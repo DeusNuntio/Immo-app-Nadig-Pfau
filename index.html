@@ -664,7 +664,8 @@ if(bc) bc.onmessage=e=>{
 ═══════════════════════════════════════════════════════════ */
 const OBJEKTE=[
   {id:'ruhrt41', gruppe:'duesseldorf',name:'Ruhrtalstr. 41',      ort:'40239 Düsseldorf',    nr:1,color:'c-dus'},
-  {id:'mind2325',gruppe:'duesseldorf',name:'Mindener Str. 23+25', ort:'40227 Düsseldorf',    nr:2,color:'c-dus'},
+  {id:'mind23',  gruppe:'duesseldorf',name:'Mindener Str. 23',   ort:'40227 Düsseldorf',    nr:2,color:'c-dus'},
+  {id:'mind25',  gruppe:'duesseldorf',name:'Mindener Str. 25',   ort:'40227 Düsseldorf',    nr:2,color:'c-dus'},
   {id:'kyff28',  gruppe:'mg',         name:'Kyffhäuser 28',        ort:'41063 Mönchengladbach',nr:3,color:'c-mg'},
   {id:'kyff30',  gruppe:'mg',         name:'Kyffhäuser 30',        ort:'41063 Mönchengladbach',nr:3,color:'c-mg'},
   {id:'kyff32',  gruppe:'mg',         name:'Kyffhäuser 32',        ort:'41063 Mönchengladbach',nr:3,color:'c-mg'},
@@ -677,7 +678,7 @@ const OBJEKTE=[
   {id:'wilm13',  gruppe:'krefeld',    name:'Wilmendyk 13',         ort:'47803 Krefeld',       nr:4,color:'c-kr'},
 ];
 const OBJ_MAP={
-  'Ruhrtalstr. 41':'ruhrt41','Mindener Str. 23':'mind2325','Mindener Str. 25':'mind2325',
+  'Ruhrtalstr. 41':'ruhrt41','Mindener Str. 23':'mind23','Mindener Str. 25':'mind25',
   'Kyffhäuser 28':'kyff28','Kyffhäuser 30':'kyff30','Kyffhäuser 32':'kyff32',
   'Inrather Str. 181':'inr181','Inrather Str. 183':'inr183','Inrather Str. 185':'inr185',
   'Wilmendyk 7':'wilm7','Wilmendyk 9':'wilm9','Wilmendyk 11':'wilm11','Wilmendyk 13':'wilm13',
@@ -1550,152 +1551,330 @@ async function deleteDok(id) {
 // Bild-Overlay für Dokumente
 
 
+
 /* ═══════════════════════════════════════════════════════════
-   NEBENKOSTENABRECHNUNG – nur Admin
+   NEBENKOSTENABRECHNUNG – stadtspezifisch, nur Admin
 ═══════════════════════════════════════════════════════════ */
+
+// Stadtspezifische Kostenarten mit Verteilerschlüsseln
+const NKA_VORLAGEN = {
+  // ── Düsseldorf: Ruhrtalstr. 41 ────────────────────────
+  ruhrt41: {
+    label: 'Ruhrtalstr. 41 – Düsseldorf',
+    kosten: [
+      {id:'wasser_strom',    name:'Wasser / Strom',          schluessel:'personen'},
+      {id:'abwasser',        name:'Abwasser',                 schluessel:'personen'},
+      {id:'muell',           name:'Müll',                     schluessel:'personen'},
+      {id:'strassenreinig',  name:'Straßenreinigung',         schluessel:'wfl'},
+      {id:'grundsteuer',     name:'Grundsteuer',              schluessel:'wfl'},
+      {id:'gebvrs',          name:'Gebäudeversicherung',      schluessel:'wfl'},
+      {id:'haftpflicht',     name:'Haftpflichtversicherung',  schluessel:'wfl'},
+      {id:'hausreinigung',   name:'Hausreinigung',            schluessel:'we'},
+      {id:'heizung',         name:'Heizung (Einzeln)',        schluessel:'einzeln'},
+    ]
+  },
+  // ── Düsseldorf: Mindener Str. 23 ──────────────────────
+  mind23: {
+    label: 'Mindener Str. 23 – Düsseldorf',
+    kosten: [
+      {id:'wasser_strom',    name:'Wasser / Strom',           schluessel:'personen'},
+      {id:'abwasser',        name:'Abwasser',                  schluessel:'personen'},
+      {id:'muell',           name:'Müll',                      schluessel:'personen'},
+      {id:'strassenreinig',  name:'Straßenreinigung',          schluessel:'wfl'},
+      {id:'grundsteuer',     name:'Grundsteuer',               schluessel:'wfl'},
+      {id:'gebvrs',          name:'Gebäudeversicherung',       schluessel:'wfl'},
+      {id:'haftpflicht',     name:'Haftpflichtversicherung',   schluessel:'wfl'},
+      {id:'hausreinigung',   name:'Hausreinigung',             schluessel:'we'},
+      {id:'strom_waschm',    name:'Strom Waschmaschine',       schluessel:'we_fest', preisProWE: 3.50},
+      {id:'heizung',         name:'Heizung (Einzeln)',         schluessel:'einzeln'},
+    ]
+  },
+  // ── Düsseldorf: Mindener Str. 25 ──────────────────────
+  mind25: {
+    label: 'Mindener Str. 25 – Düsseldorf',
+    kosten: [
+      {id:'wasser_strom',    name:'Wasser / Strom',           schluessel:'personen'},
+      {id:'abwasser',        name:'Abwasser',                  schluessel:'personen'},
+      {id:'muell',           name:'Müll',                      schluessel:'personen'},
+      {id:'strassenreinig',  name:'Straßenreinigung',          schluessel:'wfl'},
+      {id:'grundsteuer',     name:'Grundsteuer',               schluessel:'wfl'},
+      {id:'gebvrs',          name:'Gebäudeversicherung',       schluessel:'wfl'},
+      {id:'haftpflicht',     name:'Haftpflichtversicherung',   schluessel:'wfl'},
+      {id:'hausreinigung',   name:'Hausreinigung',             schluessel:'we'},
+      {id:'strom_waschm',    name:'Strom Waschmaschine',       schluessel:'we_fest', preisProWE: 3.50},
+      {id:'heizung',         name:'Heizung (Einzeln)',         schluessel:'einzeln'},
+    ]
+  },
+  // ── Mönchengladbach: Kyffhäuser 28 / 30 / 32 ─────────
+  _mg_default: {
+    label: 'Mönchengladbach',
+    kosten: [
+      {id:'wasser_abw',      name:'Wasser / Abwasser',         schluessel:'personen'},
+      {id:'muell',           name:'Müll',                       schluessel:'personen'},
+      {id:'allg_strom',      name:'Allgemeinstrom',             schluessel:'wfl'},
+      {id:'regenwasser',     name:'Regenwasser',                schluessel:'wfl'},
+      {id:'strassenreinig',  name:'Straßenreinigung',           schluessel:'wfl'},
+      {id:'grundsteuer',     name:'Grundsteuer',                schluessel:'wfl'},
+      {id:'gebvrs',          name:'Gebäudeversicherung',        schluessel:'wfl'},
+      {id:'haftpflicht',     name:'Haftpflichtversicherung',    schluessel:'monate'},
+      {id:'hausreinigung',   name:'Hausreinigung',              schluessel:'besonders'},
+      {id:'vorgarten',       name:'Vorgartenpflege',            schluessel:'we'},
+      {id:'heizung',         name:'Heizung (Einzeln)',          schluessel:'einzeln'},
+    ]
+  },
+  // ── Krefeld: Inrather Str. + Wilmendyk ─────────────────
+  _krefeld_default: {
+    label: 'Krefeld',
+    kosten: [
+      {id:'wasser',          name:'Wasser (BK)',                schluessel:'wfl'},
+      {id:'entwaesserung',   name:'Entwässerung (BK)',          schluessel:'wfl'},
+      {id:'heiz_ww',         name:'Heiz-Warmwasserkosten',      schluessel:'wfl'},
+      {id:'muell',           name:'Müllabfuhr',                 schluessel:'wfl'},
+      {id:'beleuchtung',     name:'Beleuchtung',                schluessel:'wfl'},
+      {id:'haftpflicht',     name:'Haftpflichtversicherung',    schluessel:'wfl'},
+      {id:'gebvrs',          name:'Wohngebäudeversicherung',    schluessel:'wfl'},
+      {id:'regenwasser',     name:'Regenwasser',                schluessel:'wfl'},
+      {id:'schnee',          name:'Schnee- und Eisbeseitigung', schluessel:'wfl'},
+      {id:'strassenreinig',  name:'Straßenreinigung',           schluessel:'wfl'},
+      {id:'gartenpflege',    name:'Gartenpflege',               schluessel:'wfl'},
+      {id:'brandschutz',     name:'Wartung Brandschutz',        schluessel:'wfl'},
+      {id:'grundsteuer',     name:'Grundsteuer',                schluessel:'wfl'},
+      {id:'hausreinigung',   name:'Hausreinigung',              schluessel:'wfl'},
+      {id:'legionellen',     name:'Legionellenprüfung',         schluessel:'wfl'},
+    ]
+  },
+};
+
+// Vorlage pro Objekt-ID
+function getNKAVorlage(objektId) {
+  if (NKA_VORLAGEN[objektId]) return NKA_VORLAGEN[objektId];
+  const obj = getObj(objektId);
+  if (!obj) return null;
+  if (obj.gruppe === 'mg')      return {...NKA_VORLAGEN._mg_default, label: obj.name + ' – Mönchengladbach'};
+  if (obj.gruppe === 'krefeld') return {...NKA_VORLAGEN._krefeld_default, label: obj.name + ' – Krefeld'};
+  return null;
+}
+
 async function modalNKA(objektId) {
   if (CU?.role !== 'admin') { toast('Nur für Administratoren'); return; }
-  const obj = getObj(objektId);
-  const mieter = (await idbGetAll('mieter','objektId', objektId))
-    .sort((a,b)=>Number(a.weNr)-Number(b.weNr));
+  const obj      = getObj(objektId);
+  const vorlage  = getNKAVorlage(objektId);
+  if (!vorlage) { toast('Keine NKA-Vorlage für dieses Objekt'); return; }
+  const mieter   = (await idbGetAll('mieter','objektId',objektId))
+    .filter(m=>m.mieter).sort((a,b)=>Number(a.weNr)-Number(b.weNr));
+  const anzahlWE = mieter.length;
+
+  let kostenHTML = vorlage.kosten.map(k => {
+    if (k.schluessel === 'einzeln') {
+      // Heizung: je Mieter ein eigenes Feld
+      return `<div class="f-section-title" style="margin-top:10px"><i class="ti ti-flame"></i> ${k.name} – je Mieter</div>
+        ${mieter.map(m=>`<div class="f-row" style="margin-bottom:4px">
+          <div class="f"><label>WE ${m.weNr} – ${m.mieter}</label>
+            <input type="number" id="nka_heiz_${m.id}" placeholder="0,00" step="0.01" value="0">
+          </div>
+        </div>`).join('')}`;
+    }
+    if (k.schluessel === 'besonders') {
+      return `<div class="f-row" style="margin-bottom:6px">
+        <div class="f"><label>${k.name} <small style="color:var(--ink-40)">(besondere Berechnung – Betrag aus Abrechnung)</small></label>
+          <input type="number" id="nka_${k.id}" placeholder="0,00" step="0.01" value="0">
+        </div>
+      </div>`;
+    }
+    const schlLabel = k.schluessel==='personen'?'Personen':k.schluessel==='wfl'?'Wohnfläche':
+      k.schluessel==='we'||k.schluessel==='we_fest'?'Wohneinheiten':k.schluessel==='monate'?'Monate':'';
+    return `<div class="f-row" style="margin-bottom:6px">
+      <div class="f"><label>${k.name} <small style="color:var(--ink-40)">(${schlLabel})</small></label>
+        <input type="number" id="nka_${k.id}" placeholder="0,00" step="0.01" value="${k.preisProWE?k.preisProWE*anzahlWE*12:'0'}">
+      </div>
+    </div>`;
+  }).join('');
 
   showModal(`
     <div class="m-title"><i class="ti ti-receipt"></i> Nebenkostenabrechnung</div>
-    <div style="font-size:13px;color:var(--ink-40);margin-bottom:14px">${obj?.name||''}</div>
+    <div style="font-size:13px;font-weight:600;color:var(--copper);margin-bottom:12px">${vorlage.label}</div>
     <div class="f-row">
       <div class="f"><label>Abrechnungsjahr</label>
         <select id="nkaJahr">
-          ${[2024,2023,2022,2021].map(y=>`<option value="${y}">${y}</option>`).join('')}
+          ${[2025,2024,2023,2022].map(y=>`<option value="${y}">${y}</option>`).join('')}
         </select>
       </div>
-      <div class="f"><label>Zeitraum</label>
-        <select id="nkaPeriode">
-          <option value="jahr">01.01. – 31.12.</option>
-          <option value="custom">Individuell</option>
-        </select>
+      <div class="f"><label>Abrechnungszeitraum</label>
+        <div style="display:flex;gap:6px;align-items:center">
+          <input type="date" id="nkaVon" style="flex:1;padding:8px;border:1.5px solid var(--ink-10);border-radius:var(--radius);font-size:13px">
+          <span style="color:var(--ink-40)">–</span>
+          <input type="date" id="nkaBis" style="flex:1;padding:8px;border:1.5px solid var(--ink-10);border-radius:var(--radius);font-size:13px">
+        </div>
       </div>
     </div>
-    <div class="f-section-title" style="margin-top:8px"><i class="ti ti-building"></i> Gesamtkosten des Objekts</div>
-    <div id="nkaKostenGrid">
-      ${['Heizkosten','Warmwasser','Kaltwasser / Abwasser','Allgemeinstrom','Gebäudeversicherung',
-         'Grundsteuer','Hausmeister / Reinigung','Aufzug','Müllentsorgung','Sonstige Kosten']
-        .map(k=>`<div class="f-row" style="margin-bottom:6px">
-          <div class="f"><label>${k}</label>
-            <input type="number" id="nka_${k.replace(/[^a-zA-Z]/g,'_')}" placeholder="0,00" step="0.01" value="0">
-          </div>
-        </div>`).join('')}
-    </div>
-    <div class="f"><label>Verteilerschlüssel</label>
-      <select id="nkaSchluessel">
-        <option value="flaeche">Wohnfläche (m²)</option>
-        <option value="gleich">Gleiche Anteile</option>
-        <option value="we">Pro WE</option>
-      </select>
-    </div>
+    <div class="f-section-title" style="margin-top:8px"><i class="ti ti-building"></i> Gesamtkosten</div>
+    ${kostenHTML}
     <div class="f-row" style="margin-top:14px">
       <button class="btn btn-copper btn-full" onclick="erstelleNKA('${objektId}')">
         <i class="ti ti-file-type-pdf"></i> Abrechnung erstellen
       </button>
       <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
-    </div>`);
+    </div>`,
+  );
+
+  // Standarddatum setzen
+  const jahr = new Date().getFullYear() - 1;
+  document.getElementById('nkaJahr').value = jahr;
+  document.getElementById('nkaVon').value  = jahr + '-01-01';
+  document.getElementById('nkaBis').value  = jahr + '-12-31';
 }
 
 async function erstelleNKA(objektId) {
-  const obj   = getObj(objektId);
-  const jahr  = document.getElementById('nkaJahr').value;
-  const schluessel = document.getElementById('nkaSchluessel').value;
-  const mieter = (await idbGetAll('mieter','objektId',objektId))
-    .filter(m => m.mieter)
-    .sort((a,b)=>Number(a.weNr)-Number(b.weNr));
+  const obj     = getObj(objektId);
+  const vorlage = getNKAVorlage(objektId);
+  if (!vorlage) return;
+  const jahr    = document.getElementById('nkaJahr').value;
+  const von     = document.getElementById('nkaVon').value;
+  const bis     = document.getElementById('nkaBis').value;
+  const fmtD    = d => d ? new Date(d).toLocaleDateString('de-DE') : '–';
+
+  const mieter  = (await idbGetAll('mieter','objektId',objektId))
+    .filter(m=>m.mieter).sort((a,b)=>Number(a.weNr)-Number(b.weNr));
+
+  // Gesamtanteile berechnen
+  const gesamtWFL     = mieter.reduce((s,m)=>s+(parseFloat(m.flaeche)||0),0) * 12;
+  const gesamtPersonen= mieter.reduce((s,m)=>s+((parseInt(m.personen)||1)),0) * 12;
+  const gesamtWE      = mieter.length * 12;
+  const gesamtMonate  = mieter.length * 12;
 
   // Kosten einlesen
-  const kostenPos = ['Heizkosten','Warmwasser','Kaltwasser / Abwasser','Allgemeinstrom',
-    'Gebäudeversicherung','Grundsteuer','Hausmeister / Reinigung','Aufzug','Müllentsorgung','Sonstige Kosten'];
-  const kosten = {};
-  let gesamtkosten = 0;
-  kostenPos.forEach(k => {
-    const v = parseFloat(document.getElementById('nka_'+k.replace(/[^a-zA-Z]/g,'_'))?.value)||0;
-    kosten[k] = v; gesamtkosten += v;
-  });
-
-  // Verteilerbasis berechnen
-  let gesamtBasis = 0;
-  mieter.forEach(m => {
-    if (schluessel==='flaeche') gesamtBasis += parseFloat(m.flaeche)||0;
-    else if (schluessel==='gleich'||schluessel==='we') gesamtBasis += 1;
+  const kostenMap = {};
+  vorlage.kosten.forEach(k => {
+    if (k.schluessel === 'einzeln') {
+      kostenMap[k.id] = {};
+      mieter.forEach(m => {
+        kostenMap[k.id][m.id] = parseFloat(document.getElementById('nka_heiz_'+m.id)?.value)||0;
+      });
+    } else {
+      kostenMap[k.id] = parseFloat(document.getElementById('nka_'+k.id)?.value)||0;
+    }
   });
 
   closeModal();
 
-  // PDF erzeugen
+  // Anteil pro Mieter berechnen
+  function getAnteil(k, m) {
+    const betrag = kostenMap[k.id];
+    const flaeche = (parseFloat(m.flaeche)||0) * 12;
+    const personen = (parseInt(m.personen)||1) * 12;
+    const we = 12;
+    switch(k.schluessel) {
+      case 'personen':  return gesamtPersonen > 0 ? betrag * personen / gesamtPersonen : 0;
+      case 'wfl':       return gesamtWFL > 0      ? betrag * flaeche  / gesamtWFL      : 0;
+      case 'we':        return gesamtWE > 0        ? betrag * we       / gesamtWE       : 0;
+      case 'monate':    return gesamtMonate > 0    ? betrag * we       / gesamtMonate   : 0;
+      case 'we_fest':   return (k.preisProWE||0) * 12;
+      case 'besonders': return betrag;
+      case 'einzeln':   return betrag[m.id]||0;
+      default:          return 0;
+    }
+  }
+
+  // Kostenzeilen für PDF
+  let kostenZeilen = '';
+  vorlage.kosten.forEach(k => {
+    if (k.schluessel === 'einzeln') return; // Heizung kommt pro Mieter
+    const betrag = kostenMap[k.id];
+    if (!betrag || betrag === 0) return;
+    const schlLabel = k.schluessel==='personen'?'Personen':k.schluessel==='wfl'?'Wohnfläche':
+      k.schluessel==='we'||k.schluessel==='we_fest'?'WE':k.schluessel==='monate'?'Monate':'Besonders';
+    kostenZeilen += `<tr><td style="padding:3px 8px;border:1px solid #dde;font-size:10px">${k.name}</td>
+      <td style="padding:3px 8px;border:1px solid #dde;font-size:10px">${schlLabel}</td>
+      <td style="padding:3px 8px;border:1px solid #dde;font-size:10px;text-align:right;font-weight:600">${fmtEur(betrag)}</td></tr>`;
+  });
+  const gesamtkosten = vorlage.kosten
+    .filter(k=>k.schluessel!=='einzeln')
+    .reduce((s,k)=>s+(kostenMap[k.id]||0),0);
+
+  // Mieter-Tabelle
+  let mieterRows = '';
+  mieter.forEach(m => {
+    const vz = (parseFloat(m.nk)||0) * 12;
+    let gesamt = 0;
+    let kostenDetails = '';
+    vorlage.kosten.forEach(k => {
+      const anteil = getAnteil(k, m);
+      if (anteil > 0) {
+        gesamt += anteil;
+        if (k.schluessel === 'einzeln') {
+          kostenDetails += `<div style="font-size:9px;color:#555">${k.name}: ${fmtEur(anteil)}</div>`;
+        }
+      }
+    });
+    const diff = gesamt - vz;
+    const diffCol = diff > 0 ? '#C0392B' : '#2E7D52';
+    const diffTxt = diff > 0 ? `Nachzahlung: ${fmtEur(diff)}` : `Guthaben: ${fmtEur(Math.abs(diff))}`;
+    const heizung = kostenMap['heizung']?.[m.id]||0;
+    mieterRows += `<tr>
+      <td style="padding:5px 8px;border:1px solid #dde;font-size:10px;vertical-align:top">WE ${m.weNr}</td>
+      <td style="padding:5px 8px;border:1px solid #dde;font-size:10px;vertical-align:top">${m.mieter}
+        ${kostenDetails}</td>
+      <td style="padding:5px 8px;border:1px solid #dde;font-size:10px;text-align:right;vertical-align:top">${parseFloat(m.flaeche)||0} m²</td>
+      <td style="padding:5px 8px;border:1px solid #dde;font-size:10px;text-align:right;vertical-align:top">${fmtEur(gesamt - heizung)}</td>
+      <td style="padding:5px 8px;border:1px solid #dde;font-size:10px;text-align:right;vertical-align:top">${heizung>0?fmtEur(heizung):'–'}</td>
+      <td style="padding:5px 8px;border:1px solid #dde;font-size:10px;text-align:right;font-weight:600;vertical-align:top">${fmtEur(gesamt)}</td>
+      <td style="padding:5px 8px;border:1px solid #dde;font-size:10px;text-align:right;vertical-align:top">${fmtEur(vz)}</td>
+      <td style="padding:5px 8px;border:1px solid #dde;font-size:10px;text-align:right;font-weight:700;color:${diffCol};vertical-align:top">${diffTxt}</td>
+    </tr>`;
+  });
+
   const win = window.open('', '_blank');
   if (!win) { toast('Popup blockiert'); return; }
 
-  let mRows = '';
-  mieter.forEach(m => {
-    const basis = schluessel==='flaeche' ? (parseFloat(m.flaeche)||0) : 1;
-    const anteil = gesamtBasis > 0 ? basis/gesamtBasis : 0;
-    const kosten_anteil = gesamtkosten * anteil;
-    const vz_jahres = (parseFloat(m.nk)||0) * 12;
-    const diff = kosten_anteil - vz_jahres;
-    const diffColor = diff > 0 ? '#C0392B' : '#2E7D52';
-    const diffText = diff > 0 ? `Nachzahlung: ${fmtEur(diff)}` : `Guthaben: ${fmtEur(Math.abs(diff))}`;
-    mRows += `<tr>
-      <td style="padding:5px 8px;border:1px solid #dde;font-size:10px">WE ${m.weNr}</td>
-      <td style="padding:5px 8px;border:1px solid #dde;font-size:10px">${m.mieter}</td>
-      <td style="padding:5px 8px;border:1px solid #dde;font-size:10px;text-align:right">${schluessel==='flaeche'?m.flaeche+' m²':'1'}</td>
-      <td style="padding:5px 8px;border:1px solid #dde;font-size:10px;text-align:right">${(anteil*100).toFixed(2)}%</td>
-      <td style="padding:5px 8px;border:1px solid #dde;font-size:10px;text-align:right;font-weight:600">${fmtEur(kosten_anteil)}</td>
-      <td style="padding:5px 8px;border:1px solid #dde;font-size:10px;text-align:right">${fmtEur(vz_jahres)}</td>
-      <td style="padding:5px 8px;border:1px solid #dde;font-size:10px;text-align:right;font-weight:700;color:${diffColor}">${diffText}</td>
-    </tr>`;
-  });
-
-  let kostenRows = '';
-  kostenPos.forEach(k => {
-    if (kosten[k]>0) kostenRows += `<tr>
-      <td style="padding:3px 8px;border:1px solid #dde;font-size:10px">${k}</td>
-      <td style="padding:3px 8px;border:1px solid #dde;font-size:10px;text-align:right;font-weight:600">${fmtEur(kosten[k])}</td>
-    </tr>`;
-  });
-
   win.document.write(`<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8">
-<title>Nebenkostenabrechnung ${jahr} – ${obj?.name}</title>
-<style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:Arial,sans-serif;font-size:11px;color:#111;padding:16px}
-.hdr{border-bottom:3px solid #1F4E79;padding-bottom:10px;margin-bottom:12px}
-h1{font-size:16px;color:#1F4E79;font-weight:700}
-h2{font-size:10px;background:#1F4E79;color:#fff;padding:4px 8px;margin:12px 0 5px;border-radius:3px;text-transform:uppercase;letter-spacing:.5px}
-table{width:100%;border-collapse:collapse;margin-bottom:8px}
+<title>NKA ${jahr} – ${obj?.name}</title>
+<style>*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:Arial,sans-serif;font-size:11px;color:#111;padding:16px}
+.hdr{border-bottom:3px solid #1F4E79;padding-bottom:8px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:flex-end}
+h1{font-size:15px;color:#1F4E79;font-weight:700}.sub{font-size:10px;color:#666;margin-top:2px}
+h2{font-size:10px;background:#1F4E79;color:#fff;padding:4px 8px;margin:10px 0 4px;border-radius:3px;text-transform:uppercase;letter-spacing:.5px}
+table{width:100%;border-collapse:collapse;margin-bottom:6px}
 .total{background:#e8f0fe;font-weight:700}
-.footer{font-size:8px;color:#aaa;text-align:center;margin-top:14px;padding-top:8px;border-top:1px solid #eee}
+.footer{font-size:8px;color:#aaa;text-align:center;margin-top:12px;padding-top:6px;border-top:1px solid #eee}
 @page{margin:1.5cm;size:A4}@media print{body{padding:0;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
 </style></head><body>
 <div class="hdr">
-  <h1>Nebenkostenabrechnung ${jahr}</h1>
-  <div style="font-size:11px;color:#555;margin-top:4px">${obj?.name||''} · ${obj?.ort||''} · Abrechnungszeitraum: 01.01.${jahr} – 31.12.${jahr}</div>
-  <div style="font-size:10px;color:#888;margin-top:2px">Erstellt am: ${new Date().toLocaleDateString('de-DE')} · ${CU?.name||''}</div>
+  <div>
+    <div style="font-size:12px;font-weight:700;color:#555">Hausverwaltung Nadig Pfau</div>
+    <h1>Nebenkostenabrechnung ${jahr}</h1>
+    <div class="sub">${obj?.name||''} · ${obj?.ort||''}</div>
+    <div class="sub">Abrechnungszeitraum: ${fmtD(von)} – ${fmtD(bis)}</div>
+    <div class="sub">Erstellt: ${new Date().toLocaleDateString('de-DE')} · ${CU?.name||''}</div>
+  </div>
 </div>
 <h2>Gesamtkosten des Objekts</h2>
-<table><tbody>${kostenRows}
-  <tr class="total"><td style="padding:5px 8px;border:1px solid #ccd">Gesamtkosten</td>
-    <td style="padding:5px 8px;border:1px solid #ccd;text-align:right">${fmtEur(gesamtkosten)}</td></tr>
-</tbody></table>
-<h2>Abrechnung je Wohneinheit (Verteilung: ${schluessel==='flaeche'?'nach Wohnfläche':schluessel==='gleich'?'gleiche Anteile':'pro WE'})</h2>
 <table><thead><tr>
-  <th style="padding:5px 8px;background:#e8f0fe;border:1px solid #ccd;text-align:left;font-size:10px">WE</th>
-  <th style="padding:5px 8px;background:#e8f0fe;border:1px solid #ccd;text-align:left;font-size:10px">Mieter</th>
-  <th style="padding:5px 8px;background:#e8f0fe;border:1px solid #ccd;text-align:right;font-size:10px">Basis</th>
-  <th style="padding:5px 8px;background:#e8f0fe;border:1px solid #ccd;text-align:right;font-size:10px">Anteil</th>
-  <th style="padding:5px 8px;background:#e8f0fe;border:1px solid #ccd;text-align:right;font-size:10px">Kostenanteil</th>
-  <th style="padding:5px 8px;background:#e8f0fe;border:1px solid #ccd;text-align:right;font-size:10px">VZ-Jahres</th>
-  <th style="padding:5px 8px;background:#e8f0fe;border:1px solid #ccd;text-align:right;font-size:10px">Ergebnis</th>
-</tr></thead><tbody>${mRows}</tbody></table>
-<div class="footer">Nebenkostenabrechnung ${jahr} · ${obj?.name||''} · Nadig Pfau Hausverwaltung</div>
-<scr' + 'ipt>window.onload=()=>setTimeout(()=>window.print(),600)</scr' + 'ipt>
+  <th style="padding:3px 8px;background:#e8f0fe;border:1px solid #ccd;text-align:left;font-size:10px">Kostenart</th>
+  <th style="padding:3px 8px;background:#e8f0fe;border:1px solid #ccd;text-align:left;font-size:10px">Schlüssel</th>
+  <th style="padding:3px 8px;background:#e8f0fe;border:1px solid #ccd;text-align:right;font-size:10px">Betrag</th>
+</tr></thead><tbody>
+${kostenZeilen}
+<tr class="total"><td colspan="2" style="padding:5px 8px;border:1px solid #ccd">Summe Nebenkosten (ohne Heizung)</td>
+  <td style="padding:5px 8px;border:1px solid #ccd;text-align:right">${fmtEur(gesamtkosten)}</td></tr>
+</tbody></table>
+<h2>Abrechnung je Wohneinheit</h2>
+<table><thead><tr>
+  <th style="padding:4px 8px;background:#e8f0fe;border:1px solid #ccd;font-size:9px;text-align:left">WE</th>
+  <th style="padding:4px 8px;background:#e8f0fe;border:1px solid #ccd;font-size:9px;text-align:left">Mieter</th>
+  <th style="padding:4px 8px;background:#e8f0fe;border:1px solid #ccd;font-size:9px;text-align:right">m²</th>
+  <th style="padding:4px 8px;background:#e8f0fe;border:1px solid #ccd;font-size:9px;text-align:right">NK-Anteil</th>
+  <th style="padding:4px 8px;background:#e8f0fe;border:1px solid #ccd;font-size:9px;text-align:right">Heizung</th>
+  <th style="padding:4px 8px;background:#e8f0fe;border:1px solid #ccd;font-size:9px;text-align:right">Gesamt</th>
+  <th style="padding:4px 8px;background:#e8f0fe;border:1px solid #ccd;font-size:9px;text-align:right">Vorauszahlung</th>
+  <th style="padding:4px 8px;background:#e8f0fe;border:1px solid #ccd;font-size:9px;text-align:right">Ergebnis</th>
+</tr></thead><tbody>${mieterRows}</tbody></table>
+<div class="footer">Nebenkostenabrechnung ${jahr} · ${obj?.name||''} · Nadig Pfau Hausverwaltung · Venloer Straße 20 · 40477 Düsseldorf</div>
+<scr` + `ipt>window.onload=()=>setTimeout(()=>window.print(),600)</scr` + `ipt>
 </body></html>`);
   win.document.close();
   toast('Nebenkostenabrechnung wird erstellt...');
 }
+
 
 /* ═══════════════════════════════════════════════════════════
    MODAL: AUFGABE HINZUFÜGEN
