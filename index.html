@@ -2640,38 +2640,62 @@ document.getElementById('photoIn').addEventListener('change', function() {
    APP START
 ═══════════════════════════════════════════════════════════ */
 window.addEventListener('DOMContentLoaded', async () => {
-  // Robuster Start: mehrere Versuche für Android Chrome PWA
+  function diagLog(msg) {
+    const el = document.getElementById('diagBox');
+    if (el) el.innerHTML += '<div>' + msg + '</div>';
+    console.log('[DIAG]', msg);
+  }
+
+  // Diagnose-Box einblenden
+  const splash = document.getElementById('splashScreen');
+  const diagDiv = document.createElement('div');
+  diagDiv.id = 'diagBox';
+  diagDiv.style.cssText = 'position:fixed;bottom:0;left:0;right:0;background:rgba(0,0,0,.85);color:#0f0;font-size:12px;font-family:monospace;padding:12px;z-index:9999;max-height:50vh;overflow-y:auto;';
+  document.body.appendChild(diagDiv);
+
+  diagLog('Start...');
+  diagLog('IndexedDB verfügbar: ' + (!!window.indexedDB));
+  diagLog('Browser: ' + navigator.userAgent.slice(0,60));
+
   let dbOk = false;
   for (let attempt = 1; attempt <= 3; attempt++) {
+    diagLog('IDB Versuch ' + attempt + '...');
     try {
       await openIDB();
       dbOk = true;
+      diagLog('✓ IDB geöffnet');
       break;
     } catch(err) {
-      console.warn(`IDB Versuch ${attempt} fehlgeschlagen:`, err);
+      diagLog('✗ IDB Fehler: ' + (err.message||err));
       if (attempt < 3) await new Promise(r => setTimeout(r, 400 * attempt));
     }
   }
+
   if (!dbOk) {
-    showStartError('Datenbank konnte nicht geöffnet werden. Bitte App neu starten oder Cache leeren.');
+    diagLog('FEHLER: IDB nicht erreichbar');
+    showStartError('Datenbank-Fehler. Siehe grüner Text unten.');
     return;
   }
+
+  diagLog('ensureDefaultUsers...');
   try {
     await ensureDefaultUsers();
+    diagLog('✓ Benutzer OK');
   } catch(err) {
-    console.warn('ensureDefaultUsers Fehler (nicht kritisch):', err);
+    diagLog('⚠ Benutzer-Fehler: ' + (err.message||err));
   }
-  // Splash mindestens 1 Sekunde anzeigen, dann Login
-  const elapsed = performance.now();
-  const delay = Math.max(0, 1000 - elapsed);
-  setTimeout(async () => {
-    try {
-      showScreen('loginScreen');
-      await loadLoginUsers();
-    } catch(err) {
-      showStartError('Login konnte nicht geladen werden: ' + err.message);
-    }
-  }, delay);
+
+  diagLog('→ LoginScreen...');
+  try {
+    showScreen('loginScreen');
+    await loadLoginUsers();
+    diagLog('✓ Login geladen');
+    // Diagnose-Box nach 8 Sekunden ausblenden wenn alles klappt
+    setTimeout(() => { diagDiv.style.display = 'none'; }, 8000);
+  } catch(err) {
+    diagLog('✗ Login-Fehler: ' + (err.message||err));
+    showStartError('Login-Fehler: ' + err.message);
+  }
 });
 
 function showStartError(msg) {
