@@ -12,7 +12,6 @@
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,wght@0,300;0,400;0,500;0,600;1,400&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.7.0/dist/tabler-icons.min.css">
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
-<script src="https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js"></script>
 <style>
 /* ═══════════════════════ DESIGN SYSTEM ═══════════════════════ */
 :root{
@@ -1996,8 +1995,8 @@ async function renderSettings(){
   // OneDrive-Status-Karte befüllen
   const odCard = document.getElementById('onedriveSyncCard');
   if (odCard) {
-    const connected = !!msalAccount;
-    const name = msalAccount?.name || msalAccount?.username || '';
+    const connected = !!odTokens;
+    const name = odTokens?.user_name || '';
     odCard.innerHTML = connected ? `
       <div style="display:flex;align-items:center;gap:10px;background:var(--green-l);border-radius:8px;padding:12px;margin-bottom:12px">
         <i class="ti ti-circle-check" style="color:var(--green);font-size:22px"></i>
@@ -2162,83 +2161,168 @@ async function confirmReset(){
 }
 
 /* ═══════════════════════════════════════════════════════════
-   ONEDRIVE SYNC – Microsoft Graph API
+   ONEDRIVE SYNC – OAuth2 PKCE (ohne externe Bibliothek)
 ═══════════════════════════════════════════════════════════ */
-const MSAL_CONFIG = {
-  auth: {
-    clientId: '269324a3-2f44-4ab9-a8d5-280093a8271c',
-    authority: 'https://login.microsoftonline.com/common',
-    redirectUri: window.location.origin + window.location.pathname,
-  },
-  cache: { cacheLocation: 'localStorage', storeAuthStateInCookie: false },
-};
+const OD_CLIENT_ID   = '269324a3-2f44-4ab9-a8d5-280093a8271c';
+const OD_REDIRECT    = 'https://deusnuntio.github.io/Immo-app-Nadig-Pfau/';
+const OD_SCOPES      = 'Files.ReadWrite User.Read offline_access';
+const OD_AUTH_URL    = 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize';
+const OD_TOKEN_URL   = 'https://login.microsoftonline.com/common/oauth2/v2.0/token';
+const ONEDRIVE_FILE  = 'https://graph.microsoft.com/v1.0/me/drive/root:/NadigPfau/immo_daten.json:/content';
 
-const GRAPH_SCOPES = ['Files.ReadWrite', 'User.Read'];
-const ONEDRIVE_FILE = '/me/drive/root:/NadigPfau/immo_daten.json:/content';
-
-let msalApp = null;
-let msalAccount = null;
+let odTokens = null;  // {access_token, refresh_token, expires_at}
 let syncInProgress = false;
 let lastSyncHash = '';
 
-function initMSAL() {
-  try {
-    msalApp = new msal.PublicClientApplication(MSAL_CONFIG);
-    msalApp.handleRedirectPromise().then(resp => {
-      if (resp) { msalAccount = resp.account; onSignedIn(); }
-      else {
-        const accounts = msalApp.getAllAccounts();
-        if (accounts.length > 0) { msalAccount = accounts[0]; onSignedIn(); }
-      }
-    }).catch(e => console.warn('MSAL redirect:', e));
-  } catch(e) { console.warn('MSAL init:', e); }
+// ── PKCE Hilfsfunktionen ──────────────────────────────────
+async function pkceChallenge() {
+  const verifier = Array.from(crypto.getRandomValues(new Uint8Array(32)))
+    .map(b => b.toString(16).padStart(2,'0')).join('');
+  const enc = new TextEncoder().encode(verifier);
+  const hash = await crypto.subtle.digest('SHA-256', enc);
+  const challenge = btoa(String.fromCharCode(...new Uint8Array(hash)))
+    .replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+  return {verifier, challenge};
 }
 
-async function getToken() {
-  if (!msalApp) return null;
+// ── Anmeldung starten ─────────────────────────────────────
+async function msalLogin() {
   try {
-    const accounts = msalApp.getAllAccounts();
-    if (!accounts.length) return null;
-    const resp = await msalApp.acquireTokenSilent({ scopes: GRAPH_SCOPES, account: accounts[0] });
-    msalAccount = resp.account;
-    return resp.accessToken;
+    const {verifier, challenge} = await pkceChallenge();
+    const state = Math.random().toString(36).slice(2);
+    sessionStorage.setItem('pkce_verifier', verifier);
+    sessionStorage.setItem('pkce_state', state);
+    sessionStorage.setItem('pkce_return', window.location.href);
+
+    const params = new URLSearchParams({
+      client_id:     OD_CLIENT_ID,
+      response_type: 'code',
+      redirect_uri:  OD_REDIRECT,
+      scope:         OD_SCOPES,
+      state,
+      code_challenge:        challenge,
+      code_challenge_method: 'S256',
+      prompt:        'select_account',
+    });
+    window.location.href = OD_AUTH_URL + '?' + params.toString();
   } catch(e) {
-    try {
-      const resp = await msalApp.acquireTokenPopup({ scopes: GRAPH_SCOPES });
-      msalAccount = resp.account;
-      return resp.accessToken;
-    } catch(e2) { console.warn('Token:', e2); return null; }
+    toast('Anmeldung fehlgeschlagen: ' + e.message);
   }
 }
 
-async function msalLogin() {
-  if (!msalApp) { toast('Microsoft-Anmeldung nicht verfügbar'); return; }
+// ── Redirect-Code verarbeiten (beim Seitenstart) ──────────
+async function handleOAuthRedirect() {
+  const params = new URLSearchParams(window.location.search);
+  const code  = params.get('code');
+  const state = params.get('state');
+  const error = params.get('error');
+
+  if (error) {
+    console.warn('OAuth Fehler:', error, params.get('error_description'));
+    window.history.replaceState({}, '', OD_REDIRECT);
+    return;
+  }
+  if (!code) return;
+
+  const savedState    = sessionStorage.getItem('pkce_state');
+  const verifier      = sessionStorage.getItem('pkce_verifier');
+  sessionStorage.removeItem('pkce_verifier');
+  sessionStorage.removeItem('pkce_state');
+  window.history.replaceState({}, '', OD_REDIRECT);
+
+  if (state !== savedState) { console.warn('State mismatch'); return; }
+
   try {
-    setSyncStatus('pending');
-    const resp = await msalApp.loginPopup({ scopes: GRAPH_SCOPES });
-    msalAccount = resp.account;
-    onSignedIn();
-  } catch(e) { setSyncStatus('offline'); toast('Anmeldung abgebrochen'); }
+    const resp = await fetch(OD_TOKEN_URL, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+      body: new URLSearchParams({
+        client_id:     OD_CLIENT_ID,
+        grant_type:    'authorization_code',
+        code,
+        redirect_uri:  OD_REDIRECT,
+        code_verifier: verifier,
+      }),
+    });
+    const tokens = await resp.json();
+    if (tokens.error) throw new Error(tokens.error_description || tokens.error);
+    saveTokens(tokens);
+    setSyncStatus('ok');
+    toast('✓ Mit OneDrive verbunden');
+    syncFromOneDrive();
+    renderSettings();
+  } catch(e) {
+    console.warn('Token-Austausch:', e);
+    setSyncStatus('offline');
+    toast('Anmeldung fehlgeschlagen: ' + e.message);
+  }
 }
 
-async function msalLogout() {
-  if (!msalApp || !msalAccount) return;
-  await msalApp.logoutPopup({ account: msalAccount });
-  msalAccount = null;
+// ── Token speichern / laden ───────────────────────────────
+function saveTokens(tokens) {
+  odTokens = {
+    access_token:  tokens.access_token,
+    refresh_token: tokens.refresh_token || odTokens?.refresh_token,
+    expires_at:    Date.now() + (tokens.expires_in || 3600) * 1000,
+    user_name:     odTokens?.user_name || '',
+  };
+  try { localStorage.setItem('od_tokens', JSON.stringify(odTokens)); } catch(e) {}
+  // Benutzernamen nachladen
+  fetch('https://graph.microsoft.com/v1.0/me', {
+    headers: {'Authorization': 'Bearer ' + odTokens.access_token}
+  }).then(r=>r.json()).then(u=>{
+    if (odTokens) { odTokens.user_name = u.displayName || u.userPrincipalName || ''; }
+    try { localStorage.setItem('od_tokens', JSON.stringify(odTokens)); } catch(e) {}
+  }).catch(()=>{});
+}
+
+function loadTokens() {
+  try {
+    const raw = localStorage.getItem('od_tokens');
+    if (raw) { odTokens = JSON.parse(raw); }
+  } catch(e) {}
+}
+
+async function getAccessToken() {
+  if (!odTokens) return null;
+  if (Date.now() < odTokens.expires_at - 60000) return odTokens.access_token;
+  if (!odTokens.refresh_token) { odTokens = null; return null; }
+  try {
+    const resp = await fetch(OD_TOKEN_URL, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+      body: new URLSearchParams({
+        client_id:     OD_CLIENT_ID,
+        grant_type:    'refresh_token',
+        refresh_token: odTokens.refresh_token,
+        scope:         OD_SCOPES,
+      }),
+    });
+    const tokens = await resp.json();
+    if (tokens.error) throw new Error(tokens.error);
+    saveTokens(tokens);
+    return odTokens.access_token;
+  } catch(e) {
+    console.warn('Token-Refresh:', e);
+    odTokens = null;
+    try { localStorage.removeItem('od_tokens'); } catch(e2) {}
+    setSyncStatus('offline');
+    return null;
+  }
+}
+
+function msalLogout() {
+  odTokens = null;
+  try { localStorage.removeItem('od_tokens'); } catch(e) {}
   setSyncStatus('offline');
   toast('Microsoft-Konto abgemeldet');
   renderSettings();
 }
 
-function onSignedIn() {
-  setSyncStatus('ok');
-  toast('✓ Mit OneDrive verbunden: ' + (msalAccount?.name || msalAccount?.username || ''));
-  syncFromOneDrive();
-}
-
+// ── Sync zu OneDrive ──────────────────────────────────────
 async function syncToOneDrive() {
   if (syncInProgress) return;
-  const token = await getToken();
+  const token = await getAccessToken();
   if (!token) return;
   syncInProgress = true;
   setSyncStatus('pending');
@@ -2248,19 +2332,17 @@ async function syncToOneDrive() {
       backup[s] = await idbGetAll(s);
     }
     backup.updatedAt = now();
-    backup.updatedBy = msalAccount?.name || msalAccount?.username || 'Unbekannt';
+    backup.updatedBy = odTokens?.user_name || 'Unbekannt';
     const json = JSON.stringify(backup);
-    const hash = json.length + '_' + json.slice(-50);
+    const hash = json.length + '_' + json.slice(-30);
     if (hash === lastSyncHash) { setSyncStatus('ok'); syncInProgress = false; return; }
-    await fetch('https://graph.microsoft.com/v1.0' + ONEDRIVE_FILE, {
+    await fetch(ONEDRIVE_FILE, {
       method: 'PUT',
-      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+      headers: {'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'},
       body: json,
     });
     lastSyncHash = hash;
     setSyncStatus('ok');
-    const dot = document.getElementById('syncDot');
-    if (dot) { dot.title = 'Zuletzt synchronisiert: ' + now(); }
   } catch(e) {
     console.warn('Sync Upload:', e);
     setSyncStatus('offline');
@@ -2268,22 +2350,18 @@ async function syncToOneDrive() {
   syncInProgress = false;
 }
 
+// ── Sync von OneDrive ─────────────────────────────────────
 async function syncFromOneDrive() {
-  const token = await getToken();
+  const token = await getAccessToken();
   if (!token) return;
   setSyncStatus('pending');
   try {
-    const resp = await fetch('https://graph.microsoft.com/v1.0' + ONEDRIVE_FILE, {
-      headers: { 'Authorization': 'Bearer ' + token },
+    const resp = await fetch(ONEDRIVE_FILE, {
+      headers: {'Authorization': 'Bearer ' + token},
     });
-    if (resp.status === 404) {
-      // Erste Nutzung – lokale Daten hochladen
-      await syncToOneDrive();
-      return;
-    }
+    if (resp.status === 404) { await syncToOneDrive(); return; }
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     const backup = await resp.json();
-    // Neuere Daten gewinnen
     const remoteTime = backup.updatedAt || '';
     const localSetting = await idbGet('settings','lastSync').catch(()=>null);
     const localTime = localSetting?.value || '';
@@ -2294,14 +2372,23 @@ async function syncFromOneDrive() {
           for (const item of backup[s]) await idbPut(s, item);
         }
       }
-      await idbPut('settings', { id:'lastSync', value: remoteTime });
+      await idbPut('settings', {id:'lastSync', value: remoteTime});
       await renderDash(); await updateBadge();
-      toast('✓ Daten von OneDrive geladen (' + (backup.updatedBy||'') + ')');
+      toast('✓ Synchronisiert (' + (backup.updatedBy||'') + ')');
     }
     setSyncStatus('ok');
   } catch(e) {
     console.warn('Sync Download:', e);
     setSyncStatus('offline');
+  }
+}
+
+function initMSAL() {
+  loadTokens();
+  handleOAuthRedirect();
+  if (odTokens) {
+    setSyncStatus('ok');
+    syncFromOneDrive();
   }
 }
 
@@ -2312,8 +2399,8 @@ function setSyncStatus(status){
 }
 
 function showSyncInfo(){
-  const connected = !!msalAccount;
-  const name = msalAccount?.name || msalAccount?.username || '';
+  const connected = !!odTokens;
+  const name = odTokens?.user_name || '';
   showModal(`
     <div class="m-title"><i class="ti ti-cloud"></i> OneDrive-Sync</div>
     ${connected ? `
@@ -2324,10 +2411,10 @@ function showSyncInfo(){
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">
         <button class="btn btn-copper" onclick="syncFromOneDrive();closeModal()"><i class="ti ti-refresh"></i> Jetzt synchronisieren</button>
-        <button class="btn btn-danger btn-sm" onclick="msalLogout()"><i class="ti ti-logout"></i> Abmelden</button>
+        <button class="btn btn-danger btn-sm" onclick="msalLogout();closeModal()"><i class="ti ti-logout"></i> Abmelden</button>
       </div>` : `
       <p style="font-size:13px;color:var(--ink-40);margin-bottom:14px;line-height:1.6">
-        Mit Microsoft-Konto anmelden um Daten automatisch über OneDrive mit allen Geräten zu synchronisieren.
+        Mit Microsoft-Konto anmelden um Daten automatisch über OneDrive zu synchronisieren.
       </p>
       <button class="btn btn-primary btn-full" onclick="msalLogin();closeModal()">
         <i class="ti ti-brand-windows"></i> Mit Microsoft anmelden
