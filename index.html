@@ -512,6 +512,7 @@ body{background:var(--surface);color:var(--ink);font-size:15px;-webkit-font-smoo
     <div id="page-objekt" class="page"></div>
     <div id="page-mieter" class="page"></div>
     <div id="page-protokoll" class="page"></div>
+    <div id="page-protokoll-archiv" class="page"></div>
     <div id="page-aufgaben" class="page"></div>
     <div id="page-settings" class="page"></div>
   </div>
@@ -524,8 +525,8 @@ body{background:var(--surface);color:var(--ink);font-size:15px;-webkit-font-smoo
       <i class="ti ti-checklist"></i><span>Aufgaben</span>
       <div class="nav-badge" id="navBadge" style="display:none"></div>
     </button>
-    <button class="nav-btn" id="nav-protokoll" onclick="newProtokoll()">
-      <i class="ti ti-clipboard-check"></i><span>Protokoll</span>
+    <button class="nav-btn" id="nav-protokoll" onclick="nav('protokoll-archiv')">
+      <i class="ti ti-clipboard-list"></i><span>Protokolle</span>
     </button>
     <button class="nav-btn" id="nav-settings" onclick="nav('settings')">
       <i class="ti ti-settings"></i><span>Einstellungen</span>
@@ -561,7 +562,7 @@ body{background:var(--surface);color:var(--ink);font-size:15px;-webkit-font-smoo
 /* ═══════════════════════════════════════════════════════════
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
-const DB_NAME='immo_v2', DB_VER=4;
+const DB_NAME='immo_v2', DB_VER=5;
 let idb=null;
 
 function openIDB(){
@@ -574,7 +575,7 @@ function openIDB(){
     const req=indexedDB.open(DB_NAME,DB_VER);
     req.onupgradeneeded=e=>{
       const db=e.target.result;
-      ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente'].forEach(s=>{
+      ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv'].forEach(s=>{
         if(!db.objectStoreNames.contains(s)){
           const store=db.createObjectStore(s,{keyPath:'id'});
           if(s==='mieter'){store.createIndex('objektId','objektId');store.createIndex('weNr','weNr')}
@@ -583,6 +584,7 @@ function openIDB(){
           if(s==='reparaturen'){store.createIndex('objektId','objektId')}
           if(s==='protokolle'){store.createIndex('objektId','objektId')}
           if(s==='dokumente'){store.createIndex('objektId','objektId');store.createIndex('mieterId','mieterId')}
+          if(s==='nka_archiv'){store.createIndex('objektId','objektId')}
         }
       });
     };
@@ -694,6 +696,7 @@ let pinBuf='';
 
 const DEFAULT_USERS=[
   {id:'u_admin', name:'Administrator',    pin:'1234',role:'admin',   objekte:[],aktiv:true},
+  {id:'u_pfau',  name:'Anna Pfau',        pin:'1603',role:'admin',   objekte:[],aktiv:true},
   {id:'u_kr',    name:'Hausmeister KR',   pin:'2222',role:'hm',      objekte:['krefeld'],aktiv:true},
   {id:'u_dus',   name:'Hausmeister DUS',  pin:'3333',role:'hm',      objekte:['duesseldorf'],aktiv:true},
   {id:'u_mg',    name:'Hausmeister MG',   pin:'4444',role:'hm',      objekte:['mg'],aktiv:true},
@@ -764,16 +767,40 @@ function nav(id,title,sub,push=true){
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.getElementById('page-'+id)?.classList.add('active');
   const TITLES={dash:'Dashboard',aufgaben:'Aufgaben & Mängel',settings:'Einstellungen',
-                objekt:'Objekt',mieter:'Mieter',protokoll:'Übergabeprotokoll'};
+                objekt:'Objekt',mieter:'Mieter',protokoll:'Übergabeprotokoll',
+                'protokoll-archiv':'Protokoll-Archiv'};
   document.getElementById('hdrTitle').textContent=title||TITLES[id]||id;
   document.getElementById('hdrSub').textContent=sub||'';
   document.getElementById('hdrBack').classList.toggle('vis',push&&id!=='dash');
   document.querySelectorAll('.nav-btn').forEach(b=>b.classList.remove('active'));
   document.getElementById('nav-'+id)?.classList.add('active');
   document.getElementById('fab').classList.toggle('visible',id==='aufgaben');
-  if(push&&id!=='dash') navStack.push({id,title,sub}); else if(id==='dash') navStack=[];
+  if(push&&id!=='dash'){
+    navStack.push({id,title,sub});
+    // History-Eintrag für Android-Zurück-Button
+    history.pushState({navId:id,title,sub}, '', window.location.pathname);
+  } else if(id==='dash'){
+    navStack=[];
+    history.replaceState({navId:'dash'}, '', window.location.pathname);
+  }
   curPage=id;
 }
+
+// Android Zurück-Button abfangen
+window.addEventListener('popstate', function(e) {
+  // Wenn Modal offen → Modal schließen
+  if(document.getElementById('modalBg')?.classList.contains('open')){
+    closeModal(); history.pushState({}, '', window.location.pathname); return;
+  }
+  // Wenn navStack gefüllt → eine Ebene zurück
+  if(navStack.length > 0){
+    history.pushState({}, '', window.location.pathname); // Verhindert App-Schließen
+    goBack();
+    return;
+  }
+  // Wenn auf Dashboard → Android darf minimieren (einmal erlaubt)
+  // Nichts tun → normales Android-Verhalten (App in Hintergrund)
+});
 function goBack(){
   navStack.pop();
   const prev=navStack.length?navStack[navStack.length-1]:{id:'dash'};
@@ -924,6 +951,7 @@ async function showObjekt(objId){
     <button class="tab-btn" onclick="objTab('aufgaben',this)">Aufgaben</button>
     <button class="tab-btn" onclick="objTab('maengel',this)">Mängel</button>
     <button class="tab-btn" onclick="objTab('dokumente',this)">Dokumente</button>
+    ${CU?.role==='admin'?'<button class="tab-btn" onclick="objTab(\'nka\',this)">NKA-Archiv</button>':''}
   </div>
   <div id="objTabContent"></div>`;
   nav('objekt',obj.name,obj.ort);
@@ -943,6 +971,7 @@ async function renderObjTab(t){
   if(t==='aufgaben')   await renderObjAufgaben(el);
   if(t==='maengel')    await renderObjMaengel(el);
   if(t==='dokumente')  await renderDokumente(el, currentObjId, null);
+  if(t==='nka')        await renderNKAArchiv(el, currentObjId);
 }
 
 async function renderObjMieter(el){
@@ -1067,6 +1096,7 @@ async function showMieter(id){
     <button class="btn btn-sm" onclick="modalAddMangel('${m.id}','${m.objektId}','reparatur')"><i class="ti ti-tools"></i> Reparatur</button>
     <button class="btn btn-sm" onclick="modalEditMieter('${m.id}')"><i class="ti ti-pencil"></i> Bearbeiten</button>
     <button class="btn btn-sm" onclick="showMieterDokumente('${m.id}')"><i class="ti ti-paperclip"></i> Dokumente</button>
+    <button class="btn btn-sm" onclick="druckeWohnungsgeberBescheinigung('${m.id}')"><i class="ti ti-file-certificate"></i> WGB</button>
     <button class="btn btn-sm btn-danger" onclick="deleteMieterConfirm('${m.id}')"><i class="ti ti-trash"></i></button>
   </div>`;
 
@@ -1585,7 +1615,7 @@ const NKA_VORLAGEN = {
       {id:'gebvrs',          name:'Gebäudeversicherung',       schluessel:'wfl'},
       {id:'haftpflicht',     name:'Haftpflichtversicherung',   schluessel:'wfl'},
       {id:'hausreinigung',   name:'Hausreinigung',             schluessel:'we'},
-      {id:'strom_waschm',    name:'Strom Waschmaschine',       schluessel:'we_fest', preisProWE: 3.50},
+      {id:'strom_waschm',    name:'Strom Waschmaschine (3,50€/Pers/Mon.)', schluessel:'personen_fest', preisProPers: 3.50},
       {id:'heizung',         name:'Heizung (Einzeln)',         schluessel:'einzeln'},
     ]
   },
@@ -1601,7 +1631,7 @@ const NKA_VORLAGEN = {
       {id:'gebvrs',          name:'Gebäudeversicherung',       schluessel:'wfl'},
       {id:'haftpflicht',     name:'Haftpflichtversicherung',   schluessel:'wfl'},
       {id:'hausreinigung',   name:'Hausreinigung',             schluessel:'we'},
-      {id:'strom_waschm',    name:'Strom Waschmaschine',       schluessel:'we_fest', preisProWE: 3.50},
+      {id:'strom_waschm',    name:'Strom Waschmaschine (3,50€/Pers/Mon.)', schluessel:'personen_fest', preisProPers: 3.50},
       {id:'heizung',         name:'Heizung (Einzeln)',         schluessel:'einzeln'},
     ]
   },
@@ -1668,9 +1698,23 @@ async function modalNKA(objektId) {
     if (k.schluessel === 'einzeln') {
       // Heizung: je Mieter ein eigenes Feld
       return `<div class="f-section-title" style="margin-top:10px"><i class="ti ti-flame"></i> ${k.name} – je Mieter</div>
-        ${mieter.map(m=>`<div class="f-row" style="margin-bottom:4px">
-          <div class="f"><label>WE ${m.weNr} – ${m.mieter}</label>
-            <input type="number" id="nka_heiz_${m.id}" placeholder="0,00" step="0.01" value="0">
+        ${mieter.map(m=>`<div style="background:var(--ink-05);border-radius:8px;padding:8px;margin-bottom:6px">
+          <div style="font-size:12px;font-weight:600;color:var(--ink);margin-bottom:6px">WE ${m.weNr} – ${m.mieter}</div>
+          <div class="f-row">
+            <div class="f"><label>Heizung (€)</label>
+              <input type="number" id="nka_heiz_${m.id}" placeholder="0,00" step="0.01" value="0"></div>
+            <div class="f"><label>NK-Vorauszahlung (€/Mon.)</label>
+              <input type="number" id="nka_vz_${m.id}" step="0.01" value="${m.nk||0}"></div>
+          </div>
+          <div class="f-row">
+            <div class="f"><label>Kleinreparaturen (€)</label>
+              <input type="number" id="nka_kr_${m.id}" placeholder="0,00" step="0.01" value="0"></div>
+            <div class="f"><label>Sonstiges (€)</label>
+              <input type="number" id="nka_so_${m.id}" placeholder="0,00" step="0.01" value="0"></div>
+          </div>
+          <div class="f" style="margin-top:4px">
+            <textarea id="nka_bem_${m.id}" placeholder="Bemerkung für diesen Mieter (erscheint im Brief)..."
+              style="width:100%;padding:6px 8px;border:1.5px solid var(--ink-10);border-radius:6px;font-size:12px;font-family:var(--font);resize:vertical;min-height:44px"></textarea>
           </div>
         </div>`).join('')}`;
     }
@@ -1717,11 +1761,11 @@ async function modalNKA(objektId) {
     </div>`,
   );
 
-  // Standarddatum setzen
-  const jahr = new Date().getFullYear() - 1;
-  document.getElementById('nkaJahr').value = jahr;
-  document.getElementById('nkaVon').value  = jahr + '-01-01';
-  document.getElementById('nkaBis').value  = jahr + '-12-31';
+  // Standarddatum aus stadtspezifischem Zeitraum
+  const zt = getNKAZeitraum(objektId);
+  document.getElementById('nkaJahr').value = zt.von.slice(0,4);
+  document.getElementById('nkaVon').value  = zt.von;
+  document.getElementById('nkaBis').value  = zt.bis;
 }
 
 async function erstelleNKA(objektId) {
@@ -1732,149 +1776,715 @@ async function erstelleNKA(objektId) {
   const von     = document.getElementById('nkaVon').value;
   const bis     = document.getElementById('nkaBis').value;
   const fmtD    = d => d ? new Date(d).toLocaleDateString('de-DE') : '–';
+  const bk      = getBriefkopf(objektId);
 
-  const mieter  = (await idbGetAll('mieter','objektId',objektId))
+  const mieter = (await idbGetAll('mieter','objektId',objektId))
     .filter(m=>m.mieter).sort((a,b)=>Number(a.weNr)-Number(b.weNr));
 
-  // Gesamtanteile berechnen
-  const gesamtWFL     = mieter.reduce((s,m)=>s+(parseFloat(m.flaeche)||0),0) * 12;
-  const gesamtPersonen= mieter.reduce((s,m)=>s+((parseInt(m.personen)||1)),0) * 12;
-  const gesamtWE      = mieter.length * 12;
-  const gesamtMonate  = mieter.length * 12;
+  // Gesamtanteile
+  const gesamtWFL      = mieter.reduce((s,m)=>s+(parseFloat(m.flaeche)||0),0)*12;
+  const gesamtPersonen = mieter.reduce((s,m)=>s+(parseInt(m.personen)||1),0)*12;
+  const gesamtWE       = mieter.length*12;
+  const gesamtMonate   = mieter.length*12;
 
   // Kosten einlesen
   const kostenMap = {};
   vorlage.kosten.forEach(k => {
-    if (k.schluessel === 'einzeln') {
-      kostenMap[k.id] = {};
-      mieter.forEach(m => {
-        kostenMap[k.id][m.id] = parseFloat(document.getElementById('nka_heiz_'+m.id)?.value)||0;
-      });
+    if (k.schluessel==='einzeln') {
+      kostenMap[k.id]={};
+      mieter.forEach(m=>{kostenMap[k.id][m.id]=parseFloat(document.getElementById('nka_heiz_'+m.id)?.value)||0;});
     } else {
-      kostenMap[k.id] = parseFloat(document.getElementById('nka_'+k.id)?.value)||0;
+      kostenMap[k.id]=parseFloat(document.getElementById('nka_'+k.id)?.value)||0;
     }
   });
 
-  closeModal();
+  // Vorauszahlung, KR, Sonstiges, Bemerkung pro Mieter
+  const mieterExtras = {};
+  mieter.forEach(m=>{
+    mieterExtras[m.id]={
+      vz:   parseFloat(document.getElementById('nka_vz_'+m.id)?.value)||(parseFloat(m.nk)||0),
+      kr:   parseFloat(document.getElementById('nka_kr_'+m.id)?.value)||0,
+      so:   parseFloat(document.getElementById('nka_so_'+m.id)?.value)||0,
+      bem:  document.getElementById('nka_bem_'+m.id)?.value||'',
+    };
+  });
 
-  // Anteil pro Mieter berechnen
   function getAnteil(k, m) {
-    const betrag = kostenMap[k.id];
-    const flaeche = (parseFloat(m.flaeche)||0) * 12;
-    const personen = (parseInt(m.personen)||1) * 12;
-    const we = 12;
-    switch(k.schluessel) {
-      case 'personen':  return gesamtPersonen > 0 ? betrag * personen / gesamtPersonen : 0;
-      case 'wfl':       return gesamtWFL > 0      ? betrag * flaeche  / gesamtWFL      : 0;
-      case 'we':        return gesamtWE > 0        ? betrag * we       / gesamtWE       : 0;
-      case 'monate':    return gesamtMonate > 0    ? betrag * we       / gesamtMonate   : 0;
-      case 'we_fest':   return (k.preisProWE||0) * 12;
-      case 'besonders': return betrag;
-      case 'einzeln':   return betrag[m.id]||0;
-      default:          return 0;
+    const betrag   = kostenMap[k.id];
+    const flaeche  = (parseFloat(m.flaeche)||0)*12;
+    const personen = (parseInt(m.personen)||1)*12;
+    const we=12;
+    switch(k.schluessel){
+      case 'personen':      return gesamtPersonen>0?betrag*personen/gesamtPersonen:0;
+      case 'wfl':           return gesamtWFL>0?betrag*flaeche/gesamtWFL:0;
+      case 'we':            return gesamtWE>0?betrag*we/gesamtWE:0;
+      case 'monate':        return gesamtMonate>0?betrag*we/gesamtMonate:0;
+      case 'we_fest':       return (k.preisProWE||0)*12;
+      case 'personen_fest': return (k.preisProPers||0)*(parseInt(m.personen)||1)*12;
+      case 'besonders':     return betrag;
+      case 'einzeln':       return betrag[m.id]||0;
+      default:              return 0;
     }
   }
 
-  // Kostenzeilen für PDF
-  let kostenZeilen = '';
-  vorlage.kosten.forEach(k => {
-    if (k.schluessel === 'einzeln') return; // Heizung kommt pro Mieter
-    const betrag = kostenMap[k.id];
-    if (!betrag || betrag === 0) return;
-    const schlLabel = k.schluessel==='personen'?'Personen':k.schluessel==='wfl'?'Wohnfläche':
-      k.schluessel==='we'||k.schluessel==='we_fest'?'WE':k.schluessel==='monate'?'Monate':'Besonders';
-    kostenZeilen += `<tr><td style="padding:3px 8px;border:1px solid #dde;font-size:10px">${k.name}</td>
-      <td style="padding:3px 8px;border:1px solid #dde;font-size:10px">${schlLabel}</td>
-      <td style="padding:3px 8px;border:1px solid #dde;font-size:10px;text-align:right;font-weight:600">${fmtEur(betrag)}</td></tr>`;
-  });
-  const gesamtkosten = vorlage.kosten
-    .filter(k=>k.schluessel!=='einzeln')
+  // Gesamtkosten-Tabelle (Übersicht)
+  const gesamtkosten = vorlage.kosten.filter(k=>k.schluessel!=='einzeln')
     .reduce((s,k)=>s+(kostenMap[k.id]||0),0);
 
-  // Mieter-Tabelle
-  let mieterRows = '';
-  mieter.forEach(m => {
-    const vz = (parseFloat(m.nk)||0) * 12;
-    let gesamt = 0;
-    let kostenDetails = '';
-    vorlage.kosten.forEach(k => {
-      const anteil = getAnteil(k, m);
-      if (anteil > 0) {
-        gesamt += anteil;
-        if (k.schluessel === 'einzeln') {
-          kostenDetails += `<div style="font-size:9px;color:#555">${k.name}: ${fmtEur(anteil)}</div>`;
-        }
-      }
-    });
-    const diff = gesamt - vz;
-    const diffCol = diff > 0 ? '#C0392B' : '#2E7D52';
-    const diffTxt = diff > 0 ? `Nachzahlung: ${fmtEur(diff)}` : `Guthaben: ${fmtEur(Math.abs(diff))}`;
-    const heizung = kostenMap['heizung']?.[m.id]||0;
-    mieterRows += `<tr>
-      <td style="padding:5px 8px;border:1px solid #dde;font-size:10px;vertical-align:top">WE ${m.weNr}</td>
-      <td style="padding:5px 8px;border:1px solid #dde;font-size:10px;vertical-align:top">${m.mieter}
-        ${kostenDetails}</td>
-      <td style="padding:5px 8px;border:1px solid #dde;font-size:10px;text-align:right;vertical-align:top">${parseFloat(m.flaeche)||0} m²</td>
-      <td style="padding:5px 8px;border:1px solid #dde;font-size:10px;text-align:right;vertical-align:top">${fmtEur(gesamt - heizung)}</td>
-      <td style="padding:5px 8px;border:1px solid #dde;font-size:10px;text-align:right;vertical-align:top">${heizung>0?fmtEur(heizung):'–'}</td>
-      <td style="padding:5px 8px;border:1px solid #dde;font-size:10px;text-align:right;font-weight:600;vertical-align:top">${fmtEur(gesamt)}</td>
-      <td style="padding:5px 8px;border:1px solid #dde;font-size:10px;text-align:right;vertical-align:top">${fmtEur(vz)}</td>
-      <td style="padding:5px 8px;border:1px solid #dde;font-size:10px;text-align:right;font-weight:700;color:${diffCol};vertical-align:top">${diffTxt}</td>
+  let kostenZeilen='';
+  vorlage.kosten.forEach(k=>{
+    if(k.schluessel==='einzeln') return;
+    const b=kostenMap[k.id];
+    if(!b||b===0) return;
+    const sl=k.schluessel==='personen'?'Personen':k.schluessel==='wfl'?'Wohnfläche':
+      k.schluessel==='we'||k.schluessel==='we_fest'?'WE':k.schluessel==='monate'?'Monate':
+      k.schluessel==='personen_fest'?'Personen':k.schluessel==='besonders'?'bes. Berechn.':'';
+    kostenZeilen+=`<tr><td style="padding:3px 8px;border:1px solid #dde;font-size:10px">${k.name}</td>
+      <td style="padding:3px 8px;border:1px solid #dde;font-size:10px">${sl}</td>
+      <td style="padding:3px 8px;border:1px solid #dde;font-size:10px;text-align:right;font-weight:600">${fmtEur(b)}</td></tr>`;
+  });
+
+  // Übersichtstabelle alle Mieter
+  let uebersichtRows='';
+  let gesamtNachzahlung=0, gesamtGuthaben=0;
+  const mieterErgebnisse=[];
+
+  mieter.forEach(m=>{
+    const ex=mieterExtras[m.id];
+    const vzJahres=ex.vz*12;
+    let nkAnteil=0;
+    vorlage.kosten.forEach(k=>{nkAnteil+=getAnteil(k,m);});
+    const gesamt=nkAnteil+ex.kr+ex.so;
+    const diff=gesamt-vzJahres;
+    const diffCol=diff>0?'#C0392B':'#2E7D52';
+    const diffTxt=diff>0?`Nachz.: ${fmtEur(diff)}`:`Gutschr.: ${fmtEur(Math.abs(diff))}`;
+    if(diff>0) gesamtNachzahlung+=diff; else gesamtGuthaben+=Math.abs(diff);
+    mieterErgebnisse.push({m, ex, nkAnteil, gesamt, vzJahres, diff});
+    uebersichtRows+=`<tr>
+      <td style="padding:4px 6px;border:1px solid #dde;font-size:9px">WE ${m.weNr}</td>
+      <td style="padding:4px 6px;border:1px solid #dde;font-size:9px">${m.mieter}</td>
+      <td style="padding:4px 6px;border:1px solid #dde;font-size:9px;text-align:right">${parseFloat(m.flaeche)||0} m²</td>
+      <td style="padding:4px 6px;border:1px solid #dde;font-size:9px;text-align:right">${fmtEur(nkAnteil)}</td>
+      <td style="padding:4px 6px;border:1px solid #dde;font-size:9px;text-align:right">${kostenMap['heizung']?.[m.id]>0?fmtEur(kostenMap['heizung'][m.id]):'–'}</td>
+      <td style="padding:4px 6px;border:1px solid #dde;font-size:9px;text-align:right">${ex.kr>0?fmtEur(ex.kr):'–'}</td>
+      <td style="padding:4px 6px;border:1px solid #dde;font-size:9px;text-align:right;font-weight:600">${fmtEur(gesamt)}</td>
+      <td style="padding:4px 6px;border:1px solid #dde;font-size:9px;text-align:right">${fmtEur(vzJahres)}</td>
+      <td style="padding:4px 6px;border:1px solid #dde;font-size:9px;text-align:right;font-weight:700;color:${diffCol}">${diffTxt}</td>
     </tr>`;
   });
+
+  // Einzel-Briefe HTML generieren
+  const today=new Date().toLocaleDateString('de-DE');
+  let briefeHTML='';
+
+  mieterErgebnisse.forEach(({m,ex,nkAnteil,gesamt,vzJahres,diff})=>{
+    const diffPos=diff>0;
+    const diffAbs=Math.abs(diff);
+    let posZeilen='';
+    vorlage.kosten.forEach(k=>{
+      if(k.schluessel==='einzeln'){
+        const h=kostenMap[k.id]?.[m.id]||0;
+        if(h>0) posZeilen+=nkaZeile(k.name,'bes. Berechnung','',h,1,h);
+        return;
+      }
+      const b=kostenMap[k.id]||0; if(!b) return;
+      const flaeche=(parseFloat(m.flaeche)||0)*12;
+      const personen=(parseInt(m.personen)||1)*12;
+      const wfl_ges=gesamtWFL;
+      const pers_ges=gesamtPersonen;
+      const we_ges=gesamtWE;
+      let geteilt,anteil,preis,kosten;
+      switch(k.schluessel){
+        case 'personen':      geteilt=pers_ges;anteil=personen;preis=b/pers_ges;kosten=b*personen/pers_ges;break;
+        case 'wfl':           geteilt=wfl_ges;anteil=flaeche;preis=b/wfl_ges;kosten=b*flaeche/wfl_ges;break;
+        case 'we':            geteilt=we_ges;anteil=12;preis=b/we_ges;kosten=b*12/we_ges;break;
+        case 'monate':        geteilt=we_ges;anteil=12;preis=b/we_ges;kosten=b*12/we_ges;break;
+        case 'personen_fest': geteilt='-';anteil=(parseInt(m.personen)||1)*12;preis=k.preisProPers||0;kosten=preis*anteil;break;
+        case 'we_fest':       geteilt='-';anteil=12;preis=k.preisProWE||0;kosten=preis*12;break;
+        case 'besonders':     geteilt='-';anteil='-';preis='-';kosten=b;break;
+        default:              kosten=getAnteil(k,m);geteilt='-';anteil='-';preis='-';
+      }
+      posZeilen+=nkaZeile(k.name,k.schluessel==='personen'?'Personen':k.schluessel==='wfl'?'WFL':k.schluessel==='we'||k.schluessel==='we_fest'?'WE':k.schluessel==='monate'?'Monate':'Bes.',
+        typeof geteilt==='number'?geteilt.toFixed(2):geteilt,
+        b,
+        typeof anteil==='number'?anteil:anteil,
+        typeof preis==='number'?preis:preis,
+        kosten);
+    });
+    if(ex.kr>0) posZeilen+=nkaZeile('Kleinreparaturen','–','–','–','–','–',ex.kr);
+    if(ex.so>0) posZeilen+=nkaZeile('Sonstiges','–','–','–','–','–',ex.so);
+
+    const schlBez=k=>{const s=k.schluessel;return s==='personen'?`${(parseInt(m.personen)||1)} Pers. × 12 Mon.`:s==='wfl'?`${parseFloat(m.flaeche)||0} m² × 12 Mon.`:s==='we'?'12 Mon.':'';};
+
+    briefeHTML+=`
+    <div class="pagebreak">
+      <div class="bk-box">
+        <div class="bk-left">
+          <strong>${bk.name}</strong>${bk.zusatz?'<br>'+bk.zusatz:''}<br>
+          ${bk.strasse}<br>${bk.ort}<br>
+          Tel: ${bk.tel}<br>${bk.email||''}
+        </div>
+        <div class="bk-right">
+          <strong>${m.mieter}</strong><br>
+          ${obj?.name||''}<br>
+          ${obj?.ort||''}<br><br>
+          ${today}
+        </div>
+      </div>
+
+      <h2 style="margin:14px 0 4px">${obj?.name||''}</h2>
+      <h1>Mietnebenkosten – Einzelabrechnung</h1>
+      <table class="info-table" style="margin:10px 0 8px">
+        <tr><td></td><td>von</td><td>bis</td><td>Monate</td></tr>
+        <tr><td>Abrechnungszeitraum</td><td>${fmtD(von)}</td><td>${fmtD(bis)}</td><td>12</td></tr>
+        <tr><td>Ihr Abrechnungszeitraum</td><td>${fmtD(von)}</td><td>${fmtD(bis)}</td><td>12</td></tr>
+      </table>
+      <table class="info-table" style="margin-bottom:10px">
+        <tr><td>Monate</td><td>WFL</td><td>Personen</td><td>Vorauszahlung</td></tr>
+        <tr><td>12</td><td>${parseFloat(m.flaeche)||0}</td><td>${parseInt(m.personen)||1}</td>
+          <td>${fmtEur(ex.vz)}/Mon. = ${fmtEur(vzJahres)}/Jahr</td></tr>
+      </table>
+
+      <table class="pos-table">
+        <thead><tr>
+          <th>Kostenart</th><th>Schlüssel</th><th>Betrag</th>
+          <th>Geteilt durch</th><th>Ihr Anteil</th><th>Preis/Anteil</th><th>Ihre Kosten</th>
+        </tr></thead>
+        <tbody>${posZeilen}</tbody>
+      </table>
+
+      <table class="summen-table">
+        <tr><td>Summe Nebenkosten</td><td>${fmtEur(nkAnteil-( kostenMap['heizung']?.[m.id]||0)-(ex.kr||0)-(ex.so||0))}</td></tr>
+        ${kostenMap['heizung']?.[m.id]>0?`<tr><td>Heizkosten</td><td>${fmtEur(kostenMap['heizung'][m.id])}</td></tr>`:''}
+        ${ex.kr>0?`<tr><td>Kleinreparaturen</td><td>${fmtEur(ex.kr)}</td></tr>`:''}
+        ${ex.so>0?`<tr><td>Sonstiges</td><td>${fmtEur(ex.so)}</td></tr>`:''}
+        <tr class="total"><td>Gesamtnebenkosten</td><td>${fmtEur(gesamt)}</td></tr>
+        <tr><td>Summe Vorauszahlung</td><td>${fmtEur(vzJahres)}</td></tr>
+        <tr class="${diffPos?'nachzahl':'gutschr'}">
+          <td>${diffPos?'Nachzahlung':'Guthaben'}</td>
+          <td>${fmtEur(diffAbs)}</td>
+        </tr>
+      </table>
+
+      ${ex.bem?`<div class="bemerkung"><strong>Hinweis:</strong> ${ex.bem}</div>`:''}
+
+      <p class="abschluss">${diffPos
+        ? 'Bitte überweisen Sie den Nachzahlungsbetrag innerhalb von 4 Wochen auf unser Konto.'
+        : 'Das Guthaben wird mit der kommenden Mietzahlung verrechnet bzw. ausgezahlt.'
+      }</p>
+
+      <div class="gruss">Mit freundlichen Grüßen<br><br>${bk.name}</div>
+    </div>`;
+  });
+
+  // NKA im Archiv speichern
+  const archivEntry = {
+    id: uid(),
+    objektId, objektName: obj?.name||'',
+    jahr, von, bis,
+    erstellt: now(), ersteller: CU?.name||'',
+    mieterAnzahl: mieter.length,
+    gesamtkosten,
+    gesamtNachzahlung, gesamtGuthaben,
+    mieterErgebnisse: mieterErgebnisse.map(({m,ex,gesamt,vzJahres,diff})=>({
+      mieterId:m.id, mieterName:m.mieter, weNr:m.weNr,
+      gesamt, vzJahres, diff, bemerkung:ex.bem||'',
+    })),
+  };
+  await idbPut('nka_archiv', archivEntry);
+  clearTimeout(window._syncTimer);
+  window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
+  toast('NKA gespeichert und wird gedruckt...');
+
+  // PDF-Fenster öffnen
+  const win = window.open('', '_blank');
+  if (!win) { toast('Popup blockiert'); return; }
+
+  win.document.write(`<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8">
+<title>Nebenkostenabrechnung ${jahr} – ${obj?.name}</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:Arial,sans-serif;font-size:10px;color:#111;padding:16px}
+h1{font-size:13px;font-weight:700;margin-bottom:6px}
+h2{font-size:11px;font-weight:700;color:#1F4E79}
+.pagebreak{page-break-after:always;padding-bottom:20px;margin-bottom:20px}
+.pagebreak:last-child{page-break-after:avoid}
+.bk-box{display:flex;justify-content:space-between;margin-bottom:14px;border-bottom:2px solid #1F4E79;padding-bottom:8px}
+.bk-left{font-size:9px;color:#444;line-height:1.5}
+.bk-right{font-size:10px;text-align:right;line-height:1.6}
+.info-table{width:100%;border-collapse:collapse;font-size:9px}
+.info-table td{padding:2px 6px;border:none;color:#444}
+.info-table tr:first-child td{font-weight:700;color:#1F4E79}
+.pos-table{width:100%;border-collapse:collapse;margin-bottom:8px}
+.pos-table th{padding:3px 6px;background:#1F4E79;color:#fff;font-size:9px;text-align:left}
+.pos-table td{padding:2px 6px;border:1px solid #dde;font-size:9px}
+.pos-table td:last-child{text-align:right;font-weight:600}
+.pos-table td:nth-child(3){text-align:right}
+.pos-table td:nth-child(6){text-align:right}
+.summen-table{width:50%;margin-left:50%;border-collapse:collapse;margin-bottom:10px}
+.summen-table td{padding:3px 8px;border:1px solid #dde;font-size:10px}
+.summen-table td:last-child{text-align:right;font-weight:600}
+.total td{background:#e8f0fe;font-weight:700}
+.nachzahl td{background:#FDECEA;color:#C0392B;font-weight:700}
+.gutschr td{background:#E6F4EC;color:#2E7D52;font-weight:700}
+.bemerkung{background:#FEF3E2;border-left:3px solid #D4820A;padding:6px 10px;font-size:10px;margin:8px 0;border-radius:3px}
+.abschluss{font-size:10px;color:#444;margin:10px 0;line-height:1.6}
+.gruss{font-size:10px;margin-top:20px;color:#333}
+/* Deckblatt Übersicht */
+.deckblatt{margin-bottom:20px}
+.deckblatt h1{font-size:16px;color:#1F4E79;border-bottom:3px solid #1F4E79;padding-bottom:6px;margin-bottom:10px}
+.stat-box{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px}
+.stat-item{border:1px solid #dde;border-radius:4px;padding:8px;text-align:center}
+.stat-item .n{font-size:20px;font-weight:700;color:#1F4E79}
+.stat-item .l{font-size:9px;color:#666}
+.uebersicht-table{width:100%;border-collapse:collapse}
+.uebersicht-table th{padding:4px 6px;background:#1F4E79;color:#fff;font-size:9px;text-align:left}
+.uebersicht-table td{padding:3px 6px;border:1px solid #dde;font-size:9px}
+.footer{font-size:8px;color:#aaa;text-align:center;padding-top:6px;border-top:1px solid #eee;margin-top:10px}
+@page{margin:1.5cm;size:A4}
+@media print{body{padding:0;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+</style></head><body>
+
+<!-- DECKBLATT / ÜBERSICHT -->
+<div class="deckblatt pagebreak">
+  <div style="font-size:9px;color:#555;margin-bottom:10px">
+    ${bk.name}${bk.zusatz?' · '+bk.zusatz:''} · ${bk.strasse} · ${bk.ort} · Tel: ${bk.tel}
+  </div>
+  <h1>Nebenkostenabrechnung ${jahr}</h1>
+  <div style="font-size:11px;color:#444;margin-bottom:10px">
+    ${obj?.name||''} · ${obj?.ort||''}<br>
+    Abrechnungszeitraum: ${fmtD(von)} – ${fmtD(bis)}<br>
+    Erstellt am: ${today} · ${CU?.name||''}
+  </div>
+
+  <div class="stat-box">
+    <div class="stat-item"><div class="n">${mieter.length}</div><div class="l">Wohneinheiten</div></div>
+    <div class="stat-item"><div class="n" style="color:#C0392B">${fmtEur(gesamtNachzahlung)}</div><div class="l">Gesamt Nachzahlungen</div></div>
+    <div class="stat-item"><div class="n" style="color:#2E7D52">${fmtEur(gesamtGuthaben)}</div><div class="l">Gesamt Guthaben</div></div>
+  </div>
+
+  <h2 style="margin-bottom:6px">Gesamtkosten</h2>
+  <table class="uebersicht-table" style="margin-bottom:12px">
+    <thead><tr><th>Kostenart</th><th>Schlüssel</th><th style="text-align:right">Betrag</th></tr></thead>
+    <tbody>${kostenZeilen}
+      <tr style="background:#e8f0fe;font-weight:700">
+        <td colspan="2">Gesamtkosten</td>
+        <td style="text-align:right">${fmtEur(gesamtkosten)}</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2 style="margin-bottom:6px">Ergebnis je Wohneinheit</h2>
+  <table class="uebersicht-table">
+    <thead><tr>
+      <th>WE</th><th>Mieter</th><th>m²</th>
+      <th style="text-align:right">NK-Anteil</th>
+      <th style="text-align:right">Heizung</th>
+      <th style="text-align:right">KR</th>
+      <th style="text-align:right">Gesamt</th>
+      <th style="text-align:right">Vorauszahlung</th>
+      <th style="text-align:right">Ergebnis</th>
+    </tr></thead>
+    <tbody>${uebersichtRows}</tbody>
+  </table>
+  <div class="footer">Nebenkostenabrechnung ${jahr} · ${obj?.name||''} · Nadig Pfau Hausverwaltung</div>
+</div>
+
+<!-- EINZELBRIEFE -->
+${briefeHTML}
+
+<scr` + `ipt>window.onload=()=>setTimeout(()=>window.print(),700)</scr` + `ipt>
+</body></html>`);
+  win.document.close();
+}
+
+function nkaZeile(name, schluessel, geteilt, betrag, anteil, preis, kosten) {
+  const f = v => typeof v==='number' ? fmtEur(v) : (v||'–');
+  const fp = v => typeof v==='number' ? v.toFixed(4)+'€' : (v||'–');
+  return `<tr>
+    <td>${name}</td>
+    <td>${schluessel}</td>
+    <td style="text-align:right">${typeof betrag==='number'?fmtEur(betrag):betrag}</td>
+    <td style="text-align:right">${geteilt}</td>
+    <td style="text-align:right">${anteil}</td>
+    <td style="text-align:right">${typeof preis==='number'?preis.toFixed(4)+'€':preis}</td>
+    <td style="text-align:right">${fmtEur(kosten)}</td>
+  </tr>`;
+}
+
+async function renderProtokollArchiv() {
+  const myObj  = await getMyObjekte();
+  const myIds  = myObj.map(o=>o.id);
+  const alle   = (await idbGetAll('protokolle'))
+    .filter(p => myIds.includes(p.objektId))
+    .sort((a,b) => new Date(b.datum||b.erstellt) - new Date(a.datum||a.erstellt));
+
+  const el = document.getElementById('page-protokoll-archiv');
+
+  // Filter-Status
+  const filterObjId = window._archivFilter?.objId || 'all';
+  const filterArt   = window._archivFilter?.art   || 'all';
+  const filterQ     = window._archivFilter?.q     || '';
+
+  let gefiltert = alle;
+  if (filterObjId !== 'all') gefiltert = gefiltert.filter(p=>p.objektId===filterObjId);
+  if (filterArt   !== 'all') gefiltert = gefiltert.filter(p=>(p.art||'').includes(filterArt));
+  if (filterQ)               gefiltert = gefiltert.filter(p=>
+    (p.mieterName||'').toLowerCase().includes(filterQ.toLowerCase()) ||
+    (p.objektName||'').toLowerCase().includes(filterQ.toLowerCase()) ||
+    (p.weNr||'').includes(filterQ)
+  );
+
+  // Statistik
+  const anzEinzug = gefiltert.filter(p=>(p.art||'').includes('Einzug')).length;
+  const anzAuszug = gefiltert.filter(p=>(p.art||'').includes('Auszug')).length;
+  const anzZwischen = gefiltert.filter(p=>(p.art||'').includes('Zwischen')).length;
+
+  let h = `
+  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:14px">
+    <div class="stat"><div class="stat-n" style="font-size:22px">${anzAuszug}</div><div class="stat-l">Auszüge</div></div>
+    <div class="stat"><div class="stat-n" style="font-size:22px">${anzEinzug}</div><div class="stat-l">Einzüge</div></div>
+    <div class="stat hl"><div class="stat-n" style="font-size:22px">${alle.length}</div><div class="stat-l">Gesamt</div></div>
+  </div>
+
+  <div class="search-bar" style="margin-bottom:10px">
+    <div class="search-wrap" style="flex:1">
+      <i class="ti ti-search"></i>
+      <input class="search-input" id="archivQ" placeholder="Mieter, Objekt, WE..."
+        value="${filterQ}" oninput="setArchivFilter('q',this.value)">
+    </div>
+    <button class="btn btn-copper btn-sm" onclick="newProtokoll()">
+      <i class="ti ti-plus"></i> Neu
+    </button>
+  </div>
+
+  <div class="filter-row" style="margin-bottom:10px">
+    <button class="filter-chip ${filterArt==='all'?'active':''}" onclick="setArchivFilter('art','all',this)">Alle</button>
+    <button class="filter-chip ${filterArt==='Auszug'?'active':''}" onclick="setArchivFilter('art','Auszug',this)">Auszüge</button>
+    <button class="filter-chip ${filterArt==='Einzug'?'active':''}" onclick="setArchivFilter('art','Einzug',this)">Einzüge</button>
+    <button class="filter-chip ${filterArt==='Zwischen'?'active':''}" onclick="setArchivFilter('art','Zwischen',this)">Zwischenabnahmen</button>
+  </div>
+
+  <div class="filter-row" style="margin-bottom:12px">
+    <button class="filter-chip ${filterObjId==='all'?'active':''}" onclick="setArchivFilter('objId','all',this)">Alle Objekte</button>
+    ${myObj.map(o=>`<button class="filter-chip ${filterObjId===o.id?'active':''}" onclick="setArchivFilter('objId','${o.id}',this)">${o.name}</button>`).join('')}
+  </div>`;
+
+  if (!gefiltert.length) {
+    h += `<div class="empty"><i class="ti ti-clipboard-off"></i>
+      <p>${filterQ||filterObjId!=='all'||filterArt!=='all' ? 'Keine Protokolle gefunden.' : 'Noch keine Protokolle vorhanden.'}</p>
+    </div>`;
+    el.innerHTML = h; return;
+  }
+
+  h += `<div style="font-size:12px;color:var(--ink-40);margin-bottom:8px">${gefiltert.length} Protokoll${gefiltert.length!==1?'e':''}</div>`;
+
+  // Gruppierung nach Jahr
+  const nachJahr = {};
+  gefiltert.forEach(p => {
+    const d = p.datum || p.erstellt || '';
+    const jahr = d ? (d.includes('-') ? d.slice(0,4) : d.slice(-4)) : 'Unbekannt';
+    if (!nachJahr[jahr]) nachJahr[jahr] = [];
+    nachJahr[jahr].push(p);
+  });
+
+  Object.keys(nachJahr).sort((a,b)=>b-a).forEach(jahr => {
+    h += `<div style="font-size:11px;font-weight:700;color:var(--ink-40);text-transform:uppercase;
+      letter-spacing:.6px;margin:14px 0 6px;display:flex;align-items:center;gap:6px">
+      <i class="ti ti-calendar" style="font-size:13px;color:var(--copper)"></i> ${jahr}
+      <span style="background:var(--ink-05);border-radius:10px;padding:1px 7px;font-size:10px">${nachJahr[jahr].length}</span>
+    </div>`;
+
+    nachJahr[jahr].forEach(p => {
+      const isEinzug   = (p.art||'').includes('Einzug');
+      const isAuszug   = (p.art||'').includes('Auszug');
+      const dotColor   = isEinzug ? 'var(--green)' : isAuszug ? 'var(--amber)' : 'var(--copper)';
+      const artChip    = isEinzug ? 'chip-ok' : isAuszug ? 'chip-warn' : 'chip-gray';
+      const obj        = getObj(p.objektId);
+      const mangelAnz  = (p._autoMaengel||[]).length;
+
+      h += `<div style="background:var(--white);border:1px solid var(--ink-10);border-radius:var(--radius);
+        padding:11px 13px;margin-bottom:7px;display:flex;gap:10px;align-items:center;cursor:pointer"
+        onclick="editProtokoll('${p.id}')">
+        <div style="width:8px;height:8px;border-radius:50%;background:${dotColor};flex-shrink:0;margin-top:2px"></div>
+        <div style="flex:1;min-width:0">
+          <div style="font-size:14px;font-weight:600;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
+            ${p.mieterName||'–'} · WE ${p.weNr||'?'}
+          </div>
+          <div style="font-size:12px;color:var(--ink-40);margin-top:2px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+            <span>${obj?.name||p.objektName||'–'}</span>
+            <span>${fmtDate(p.datum)}</span>
+            <span class="chip ${artChip}" style="font-size:10px;padding:1px 6px">${p.art||'Übergabe'}</span>
+            ${mangelAnz ? `<span class="chip chip-err" style="font-size:10px;padding:1px 6px"><i class="ti ti-alert-triangle" style="font-size:9px"></i> ${mangelAnz} Mängel</span>` : ''}
+            ${p.status==='fertig' ? '' : `<span class="chip chip-warn" style="font-size:10px;padding:1px 6px">Entwurf</span>`}
+          </div>
+        </div>
+        <div style="display:flex;gap:5px;flex-shrink:0">
+          <button class="btn btn-sm" onclick="event.stopPropagation();printProt('${p.id}')">
+            <i class="ti ti-printer"></i>
+          </button>
+          <button class="btn btn-sm btn-danger" onclick="event.stopPropagation();deleteProtokoll('${p.id}')">
+            <i class="ti ti-trash"></i>
+          </button>
+        </div>
+      </div>`;
+    });
+  });
+
+  el.innerHTML = h;
+}
+
+function setArchivFilter(key, val, btn) {
+  if (!window._archivFilter) window._archivFilter = {objId:'all', art:'all', q:''};
+  window._archivFilter[key] = val;
+  if (btn && key !== 'q') {
+    const row = btn.parentNode;
+    Array.from(row.children).forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+  }
+  renderProtokollArchiv();
+}
+
+async function deleteProtokoll(id) {
+  if (!confirm('Protokoll wirklich löschen?')) return;
+  await idbDelete('protokolle', id);
+  clearTimeout(window._syncTimer);
+  window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
+  await renderProtokollArchiv();
+  await renderDash();
+  toast('Protokoll gelöscht');
+}
+
+
+/* ═══════════════════════════════════════════════════════════
+   BRIEFKÖPFE
+═══════════════════════════════════════════════════════════ */
+function getBriefkopf(objektId) {
+  const obj = getObj(objektId);
+  if (obj?.gruppe === 'mg') {
+    return {
+      name:    'Hausverwaltung Roland B. Nadig',
+      zusatz:  'Dipl.Ing. Architekt · AKNW 17646',
+      strasse: 'Zur Verlach 37',
+      ort:     '40723 Hilden',
+      tel:     '02103 2509710 · Mobil: 0157 50984524',
+      email:   'rolandnadig@gmx.de · alexandernadig@gmx.de',
+    };
+  }
+  return {
+    name:    'Hausverwaltung Alexander-Roland Nadig und Anna-Alexandra Pfau',
+    zusatz:  '',
+    strasse: 'Venloer Straße 20',
+    ort:     '40477 Düsseldorf',
+    tel:     '0177 / 2509710',
+    email:   'nadigpfau-hausverwaltung@gmx.de',
+  };
+}
+
+function getBriefkopfHTML(objektId) {
+  const b = getBriefkopf(objektId);
+  return `<div style="font-size:10px;color:#555;margin-bottom:8px;padding-bottom:6px;border-bottom:2px solid #1F4E79">
+    <strong style="font-size:11px;color:#1F4E79">${b.name}</strong>${b.zusatz?`<br>${b.zusatz}`:''}
+    <br>${b.strasse} · ${b.ort}
+    <br>Tel: ${b.tel}${b.email?` · ${b.email}`:''}
+  </div>`;
+}
+
+
+/* ═══════════════════════════════════════════════════════════
+   WOHNUNGSGEBERBESCHEINIGUNG
+═══════════════════════════════════════════════════════════ */
+async function druckeWohnungsgeberBescheinigung(mieterId) {
+  const m   = await idbGet('mieter', mieterId);
+  if (!m) return;
+  const obj = getObj(m.objektId);
+  const bk  = getBriefkopf(m.objektId);
+  const personen = m.personen_liste?.length
+    ? m.personen_liste
+    : [{name: m.mieter, geburtsdatum:''}];
+
+  // Datum heute
+  const heute = new Date().toLocaleDateString('de-DE');
+
+  // Personenzeilen
+  let persZeilen = '';
+  for (let i = 0; i < 7; i++) {
+    const p = personen[i] || {name:'', geburtsdatum:''};
+    const val = p.name ? p.name + (p.geburtsdatum ? ', geb. ' + new Date(p.geburtsdatum).toLocaleDateString('de-DE') : '') : '';
+    persZeilen += `<tr>
+      <td style="width:20px;font-size:10px;color:#555;vertical-align:top;padding:2px 4px">${i+1}.</td>
+      <td style="border-bottom:1px solid #999;padding:4px 2px;font-size:11px;min-height:22px">${val}</td>
+    </tr>`;
+  }
 
   const win = window.open('', '_blank');
   if (!win) { toast('Popup blockiert'); return; }
 
   win.document.write(`<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8">
-<title>NKA ${jahr} – ${obj?.name}</title>
-<style>*{margin:0;padding:0;box-sizing:border-box}
-body{font-family:Arial,sans-serif;font-size:11px;color:#111;padding:16px}
-.hdr{border-bottom:3px solid #1F4E79;padding-bottom:8px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:flex-end}
-h1{font-size:15px;color:#1F4E79;font-weight:700}.sub{font-size:10px;color:#666;margin-top:2px}
-h2{font-size:10px;background:#1F4E79;color:#fff;padding:4px 8px;margin:10px 0 4px;border-radius:3px;text-transform:uppercase;letter-spacing:.5px}
-table{width:100%;border-collapse:collapse;margin-bottom:6px}
-.total{background:#e8f0fe;font-weight:700}
-.footer{font-size:8px;color:#aaa;text-align:center;margin-top:12px;padding-top:6px;border-top:1px solid #eee}
+<title>Wohnungsgeberbescheinigung – ${m.mieter}</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:Arial,sans-serif;font-size:11px;color:#111;padding:20px;max-width:210mm}
+h1{font-size:13px;font-weight:700;margin-bottom:12px;text-align:center}
+h2{font-size:11px;font-weight:700;margin:14px 0 6px;border-bottom:1px solid #333;padding-bottom:3px}
+.bk{font-size:10px;color:#444;margin-bottom:14px;padding:8px;background:#f8f8f8;border-left:3px solid #1F4E79}
+.zeile{display:flex;gap:8px;margin-bottom:8px;align-items:baseline}
+.zeile label{font-size:10px;color:#555;white-space:nowrap;width:180px;flex-shrink:0}
+.zeile .val{border-bottom:1px solid #777;flex:1;min-height:16px;font-size:11px;padding:1px 0}
+table{width:100%;border-collapse:collapse}
+.checks{margin:10px 0}
+.check-row{display:flex;gap:8px;align-items:center;margin-bottom:6px;font-size:11px}
+.box{width:12px;height:12px;border:1px solid #333;display:inline-block;flex-shrink:0}
+.sig-area{margin-top:20px;display:grid;grid-template-columns:1fr 1fr;gap:20px}
+.sig-box{border-top:1px solid #333;padding-top:4px;font-size:10px;color:#555;text-align:center}
+.footer{font-size:8px;color:#888;margin-top:16px;text-align:center}
 @page{margin:1.5cm;size:A4}@media print{body{padding:0;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
 </style></head><body>
-<div class="hdr">
-  <div>
-    <div style="font-size:12px;font-weight:700;color:#555">Hausverwaltung Nadig Pfau</div>
-    <h1>Nebenkostenabrechnung ${jahr}</h1>
-    <div class="sub">${obj?.name||''} · ${obj?.ort||''}</div>
-    <div class="sub">Abrechnungszeitraum: ${fmtD(von)} – ${fmtD(bis)}</div>
-    <div class="sub">Erstellt: ${new Date().toLocaleDateString('de-DE')} · ${CU?.name||''}</div>
+
+<div class="bk">
+  <strong>${bk.name}</strong>${bk.zusatz?' · '+bk.zusatz:''}<br>
+  ${bk.strasse} · ${bk.ort}<br>
+  Tel: ${bk.tel}${bk.email?' · '+bk.email:''}
+</div>
+
+<h1>Wohnungsgeberbescheinigung<br>
+<span style="font-size:10px;font-weight:400">gemäß § 19 des Bundesmeldegesetzes (BMG)</span></h1>
+
+<p style="font-size:11px;margin-bottom:10px">
+  Ich, <strong>${bk.name}</strong>,<br>
+  bescheinige hiermit einen <strong>Einzug in</strong> folgende Wohnung:
+</p>
+
+<div class="zeile"><label>Postleitzahl, Ort, Straße, Hausnummer:</label>
+  <div class="val">${obj?.ort||''}, ${obj?.name||''}</div></div>
+<div class="zeile"><label>Stockwerk / Wohnung / Lagebeschreibung:</label>
+  <div class="val">${m.etage||''} · WE ${m.weNr||''}</div></div>
+<div class="zeile"><label>am (Einzugsdatum):</label>
+  <div class="val">${m.einzug||''}</div></div>
+
+<h2>Für folgende Personen</h2>
+<table>${persZeilen}
+  <tr><td colspan="2" style="font-size:9px;color:#777;padding-top:4px">
+    Für weitere Personen verwenden Sie bitte ein zusätzliches Formular.
+  </td></tr>
+</table>
+
+<h2>Name und Anschrift des Wohnungsgebers</h2>
+<div class="zeile"><label>Name des Wohnungsgebers:</label>
+  <div class="val">${bk.name}</div></div>
+<div class="zeile"><label>Straße, Hausnummer, PLZ und Ort:</label>
+  <div class="val">${bk.strasse}, ${bk.ort}</div></div>
+
+<div class="checks">
+  <div class="check-row"><div class="box" style="background:#333"></div>
+    <span>Der Wohnungsgeber ist gleichzeitig <strong>Eigentümer</strong> der Wohnung</span></div>
+  <div class="check-row"><div class="box"></div>
+    <span>Der Wohnungsgeber ist <strong>nicht</strong> Eigentümer der Wohnung</span></div>
+</div>
+
+<p style="font-size:10px;color:#444;margin:12px 0;line-height:1.6">
+Ich bestätige mit meiner Unterschrift den Einzug der oben genannten Person(en) in die näher bezeichnete Wohnung
+und dass ich als Wohnungsgeber oder als beauftragte Person diese Bescheinigung ausstellen darf.
+Ich habe davon Kenntnis genommen, dass ich ordnungswidrig handele, wenn ich hierzu nicht berechtigt bin
+und dass es verboten ist, eine Wohnanschrift für eine Anmeldung eines Wohnsitzes einem Dritten anzubieten
+oder zur Verfügung zu stellen, obwohl ein tatsächlicher Bezug der Wohnung weder stattfindet noch beabsichtigt ist.
+</p>
+
+<div class="sig-area">
+  <div class="sig-box">
+    <div style="height:35px"></div>
+    Ort, Datum: ${heute}<br>Unterschrift des Wohnungsgebers
+  </div>
+  <div class="sig-box">
+    <div style="height:35px"></div>
+    Stempel (optional)
   </div>
 </div>
-<h2>Gesamtkosten des Objekts</h2>
-<table><thead><tr>
-  <th style="padding:3px 8px;background:#e8f0fe;border:1px solid #ccd;text-align:left;font-size:10px">Kostenart</th>
-  <th style="padding:3px 8px;background:#e8f0fe;border:1px solid #ccd;text-align:left;font-size:10px">Schlüssel</th>
-  <th style="padding:3px 8px;background:#e8f0fe;border:1px solid #ccd;text-align:right;font-size:10px">Betrag</th>
-</tr></thead><tbody>
-${kostenZeilen}
-<tr class="total"><td colspan="2" style="padding:5px 8px;border:1px solid #ccd">Summe Nebenkosten (ohne Heizung)</td>
-  <td style="padding:5px 8px;border:1px solid #ccd;text-align:right">${fmtEur(gesamtkosten)}</td></tr>
-</tbody></table>
-<h2>Abrechnung je Wohneinheit</h2>
-<table><thead><tr>
-  <th style="padding:4px 8px;background:#e8f0fe;border:1px solid #ccd;font-size:9px;text-align:left">WE</th>
-  <th style="padding:4px 8px;background:#e8f0fe;border:1px solid #ccd;font-size:9px;text-align:left">Mieter</th>
-  <th style="padding:4px 8px;background:#e8f0fe;border:1px solid #ccd;font-size:9px;text-align:right">m²</th>
-  <th style="padding:4px 8px;background:#e8f0fe;border:1px solid #ccd;font-size:9px;text-align:right">NK-Anteil</th>
-  <th style="padding:4px 8px;background:#e8f0fe;border:1px solid #ccd;font-size:9px;text-align:right">Heizung</th>
-  <th style="padding:4px 8px;background:#e8f0fe;border:1px solid #ccd;font-size:9px;text-align:right">Gesamt</th>
-  <th style="padding:4px 8px;background:#e8f0fe;border:1px solid #ccd;font-size:9px;text-align:right">Vorauszahlung</th>
-  <th style="padding:4px 8px;background:#e8f0fe;border:1px solid #ccd;font-size:9px;text-align:right">Ergebnis</th>
-</tr></thead><tbody>${mieterRows}</tbody></table>
-<div class="footer">Nebenkostenabrechnung ${jahr} · ${obj?.name||''} · Nadig Pfau Hausverwaltung · Venloer Straße 20 · 40477 Düsseldorf</div>
-<scr` + `ipt>window.onload=()=>setTimeout(()=>window.print(),600)</scr` + `ipt>
+
+<div class="footer">
+  Wohnungsgeberbescheinigung gem. § 19 BMG · ${obj?.name||''} WE ${m.weNr||''} · ${m.mieter} · ${heute}
+</div>
+
+<scr` + `ipt>window.onload=()=>setTimeout(()=>window.print(),500)</scr` + `ipt>
 </body></html>`);
   win.document.close();
-  toast('Nebenkostenabrechnung wird erstellt...');
 }
 
+
+/* ═══════════════════════════════════════════════════════════
+   NKA HILFSFUNKTIONEN
+═══════════════════════════════════════════════════════════ */
+const NKA_ZEITRAEUME = {
+  ruhrt41: {von:'2024-11-01', bis:'2025-10-31', label:'01.11.2024 – 31.10.2025'},
+  mind23:  {von:'2024-07-01', bis:'2025-06-30', label:'01.07.2024 – 30.06.2025'},
+  mind25:  {von:'2025-07-01', bis:'2026-06-30', label:'01.07.2025 – 30.06.2026'},
+  kyff28:  {von:'2024-02-01', bis:'2025-01-31', label:'01.02.2024 – 31.01.2025'},
+  kyff30:  {von:'2024-02-01', bis:'2025-01-31', label:'01.02.2024 – 31.01.2025'},
+  kyff32:  {von:'2024-02-01', bis:'2025-01-31', label:'01.02.2024 – 31.01.2025'},
+  _krefeld:{von:'2025-01-01', bis:'2025-12-31', label:'01.01.2025 – 31.12.2025'},
+};
+
+function getNKAZeitraum(objektId) {
+  if (NKA_ZEITRAEUME[objektId]) return NKA_ZEITRAEUME[objektId];
+  const obj = getObj(objektId);
+  if (obj?.gruppe === 'krefeld') return NKA_ZEITRAEUME._krefeld;
+  return {von: new Date().getFullYear()-1+'-01-01', bis: new Date().getFullYear()-1+'-12-31', label:''};
+}
+
+
+/* ═══════════════════════════════════════════════════════════
+   NKA-ARCHIV
+═══════════════════════════════════════════════════════════ */
+async function renderNKAArchiv(el, objektId) {
+  const alle = (await idbGetAll('nka_archiv','objektId',objektId))
+    .sort((a,b)=>b.erstellt.localeCompare(a.erstellt));
+
+  let h = `<div class="s-hdr" style="margin-bottom:10px">
+    <div class="s-title">NKA-Archiv (${alle.length})</div>
+    ${CU?.role==='admin'?`<button class="btn btn-sm btn-copper" onclick="modalNKA('${objektId}')">
+      <i class="ti ti-receipt"></i> Neue NKA
+    </button>`:''}
+  </div>`;
+
+  if (!alle.length) {
+    h += '<div class="empty"><i class="ti ti-receipt-off"></i><p>Noch keine Abrechnungen erstellt.</p></div>';
+    el.innerHTML = h; return;
+  }
+
+  alle.forEach(nka => {
+    const fmtD = d => d ? new Date(d).toLocaleDateString('de-DE') : '–';
+    const ergebnisChips = (nka.mieterErgebnisse||[]).map(mr=>{
+      const col = mr.diff>0 ? 'var(--red)' : 'var(--green)';
+      const txt = mr.diff>0 ? '+'+fmtEur(mr.diff) : fmtEur(Math.abs(mr.diff));
+      return '<span style="background:var(--ink-05);border-radius:6px;padding:3px 8px;font-size:10px">WE '+mr.weNr+' <strong style="color:'+col+'">'+txt+'</strong></span>';
+    }).join('');
+
+    h += '<div style="background:var(--white);border:1px solid var(--ink-10);border-radius:var(--radius);padding:12px;margin-bottom:8px">'
+      +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">'
+      +'<div><div style="font-size:14px;font-weight:600;color:var(--ink)">NKA '+nka.jahr+'</div>'
+      +'<div style="font-size:11px;color:var(--ink-40)">'+fmtD(nka.von)+' – '+fmtD(nka.bis)+'</div>'
+      +'<div style="font-size:11px;color:var(--ink-40)">'+nka.erstellt+' · '+(nka.ersteller||'')+'</div></div>'
+      +'<div style="text-align:right">'
+      +'<div style="font-size:12px;color:var(--red);font-weight:600">Nachz.: '+fmtEur(nka.gesamtNachzahlung||0)+'</div>'
+      +'<div style="font-size:12px;color:var(--green);font-weight:600">Gutschr.: '+fmtEur(nka.gesamtGuthaben||0)+'</div>'
+      +'</div></div>'
+      +'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">'+ergebnisChips+'</div>'
+      +`<button class="btn btn-sm btn-danger" onclick="deleteNKA('${nka.id}')"><i class="ti ti-trash"></i> Löschen</button>`
+      +'</div>';
+  });
+
+  el.innerHTML = h;
+}
+
+async function deleteNKA(id) {
+  if (!confirm('NKA-Eintrag wirklich löschen?')) return;
+  await idbDelete('nka_archiv', id);
+  clearTimeout(window._syncTimer);
+  window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
+  const el = document.getElementById('objTabContent');
+  if (el && currentObjId) await renderNKAArchiv(el, currentObjId);
+  toast('NKA gelöscht');
+}
 
 /* ═══════════════════════════════════════════════════════════
    MODAL: AUFGABE HINZUFÜGEN
@@ -1929,28 +2539,47 @@ async function saveAufgabe(){
    MIETER HINZUFÜGEN / BEARBEITEN / LÖSCHEN
 ═══════════════════════════════════════════════════════════ */
 function mieterFormHTML(obj, m={}) {
+  // Personen-Liste aufbauen (min. 1 Zeile)
+  const personen = m.personen_liste || (m.mieter ? [{name:m.mieter}] : [{}]);
+  const personenRows = personen.map((p,i)=>`
+    <div class="f-row" style="margin-bottom:4px" id="pRow_${i}">
+      <div class="f"><input type="text" id="pName_${i}" value="${p.name||''}"
+        placeholder="Vor- und Nachname Person ${i+1}" style="font-size:13px"></div>
+      <div class="f"><input type="date" id="pGeb_${i}" value="${p.geburtsdatum||''}"
+        style="font-size:13px" title="Geburtsdatum"></div>
+      ${i>0?`<button class="btn btn-sm btn-danger" onclick="removePerson(${i})" style="flex-shrink:0"><i class="ti ti-trash"></i></button>`:''}
+    </div>`).join('');
+
   return `
     <div class="f-row">
-      <div class="f"><label>Vorname, Nachname *</label>
-        <input type="text" id="mName" value="${m.mieter||''}" placeholder="z. B. Mustermann, Max"></div>
       <div class="f"><label>WE-Nr. *</label>
         <input type="number" id="mWeNr" value="${m.weNr||''}" placeholder="1"></div>
-    </div>
-    <div class="f-row">
       <div class="f"><label>Etage / Lage</label>
         <input type="text" id="mEtage" value="${m.etage||''}" placeholder="z. B. 1.OG rechts"></div>
+    </div>
+    <div class="f-section-title"><i class="ti ti-users"></i> Bewohner</div>
+    <div style="font-size:11px;color:var(--ink-40);margin-bottom:6px">Name · Geburtsdatum</div>
+    <div id="personenListe">${personenRows}</div>
+    <button class="btn btn-sm" style="margin-bottom:12px" onclick="addPersonRow()">
+      <i class="ti ti-user-plus"></i> Person hinzufügen
+    </button>
+    <div class="f-row">
       <div class="f"><label>Wohnfläche (m²)</label>
         <input type="number" id="mFlaeche" value="${m.flaeche||''}" step="0.01"></div>
+      <div class="f"><label>Personen (Anzahl)</label>
+        <input type="number" id="mPersonen" value="${m.personen||personen.length||1}" min="1" max="20"
+          onchange="syncPersonenAnzahl(this.value)"></div>
     </div>
     <div class="f-row">
       <div class="f"><label>Miete (€)</label>
         <input type="number" id="mMiete" value="${m.miete||''}" step="0.01"></div>
-      <div class="f"><label>NK-Vorauszahlung (€)</label>
+      <div class="f"><label>NK-Vorauszahlung (€/Monat)</label>
         <input type="number" id="mNk" value="${m.nk||''}" step="0.01"></div>
     </div>
     <div class="f-row">
       <div class="f"><label>Einzug</label>
-        <input type="date" id="mEinzug" value="${m.einzug||''}"></div>
+        <input type="date" id="mEinzug" value="${m.einzug && m.einzug.includes('.')?
+          m.einzug.split('.').reverse().join('-'):m.einzug||''}"></div>
       <div class="f"><label>Kaution (€)</label>
         <input type="number" id="mKaution" value="${m.kaution||''}" step="0.01"></div>
     </div>
@@ -1962,10 +2591,50 @@ function mieterFormHTML(obj, m={}) {
     </div>
     <div class="f-row">
       <div class="f"><label>Auszug</label>
-        <input type="date" id="mAuszug" value="${m.auszug||''}"></div>
+        <input type="date" id="mAuszug" value="${m.auszug && m.auszug.includes('.')?
+          m.auszug.split('.').reverse().join('-'):m.auszug||''}"></div>
       <div class="f"><label>TG-Stellplatz Nr.</label>
         <input type="text" id="mTgNr" value="${m.tgNr||''}"></div>
     </div>`;
+}
+
+function addPersonRow() {
+  const liste = document.getElementById('personenListe');
+  const i = liste.children.length;
+  const div = document.createElement('div');
+  div.className = 'f-row'; div.style.marginBottom = '4px'; div.id = 'pRow_'+i;
+  div.innerHTML = `<div class="f"><input type="text" id="pName_${i}" placeholder="Vor- und Nachname Person ${i+1}" style="font-size:13px"></div>
+    <div class="f"><input type="date" id="pGeb_${i}" style="font-size:13px" title="Geburtsdatum"></div>
+    <button class="btn btn-sm btn-danger" onclick="removePerson(${i})" style="flex-shrink:0"><i class="ti ti-trash"></i></button>`;
+  liste.appendChild(div);
+  document.getElementById('mPersonen').value = liste.children.length;
+}
+
+function removePerson(idx) {
+  const el = document.getElementById('pRow_'+idx);
+  if (el) { el.remove(); document.getElementById('mPersonen').value = document.getElementById('personenListe').children.length; }
+}
+
+function syncPersonenAnzahl(n) {
+  const liste = document.getElementById('personenListe');
+  const current = liste.children.length;
+  const target = parseInt(n)||1;
+  for (let i = current; i < target; i++) addPersonRow();
+  for (let i = current-1; i >= target; i--) {
+    const el = document.getElementById('pRow_'+i);
+    if (el && i > 0) el.remove();
+  }
+}
+
+function getPersonenFromForm() {
+  const liste = document.getElementById('personenListe');
+  const result = [];
+  for (let i = 0; i < liste.children.length; i++) {
+    const name = document.getElementById('pName_'+i)?.value?.trim();
+    const geb  = document.getElementById('pGeb_'+i)?.value;
+    if (name) result.push({name, geburtsdatum: geb||''});
+  }
+  return result;
 }
 
 async function modalAddMieter(objektId) {
@@ -2031,10 +2700,13 @@ async function modalEditMieter(id) {
 async function saveEditMieter(id) {
   const m = await idbGet('mieter', id);
   if (!m) return;
-  const name   = document.getElementById('mName').value.trim() || m.mieter;
+  const persListe = getPersonenFromForm();
+  const name = persListe[0]?.name || m.mieter;
   const einzug = document.getElementById('mEinzug').value;
   const auszug = document.getElementById('mAuszug').value;
   m.mieter  = name;
+  m.personen = parseInt(document.getElementById('mPersonen').value)||persListe.length||1;
+  m.personen_liste = persListe;
   m.weNr    = document.getElementById('mWeNr').value || m.weNr;
   m.etage   = document.getElementById('mEtage').value;
   m.flaeche = document.getElementById('mFlaeche').value;
@@ -2067,6 +2739,8 @@ async function deleteMieterConfirm(id) {
   goBack();
   toast('Mieter gelöscht');
 }
+
+
 
 
 
@@ -2974,7 +3648,7 @@ async function delUser(id){
 ═══════════════════════════════════════════════════════════ */
 async function exportBackup(){
   const backup={};
-  for(const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente']){
+  for(const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv']){
     backup[s]=await idbGetAll(s);
   }
   backup.exportedAt=now();backup.version=2;
@@ -2992,7 +3666,7 @@ async function importBackup(input){
   reader.onload=async function(e){
     try{
       const backup=JSON.parse(e.target.result);
-      for(const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente']){
+      for(const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv']){
         if(backup[s]){
           await idbClear(s);
           for(const item of backup[s]) await idbPut(s,item);
@@ -3193,7 +3867,7 @@ async function syncToOneDrive() {
   setSyncStatus('pending');
   try {
     const backup = {};
-    for (const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente']) {
+    for (const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv']) {
       backup[s] = await idbGetAll(s);
     }
     backup.updatedAt = now();
@@ -3294,6 +3968,8 @@ function showSyncInfo(){
 
 
 
+
+
 /* ═══════════════════════════════════════════════════════════
    MODAL
 ═══════════════════════════════════════════════════════════ */
@@ -3337,8 +4013,9 @@ function toast(msg,dur=2400){
 const _nav=nav;
 window.nav=async function(id,title,sub,push=true){
   _nav(id,title,sub,push);
-  if(id==='aufgaben') await renderAufgaben();
-  if(id==='settings') await renderSettings();
+  if(id==='aufgaben')          await renderAufgaben();
+  if(id==='settings')          await renderSettings();
+  if(id==='protokoll-archiv')  await renderProtokollArchiv();
 };
 
 
