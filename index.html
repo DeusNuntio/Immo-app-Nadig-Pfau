@@ -12,6 +12,7 @@
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,wght@0,300;0,400;0,500;0,600;1,400&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.7.0/dist/tabler-icons.min.css">
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js"></script>
 <style>
 /* ═══════════════════════ DESIGN SYSTEM ═══════════════════════ */
 :root{
@@ -643,7 +644,12 @@ function idbClear(store){
 ═══════════════════════════════════════════════════════════ */
 let bc=null;
 try{ bc=new BroadcastChannel('immo_sync'); }catch(e){}
-function bcSend(type,data){try{bc?.postMessage({type,data,ts:Date.now()});}catch(e){}}
+function bcSend(type,data){
+  try{bc?.postMessage({type,data,ts:Date.now()});}catch(e){}
+  // Auto-Sync zu OneDrive nach jeder Änderung (mit 3s Verzögerung zum Bündeln)
+  clearTimeout(window._syncTimer);
+  window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
+}
 if(bc) bc.onmessage=e=>{
   const {type,data}=e.data;
   if(type==='aufgabe_changed') refreshAufgaben();
@@ -782,7 +788,7 @@ async function initApp(){
   await renderDash();
   nav('dash','Dashboard','',false);
   updateBadge();
-  setSyncStatus('ok');
+  initMSAL();
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -1984,16 +1990,34 @@ async function renderSettings(){
     </div>
 
     <div class="card">
-      <div class="card-hdr"><i class="ti ti-info-circle"></i> OneDrive-Sync (Stufe 3)</div>
-      <p style="font-size:13px;color:var(--ink-40);line-height:1.6">
-        Für automatischen Sync zwischen mehreren Geräten über OneDrive wird ein Webserver benötigt.<br><br>
-        <strong>Deploy-Anleitung:</strong><br>
-        1. Repository auf GitHub hochladen<br>
-        2. Auf <a href="https://render.com" target="_blank" style="color:var(--copper)">Render.com</a> als Static Site deployen<br>
-        3. OneDrive-Integration über Microsoft Graph API aktivieren<br><br>
-        Den vollständigen Server-Code erhalten Sie auf Anfrage.
-      </p>
+      <div class="card-hdr"><i class="ti ti-brand-onedrive"></i> OneDrive-Sync</div>
+      <div id="onedriveSyncCard"></div>
     </div>`;
+  // OneDrive-Status-Karte befüllen
+  const odCard = document.getElementById('onedriveSyncCard');
+  if (odCard) {
+    const connected = !!msalAccount;
+    const name = msalAccount?.name || msalAccount?.username || '';
+    odCard.innerHTML = connected ? `
+      <div style="display:flex;align-items:center;gap:10px;background:var(--green-l);border-radius:8px;padding:12px;margin-bottom:12px">
+        <i class="ti ti-circle-check" style="color:var(--green);font-size:22px"></i>
+        <div><div style="font-weight:600;font-size:14px;color:var(--green)">Verbunden mit OneDrive</div>
+        <div style="font-size:12px;color:var(--ink-60);margin-top:1px">${name}</div></div>
+      </div>
+      <p style="font-size:13px;color:var(--ink-40);margin-bottom:12px;line-height:1.6">
+        Daten werden automatisch nach jeder Änderung synchronisiert. Alle Geräte die angemeldet sind sehen immer den aktuellen Stand.
+      </p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-copper" onclick="syncFromOneDrive()"><i class="ti ti-refresh"></i> Jetzt synchronisieren</button>
+        <button class="btn btn-sm btn-danger" onclick="msalLogout()"><i class="ti ti-logout"></i> Microsoft-Konto abmelden</button>
+      </div>` : `
+      <p style="font-size:13px;color:var(--ink-40);margin-bottom:12px;line-height:1.6">
+        Mit Microsoft-Konto anmelden um Daten automatisch mit allen Geräten zu synchronisieren. Alle Änderungen (Aufgaben, Mängel, Protokolle) werden sofort in OneDrive gespeichert.
+      </p>
+      <button class="btn btn-primary btn-full" onclick="msalLogin()">
+        <i class="ti ti-brand-windows"></i> Mit Microsoft anmelden
+      </button>`;
+  }
 
   if(isAdmin) await renderUserList_();
 }
@@ -2138,24 +2162,177 @@ async function confirmReset(){
 }
 
 /* ═══════════════════════════════════════════════════════════
-   SYNC STATUS
+   ONEDRIVE SYNC – Microsoft Graph API
 ═══════════════════════════════════════════════════════════ */
+const MSAL_CONFIG = {
+  auth: {
+    clientId: '269324a3-2f44-4ab9-a8d5-280093a8271c',
+    authority: 'https://login.microsoftonline.com/common',
+    redirectUri: window.location.origin + window.location.pathname,
+  },
+  cache: { cacheLocation: 'localStorage', storeAuthStateInCookie: false },
+};
+
+const GRAPH_SCOPES = ['Files.ReadWrite', 'User.Read'];
+const ONEDRIVE_FILE = '/me/drive/root:/NadigPfau/immo_daten.json:/content';
+
+let msalApp = null;
+let msalAccount = null;
+let syncInProgress = false;
+let lastSyncHash = '';
+
+function initMSAL() {
+  try {
+    msalApp = new msal.PublicClientApplication(MSAL_CONFIG);
+    msalApp.handleRedirectPromise().then(resp => {
+      if (resp) { msalAccount = resp.account; onSignedIn(); }
+      else {
+        const accounts = msalApp.getAllAccounts();
+        if (accounts.length > 0) { msalAccount = accounts[0]; onSignedIn(); }
+      }
+    }).catch(e => console.warn('MSAL redirect:', e));
+  } catch(e) { console.warn('MSAL init:', e); }
+}
+
+async function getToken() {
+  if (!msalApp) return null;
+  try {
+    const accounts = msalApp.getAllAccounts();
+    if (!accounts.length) return null;
+    const resp = await msalApp.acquireTokenSilent({ scopes: GRAPH_SCOPES, account: accounts[0] });
+    msalAccount = resp.account;
+    return resp.accessToken;
+  } catch(e) {
+    try {
+      const resp = await msalApp.acquireTokenPopup({ scopes: GRAPH_SCOPES });
+      msalAccount = resp.account;
+      return resp.accessToken;
+    } catch(e2) { console.warn('Token:', e2); return null; }
+  }
+}
+
+async function msalLogin() {
+  if (!msalApp) { toast('Microsoft-Anmeldung nicht verfügbar'); return; }
+  try {
+    setSyncStatus('pending');
+    const resp = await msalApp.loginPopup({ scopes: GRAPH_SCOPES });
+    msalAccount = resp.account;
+    onSignedIn();
+  } catch(e) { setSyncStatus('offline'); toast('Anmeldung abgebrochen'); }
+}
+
+async function msalLogout() {
+  if (!msalApp || !msalAccount) return;
+  await msalApp.logoutPopup({ account: msalAccount });
+  msalAccount = null;
+  setSyncStatus('offline');
+  toast('Microsoft-Konto abgemeldet');
+  renderSettings();
+}
+
+function onSignedIn() {
+  setSyncStatus('ok');
+  toast('✓ Mit OneDrive verbunden: ' + (msalAccount?.name || msalAccount?.username || ''));
+  syncFromOneDrive();
+}
+
+async function syncToOneDrive() {
+  if (syncInProgress) return;
+  const token = await getToken();
+  if (!token) return;
+  syncInProgress = true;
+  setSyncStatus('pending');
+  try {
+    const backup = {};
+    for (const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings']) {
+      backup[s] = await idbGetAll(s);
+    }
+    backup.updatedAt = now();
+    backup.updatedBy = msalAccount?.name || msalAccount?.username || 'Unbekannt';
+    const json = JSON.stringify(backup);
+    const hash = json.length + '_' + json.slice(-50);
+    if (hash === lastSyncHash) { setSyncStatus('ok'); syncInProgress = false; return; }
+    await fetch('https://graph.microsoft.com/v1.0' + ONEDRIVE_FILE, {
+      method: 'PUT',
+      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+      body: json,
+    });
+    lastSyncHash = hash;
+    setSyncStatus('ok');
+    const dot = document.getElementById('syncDot');
+    if (dot) { dot.title = 'Zuletzt synchronisiert: ' + now(); }
+  } catch(e) {
+    console.warn('Sync Upload:', e);
+    setSyncStatus('offline');
+  }
+  syncInProgress = false;
+}
+
+async function syncFromOneDrive() {
+  const token = await getToken();
+  if (!token) return;
+  setSyncStatus('pending');
+  try {
+    const resp = await fetch('https://graph.microsoft.com/v1.0' + ONEDRIVE_FILE, {
+      headers: { 'Authorization': 'Bearer ' + token },
+    });
+    if (resp.status === 404) {
+      // Erste Nutzung – lokale Daten hochladen
+      await syncToOneDrive();
+      return;
+    }
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const backup = await resp.json();
+    // Neuere Daten gewinnen
+    const remoteTime = backup.updatedAt || '';
+    const localSetting = await idbGet('settings','lastSync').catch(()=>null);
+    const localTime = localSetting?.value || '';
+    if (remoteTime > localTime) {
+      for (const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen']) {
+        if (backup[s]) {
+          await idbClear(s);
+          for (const item of backup[s]) await idbPut(s, item);
+        }
+      }
+      await idbPut('settings', { id:'lastSync', value: remoteTime });
+      await renderDash(); await updateBadge();
+      toast('✓ Daten von OneDrive geladen (' + (backup.updatedBy||'') + ')');
+    }
+    setSyncStatus('ok');
+  } catch(e) {
+    console.warn('Sync Download:', e);
+    setSyncStatus('offline');
+  }
+}
+
 function setSyncStatus(status){
   const dot=document.getElementById('syncDot');
   if(!dot) return;
   dot.className='sync-dot '+status;
 }
+
 function showSyncInfo(){
+  const connected = !!msalAccount;
+  const name = msalAccount?.name || msalAccount?.username || '';
   showModal(`
-    <div class="m-title"><i class="ti ti-cloud"></i> Sync-Status</div>
-    <div style="font-size:13px;line-height:1.8;color:var(--ink-40)">
-      <p><strong style="color:var(--green)">● Lokal gespeichert</strong> – Alle Daten werden in IndexedDB auf diesem Gerät gespeichert.</p>
-      <p style="margin-top:10px"><strong>Multi-Gerät-Sync:</strong><br>
-      Für Echtzeit-Sync zwischen mehreren Geräten ist ein Webserver erforderlich (Stufe 3).<br><br>
-      <strong>Zwischenlösung:</strong><br>
-      Exportieren Sie regelmäßig ein Backup (Einstellungen → Backup exportieren) und importieren Sie es auf anderen Geräten.</p>
-    </div>
-    <button class="btn btn-full btn-primary" style="margin-top:14px" onclick="closeModal()">OK</button>`);
+    <div class="m-title"><i class="ti ti-cloud"></i> OneDrive-Sync</div>
+    ${connected ? `
+      <div style="display:flex;align-items:center;gap:10px;background:var(--green-l);border-radius:8px;padding:12px;margin-bottom:14px">
+        <i class="ti ti-circle-check" style="color:var(--green);font-size:20px"></i>
+        <div><div style="font-weight:600;font-size:13px;color:var(--green)">Verbunden</div>
+        <div style="font-size:12px;color:var(--ink-40)">${name}</div></div>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">
+        <button class="btn btn-copper" onclick="syncFromOneDrive();closeModal()"><i class="ti ti-refresh"></i> Jetzt synchronisieren</button>
+        <button class="btn btn-danger btn-sm" onclick="msalLogout()"><i class="ti ti-logout"></i> Abmelden</button>
+      </div>` : `
+      <p style="font-size:13px;color:var(--ink-40);margin-bottom:14px;line-height:1.6">
+        Mit Microsoft-Konto anmelden um Daten automatisch über OneDrive mit allen Geräten zu synchronisieren.
+      </p>
+      <button class="btn btn-primary btn-full" onclick="msalLogin();closeModal()">
+        <i class="ti ti-brand-windows"></i> Mit Microsoft anmelden
+      </button>`}
+    <button class="btn btn-full" style="margin-top:8px" onclick="closeModal()">Schließen</button>`);
 }
 
 /* ═══════════════════════════════════════════════════════════
