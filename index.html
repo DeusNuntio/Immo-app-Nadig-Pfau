@@ -2161,155 +2161,167 @@ async function confirmReset(){
 }
 
 /* ═══════════════════════════════════════════════════════════
-   ONEDRIVE SYNC – OAuth2 PKCE (ohne externe Bibliothek)
+   ONEDRIVE SYNC – OAuth2 PKCE
 ═══════════════════════════════════════════════════════════ */
-const OD_CLIENT_ID   = '269324a3-2f44-4ab9-a8d5-280093a8271c';
-const OD_REDIRECT    = 'https://deusnuntio.github.io/Immo-app-Nadig-Pfau/';
-const OD_SCOPES      = 'Files.ReadWrite User.Read offline_access';
-const OD_AUTH_URL    = 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize';
-const OD_TOKEN_URL   = 'https://login.microsoftonline.com/common/oauth2/v2.0/token';
-const ONEDRIVE_FILE  = 'https://graph.microsoft.com/v1.0/me/drive/root:/NadigPfau/immo_daten.json:/content';
+const OD_CLIENT_ID  = '269324a3-2f44-4ab9-a8d5-280093a8271c';
+const OD_REDIRECT   = 'https://deusnuntio.github.io/Immo-app-Nadig-Pfau/';
+const OD_SCOPES     = 'Files.ReadWrite User.Read offline_access';
+const OD_AUTH_URL   = 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize';
+const OD_TOKEN_URL  = 'https://login.microsoftonline.com/common/oauth2/v2.0/token';
+const OD_FILE_URL   = 'https://graph.microsoft.com/v1.0/me/drive/root:/NadigPfau/immo_daten.json:/content';
 
-let odTokens = null;  // {access_token, refresh_token, expires_at}
+let odTokens       = null;
 let syncInProgress = false;
-let lastSyncHash = '';
+let lastSyncHash   = '';
 
-// ── PKCE Hilfsfunktionen ──────────────────────────────────
-async function pkceChallenge() {
-  const verifier = Array.from(crypto.getRandomValues(new Uint8Array(32)))
-    .map(b => b.toString(16).padStart(2,'0')).join('');
-  const enc = new TextEncoder().encode(verifier);
-  const hash = await crypto.subtle.digest('SHA-256', enc);
-  const challenge = btoa(String.fromCharCode(...new Uint8Array(hash)))
-    .replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
-  return {verifier, challenge};
-}
-
-// ── Anmeldung starten ─────────────────────────────────────
-async function msalLogin() {
-  try {
-    const {verifier, challenge} = await pkceChallenge();
-    const state = Math.random().toString(36).slice(2);
-    sessionStorage.setItem('pkce_verifier', verifier);
-    sessionStorage.setItem('pkce_state', state);
-    sessionStorage.setItem('pkce_return', window.location.href);
-
-    const params = new URLSearchParams({
-      client_id:     OD_CLIENT_ID,
-      response_type: 'code',
-      redirect_uri:  OD_REDIRECT,
-      scope:         OD_SCOPES,
-      state,
-      code_challenge:        challenge,
-      code_challenge_method: 'S256',
-      prompt:        'select_account',
-    });
-    window.location.href = OD_AUTH_URL + '?' + params.toString();
-  } catch(e) {
-    toast('Anmeldung fehlgeschlagen: ' + e.message);
-  }
-}
-
-// ── Redirect-Code verarbeiten (beim Seitenstart) ──────────
-async function handleOAuthRedirect() {
-  const params = new URLSearchParams(window.location.search);
-  const code  = params.get('code');
-  const state = params.get('state');
-  const error = params.get('error');
-
-  if (error) {
-    console.warn('OAuth Fehler:', error, params.get('error_description'));
-    window.history.replaceState({}, '', OD_REDIRECT);
-    return;
-  }
-  if (!code) return;
-
-  const savedState    = sessionStorage.getItem('pkce_state');
-  const verifier      = sessionStorage.getItem('pkce_verifier');
-  sessionStorage.removeItem('pkce_verifier');
-  sessionStorage.removeItem('pkce_state');
-  window.history.replaceState({}, '', OD_REDIRECT);
-
-  if (state !== savedState) { console.warn('State mismatch'); return; }
-
-  try {
-    const resp = await fetch(OD_TOKEN_URL, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-      body: new URLSearchParams({
-        client_id:     OD_CLIENT_ID,
-        grant_type:    'authorization_code',
-        code,
-        redirect_uri:  OD_REDIRECT,
-        code_verifier: verifier,
-      }),
-    });
-    const tokens = await resp.json();
-    if (tokens.error) throw new Error(tokens.error_description || tokens.error);
-    saveTokens(tokens);
-    setSyncStatus('ok');
-    toast('✓ Mit OneDrive verbunden');
-    syncFromOneDrive();
-    renderSettings();
-  } catch(e) {
-    console.warn('Token-Austausch:', e);
-    setSyncStatus('offline');
-    toast('Anmeldung fehlgeschlagen: ' + e.message);
-  }
-}
-
-// ── Token speichern / laden ───────────────────────────────
-function saveTokens(tokens) {
+// ── Token speichern/laden ─────────────────────────────────
+function odSaveTokens(t) {
   odTokens = {
-    access_token:  tokens.access_token,
-    refresh_token: tokens.refresh_token || odTokens?.refresh_token,
-    expires_at:    Date.now() + (tokens.expires_in || 3600) * 1000,
+    access_token:  t.access_token,
+    refresh_token: t.refresh_token || odTokens?.refresh_token || '',
+    expires_at:    Date.now() + ((t.expires_in||3600) - 60) * 1000,
     user_name:     odTokens?.user_name || '',
   };
   try { localStorage.setItem('od_tokens', JSON.stringify(odTokens)); } catch(e) {}
-  // Benutzernamen nachladen
-  fetch('https://graph.microsoft.com/v1.0/me', {
-    headers: {'Authorization': 'Bearer ' + odTokens.access_token}
-  }).then(r=>r.json()).then(u=>{
-    if (odTokens) { odTokens.user_name = u.displayName || u.userPrincipalName || ''; }
-    try { localStorage.setItem('od_tokens', JSON.stringify(odTokens)); } catch(e) {}
-  }).catch(()=>{});
-}
+};
 
-function loadTokens() {
+function odLoadTokens() {
   try {
     const raw = localStorage.getItem('od_tokens');
-    if (raw) { odTokens = JSON.parse(raw); }
-  } catch(e) {}
-}
+    if (raw) odTokens = JSON.parse(raw);
+  } catch(e) { odTokens = null; }
+};
 
-async function getAccessToken() {
+async function odGetToken() {
   if (!odTokens) return null;
-  if (Date.now() < odTokens.expires_at - 60000) return odTokens.access_token;
+  if (Date.now() < odTokens.expires_at) return odTokens.access_token;
   if (!odTokens.refresh_token) { odTokens = null; return null; }
   try {
-    const resp = await fetch(OD_TOKEN_URL, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+    const r = await fetch(OD_TOKEN_URL, {
+      method:'POST',
+      headers:{'Content-Type':'application/x-www-form-urlencoded'},
       body: new URLSearchParams({
-        client_id:     OD_CLIENT_ID,
-        grant_type:    'refresh_token',
-        refresh_token: odTokens.refresh_token,
-        scope:         OD_SCOPES,
+        client_id: OD_CLIENT_ID, grant_type:'refresh_token',
+        refresh_token: odTokens.refresh_token, scope: OD_SCOPES,
       }),
     });
-    const tokens = await resp.json();
-    if (tokens.error) throw new Error(tokens.error);
-    saveTokens(tokens);
+    const t = await r.json();
+    if (t.error) throw new Error(t.error_description||t.error);
+    odSaveTokens(t);
     return odTokens.access_token;
   } catch(e) {
-    console.warn('Token-Refresh:', e);
+    console.warn('Token-Refresh fehlgeschlagen:', e.message);
     odTokens = null;
     try { localStorage.removeItem('od_tokens'); } catch(e2) {}
     setSyncStatus('offline');
     return null;
   }
-}
+};
+
+// ── PKCE ─────────────────────────────────────────────────
+async function pkceGen() {
+  const arr = crypto.getRandomValues(new Uint8Array(32));
+  const verifier = btoa(String.fromCharCode(...arr))
+    .replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'');
+  const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier));
+  const challenge = btoa(String.fromCharCode(...new Uint8Array(hash)))
+    .replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'');
+  return {verifier, challenge};
+};
+
+// ── Anmeldung ─────────────────────────────────────────────
+async function msalLogin() {
+  try {
+    const {verifier, challenge} = await pkceGen();
+    const state = crypto.getRandomValues(new Uint8Array(8))
+      .reduce((s,b)=>s+b.toString(16).padStart(2,'0'),'');
+    localStorage.setItem('od_pkce_v', verifier);
+    localStorage.setItem('od_pkce_s', state);
+    const params = new URLSearchParams({
+      client_id: OD_CLIENT_ID, response_type:'code',
+      redirect_uri: OD_REDIRECT, scope: OD_SCOPES,
+      state, code_challenge: challenge, code_challenge_method:'S256',
+      prompt:'select_account',
+    });
+    // Öffne Auth in neuem Fenster (funktioniert in PWA und Browser)
+    const authWin = window.open(OD_AUTH_URL + '?' + params, '_blank',
+      'width=500,height=650,scrollbars=yes');
+    if (!authWin) {
+      // Fallback: direkte Weiterleitung
+      localStorage.setItem('od_pkce_redirect', '1');
+      window.location.href = OD_AUTH_URL + '?' + params;
+    }
+  } catch(e) {
+    toast('Anmeldung fehlgeschlagen: ' + e.message);
+    console.error('msalLogin:', e);
+  }
+};
+
+// ── OAuth-Code verarbeiten ────────────────────────────────
+async function handleOAuthRedirect() {
+  const params = new URLSearchParams(window.location.search);
+  const code   = params.get('code');
+  const state  = params.get('state');
+  const error  = params.get('error');
+
+  // URL sofort bereinigen
+  if (code || error) {
+    window.history.replaceState({}, '', window.location.pathname);
+  }
+
+  if (error) {
+    console.warn('OAuth Fehler:', error, params.get('error_description'));
+    toast('Microsoft-Anmeldung fehlgeschlagen: ' + (params.get('error_description')||error));
+    return;
+  }
+  if (!code) return;
+
+  const verifier  = localStorage.getItem('od_pkce_v');
+  const savedState = localStorage.getItem('od_pkce_s');
+  localStorage.removeItem('od_pkce_v');
+  localStorage.removeItem('od_pkce_s');
+  localStorage.removeItem('od_pkce_redirect');
+
+  if (state !== savedState) {
+    console.warn('State mismatch – möglicher CSRF-Angriff');
+    return;
+  }
+  if (!verifier) {
+    console.warn('PKCE Verifier fehlt');
+    return;
+  }
+
+  setSyncStatus('pending');
+  try {
+    const r = await fetch(OD_TOKEN_URL, {
+      method:'POST',
+      headers:{'Content-Type':'application/x-www-form-urlencoded'},
+      body: new URLSearchParams({
+        client_id: OD_CLIENT_ID, grant_type:'authorization_code',
+        code, redirect_uri: OD_REDIRECT, code_verifier: verifier,
+      }),
+    });
+    const t = await r.json();
+    if (t.error) throw new Error(t.error_description||t.error);
+    odSaveTokens(t);
+    // Benutzernamen laden
+    const me = await fetch('https://graph.microsoft.com/v1.0/me',
+      {headers:{'Authorization':'Bearer '+odTokens.access_token}});
+    const meData = await me.json();
+    if (odTokens) {
+      odTokens.user_name = meData.displayName || meData.userPrincipalName || '';
+      try { localStorage.setItem('od_tokens', JSON.stringify(odTokens)); } catch(e) {}
+    }
+    setSyncStatus('ok');
+    toast('✓ Mit OneDrive verbunden: ' + (odTokens.user_name||''));
+    await syncFromOneDrive();
+    renderSettings();
+  } catch(e) {
+    console.error('Token-Austausch:', e);
+    setSyncStatus('offline');
+    toast('Anmeldung fehlgeschlagen: ' + e.message);
+  }
+};
 
 function msalLogout() {
   odTokens = null;
@@ -2317,12 +2329,12 @@ function msalLogout() {
   setSyncStatus('offline');
   toast('Microsoft-Konto abgemeldet');
   renderSettings();
-}
+};
 
 // ── Sync zu OneDrive ──────────────────────────────────────
 async function syncToOneDrive() {
   if (syncInProgress) return;
-  const token = await getAccessToken();
+  const token = await odGetToken();
   if (!token) return;
   syncInProgress = true;
   setSyncStatus('pending');
@@ -2334,13 +2346,14 @@ async function syncToOneDrive() {
     backup.updatedAt = now();
     backup.updatedBy = odTokens?.user_name || 'Unbekannt';
     const json = JSON.stringify(backup);
-    const hash = json.length + '_' + json.slice(-30);
-    if (hash === lastSyncHash) { setSyncStatus('ok'); syncInProgress = false; return; }
-    await fetch(ONEDRIVE_FILE, {
-      method: 'PUT',
-      headers: {'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'},
+    const hash = json.length+'_'+json.slice(-30);
+    if (hash === lastSyncHash) { setSyncStatus('ok'); syncInProgress=false; return; }
+    const r = await fetch(OD_FILE_URL, {
+      method:'PUT',
+      headers:{'Authorization':'Bearer '+token,'Content-Type':'application/json'},
       body: json,
     });
+    if (!r.ok) throw new Error('HTTP '+r.status);
     lastSyncHash = hash;
     setSyncStatus('ok');
   } catch(e) {
@@ -2348,31 +2361,30 @@ async function syncToOneDrive() {
     setSyncStatus('offline');
   }
   syncInProgress = false;
-}
+};
 
 // ── Sync von OneDrive ─────────────────────────────────────
 async function syncFromOneDrive() {
-  const token = await getAccessToken();
+  const token = await odGetToken();
   if (!token) return;
   setSyncStatus('pending');
   try {
-    const resp = await fetch(ONEDRIVE_FILE, {
-      headers: {'Authorization': 'Bearer ' + token},
-    });
-    if (resp.status === 404) { await syncToOneDrive(); return; }
-    if (!resp.ok) throw new Error('HTTP ' + resp.status);
-    const backup = await resp.json();
-    const remoteTime = backup.updatedAt || '';
-    const localSetting = await idbGet('settings','lastSync').catch(()=>null);
-    const localTime = localSetting?.value || '';
+    const r = await fetch(OD_FILE_URL,
+      {headers:{'Authorization':'Bearer '+token}});
+    if (r.status === 404) { await syncToOneDrive(); return; }
+    if (!r.ok) throw new Error('HTTP '+r.status);
+    const backup = await r.json();
+    const remoteTime = backup.updatedAt||'';
+    const ls = await idbGet('settings','lastSync').catch(()=>null);
+    const localTime  = ls?.value||'';
     if (remoteTime > localTime) {
       for (const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen']) {
         if (backup[s]) {
           await idbClear(s);
-          for (const item of backup[s]) await idbPut(s, item);
+          for (const item of backup[s]) await idbPut(s,item);
         }
       }
-      await idbPut('settings', {id:'lastSync', value: remoteTime});
+      await idbPut('settings',{id:'lastSync',value:remoteTime});
       await renderDash(); await updateBadge();
       toast('✓ Synchronisiert (' + (backup.updatedBy||'') + ')');
     }
@@ -2381,46 +2393,48 @@ async function syncFromOneDrive() {
     console.warn('Sync Download:', e);
     setSyncStatus('offline');
   }
-}
+};
 
+// ── Init ──────────────────────────────────────────────────
 function initMSAL() {
-  loadTokens();
-  handleOAuthRedirect();
+  odLoadTokens();
   if (odTokens) {
     setSyncStatus('ok');
     syncFromOneDrive();
+  } else {
+    setSyncStatus('offline');
   }
-}
+};
 
 function setSyncStatus(status){
   const dot=document.getElementById('syncDot');
   if(!dot) return;
   dot.className='sync-dot '+status;
-}
+};
 
 function showSyncInfo(){
   const connected = !!odTokens;
-  const name = odTokens?.user_name || '';
+  const name = odTokens?.user_name||'';
   showModal(`
     <div class="m-title"><i class="ti ti-cloud"></i> OneDrive-Sync</div>
     ${connected ? `
       <div style="display:flex;align-items:center;gap:10px;background:var(--green-l);border-radius:8px;padding:12px;margin-bottom:14px">
         <i class="ti ti-circle-check" style="color:var(--green);font-size:20px"></i>
         <div><div style="font-weight:600;font-size:13px;color:var(--green)">Verbunden</div>
-        <div style="font-size:12px;color:var(--ink-40)">${name}</div></div>
+          <div style="font-size:12px;color:var(--ink-40)">${name}</div></div>
       </div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">
-        <button class="btn btn-copper" onclick="syncFromOneDrive();closeModal()"><i class="ti ti-refresh"></i> Jetzt synchronisieren</button>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-copper" onclick="syncFromOneDrive();closeModal()"><i class="ti ti-refresh"></i> Synchronisieren</button>
         <button class="btn btn-danger btn-sm" onclick="msalLogout();closeModal()"><i class="ti ti-logout"></i> Abmelden</button>
       </div>` : `
       <p style="font-size:13px;color:var(--ink-40);margin-bottom:14px;line-height:1.6">
-        Mit Microsoft-Konto anmelden um Daten automatisch über OneDrive zu synchronisieren.
+        Mit Microsoft-Konto anmelden um Daten über OneDrive zu synchronisieren.
       </p>
       <button class="btn btn-primary btn-full" onclick="msalLogin();closeModal()">
         <i class="ti ti-brand-windows"></i> Mit Microsoft anmelden
       </button>`}
     <button class="btn btn-full" style="margin-top:8px" onclick="closeModal()">Schließen</button>`);
-}
+};
 
 /* ═══════════════════════════════════════════════════════════
    MODAL
@@ -2847,6 +2861,18 @@ document.getElementById('photoIn').addEventListener('change', function() {
    APP START
 ═══════════════════════════════════════════════════════════ */
 window.addEventListener('DOMContentLoaded', async () => {
+  // OAuth-Redirect zuerst prüfen (kommt von Microsoft-Anmeldung)
+  const urlParams = new URLSearchParams(window.location.search);
+  if (urlParams.get('code') || urlParams.get('error')) {
+    // IDB öffnen, dann Redirect verarbeiten
+    await openIDB().catch(()=>{});
+    await ensureDefaultUsers().catch(()=>{});
+    await handleOAuthRedirect();
+    showScreen('loginScreen');
+    await loadLoginUsers().catch(()=>{});
+    return;
+  }
+
   let dbOk = false;
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
