@@ -941,8 +941,22 @@ async function renderDash() {
   }
 
   // Letzte Protokolle
+  // Offene Entwürfe
+  const drafts = prots.filter(p=>myObj.some(o=>o.id===p.objektId)&&p.status==='draft')
+    .sort((a,b)=>new Date(b.erstellt)-new Date(a.erstellt));
+  if (drafts.length) {
+    html += `<div class="card" style="margin-bottom:12px;border-color:var(--amber)">
+      <div class="card-hdr" style="color:var(--amber)"><i class="ti ti-clipboard"></i> Offene Entwürfe (${drafts.length})</div>
+      ${drafts.map(p=>`<div class="activity-item" onclick="editProtokoll('${p.id}')" style="cursor:pointer">
+        <div class="activity-dot" style="background:var(--amber)"></div>
+        <div class="activity-text">${p.mieterName||'(kein Mieter)'} · WE ${p.weNr||'?'} · ${p.objektName||''} · Schritt ${(p._draftStep||0)+1}</div>
+        <div class="activity-time">${fmtDate(p.datum)}</div>
+      </div>`).join('')}
+    </div>`;
+  }
+
   const lastProts = prots
-    .filter(p=>myObj.some(o=>o.id===p.objektId))
+    .filter(p=>myObj.some(o=>o.id===p.objektId)&&p.status!=='draft')
     .sort((a,b)=>new Date(b.erstellt)-new Date(a.erstellt))
     .slice(0,3);
   if (lastProts.length) {
@@ -2278,7 +2292,7 @@ async function renderProtokollArchiv() {
   const myObj  = await getMyObjekte();
   const myIds  = myObj.map(o=>o.id);
   const alle   = (await idbGetAll('protokolle'))
-    .filter(p => myIds.includes(p.objektId))
+    .filter(p => myIds.includes(p.objektId) && p.status !== 'draft')
     .sort((a,b) => new Date(b.datum||b.erstellt) - new Date(a.datum||a.erstellt));
 
   const el = document.getElementById('page-protokoll-archiv');
@@ -3548,6 +3562,9 @@ async function modalMieterhoehung(mieterId) {
     <div class="f"><label>Begründung (erscheint im Schreiben)</label>
       <textarea id="mhBegruendung" style="min-height:80px"
         placeholder="z. B. Anpassung an die ortsübliche Vergleichsmiete gem. Mietspiegel ${new Date().getFullYear()}..."></textarea>
+      <div style="font-size:11px;color:var(--ink-40);margin-top:4px;line-height:1.5">
+        Hinweis: Bei § 558 BGB ist eine Begründung mit Begründungsmittel (Mietspiegel, drei Vergleichswohnungen oder Sachverständigengutachten) zwingend – sonst ist das Verlangen formal unwirksam (§ 558a BGB). Sperrfrist 15 Monate und Kappungsgrenze 20 % (in angespannten Märkten 15 %) selbst prüfen.
+      </div>
     </div>
     ${history.length ? `<div class="card-hdr" style="margin-top:10px;margin-bottom:6px"><i class="ti ti-history"></i> Miethistorie</div>
       <div style="font-size:12px;color:var(--ink-40)">
@@ -3601,6 +3618,19 @@ async function saveMieterhoehung(mieterId) {
   const wirksamAb = new Date(datum).toLocaleDateString('de-DE');
   const diff = neueMiete - alteMiete;
   const diffNK = (neueNK||alteNK) - alteNK;
+  const diffPct = alteMiete ? (diff/alteMiete)*100 : 0;
+
+  // Rechtliche Textbausteine je nach Rechtsgrundlage
+  // § 558 = Zustimmungsmodell, § 559 = einseitige Erklärung, Staffel/Index/Einvernehmen = informativ
+  const istZustimmung = /558/.test(grund);          // ortsübliche Vergleichsmiete -> Zustimmung nötig
+  const istModernisierung = /559/.test(grund);      // Modernisierung -> einseitige Erklärung
+  const ueberschrift = istZustimmung ? 'Mieterhöhungsverlangen'
+                     : istModernisierung ? 'Mieterhöhungserklärung'
+                     : 'Mitteilung zur Mietanpassung';
+  // Kappungsgrenzen-Warnung nur intern (keine Rechtsberatung im Schreiben)
+  if (istZustimmung && diffPct > 20.0001) {
+    console.warn('Hinweis: Erhöhung über 20% – Kappungsgrenze § 558 Abs. 3 BGB prüfen (in angespannten Märkten 15%).');
+  }
 
   const win = window.open('', '_blank');
   if (!win) { toast('Protokoll gespeichert – Popup blockiert'); return; }
@@ -3649,9 +3679,13 @@ p{font-size:11px;line-height:1.8;margin-bottom:6px}
   </div>
 </div>
 <div class="trenn"></div>
-<h2>Mieterhöhung gemäß ${grund}</h2>
+<h2>${ueberschrift} gemäß ${grund}</h2>
 <p>${getAnrede(m)},</p>
-<p>wir teilen Ihnen mit, dass wir die Miete für Ihre Wohnung in ${obj?.name||''}, WE ${m.weNr}, gemäß ${grund} mit Wirkung zum <strong>${wirksamAb}</strong> wie folgt anpassen:</p>
+<p>${istZustimmung
+  ? `für Ihre Wohnung in ${obj?.name||''}, WE ${m.weNr}, bitten wir Sie um Zustimmung zu einer Erhöhung der Nettokaltmiete bis zur ortsüblichen Vergleichsmiete gemäß § 558 BGB. Die Erhöhung soll zum <strong>${wirksamAb}</strong> wirksam werden:`
+  : istModernisierung
+  ? `aufgrund der durchgeführten Modernisierungsmaßnahmen erhöhen wir die Miete für Ihre Wohnung in ${obj?.name||''}, WE ${m.weNr}, gemäß § 559 BGB mit Wirkung zum <strong>${wirksamAb}</strong> wie folgt:`
+  : `wir teilen Ihnen mit, dass sich die Miete für Ihre Wohnung in ${obj?.name||''}, WE ${m.weNr}, gemäß ${grund} mit Wirkung zum <strong>${wirksamAb}</strong> wie folgt ändert:`}</p>
 <div class="box">
   <div class="row"><span>Bisherige Kaltmiete</span><span>${fmtEur(alteMiete)}</span></div>
   <div class="row"><span>Neue Kaltmiete</span><span>${fmtEur(neueMiete)}</span></div>
@@ -3661,8 +3695,12 @@ p{font-size:11px;line-height:1.8;margin-bottom:6px}
   <div style="font-size:10px;color:#555;margin-top:4px">Erhöhung Kaltmiete: ${fmtEur(diff)} (${((diff/alteMiete)*100).toFixed(1)} %)</div>
 </div>
 ${begruend?`<p>${begruend}</p>`:''}
-<p>Bitte überweisen Sie ab dem <strong>${wirksamAb}</strong> den neuen Betrag von <strong>${fmtEur(neueMiete + (neueNK||alteNK))}</strong> auf das Ihnen bekannte Konto.</p>
-<p>Die Mieterhöhung wird wirksam, wenn Sie nicht innerhalb von zwei Monaten nach Zugang dieses Schreibens widersprechen.</p>
+${istZustimmung
+  ? `<p>Wir bitten Sie, dieser Mieterhöhung bis zum Ablauf des zweiten Kalendermonats nach Zugang dieses Schreibens zuzustimmen. Eine vorbereitete Zustimmungserklärung können Sie unterzeichnet an uns zurücksenden. Erst mit Ihrer Zustimmung schulden Sie ab dem <strong>${wirksamAb}</strong> die erhöhte Miete von <strong>${fmtEur(neueMiete + (neueNK||alteNK))}</strong>.</p>
+<p>Bitte beachten Sie: Stimmen Sie nicht zu, können wir innerhalb der gesetzlichen Frist Klage auf Erteilung der Zustimmung erheben (§ 558b Abs. 2 BGB).</p>`
+  : istModernisierung
+  ? `<p>Die erhöhte Miete von <strong>${fmtEur(neueMiete + (neueNK||alteNK))}</strong> ist mit Beginn des dritten Monats nach Zugang dieser Erklärung zu zahlen (§ 559b Abs. 2 BGB). Bitte überweisen Sie den neuen Betrag ab diesem Zeitpunkt auf das Ihnen bekannte Konto.</p>`
+  : `<p>Bitte überweisen Sie ab dem <strong>${wirksamAb}</strong> den neuen Betrag von <strong>${fmtEur(neueMiete + (neueNK||alteNK))}</strong> auf das Ihnen bekannte Konto.</p>`}
 <p style="margin-top:12mm">Mit freundlichen Grüßen<br><br>${bk.name}</p>
 <div style="font-size:8px;color:#aaa;margin-top:16mm;padding-top:4mm;border-top:1px solid #eee">
   Mieterhöhungsschreiben · ${obj?.name||''} WE ${m.weNr} · ${m.mieter} · ${heute} · Nadig Pfau Hausverwaltung
@@ -4398,9 +4436,10 @@ async function modalAddMieter(objektId) {
 }
 
 async function saveNewMieter(objektId) {
-  const name = document.getElementById('mName').value.trim();
+  const persListe = getPersonenFromForm();
+  const name = persListe[0]?.name || document.getElementById('pName_0')?.value?.trim() || '';
   const weNr = document.getElementById('mWeNr').value.trim();
-  if (!name || !weNr) { toast('Name und WE-Nr. sind Pflichtfelder'); return; }
+  if (!name || !weNr) { toast('Name der ersten Person und WE-Nr. sind Pflichtfelder'); return; }
   const obj  = getObj(objektId);
   const id   = 'm_' + objektId + '_' + weNr + '_' + name.replace(/\W/g,'').slice(0,10);
   const einzug = document.getElementById('mEinzug').value;
@@ -4657,6 +4696,18 @@ async function startProt(){
   const mietId=document.getElementById('pMietSel').value||null;
   const art=document.getElementById('pArt').value;
   closeModal();
+  // Prüfe ob bereits ein Draft für dieses Objekt/Mieter existiert
+  const bestehendeDrafts=(await idbGetAll('protokolle'))
+    .filter(p=>p.status==='draft'&&p.objektId===objId&&(p.mieterId===mietId||(!p.mieterId&&!mietId)));
+  if(bestehendeDrafts.length>0){
+    const draft=bestehendeDrafts.sort((a,b)=>new Date(b.erstellt)-new Date(a.erstellt))[0];
+    const step=draft._draftStep||0;
+    if(confirm(`Es gibt einen gespeicherten Entwurf vom ${fmtDate(draft.datum)} (Schritt ${step+1}). Fortfahren?`)){
+      PD={...draft};
+      renderProt(step);
+      return;
+    }
+  }
   PD=await buildPD(objId,mietId,art);
   renderProt(0);
 }
@@ -4691,6 +4742,12 @@ async function buildPD(objId,mietId,art){
 function renderProt(step){
   nav('protokoll','Übergabeprotokoll',`Schritt ${step+1} / ${PROT_STEPS.length}`);
   pSigPads={};
+  // Draft nach jedem Schritt automatisch speichern
+  if (PD) {
+    PD.status = 'draft';
+    PD._draftStep = step;
+    idbPut('protokolle', PD).catch(e=>console.warn('Draft-Speicherung:', e));
+  }
 
   let stepsH='';
   PROT_STEPS.forEach((s,i)=>{
@@ -5035,7 +5092,8 @@ async function editProtokoll(id){
   const p=await idbGet('protokolle',id);
   if(!p) return;
   PD={...p};pRoomIdx=0;
-  renderProt(0);
+  const step = p.status==='draft' ? (p._draftStep||0) : 0;
+  renderProt(step);
 }
 
 async function printProt(id){
