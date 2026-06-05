@@ -741,7 +741,7 @@ let pinBuf='';
 const DEFAULT_USERS=[
   {id:'u_alexander', name:'Alexander Nadig', pin:'2204',role:'admin', objekte:[],aktiv:true},
   {id:'u_pfau',      name:'Anna Pfau',       pin:'1603',role:'admin', objekte:[],aktiv:true},
-  {id:'u_roland',    name:'Roland Nadig',    pin:'2204',role:'hm',    objekte:['duesseldorf','krefeld','mg'],aktiv:true},
+  {id:'u_roland',    name:'Roland Nadig',    pin:'2204',role:'admin',  objekte:[],aktiv:true},
   {id:'u_dirk',      name:'Dirk Nicolay',    pin:'1111',role:'hm',    objekte:['krefeld'],aktiv:true},
   {id:'u_dus',       name:'Hausmeister DUS', pin:'3333',role:'hm',    objekte:['duesseldorf'],aktiv:true},
   {id:'u_mg',        name:'Hausmeister MG',  pin:'4444',role:'hm',    objekte:['mg'],aktiv:true},
@@ -3903,7 +3903,7 @@ function renderKalMonat(alle, year, mon) {
   let h = `<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:2px;margin-bottom:4px">
     ${['Mo','Di','Mi','Do','Fr','Sa','So'].map(d=>`<div style="text-align:center;font-size:10px;font-weight:700;color:var(--ink-40);padding:2px">${d}</div>`).join('')}
   </div>
-  <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:2px">`;
+  <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:2px;grid-auto-rows:62px">`;
 
   // Leer-Zellen vor dem 1.
   for (let i=0; i<startDow; i++) h += `<div style="min-height:52px"></div>`;
@@ -3915,15 +3915,16 @@ function renderKalMonat(alle, year, mon) {
     const dow = (new Date(year,mon,d).getDay()+6)%7;
     const isWE = dow>=5;
 
-    h += `<div style="min-height:52px;border-radius:6px;padding:3px;background:${isToday?'var(--ink)':'var(--white)'};
-      border:1px solid ${isToday?'var(--ink)':'var(--ink-10)'};cursor:pointer"
+    h += `<div style="height:62px;overflow:hidden;border-radius:6px;padding:3px;background:${isToday?'var(--ink)':'var(--white)'};
+      border:1px solid ${isToday?'var(--ink)':'var(--ink-10)'};cursor:pointer;flex-shrink:0"
       onclick="kalDayClick('${dateStr}')">
-      <div style="font-size:11px;font-weight:${isToday?'700':'500'};color:${isToday?'#fff':isWE?'var(--ink-40)':'var(--ink)'};text-align:right;margin-bottom:2px">${d}</div>
-      ${dayTermine.slice(0,3).map(t=>{
+      <div style="font-size:10px;font-weight:${isToday?'700':'500'};color:${isToday?'#fff':isWE?'var(--ink-40)':'var(--ink)'};text-align:right;margin-bottom:1px;line-height:1.2">${d}</div>
+      ${dayTermine.slice(0,2).map(t=>{
         const typ=getTerminTyp(t.typ);
-        return `<div style="font-size:9px;background:${typ.color};color:white;border-radius:3px;padding:1px 3px;margin-bottom:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${t.titel}</div>`;
+        const kurz=t.titel.length>8?t.titel.slice(0,7)+'…':t.titel;
+        return `<div style="font-size:8px;background:${typ.color};color:white;border-radius:2px;padding:1px 2px;margin-bottom:1px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${kurz}</div>`;
       }).join('')}
-      ${dayTermine.length>3?`<div style="font-size:9px;color:${isToday?'rgba(255,255,255,.7)':'var(--ink-40)'}">+${dayTermine.length-3}</div>`:''}
+      ${dayTermine.length>2?`<div style="font-size:8px;color:${isToday?'rgba(255,255,255,.7)':'var(--ink-40)'}">+${dayTermine.length-2}</div>`:''}
     </div>`;
   }
   h += `</div>`;
@@ -3975,6 +3976,7 @@ function terminHTML(t) {
         ${t.uhrzeit?`<span><i class="ti ti-clock" style="font-size:10px"></i> ${t.uhrzeit}${t.uhrzeitEnd?' – '+t.uhrzeitEnd:''}</span>`:''}
         ${obj?`<span><i class="ti ti-building" style="font-size:10px"></i> ${obj.name}</span>`:''}
         ${t.mieterName?`<span><i class="ti ti-user" style="font-size:10px"></i> ${t.mieterName}</span>`:''}
+        ${t.zugewiesen?`<span><i class="ti ti-user-check" style="font-size:10px;color:var(--copper)"></i> ${t.zugewiesen}</span>`:''}
         <span class="chip chip-gray" style="font-size:9px;padding:1px 5px">${typ.label}</span>
       </div>
       ${t.notiz?`<div style="font-size:11px;color:var(--ink-60);margin-top:3px;font-style:italic;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${t.notiz}</div>`:''}
@@ -4046,8 +4048,16 @@ async function modalAddTermin(prefillDate) {
     </div>
     <div class="f"><label>Notiz / Details</label>
       <textarea id="tNotiz" style="min-height:60px" placeholder="Weitere Infos, Ansprechpartner, Zugangscode..."></textarea></div>
-    <div class="f"><label>Erstellt von</label>
-      <input type="text" id="tErsteller" value="${CU?.name||''}" readonly style="background:var(--ink-05)"></div>
+    <div class="f-row">
+      <div class="f"><label>Erstellt von</label>
+        <input type="text" id="tErsteller" value="${CU?.name||''}" readonly style="background:var(--ink-05)"></div>
+      <div class="f"><label>Zugewiesen an</label>
+        <select id="tZugewiesen">
+          <option value="">– Niemanden –</option>
+          ${(await idbGetAll('users')).filter(u=>u.aktiv!==false).map(u=>`<option value="${u.id}">${u.name}</option>`).join('')}
+        </select>
+      </div>
+    </div>
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="saveTermin()">
         <i class="ti ti-check"></i> Speichern
@@ -4082,6 +4092,7 @@ async function saveTermin() {
     mieterId:   mieterId||null,
     mieterName: m?.mieter||'',
     notiz:      document.getElementById('tNotiz')?.value||'',
+    zugewiesen: document.getElementById('tZugewiesen')?.value||'',
     status:     'offen',
     erstellt:   now(), ersteller: CU?.name||'',
   });
@@ -4114,6 +4125,7 @@ async function showTerminDetail(id) {
       ${obj?`<span><i class="ti ti-building" style="font-size:12px"></i> ${obj.name} · ${obj.ort}</span>`:''}
       ${t.mieterName?`<span><i class="ti ti-user" style="font-size:12px"></i> ${t.mieterName}</span>`:''}
       ${t.ersteller?`<span><i class="ti ti-user-circle" style="font-size:12px"></i> ${t.ersteller} · ${t.erstellt||''}</span>`:''}
+      ${t.zugewiesen?`<span><i class="ti ti-user-check" style="font-size:12px;color:var(--copper)"></i> <strong>Zugewiesen an:</strong> ${t.zugewiesen}</span>`:''}
     </div>
     ${t.notiz?`<div style="background:var(--ink-05);border-radius:8px;padding:10px;font-size:13px;line-height:1.6;margin-bottom:12px;white-space:pre-wrap">${t.notiz}</div>`:''}
     <div style="display:flex;gap:7px;flex-wrap:wrap">
@@ -6280,11 +6292,24 @@ function showStartError(msg) {
   // Service Worker komplett deregistrieren + alle Caches leeren
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.getRegistrations().then(regs => {
-      regs.forEach(reg => reg.unregister());
-    });
+      regs.forEach(reg => reg.unregister().catch(()=>{}));
+    }).catch(()=>{});
   }
   if ('caches' in window) {
-    caches.keys().then(keys => keys.forEach(k => caches.delete(k)));
+    caches.keys().then(keys => {
+      keys.forEach(k => caches.delete(k).catch(()=>{}));
+      if (keys.length > 0) console.log('[NadigPfau] Cache geleert:', keys.length, 'Einträge');
+    }).catch(()=>{});
+  }
+  // Force-Reload bei veralteter App-Version
+  const APP_VERSION = '2026-06-07-v7';
+  const storedVersion = localStorage.getItem('app_version');
+  if (storedVersion && storedVersion !== APP_VERSION) {
+    localStorage.setItem('app_version', APP_VERSION);
+    console.log('[NadigPfau] Neue Version, Hard-Reload...');
+    window.location.reload(true);
+  } else {
+    localStorage.setItem('app_version', APP_VERSION);
   }
 
   // PWA Install-Prompt abfangen
