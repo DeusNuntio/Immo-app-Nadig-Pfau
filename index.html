@@ -793,6 +793,9 @@ async function tryLogin(){
     showLoginErr('Falscher PIN');pinBuf='';updatePinDisplay();return;
   }
   localStorage.setItem('lastLoginUser', uid);
+  // Session-Marker: erlaubt Auto-Wiederanmeldung nach OS-Reload (z. B. nach Kamera-Nutzung)
+  try { sessionStorage.setItem('activeSession', uid); } catch(e) {}
+  try { localStorage.setItem('activeSession', JSON.stringify({uid, ts: Date.now()})); } catch(e) {}
   CU=user;pinBuf='';
   showScreen('appScreen');
   await initApp();
@@ -804,6 +807,8 @@ function showLoginErr(msg){
 }
 function doLogout(){
   CU=null;pinBuf='';
+  try { sessionStorage.removeItem('activeSession'); } catch(e) {}
+  try { localStorage.removeItem('activeSession'); } catch(e) {}
   showScreen('loginScreen');
   loadLoginUsers();
 }
@@ -6264,11 +6269,15 @@ document.getElementById('photoIn').addEventListener('change', async function() {
     if (pPhotoRoom) {
       if (PD && PD.raeume && PD.raeume[pPhotoRoom]) {
         PD.raeume[pPhotoRoom].photos.push(data);
+        PD.status = 'draft';
+        idbPut('protokolle', PD).catch(e=>console.warn('Draft nach Foto:', e));
         renderProtRaeume();
       }
     } else if (window._zaehlerIdx !== null && window._zaehlerIdx !== undefined) {
       if (PD && PD.zaehler && PD.zaehler[window._zaehlerIdx] !== undefined) {
         PD.zaehler[window._zaehlerIdx].foto = data;
+        PD.status = 'draft';
+        idbPut('protokolle', PD).catch(e=>console.warn('Draft nach Zählerfoto:', e));
         renderProt(2);
       }
       window._zaehlerIdx = null;
@@ -6318,6 +6327,31 @@ window.addEventListener('DOMContentLoaded', async () => {
   }
   try { await ensureDefaultUsers(); } catch(err) { console.warn('ensureDefaultUsers:', err); }
   try {
+    // Aktive Session wiederherstellen (nach OS-Reload, z. B. nach Kamera-Nutzung)
+    let sessionUid = null;
+    try { sessionUid = sessionStorage.getItem('activeSession'); } catch(e) {}
+    if (!sessionUid) {
+      try {
+        const raw = localStorage.getItem('activeSession');
+        if (raw) {
+          const s = JSON.parse(raw);
+          // nur innerhalb von 12 Stunden automatisch wieder anmelden
+          if (s && s.uid && s.ts && (Date.now() - s.ts) < 12*60*60*1000) sessionUid = s.uid;
+        }
+      } catch(e) {}
+    }
+    if (sessionUid) {
+      const user = await idbGet('users', sessionUid).catch(()=>null);
+      if (user && user.aktiv !== false) {
+        CU = user;
+        // Zeitstempel auffrischen
+        try { sessionStorage.setItem('activeSession', sessionUid); } catch(e) {}
+        try { localStorage.setItem('activeSession', JSON.stringify({uid: sessionUid, ts: Date.now()})); } catch(e) {}
+        showScreen('appScreen');
+        await initApp();
+        return;
+      }
+    }
     showScreen('loginScreen');
     await loadLoginUsers();
   } catch(err) {
