@@ -120,6 +120,7 @@ body{background:var(--surface);color:var(--ink);font-size:15px;-webkit-font-smoo
 .obj-icon.c-kr{background:var(--copper)}
 .obj-icon.c-mg{background:var(--ink-60)}
 .obj-icon.c-dus{background:var(--ink-80)}
+.obj-icon.c-mon{background:#2E7D52}
 .obj-body{flex:1;min-width:0}
 .obj-name{font-size:15px;font-weight:600;color:var(--ink);letter-spacing:-.2px}
 .obj-meta{font-size:12px;color:var(--ink-40);margin-top:2px}
@@ -630,7 +631,7 @@ body{background:var(--surface);color:var(--ink);font-size:15px;-webkit-font-smoo
 /* ═══════════════════════════════════════════════════════════
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
-const DB_NAME='immo_v2', DB_VER=9;
+const DB_NAME='immo_v2', DB_VER=10;
 let idb=null;
 
 function openIDB(){
@@ -643,7 +644,7 @@ function openIDB(){
     const req=indexedDB.open(DB_NAME,DB_VER);
     req.onupgradeneeded=e=>{
       const db=e.target.result;
-      ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','fotos','wartung'].forEach(s=>{
+      ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','fotos','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung'].forEach(s=>{
         if(!db.objectStoreNames.contains(s)){
           const store=db.createObjectStore(s,{keyPath:'id'});
           if(s==='mieter'){store.createIndex('objektId','objektId');store.createIndex('weNr','weNr')}
@@ -657,6 +658,11 @@ function openIDB(){
           if(s==='termine'){store.createIndex('datum','datum');store.createIndex('objektId','objektId')}
           if(s==='fotos'){store.createIndex('protId','protId')}
           if(s==='wartung'){store.createIndex('objektId','objektId')}
+          if(s==='zaehler'){store.createIndex('objektId','objektId')}
+          if(s==='zaehlerstaende'){store.createIndex('objektId','objektId');store.createIndex('zaehlerId','zaehlerId')}
+          if(s==='versorger'){store.createIndex('objektId','objektId')}
+          if(s==='lager'){store.createIndex('objektId','objektId');store.createIndex('kategorie','kategorie')}
+          if(s==='lager_anforderung'){store.createIndex('status','status')}
         }
       });
     };
@@ -754,6 +760,8 @@ const OBJEKTE=[
   {id:'wilm9',   gruppe:'krefeld',    name:'Wilmendyk 9',          ort:'47803 Krefeld',       nr:4,color:'c-kr'},
   {id:'wilm11',  gruppe:'krefeld',    name:'Wilmendyk 11',         ort:'47803 Krefeld',       nr:4,color:'c-kr'},
   {id:'wilm13',  gruppe:'krefeld',    name:'Wilmendyk 13',         ort:'47803 Krefeld',       nr:4,color:'c-kr'},
+  {id:'marien22',gruppe:'monheim',    name:'Marienburger Str. 22', ort:'40789 Monheim am Rhein',nr:5,color:'c-mon',
+   sichtbarFuer:['u_alexander'], privat:true},
 ];
 const OBJ_MAP={
   'Ruhrtalstr. 41':'ruhrt41','Mindener Str. 23':'mind23','Mindener Str. 25':'mind25',
@@ -762,7 +770,7 @@ const OBJ_MAP={
   'Wilmendyk 7':'wilm7','Wilmendyk 9':'wilm9','Wilmendyk 11':'wilm11','Wilmendyk 13':'wilm13',
 };
 const getObj=id=>OBJEKTE.find(o=>o.id===id);
-const GRUPPE_LABEL={duesseldorf:'Düsseldorf',mg:'Mönchengladbach',krefeld:'Krefeld'};
+const GRUPPE_LABEL={duesseldorf:'Düsseldorf',mg:'Mönchengladbach',krefeld:'Krefeld',monheim:'Monheim am Rhein'};
 
 /* ═══════════════════════════════════════════════════════════
    AUTH STATE
@@ -1090,8 +1098,10 @@ async function renderDash() {
 
 async function getMyObjekte(){
   if(!CU) return [];
-  if(CU.role==='admin') return OBJEKTE;
-  return OBJEKTE.filter(o=>CU.objekte.includes(o.gruppe));
+  // Objekte mit eingeschränkter Sichtbarkeit (sichtbarFuer) nur für gelistete Benutzer
+  const sichtbar = o => !o.sichtbarFuer || o.sichtbarFuer.includes(CU.id);
+  if(CU.role==='admin') return OBJEKTE.filter(sichtbar);
+  return OBJEKTE.filter(o=>CU.objekte.includes(o.gruppe) && sichtbar(o));
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -1103,17 +1113,20 @@ async function showObjekt(objId){
   currentObjId=objId;
   const obj=getObj(objId);
   const el=document.getElementById('page-objekt');
+  const istPrivat = obj.privat===true;
   el.innerHTML=`<div class="tab-bar">
-    <button class="tab-btn active" onclick="objTab('mieter',this)">Mieter</button>
-    <button class="tab-btn" onclick="objTab('protokolle',this)">Protokolle</button>
-    <button class="tab-btn" onclick="objTab('aufgaben',this)">Aufgaben</button>
+    ${istPrivat?'':`<button class="tab-btn active" onclick="objTab('mieter',this)">Mieter</button>
+    <button class="tab-btn" onclick="objTab('protokolle',this)">Protokolle</button>`}
+    <button class="tab-btn ${istPrivat?'active':''}" onclick="objTab('aufgaben',this)">Aufgaben</button>
     <button class="tab-btn" onclick="objTab('maengel',this)">Mängel</button>
+    <button class="tab-btn" onclick="objTab('zaehler',this)">Zähler</button>
     <button class="tab-btn" onclick="objTab('dokumente',this)">Dokumente</button>
-    ${CU?.role==='admin'?'<button class="tab-btn" onclick="objTab(\'nka\',this)">NKA-Archiv</button>':''}
+    ${CU?.role==='admin'?`<button class="tab-btn" onclick="objTab('versorger',this)">Versorger</button>`:''}
+    ${CU?.role==='admin'&&!istPrivat?'<button class="tab-btn" onclick="objTab(\'nka\',this)">NKA-Archiv</button>':''}
   </div>
   <div id="objTabContent"></div>`;
   nav('objekt',obj.name,obj.ort);
-  await renderObjTab('mieter');
+  await renderObjTab(istPrivat?'aufgaben':'mieter');
 }
 
 async function objTab(t,btn){
@@ -1128,8 +1141,267 @@ async function renderObjTab(t){
   if(t==='protokolle') await renderObjProtokolle(el);
   if(t==='aufgaben')   await renderObjAufgaben(el);
   if(t==='maengel')    await renderObjMaengel(el);
+  if(t==='zaehler')    await renderObjZaehler(el);
   if(t==='dokumente')  await renderDokumente(el, currentObjId, null);
+  if(t==='versorger')  await renderObjVersorger(el);
   if(t==='nka')        await renderNKAArchiv(el, currentObjId);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   ZÄHLER & ZÄHLERSTÄNDE
+═══════════════════════════════════════════════════════════ */
+// Standard-Zählerbelegung je Objekt. Sonderfälle überschreiben den Standard.
+const ZAEHLER_STANDARD = [
+  {art:'gas',    name:'Gas gesamt',      einheit:'m³'},
+  {art:'wasser', name:'Wasser gesamt',   einheit:'m³'},
+  {art:'strom',  name:'Allgemeinstrom',  einheit:'kWh'},
+];
+const ZAEHLER_SONDERFALL = {
+  wilm11: [
+    {art:'strom',   name:'Allgemeinstrom', einheit:'kWh'},
+    {art:'heizung', name:'Heizung',        einheit:'kWh'},
+  ],
+  inr185: [
+    {art:'strom',     name:'Allgemeinstrom', einheit:'kWh'},
+    {art:'heizung',   name:'Heizung',        einheit:'kWh'},
+    {art:'tiefgarage',name:'Tiefgarage',     einheit:'kWh'},
+  ],
+};
+const ZAEHLER_ICON = {gas:'ti-flame',wasser:'ti-droplet',strom:'ti-bolt',heizung:'ti-temperature',tiefgarage:'ti-parking'};
+
+// Stellt sicher, dass für ein Objekt die (Standard- oder Sonder-)Zähler existieren.
+async function ensureZaehler(objektId){
+  const vorhandene = await idbGetAll('zaehler','objektId',objektId);
+  if(vorhandene.length) return vorhandene;
+  const def = ZAEHLER_SONDERFALL[objektId] || ZAEHLER_STANDARD;
+  const erstellt = [];
+  for(const d of def){
+    const z = {id:'z_'+objektId+'_'+d.art+'_'+Math.random().toString(36).slice(2,6),
+      objektId, art:d.art, name:d.name, einheit:d.einheit, erstellt:now()};
+    await idbPut('zaehler', z);
+    erstellt.push(z);
+  }
+  return erstellt;
+}
+
+async function renderObjZaehler(el){
+  const zaehler = (await ensureZaehler(currentObjId)).sort((a,b)=>a.name.localeCompare(b.name));
+  const alleStaende = await idbGetAll('zaehlerstaende','objektId',currentObjId);
+  let h=`<div class="s-hdr"><div class="s-title"><i class="ti ti-gauge"></i> Zähler (${zaehler.length})</div>
+    ${CU?.role==='admin'?`<button class="btn btn-sm" onclick="modalNeuerZaehler('${currentObjId}')"><i class="ti ti-plus"></i> Zähler</button>`:''}
+  </div>`;
+
+  for(const z of zaehler){
+    const staende = alleStaende.filter(s=>s.zaehlerId===z.id)
+      .sort((a,b)=>new Date(b.datumISO||0)-new Date(a.datumISO||0));
+    const letzter = staende[0];
+    const vorletzter = staende[1];
+    // Verbrauch & Vergleich
+    let verbrauchTxt = '';
+    if(letzter && vorletzter){
+      const diff = (parseFloat(letzter.wert)||0)-(parseFloat(vorletzter.wert)||0);
+      const tage = Math.max(1,Math.round((new Date(letzter.datumISO)-new Date(vorletzter.datumISO))/86400000));
+      verbrauchTxt = `<span style="color:var(--ink-60)">Verbrauch seit letzter Ablesung: <strong>${diff.toFixed(2)} ${z.einheit}</strong> (${tage} Tage)</span>`;
+    }
+    h+=`<div class="card" style="margin-bottom:10px">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+        <div style="width:38px;height:38px;border-radius:8px;background:var(--ink-05);display:flex;align-items:center;justify-content:center;font-size:18px;color:var(--copper)">
+          <i class="ti ${ZAEHLER_ICON[z.art]||'ti-gauge'}"></i>
+        </div>
+        <div style="flex:1">
+          <div style="font-weight:600;font-size:14px">${z.name}</div>
+          <div style="font-size:12px;color:var(--ink-40)">
+            ${letzter?`Letzter Stand: <strong>${letzter.wert} ${z.einheit}</strong> · ${letzter.datum}`:'Noch keine Ablesung'}
+          </div>
+        </div>
+        <button class="btn btn-sm btn-copper" onclick="modalZaehlerstand('${z.id}')"><i class="ti ti-camera"></i> Ablesen</button>
+      </div>
+      ${verbrauchTxt?`<div style="font-size:12px;margin-bottom:6px">${verbrauchTxt}</div>`:''}
+      ${staende.length?`<button class="btn btn-sm" style="width:100%" onclick="zeigeZaehlerVerlauf('${z.id}')"><i class="ti ti-chart-line"></i> Verlauf & Verbrauch (${staende.length})</button>`:''}
+    </div>`;
+  }
+  el.innerHTML=h;
+}
+
+// Ablesemaske: Wert + Foto + Datum
+async function modalZaehlerstand(zaehlerId){
+  const z = await idbGet('zaehler', zaehlerId);
+  if(!z) return;
+  window._zsFoto = null;
+  showModal(`
+    <div class="m-title"><i class="ti ${ZAEHLER_ICON[z.art]||'ti-gauge'}"></i> Ablesung – ${z.name}</div>
+    <div class="f"><label>Zählerstand (${z.einheit}) *</label>
+      <input type="number" id="zsWert" step="0.001" inputmode="decimal" placeholder="z. B. 12345,678"></div>
+    <div class="f"><label>Ablesedatum</label>
+      <input type="date" id="zsDatum" value="${today()}"></div>
+    <div class="f"><label>Zählernummer (optional)</label>
+      <input type="text" id="zsNummer" value="${z.zaehlernummer||''}" placeholder="Gerätenummer"></div>
+    <div class="f"><label>Foto des Zählers</label>
+      <input type="file" id="zsFotoIn" accept="image/*" capture="environment" style="display:none" onchange="onZsFoto(this)">
+      <button class="btn btn-full" onclick="document.getElementById('zsFotoIn').click()"><i class="ti ti-camera"></i> Foto aufnehmen / wählen</button>
+      <div id="zsFotoPreview" style="margin-top:8px"></div>
+    </div>
+    <div class="f"><label>Bemerkung (optional)</label>
+      <textarea id="zsBemerkung" style="min-height:50px" placeholder="z. B. Zähler schwer ablesbar"></textarea></div>
+    <div class="f-row" style="margin-top:12px">
+      <button class="btn btn-copper btn-full" onclick="saveZaehlerstand('${zaehlerId}')"><i class="ti ti-check"></i> Speichern</button>
+      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+    </div>`);
+}
+
+async function onZsFoto(input){
+  const file = input.files[0];
+  if(!file) return;
+  const dataUrl = await compressFoto(file, 1400, 0.78);
+  window._zsFoto = dataUrl;
+  const prev = document.getElementById('zsFotoPreview');
+  if(prev) prev.innerHTML = `<img src="${dataUrl}" style="max-width:100%;border-radius:8px;border:1px solid var(--ink-10)">
+    <button class="btn btn-sm btn-danger" style="margin-top:4px" onclick="window._zsFoto=null;document.getElementById('zsFotoPreview').innerHTML=''"><i class="ti ti-trash"></i> Foto entfernen</button>`;
+}
+
+async function saveZaehlerstand(zaehlerId){
+  const z = await idbGet('zaehler', zaehlerId);
+  if(!z) return;
+  const wert = document.getElementById('zsWert')?.value;
+  if(wert===''||wert==null){ toast('Bitte Zählerstand eingeben'); return; }
+  const datumISO = document.getElementById('zsDatum')?.value || today();
+  const nummer = document.getElementById('zsNummer')?.value?.trim()||'';
+  // Plausibilität: neuer Wert sollte nicht kleiner als letzter sein (Hinweis, kein Block)
+  const bisher = (await idbGetAll('zaehlerstaende','zaehlerId',zaehlerId))
+    .sort((a,b)=>new Date(b.datumISO||0)-new Date(a.datumISO||0));
+  const letzter = bisher[0];
+  if(letzter && parseFloat(wert) < parseFloat(letzter.wert)){
+    if(!confirm(`Der neue Wert (${wert}) ist kleiner als der letzte Stand (${letzter.wert}). Trotzdem speichern?`)) return;
+  }
+  const eintrag = {
+    id: uid(),
+    zaehlerId, objektId: z.objektId,
+    wert: parseFloat(wert),
+    einheit: z.einheit,
+    datum: new Date(datumISO).toLocaleDateString('de-DE'),
+    datumISO,
+    nummer,
+    foto: window._zsFoto || '',
+    bemerkung: document.getElementById('zsBemerkung')?.value?.trim()||'',
+    erfasst: now(), erfasstVon: CU?.name||'',
+  };
+  await idbPut('zaehlerstaende', eintrag);
+  // Zählernummer am Stammdatensatz merken
+  if(nummer && nummer!==z.zaehlernummer){ z.zaehlernummer=nummer; await idbPut('zaehler', z); }
+  window._zsFoto = null;
+  closeModal();
+  clearTimeout(window._syncTimer);
+  window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
+  await renderObjZaehler(document.getElementById('objTabContent'));
+  toast('Ablesung gespeichert ✓');
+}
+
+// Verlauf mit Verbrauchsdifferenzen (Monat/Jahr-Vergleich)
+async function zeigeZaehlerVerlauf(zaehlerId){
+  const z = await idbGet('zaehler', zaehlerId);
+  const staende = (await idbGetAll('zaehlerstaende','zaehlerId',zaehlerId))
+    .sort((a,b)=>new Date(b.datumISO||0)-new Date(a.datumISO||0));
+  let rows='';
+  for(let i=0;i<staende.length;i++){
+    const s=staende[i];
+    const naechstAelter=staende[i+1];
+    let diff='–', proTag='–';
+    if(naechstAelter){
+      const d=(parseFloat(s.wert)||0)-(parseFloat(naechstAelter.wert)||0);
+      const tage=Math.max(1,Math.round((new Date(s.datumISO)-new Date(naechstAelter.datumISO))/86400000));
+      diff=`${d.toFixed(2)} ${z.einheit}`;
+      proTag=`${(d/tage).toFixed(2)} ${z.einheit}/Tag`;
+    }
+    rows+=`<tr style="border-bottom:1px solid var(--ink-10)">
+      <td style="padding:6px 4px;font-size:12px">${s.datum}</td>
+      <td style="padding:6px 4px;font-size:12px;font-weight:600">${s.wert} ${z.einheit}</td>
+      <td style="padding:6px 4px;font-size:12px">${diff}</td>
+      <td style="padding:6px 4px;font-size:11px;color:var(--ink-40)">${proTag}</td>
+      <td style="padding:6px 4px;text-align:right">${s.foto?`<button class="btn btn-sm" onclick="openFoto('${s.id}','zaehlerstand')"><i class="ti ti-photo"></i></button>`:''}
+        ${CU?.role==='admin'?`<button class="btn btn-sm btn-danger" onclick="delZaehlerstand('${s.id}','${zaehlerId}')"><i class="ti ti-trash"></i></button>`:''}</td>
+    </tr>`;
+  }
+  // Jahresvergleich: Verbrauch pro Kalenderjahr
+  const perJahr={};
+  for(let i=0;i<staende.length-1;i++){
+    const neu=staende[i], alt=staende[i+1];
+    const jahr=new Date(neu.datumISO).getFullYear();
+    const d=(parseFloat(neu.wert)||0)-(parseFloat(alt.wert)||0);
+    if(d>=0) perJahr[jahr]=(perJahr[jahr]||0)+d;
+  }
+  const jahrRows=Object.keys(perJahr).sort((a,b)=>b-a).map(j=>
+    `<tr><td style="padding:4px 6px;font-size:12px">${j}</td><td style="padding:4px 6px;font-size:12px;font-weight:600">${perJahr[j].toFixed(2)} ${z.einheit}</td></tr>`).join('');
+
+  showModal(`
+    <div class="m-title"><i class="ti ti-chart-line"></i> Verlauf – ${z.name}</div>
+    ${jahrRows?`<div class="card-hdr" style="margin-bottom:6px">Verbrauch je Kalenderjahr</div>
+    <table style="width:100%;border-collapse:collapse;margin-bottom:14px">
+      <thead><tr style="background:var(--ink-05)"><th style="padding:4px 6px;text-align:left;font-size:11px">Jahr</th><th style="padding:4px 6px;text-align:left;font-size:11px">Verbrauch</th></tr></thead>
+      <tbody>${jahrRows}</tbody></table>`:''}
+    <div class="card-hdr" style="margin-bottom:6px">Alle Ablesungen (${staende.length})</div>
+    <div style="max-height:50vh;overflow-y:auto">
+    <table style="width:100%;border-collapse:collapse">
+      <thead><tr style="background:var(--ink-05)">
+        <th style="padding:6px 4px;text-align:left;font-size:11px">Datum</th>
+        <th style="padding:6px 4px;text-align:left;font-size:11px">Stand</th>
+        <th style="padding:6px 4px;text-align:left;font-size:11px">Verbrauch</th>
+        <th style="padding:6px 4px;text-align:left;font-size:11px">Ø</th>
+        <th style="padding:6px 4px"></th>
+      </tr></thead>
+      <tbody>${rows||'<tr><td colspan="5" style="padding:10px;text-align:center;color:var(--ink-40)">Keine Daten</td></tr>'}</tbody>
+    </table></div>
+    <button class="btn btn-full" style="margin-top:12px" onclick="closeModal()">Schließen</button>`);
+}
+
+async function delZaehlerstand(id, zaehlerId){
+  if(!confirm('Diese Ablesung wirklich löschen?')) return;
+  await idbDelete('zaehlerstaende', id);
+  clearTimeout(window._syncTimer);
+  window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
+  await zeigeZaehlerVerlauf(zaehlerId);
+  toast('Ablesung gelöscht');
+}
+
+// Zusätzlichen Zähler anlegen (Admin)
+async function modalNeuerZaehler(objektId){
+  showModal(`
+    <div class="m-title"><i class="ti ti-plus"></i> Neuer Zähler</div>
+    <div class="f"><label>Bezeichnung *</label>
+      <input type="text" id="nzName" placeholder="z. B. Wasser Garten"></div>
+    <div class="f-row">
+      <div class="f"><label>Art</label>
+        <select id="nzArt">
+          <option value="strom">Strom</option>
+          <option value="gas">Gas</option>
+          <option value="wasser">Wasser</option>
+          <option value="heizung">Heizung</option>
+          <option value="tiefgarage">Tiefgarage</option>
+          <option value="sonstige">Sonstige</option>
+        </select></div>
+      <div class="f"><label>Einheit</label>
+        <input type="text" id="nzEinheit" value="kWh" placeholder="kWh / m³"></div>
+    </div>
+    <div class="f"><label>Zählernummer (optional)</label>
+      <input type="text" id="nzNummer" placeholder="Gerätenummer"></div>
+    <div class="f-row" style="margin-top:12px">
+      <button class="btn btn-copper btn-full" onclick="saveNeuerZaehler('${objektId}')"><i class="ti ti-check"></i> Speichern</button>
+      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+    </div>`);
+}
+
+async function saveNeuerZaehler(objektId){
+  const name=document.getElementById('nzName')?.value?.trim();
+  if(!name){ toast('Bitte Bezeichnung eingeben'); return; }
+  const art=document.getElementById('nzArt')?.value||'sonstige';
+  const z={ id:'z_'+objektId+'_'+art+'_'+Math.random().toString(36).slice(2,6),
+    objektId, art, name, einheit:document.getElementById('nzEinheit')?.value?.trim()||'kWh',
+    zaehlernummer:document.getElementById('nzNummer')?.value?.trim()||'', erstellt:now() };
+  await idbPut('zaehler', z);
+  closeModal();
+  clearTimeout(window._syncTimer);
+  window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
+  await renderObjZaehler(document.getElementById('objTabContent'));
+  toast('Zähler angelegt ✓');
 }
 
 // Prüft alle Objekte/Mieter auf fällige Mieterwechsel (Mietbeginn erreicht)
@@ -6568,7 +6840,7 @@ async function delUser(id){
 ═══════════════════════════════════════════════════════════ */
 async function exportBackup(){
   const backup={};
-  for(const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung']){
+  for(const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung']){
     backup[s]=await idbGetAll(s);
   }
   backup.exportedAt=now();backup.version=2;
@@ -6586,7 +6858,7 @@ async function importBackup(input){
   reader.onload=async function(e){
     try{
       const backup=JSON.parse(e.target.result);
-      for(const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung']){
+      for(const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung']){
         if(backup[s]){
           await idbClear(s);
           for(const item of backup[s]) await idbPut(s,item);
@@ -6787,7 +7059,7 @@ async function syncToOneDrive() {
   setSyncStatus('pending');
   try {
     const backup = {};
-    for (const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung']) {
+    for (const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung']) {
       backup[s] = await idbGetAll(s);
     }
     backup.updatedAt = now();
@@ -6988,6 +7260,11 @@ async function openFoto(src, caption='') {
   if (caption === 'dok' && src && !src.startsWith('data:')) {
     const d = await idbGet('dokumente', src).catch(()=>null);
     if (d) { src = d.data; caption = d.name; }
+  }
+  // Zählerstand-Foto aus IDB laden
+  if (caption === 'zaehlerstand' && src && !src.startsWith('data:')) {
+    const s = await idbGet('zaehlerstaende', src).catch(()=>null);
+    if (s) { src = s.foto; caption = `Zählerstand ${s.wert} ${s.einheit||''} · ${s.datum||''}`; }
   }
   window._currentFoto = src;
   window._currentFotoName = caption || 'Foto';
