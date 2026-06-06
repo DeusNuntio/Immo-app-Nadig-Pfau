@@ -600,6 +600,9 @@ body{background:var(--surface);color:var(--ink);font-size:15px;-webkit-font-smoo
   <button class="foto-overlay-close" onclick="closeFotoOverlay()"><i class="ti ti-x"></i></button>
   <img id="fotoOverlayImg" src="" alt="Foto">
   <div id="fotoOverlayCaption" style="color:rgba(255,255,255,.6);font-size:13px;margin-top:10px;text-align:center"></div>
+  <button id="fotoShareBtn" onclick="event.stopPropagation();shareFoto()" style="margin-top:16px;padding:11px 22px;border:none;border-radius:24px;background:#185FA5;color:#fff;font-size:14px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;gap:8px">
+    <i class="ti ti-share"></i> Foto teilen / weiterleiten
+  </button>
 </div>
 
 <!-- TOAST -->
@@ -5020,11 +5023,25 @@ function fabAction(){
 const ROOMS=['Flur / Diele','Wohnzimmer','Schlafzimmer 1','Schlafzimmer 2','Schlafzimmer 3',
   'Küche','Badezimmer','Gäste-WC','Abstellraum','Keller','Balkon / Terrasse'];
 const CONDS=['Wände / Decken','Boden / Fußleisten','Fenster / Rollläden','Türen / Türrahmen',
-  'Elektro / Schalter','Heizung / Heizkörper','Sanitär / Fliesen','Sonstiges'];
+  'Elektro / Schalter','Heizung / Heizkörper','Sonstiges'];
+// Raumspezifische Zustandsfelder
+const ROOMS_NEBEN=['Abstellraum','Keller','Balkon / Terrasse']; // nur Grundfelder
+const ROOMS_FLIESEN=['Badezimmer','Gäste-WC','Küche'];           // zusätzlich Fliesen
 const ROOM_EXTRA_CONDS={
   'Badezimmer':['Waschbecken / Armatur','Dusche / Duschwanne','Badewanne','Toilette / Spülkasten'],
   'Gäste-WC':['Waschbecken / Armatur','Toilette / Spülkasten'],
 };
+// Liefert die exakte Feldliste je Raum
+function condsForRoom(rn){
+  if(ROOMS_NEBEN.includes(rn)){
+    return ['Wände / Decken','Boden / Fußleisten','Türen / Türrahmen','Elektro / Schalter','Sonstiges'];
+  }
+  let base=['Wände / Decken','Boden / Fußleisten','Fenster / Rollläden','Türen / Türrahmen','Elektro / Schalter','Heizung / Heizkörper'];
+  if(ROOMS_FLIESEN.includes(rn)) base.push('Fliesen');
+  base=base.concat(ROOM_EXTRA_CONDS[rn]||[]);
+  base.push('Sonstiges');
+  return base;
+}
 const COND_V=['Einwandfrei','Leichte Gebrauchsspuren','Renovierungsbedarf','Beschädigt','Entfällt'];
 const PROT_STEPS=['Objekt','Räume','Zähler','Schlüssel','Mängel','Unterschriften'];
 
@@ -5330,16 +5347,32 @@ function renderProtRaeume(){
   tabs.innerHTML=`<div class="room-scroll"><div class="room-tabs">
     ${ROOMS.map((r,i)=>{
       const d=PD.raeume[r];
-      const bad=Object.values(d.conditions).some(v=>v&&v!=='Einwandfrei');
-      return`<button class="room-tab${i===pRoomIdx?' active':''}${bad?' has-data':''}" onclick="selectRoom(${i})">${r}</button>`;
+      const fehlt=d.vorhanden===false;
+      const bad=!fehlt && Object.values(d.conditions).some(v=>v&&v!=='Einwandfrei');
+      return`<button class="room-tab${i===pRoomIdx?' active':''}${bad?' has-data':''}" style="${fehlt?'opacity:.4;text-decoration:line-through':''}" onclick="selectRoom(${i})">${r}</button>`;
     }).join('')}
   </div></div>`;
 
   const rn=ROOMS[pRoomIdx];
   const rd=PD.raeume[rn];
-  let condH=`<div style="font-size:11px;font-weight:700;color:var(--ink-40);text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px">${rn}</div>
-  <div class="cond-grid">`;
-  const allConds=[...CONDS,...(ROOM_EXTRA_CONDS[rn]||[])];
+  const vorhanden = rd.vorhanden !== false; // Standard: vorhanden
+  let condH=`<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px">
+    <div style="font-size:11px;font-weight:700;color:var(--ink-40);text-transform:uppercase;letter-spacing:.5px">${rn}</div>
+    <label style="display:flex;align-items:center;gap:7px;font-size:12px;cursor:pointer;white-space:nowrap">
+      <input type="checkbox" ${vorhanden?'checked':''} onchange="setRoomVorhanden('${rn}',this.checked)" style="width:17px;height:17px">
+      Raum vorhanden
+    </label>
+  </div>`;
+  if(!vorhanden){
+    condH+=`<div style="text-align:center;color:var(--ink-40);padding:24px 16px;font-size:13px;background:var(--ink-05);border-radius:10px">
+      <i class="ti ti-eye-off" style="font-size:26px;display:block;margin-bottom:6px;opacity:.5"></i>
+      Dieser Raum ist nicht vorhanden und wird im Protokoll-Ausdruck weggelassen.
+    </div>`;
+    cont.innerHTML = condH;
+    return;
+  }
+  condH+=`<div class="cond-grid">`;
+  const allConds=condsForRoom(rn);
   allConds.forEach(c=>{
     const val=rd.conditions[c]||'Einwandfrei';
     const col=val==='Einwandfrei'?'var(--green)':val==='Beschädigt'?'var(--red)':val==='Entfällt'?'var(--ink-20)':'var(--amber)';
@@ -5378,6 +5411,14 @@ function renderProtRaeume(){
 }
 
 function selectRoom(idx){pRoomIdx=idx;renderProtRaeume();}
+function setRoomVorhanden(room,val){
+  if(PD.raeume[room]){
+    PD.raeume[room].vorhanden=val;
+    PD.status='draft';
+    idbPut('protokolle',PD).catch(e=>console.warn('Draft Raum:',e));
+    renderProtRaeume();
+  }
+}
 function setRoomCond(room,cond,val){PD.raeume[room].conditions[cond]=val;}
 function setRoomCondFull(room,cond,val){
   PD.raeume[room].conditions[cond]=val;
@@ -5541,9 +5582,16 @@ async function finishProt(){
   bcSend('protokoll_saved',{id:PD.id});
   clearTimeout(window._syncTimer);
   window._syncTimer=setTimeout(()=>syncToOneDrive(),3000);
-  printProtHTML(PD);
-  await renderDash();
-  nav('dash','Dashboard','',false);
+  const fertigesPD = {...PD};
+  // Wiederherstellungsmarker löschen (Protokoll ist abgeschlossen)
+  try { localStorage.removeItem('openProtokoll'); } catch(e){}
+  PD = null;
+  // Erst ins Archiv navigieren, damit der Nutzer das gespeicherte Protokoll sieht
+  await renderProtokollArchiv();
+  nav('protokoll-archiv','Protokoll-Archiv','',false);
+  toast('Protokoll im Archiv gespeichert ✓');
+  // Dann drucken (nicht blockierend, im selben Tab via iframe)
+  setTimeout(()=>printProtHTML(fertigesPD), 400);
 }
 
 async function editProtokoll(id){
@@ -5558,6 +5606,36 @@ async function editProtokoll(id){
 async function printProt(id){
   const p=await idbGet('protokolle',id);
   if(p) printProtHTML(p);
+}
+
+// Druckt HTML zuverlässig im selben Tab (mobil-tauglich) via verstecktem iframe.
+// Fallback auf window.open, falls iframe-Druck nicht greift.
+function printViaIframe(html){
+  try {
+    const old = document.getElementById('printFrame');
+    if (old) old.remove();
+    const f = document.createElement('iframe');
+    f.id = 'printFrame';
+    f.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden';
+    document.body.appendChild(f);
+    const fd = f.contentWindow.document;
+    fd.open(); fd.write(html); fd.close();
+    const doPrint = () => {
+      try { f.contentWindow.focus(); f.contentWindow.print(); }
+      catch(e){ console.warn('iframe-Druck:', e); }
+    };
+    // Warten bis Bilder geladen sind
+    if (f.contentWindow.document.readyState === 'complete') setTimeout(doPrint, 500);
+    else f.addEventListener('load', ()=>setTimeout(doPrint, 500));
+    return true;
+  } catch(e) {
+    console.warn('printViaIframe fehlgeschlagen, Fallback window.open:', e);
+    const win = window.open('', '_blank');
+    if (!win) { toast('Druck nicht möglich – bitte Popups erlauben'); return false; }
+    win.document.write(html); win.document.close();
+    win.addEventListener('load', () => setTimeout(() => win.print(), 600));
+    return true;
+  }
 }
 
 async function printProtHTML(d) {
@@ -5575,15 +5653,14 @@ async function printProtHTML(d) {
       img.src = src;
     });
   }
-  const win = window.open('', '_blank');
-  if (!win) { toast('Popup blockiert – bitte Popup-Blocker deaktivieren'); return; }
+  const win = { _html:'', document:{ write(s){ win._html+=s; }, close(){} } };
   const datum = d.datum ? new Date(d.datum).toLocaleDateString('de-DE') : d.datum||'–';
   let roomRows = '';
   for (const r of ROOMS) {
     const rd = d.raeume?.[r]; if (!rd) continue;
+    if (rd.vorhanden === false) continue; // nicht vorhandene Räume nicht drucken
     roomRows += `<tr><td colspan="3" style="background:#e8f0fe;font-weight:700;padding:5px 8px;border:1px solid #ccd;font-size:11px">${r}</td></tr>`;
-    const _extraC={'Badezimmer':['Waschbecken / Armatur','Dusche / Duschwanne','Badewanne','Toilette / Spülkasten'],'Gäste-WC':['Waschbecken / Armatur','Toilette / Spülkasten']};
-    const roomConds=[...['Wände / Decken','Boden / Fußleisten','Fenster / Rollläden','Türen / Türrahmen','Elektro / Schalter','Heizung / Heizkörper','Sanitär / Fliesen','Sonstiges'],...(_extraC[r]||[])];
+    const roomConds = condsForRoom(r);
     for (const c of roomConds) {
       const val = rd.conditions?.[c]||'Einwandfrei';
       const col = val==='Einwandfrei'?'#2E7D52':val==='Beschädigt'?'#C0392B':val==='Entfällt'?'#888':'#D4820A';
@@ -5673,7 +5750,7 @@ ${d.zeugeName&&d.sigZeuge?`<div style="max-width:50%;margin-top:8px"><div class=
 
 </body></html>`);
   win.document.close();
-  win.addEventListener('load', () => setTimeout(() => win.print(), 700));
+  printViaIframe(win._html);
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -6386,12 +6463,40 @@ async function openFoto(src, caption='') {
     const d = await idbGet('dokumente', src).catch(()=>null);
     if (d) { src = d.data; caption = d.name; }
   }
+  window._currentFoto = src;
+  window._currentFotoName = caption || 'Foto';
   document.getElementById('fotoOverlayImg').src = src;
   document.getElementById('fotoOverlayCaption').textContent = caption;
   document.getElementById('fotoOverlay').classList.add('open');
 }
 function closeFotoOverlay() {
   document.getElementById('fotoOverlay').classList.remove('open');
+}
+
+// Foto über das native Teilen-Menü weiterleiten (Mail, WhatsApp, etc.)
+async function shareFoto(){
+  const src = window._currentFoto;
+  if(!src){ toast('Kein Foto ausgewählt'); return; }
+  try {
+    const res = await fetch(src);
+    const blob = await res.blob();
+    const name = (window._currentFotoName||'Foto').replace(/[^a-zA-Z0-9äöüÄÖÜ _-]/g,'').slice(0,40) || 'Foto';
+    const file = new File([blob], name+'.jpg', { type: blob.type||'image/jpeg' });
+    if (navigator.canShare && navigator.canShare({ files:[file] })) {
+      await navigator.share({ files:[file], title: name });
+      return;
+    }
+    // Fallback: Bild herunterladen, wenn Datei-Teilen nicht geht
+    const a = document.createElement('a');
+    a.href = src; a.download = name+'.jpg';
+    document.body.appendChild(a); a.click(); a.remove();
+    toast('Foto heruntergeladen – kann jetzt weitergeleitet werden');
+  } catch(e) {
+    if (e && e.name === 'AbortError') return; // Nutzer hat abgebrochen
+    console.warn('Teilen:', e);
+    toast('Teilen nicht möglich – Foto wird heruntergeladen');
+    try { const a=document.createElement('a'); a.href=src; a.download='Foto.jpg'; a.click(); } catch(_){}
+  }
 }
 
 /* ═══════════════════════════════════════════════════════════
