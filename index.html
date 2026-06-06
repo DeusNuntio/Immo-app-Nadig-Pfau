@@ -548,6 +548,7 @@ body{background:var(--surface);color:var(--ink);font-size:15px;-webkit-font-smoo
     <div id="page-protokoll" class="page"></div>
     <div id="page-protokoll-archiv" class="page"></div>
     <div id="page-aufgaben" class="page"></div>
+    <div id="page-wartung" class="page"></div>
     <div id="page-settings" class="page"></div>
   </div>
 
@@ -600,7 +601,7 @@ body{background:var(--surface);color:var(--ink);font-size:15px;-webkit-font-smoo
 /* ═══════════════════════════════════════════════════════════
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
-const DB_NAME='immo_v2', DB_VER=7;
+const DB_NAME='immo_v2', DB_VER=9;
 let idb=null;
 
 function openIDB(){
@@ -613,7 +614,7 @@ function openIDB(){
     const req=indexedDB.open(DB_NAME,DB_VER);
     req.onupgradeneeded=e=>{
       const db=e.target.result;
-      ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine'].forEach(s=>{
+      ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','fotos','wartung'].forEach(s=>{
         if(!db.objectStoreNames.contains(s)){
           const store=db.createObjectStore(s,{keyPath:'id'});
           if(s==='mieter'){store.createIndex('objektId','objektId');store.createIndex('weNr','weNr')}
@@ -625,6 +626,8 @@ function openIDB(){
           if(s==='nka_archiv'){store.createIndex('objektId','objektId')}
           if(s==='einkaufsliste'){store.createIndex('objektId','objektId');store.createIndex('status','status')}
           if(s==='termine'){store.createIndex('datum','datum');store.createIndex('objektId','objektId')}
+          if(s==='fotos'){store.createIndex('protId','protId')}
+          if(s==='wartung'){store.createIndex('objektId','objektId')}
         }
       });
     };
@@ -829,7 +832,7 @@ function nav(id,title,sub,push=true){
   const TITLES={dash:'Dashboard',aufgaben:'Aufgaben & Mängel',settings:'Einstellungen',
                 objekt:'Objekt',mieter:'Mieter',protokoll:'Übergabeprotokoll',
                 'protokoll-archiv':'Protokoll-Archiv',
-                'kalender':'Kalender'};
+                'kalender':'Kalender','wartung':'Wartungsfristen'};
   document.getElementById('hdrTitle').textContent=title||TITLES[id]||id;
   document.getElementById('hdrSub').textContent=sub||'';
   document.getElementById('hdrBack').classList.toggle('vis',push&&id!=='dash');
@@ -900,6 +903,8 @@ async function renderDash() {
   const el = document.getElementById('page-dash');
 
   const setting = await idbGet('settings','lastImport').catch(()=>null);
+  const faelligeWartung = await getFaelligeWartung(30).catch(()=>[]);
+  const lastSyncEntry = await idbGet('settings','lastSync').catch(()=>null);
 
   // 4er Stats
   let html = `<div class="stats-row" style="grid-template-columns:repeat(4,1fr)">
@@ -928,8 +933,50 @@ async function renderDash() {
     <button class="qa-btn" onclick="nav('aufgaben')"><i class="ti ti-checklist"></i> Aufgaben</button>
     <button class="qa-btn" onclick="modalAddAufgabe(null,null)"><i class="ti ti-plus"></i> ToDo</button>
     <button class="qa-btn" onclick="modalAddMangel(null,null,'mangel')"><i class="ti ti-alert-triangle"></i> Mangel</button>
+    <button class="qa-btn" onclick="nav('wartung')"><i class="ti ti-calendar-stats"></i> Wartung</button>
     <button class="qa-btn" onclick="nav('settings')"><i class="ti ti-upload"></i> Excel-Import</button>
   </div>`;
+
+  // Fällige Wartungsfristen
+  if (faelligeWartung.length) {
+    const ueberfaellig = faelligeWartung.filter(w=>w.tage<0);
+    const randColor = ueberfaellig.length ? 'var(--red)' : 'var(--amber)';
+    const titelColor = ueberfaellig.length ? 'var(--red)' : 'var(--amber)';
+    html += `<div class="card" style="border-color:${randColor};margin-bottom:12px">
+      <div class="card-hdr" style="color:${titelColor}"><i class="ti ti-calendar-stats"></i> Wartungsfristen (${faelligeWartung.length})</div>
+      ${faelligeWartung.slice(0,4).map(w=>{
+        const c = w.tage<0?'var(--red)':'var(--amber)';
+        const txt = w.tage<0?`${Math.abs(w.tage)} Tage überfällig`:`in ${w.tage} Tagen`;
+        const obj = w.objektId?getObj(w.objektId):null;
+        return `<div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--ink-10);cursor:pointer" onclick="nav('wartung')">
+          <div style="width:6px;height:6px;border-radius:50%;background:${c};flex-shrink:0"></div>
+          <div style="flex:1;font-size:13px;color:var(--ink)">${esc(w.titel)}</div>
+          <div style="font-size:11px;color:${c};font-weight:600;white-space:nowrap">${txt}</div>
+          <div style="font-size:11px;color:var(--ink-40);white-space:nowrap">${obj?esc(obj.name):'Alle'}</div>
+        </div>`;
+      }).join('')}
+      ${faelligeWartung.length>4?`<div style="font-size:12px;color:var(--ink-40);padding-top:6px;cursor:pointer" onclick="nav('wartung')">+${faelligeWartung.length-4} weitere anzeigen</div>`:''}
+    </div>`;
+  }
+
+  // Backup-Erinnerung – wenn kein Sync oder letzter Sync älter als 7 Tage
+  {
+    let warnBackup = false, syncInfo = '';
+    if (!lastSyncEntry || !lastSyncEntry.value) {
+      warnBackup = true; syncInfo = 'Noch keine Datensicherung über OneDrive erfolgt.';
+    } else {
+      const tage = Math.floor((Date.now() - new Date(lastSyncEntry.value).getTime())/86400000);
+      if (tage >= 7) { warnBackup = true; syncInfo = `Letzte Sicherung vor ${tage} Tagen.`; }
+    }
+    if (warnBackup) {
+      html += `<div style="background:var(--amber-l);border-radius:10px;padding:10px 14px;margin-bottom:12px;display:flex;align-items:center;gap:10px">
+        <i class="ti ti-cloud-off" style="color:var(--amber);font-size:18px;flex-shrink:0"></i>
+        <div style="flex:1"><div style="font-size:13px;font-weight:600;color:var(--amber)">Datensicherung empfohlen</div>
+        <div style="font-size:12px;color:var(--amber)">${syncInfo} Daten werden nur lokal gespeichert.</div></div>
+        <button class="btn btn-sm" onclick="syncToOneDrive()"><i class="ti ti-cloud-upload"></i></button>
+      </div>`;
+    }
+  }
 
   // Dringende Punkte
   const dringend = [...myAuf.filter(a=>a.prio==='hoch'), ...myMng.filter(m=>m.schwere==='schwerwiegend')];
@@ -1225,6 +1272,193 @@ async function showMieter(id){
   }
   el.innerHTML=h;
   nav('mieter',m.mieter,obj?.name||'');
+}
+
+/* ═══════════════════════════════════════════════════════════
+   WARTUNGSFRISTEN
+═══════════════════════════════════════════════════════════ */
+const WARTUNG_TYPEN = [
+  {val:'heizung',    label:'Heizungswartung',        intervall:12, icon:'ti-flame',         hinweis:'Fachkundige Wartung nach GEG; Intervall je nach Anlage (oft jährlich).'},
+  {val:'rauchmelder',label:'Rauchmelder-Prüfung',    intervall:12, icon:'ti-bell-ringing',  hinweis:'Jährliche Funktionsprüfung nach DIN 14676.'},
+  {val:'schornstein',label:'Schornsteinfeger',       intervall:12, icon:'ti-building-factory',hinweis:'Abgasmessung / Feuerstättenschau nach Kehr- und Überprüfungsordnung.'},
+  {val:'legionellen',label:'Legionellenprüfung',     intervall:36, icon:'ti-droplet',        hinweis:'Trinkwasseruntersuchung bei Großanlagen, i.d.R. alle 3 Jahre (TrinkwV).'},
+  {val:'feuerloescher',label:'Feuerlöscher-Prüfung', intervall:24, icon:'ti-fire-extinguisher',hinweis:'Sachkundige Prüfung üblicherweise alle 2 Jahre (DIN 14406).'},
+  {val:'sonstiges',  label:'Sonstige Wartung',       intervall:12, icon:'ti-tool',           hinweis:''},
+];
+const wartungTyp = v => WARTUNG_TYPEN.find(t=>t.val===v) || WARTUNG_TYPEN[WARTUNG_TYPEN.length-1];
+
+// Tage bis zur Fälligkeit (negativ = überfällig)
+function wartungTageBis(w){
+  if(!w.faellig) return null;
+  const heute = new Date(); heute.setHours(0,0,0,0);
+  const f = new Date(w.faellig); f.setHours(0,0,0,0);
+  return Math.round((f - heute)/86400000);
+}
+// Nächstes Fälligkeitsdatum aus Basisdatum + Intervall (Monate)
+function wartungNaechste(basisISO, intervallMonate){
+  const d = new Date(basisISO);
+  d.setMonth(d.getMonth() + (intervallMonate||12));
+  return d.toISOString().split('T')[0];
+}
+
+async function getMyWartung(){
+  const myObj = await getMyObjekte();
+  const ids = myObj.map(o=>o.id);
+  const all = await idbGetAll('wartung');
+  return all.filter(w => !w.objektId || ids.includes(w.objektId));
+}
+
+// Liefert fällige + bald fällige Wartungen (für Dashboard-Warnbox)
+async function getFaelligeWartung(vorlaufTage=30){
+  const list = await getMyWartung();
+  return list
+    .map(w => ({...w, tage: wartungTageBis(w)}))
+    .filter(w => w.tage !== null && w.tage <= vorlaufTage)
+    .sort((a,b)=>a.tage-b.tage);
+}
+
+async function renderWartung(){
+  const el = document.getElementById('page-wartung');
+  const list = (await getMyWartung()).map(w=>({...w, tage:wartungTageBis(w)}))
+    .sort((a,b)=>(a.tage??9e9)-(b.tage??9e9));
+
+  let html = `<div style="margin-bottom:14px">
+    <button class="btn btn-copper btn-full" onclick="modalAddWartung()"><i class="ti ti-plus"></i> Wartungsfrist anlegen</button>
+  </div>`;
+
+  if(!list.length){
+    html += `<div style="text-align:center;color:var(--ink-40);padding:30px 16px;font-size:13px">
+      <i class="ti ti-calendar-check" style="font-size:32px;display:block;margin-bottom:8px;opacity:.4"></i>
+      Noch keine Wartungsfristen erfasst.<br>Lege z. B. Heizung, Rauchmelder oder Legionellenprüfung an.
+    </div>`;
+  } else {
+    for(const w of list){
+      const t = wartungTyp(w.typ);
+      const obj = w.objektId ? getObj(w.objektId) : null;
+      let statusColor='var(--green)', statusText='', statusBg='';
+      if(w.tage===null){ statusColor='var(--ink-40)'; statusText='Kein Datum'; }
+      else if(w.tage<0){ statusColor='var(--red)'; statusText=`${Math.abs(w.tage)} Tage überfällig`; statusBg='var(--red-l,#fdecea)'; }
+      else if(w.tage<=30){ statusColor='var(--amber)'; statusText=`fällig in ${w.tage} Tagen`; statusBg='var(--amber-l)'; }
+      else { statusColor='var(--green)'; statusText=`fällig in ${w.tage} Tagen`; }
+      html += `<div class="card" style="margin-bottom:10px;${statusBg?`background:${statusBg}`:''}">
+        <div style="display:flex;align-items:flex-start;gap:10px">
+          <i class="ti ${t.icon}" style="font-size:22px;color:${statusColor};flex-shrink:0;margin-top:2px"></i>
+          <div style="flex:1;min-width:0">
+            <div style="font-weight:600;font-size:14px">${esc(w.titel||t.label)}</div>
+            <div style="font-size:12px;color:var(--ink-40);margin-top:2px">
+              ${obj?esc(obj.name):'Alle Objekte'} · alle ${w.intervall||12} Monate
+            </div>
+            <div style="font-size:12px;color:${statusColor};font-weight:600;margin-top:4px">
+              <i class="ti ti-calendar" style="font-size:12px"></i> ${w.faellig?fmtDate(w.faellig):'–'} ${statusText?`· ${statusText}`:''}
+            </div>
+            ${w.notiz?`<div style="font-size:12px;color:var(--ink-40);margin-top:4px">${esc(w.notiz)}</div>`:''}
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+          <button class="btn btn-sm btn-primary" onclick="wartungErledigt('${w.id}')"><i class="ti ti-check"></i> Erledigt</button>
+          <button class="btn btn-sm" onclick="modalAddWartung('${w.id}')"><i class="ti ti-edit"></i> Bearbeiten</button>
+          <button class="btn btn-sm btn-danger" style="margin-left:auto" onclick="deleteWartung('${w.id}')"><i class="ti ti-trash"></i></button>
+        </div>
+      </div>`;
+    }
+  }
+  el.innerHTML = html;
+}
+
+async function modalAddWartung(id){
+  const w = id ? await idbGet('wartung', id) : null;
+  const myObj = await getMyObjekte();
+  const titel = w ? 'Wartungsfrist bearbeiten' : 'Wartungsfrist anlegen';
+  const selTyp = w?.typ || 'heizung';
+  const html = `
+    <div class="modal-head"><h3>${titel}</h3><button class="modal-x" onclick="closeModal()">✕</button></div>
+    <div class="f"><label>Art der Wartung</label>
+      <select id="wTyp" onchange="wartungTypChange()">
+        ${WARTUNG_TYPEN.map(t=>`<option value="${t.val}" ${t.val===selTyp?'selected':''}>${t.label}</option>`).join('')}
+      </select>
+    </div>
+    <div class="f"><label>Eigene Bezeichnung (optional)</label>
+      <input type="text" id="wTitel" value="${w?esc(w.titel||''):''}" placeholder="z. B. Heizung Kyffhäuser 28"></div>
+    <div class="f"><label>Objekt</label>
+      <select id="wObjekt">
+        <option value="">Alle Objekte</option>
+        ${myObj.map(o=>`<option value="${o.id}" ${w?.objektId===o.id?'selected':''}>${esc(o.name)}</option>`).join('')}
+      </select>
+    </div>
+    <div class="f"><label>Intervall (Monate)</label>
+      <input type="number" id="wIntervall" min="1" max="120" value="${w?.intervall||wartungTyp(selTyp).intervall}"></div>
+    <div class="f"><label>Nächste Fälligkeit</label>
+      <input type="date" id="wFaellig" value="${w?.faellig||''}"></div>
+    <div class="f"><label>Notiz (optional)</label>
+      <textarea id="wNotiz" style="min-height:60px" placeholder="z. B. Firma, Vertragsnummer, Ansprechpartner">${w?esc(w.notiz||''):''}</textarea></div>
+    <div id="wHinweis" style="font-size:11px;color:var(--ink-40);line-height:1.5;margin-bottom:12px"></div>
+    <button class="btn btn-copper btn-full" onclick="saveWartung('${id||''}')">
+      <i class="ti ti-device-floppy"></i> Speichern
+    </button>`;
+  showModal(html);
+  wartungTypChange();
+}
+
+function wartungTypChange(){
+  const typ = document.getElementById('wTyp')?.value;
+  if(!typ) return;
+  const t = wartungTyp(typ);
+  const hinweisEl = document.getElementById('wHinweis');
+  if(hinweisEl) hinweisEl.textContent = t.hinweis ? 'Hinweis: '+t.hinweis : '';
+  // Intervall-Vorschlag nur setzen, wenn Feld leer oder noch Default
+  const intEl = document.getElementById('wIntervall');
+  if(intEl && (!intEl.value || intEl.dataset.auto!=='0')){ intEl.value = t.intervall; intEl.dataset.auto='1'; }
+}
+
+async function saveWartung(id){
+  const typ = document.getElementById('wTyp').value;
+  const titel = document.getElementById('wTitel').value.trim();
+  const objektId = document.getElementById('wObjekt').value || null;
+  const intervall = parseInt(document.getElementById('wIntervall').value,10) || wartungTyp(typ).intervall;
+  const faellig = document.getElementById('wFaellig').value;
+  const notiz = document.getElementById('wNotiz').value.trim();
+  if(!faellig){ toast('Bitte Fälligkeitsdatum angeben'); return; }
+  const existing = id ? await idbGet('wartung', id) : null;
+  const w = {
+    id: id || uid(),
+    typ, titel: titel || wartungTyp(typ).label,
+    objektId, intervall, faellig, notiz,
+    erstellt: existing?.erstellt || now(),
+    historie: existing?.historie || [],
+  };
+  await idbPut('wartung', w);
+  closeModal();
+  clearTimeout(window._syncTimer);
+  window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
+  await renderWartung();
+  if(curPage==='dash') await renderDash();
+  toast('Wartungsfrist gespeichert ✓');
+}
+
+async function wartungErledigt(id){
+  const w = await idbGet('wartung', id);
+  if(!w) return;
+  if(!confirm(`Wartung "${w.titel}" als erledigt markieren? Die nächste Fälligkeit wird automatisch berechnet.`)) return;
+  // Historie pflegen, nächste Fälligkeit ab heute berechnen
+  w.historie = w.historie || [];
+  w.historie.push({ erledigtAm: today(), war: w.faellig, von: CU?.name||'' });
+  w.faellig = wartungNaechste(today(), w.intervall);
+  await idbPut('wartung', w);
+  clearTimeout(window._syncTimer);
+  window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
+  await renderWartung();
+  if(curPage==='dash') await renderDash();
+  toast(`Erledigt ✓ – nächste Fälligkeit: ${fmtDate(w.faellig)}`);
+}
+
+async function deleteWartung(id){
+  if(!confirm('Wartungsfrist wirklich löschen?')) return;
+  await idbDelete('wartung', id);
+  clearTimeout(window._syncTimer);
+  window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
+  await renderWartung();
+  if(curPage==='dash') await renderDash();
+  toast('Wartungsfrist gelöscht');
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -2429,6 +2663,11 @@ function setArchivFilter(key, val, btn) {
 async function deleteProtokoll(id) {
   if (!confirm('Protokoll wirklich löschen?')) return;
   await idbDelete('protokolle', id);
+  // verknüpfte Einzelfoto-Sicherungen mit entfernen
+  try {
+    const tmp = await idbGetAll('fotos', 'protId', id);
+    for (const fo of tmp) await idbDelete('fotos', fo.id).catch(()=>{});
+  } catch(e) { console.warn('Foto-Aufräumung (Löschung):', e); }
   clearTimeout(window._syncTimer);
   window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
   await renderProtokollArchiv();
@@ -4583,13 +4822,63 @@ async function modalAddMangel(mieterId,objektId,type='mangel'){
     </div>
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="saveMangel('${type}')"><i class="ti ti-check"></i> Speichern</button>
-      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-full" onclick="cancelMangel()">Abbrechen</button>
     </div>`);
 
   window._mangelPhotos=[];
+  window._mangelSession='mangel_'+Date.now();
+  // Eventuell aus abgebrochener Sitzung verbliebene Fotos anbieten
+  restoreMangelFotos();
   }
 
+// Stellt Fotos einer unterbrochenen Mangel-Erfassung wieder her
+async function restoreMangelFotos(){
+  let offen = [];
+  try { offen = await idbGetAll('fotos', 'protId', '__mangel_offen__'); } catch(e){ return; }
+  if(!offen.length) return;
+  if(!confirm(`Es liegen ${offen.length} Foto(s) aus einer nicht abgeschlossenen Mangel-Erfassung vor. Übernehmen?`)){
+    // Verworfen: aufräumen
+    for(const fo of offen) await idbDelete('fotos', fo.id).catch(()=>{});
+    return;
+  }
+  window._mangelPhotos = offen.map(f=>f.data);
+  window._mangelFotoIds = offen.map(f=>f.id);
+  const grid = document.getElementById('mgPhotoGrid');
+  if(grid){
+    grid.style.display='grid';
+    grid.innerHTML = window._mangelPhotos.map((p,i) =>
+      '<div class="ph-thumb"><img src="'+p+'"><button class="ph-del" onclick="delMangelFoto('+i+')">'+String.fromCharCode(10005)+'</button></div>'
+    ).join('');
+  }
+}
+
+function delMangelFoto(i){
+  window._mangelPhotos.splice(i,1);
+  if(window._mangelFotoIds && window._mangelFotoIds[i]){
+    idbDelete('fotos', window._mangelFotoIds[i]).catch(()=>{});
+    window._mangelFotoIds.splice(i,1);
+  }
+  const grid=document.getElementById('mgPhotoGrid');
+  if(grid){
+    grid.innerHTML = window._mangelPhotos.map((p,idx) =>
+      '<div class="ph-thumb"><img src="'+p+'"><button class="ph-del" onclick="delMangelFoto('+idx+')">'+String.fromCharCode(10005)+'</button></div>'
+    ).join('');
+    if(!window._mangelPhotos.length) grid.style.display='none';
+  }
+}
+
 function openPhotoForMangel(){pPhotoRoom=null;window._mangelPhotos=window._mangelPhotos||[];document.getElementById('photoIn').value='';document.getElementById('photoIn').click();}
+
+async function cancelMangel(){
+  // Verworfene Mangel-Erfassung: temporäre Fotos aufräumen
+  try {
+    const offen = await idbGetAll('fotos', 'protId', '__mangel_offen__');
+    for(const fo of offen) await idbDelete('fotos', fo.id).catch(()=>{});
+  } catch(e){}
+  window._mangelFotoIds = [];
+  window._mangelPhotos = [];
+  closeModal();
+}
 
 async function saveMangel(type){
   const titel=document.getElementById('mgTitel').value.trim();
@@ -4609,6 +4898,12 @@ async function saveMangel(type){
   };
   const store=type==='reparatur'?'reparaturen':'maengel';
   await idbPut(store,entry);
+  // Temporäre Einzelfoto-Sicherungen der Mangel-Erfassung aufräumen
+  try {
+    const offen = await idbGetAll('fotos', 'protId', '__mangel_offen__');
+    for(const fo of offen) await idbDelete('fotos', fo.id).catch(()=>{});
+  } catch(e){}
+  window._mangelFotoIds = [];
   closeModal(); bcSend('mangel_changed',{});
   await refreshAufgaben(); await renderDash();
   if(curPage==='objekt') await renderObjTab(type==='reparatur'?'maengel':'maengel');
@@ -4696,6 +4991,41 @@ async function loadMieterForProt(objId){
       .map(m=>`<option value="${m.id}">${m.mieter} (WE ${m.weNr})</option>`).join('');
 }
 
+// Spielt einzeln gesicherte Fotos zurück in PD, falls ein Gesamt-Update zuvor
+// abgebrochen wurde (z. B. OS-Kill nach Kamera-Nutzung). Ergänzt nur Fehlendes.
+async function restoreFotosForPD(){
+  if (!PD || !PD.id) return;
+  let fotos = [];
+  try { fotos = await idbGetAll('fotos', 'protId', PD.id); } catch(e){ console.warn('Foto-Wiederherstellung:', e); return; }
+  if (!fotos.length) return;
+  let ergaenzt = false;
+  for (const fo of fotos) {
+    if (!fo || !fo.slot || !fo.data) continue;
+    if (fo.slot.startsWith('room:')) {
+      const room = fo.slot.slice(5);
+      if (PD.raeume && PD.raeume[room]) {
+        PD.raeume[room].photoIds = PD.raeume[room].photoIds || [];
+        if (!PD.raeume[room].photoIds.includes(fo.id)) {
+          PD.raeume[room].photos = PD.raeume[room].photos || [];
+          PD.raeume[room].photos.push(fo.data);
+          PD.raeume[room].photoIds.push(fo.id);
+          ergaenzt = true;
+        }
+      }
+    } else if (fo.slot.startsWith('zaehler:')) {
+      const idx = parseInt(fo.slot.slice(8), 10);
+      if (PD.zaehler && PD.zaehler[idx] && PD.zaehler[idx].fotoId !== fo.id && !PD.zaehler[idx].foto) {
+        PD.zaehler[idx].foto = fo.data;
+        PD.zaehler[idx].fotoId = fo.id;
+        ergaenzt = true;
+      }
+    }
+  }
+  if (ergaenzt) {
+    try { await idbPut('protokolle', PD); } catch(e){ console.warn('Draft nach Wiederherstellung:', e); }
+  }
+}
+
 async function startProt(){
   const objId=document.getElementById('pObjSel').value;
   const mietId=document.getElementById('pMietSel').value||null;
@@ -4709,6 +5039,7 @@ async function startProt(){
     const step=draft._draftStep||0;
     if(confirm(`Es gibt einen gespeicherten Entwurf vom ${fmtDate(draft.datum)} (Schritt ${step+1}). Fortfahren?`)){
       PD={...draft};
+      await restoreFotosForPD();
       renderProt(step);
       return;
     }
@@ -4833,7 +5164,7 @@ function getProtStep(step){
         </div>
         ${z.foto ? `<div style="position:relative;width:80px;height:60px;border-radius:6px;overflow:hidden;border:1px solid var(--ink-10);margin-top:6px">
           <img src="${z.foto}" style="width:100%;height:100%;object-fit:cover">
-          <button class="ph-del" onclick="PD.zaehler[${i}].foto='';renderProt(2)">✕</button>
+          <button class="ph-del" onclick="delZaehlerFoto(${i})">✕</button>
         </div>` : `<button class="btn btn-sm" style="margin-top:6px" onclick="openZaehlerCam(${i})">
           <i class="ti ti-camera"></i> Foto
         </button>`}
@@ -4987,7 +5318,26 @@ function setRoomCondNote(room,cond,val){
 }
 function openRoomCam(room){pPhotoRoom=room;window._zaehlerIdx=null;document.getElementById('photoIn').value='';document.getElementById('photoIn').click();}
 function openZaehlerCam(idx){window._zaehlerIdx=idx;pPhotoRoom=null;document.getElementById('photoIn').value='';document.getElementById('photoIn').click();}
-function delRoomPhoto(room,idx){PD.raeume[room].photos.splice(idx,1);renderProtRaeume();}
+function delZaehlerFoto(i){
+  if (!PD || !PD.zaehler || !PD.zaehler[i]) return;
+  const fid = PD.zaehler[i].fotoId;
+  PD.zaehler[i].foto = '';
+  PD.zaehler[i].fotoId = null;
+  if (fid) idbDelete('fotos', fid).catch(e=>console.warn('Zählerfoto-Löschung:', e));
+  idbPut('protokolle', PD).catch(e=>console.warn('Draft nach Zählerfoto-Löschung:', e));
+  renderProt(2);
+}
+function delRoomPhoto(room,idx){
+  const rd = PD.raeume[room];
+  rd.photos.splice(idx,1);
+  if (rd.photoIds && rd.photoIds[idx]) {
+    const fid = rd.photoIds[idx];
+    rd.photoIds.splice(idx,1);
+    idbDelete('fotos', fid).catch(e=>console.warn('Foto-Löschung:', e));
+  }
+  idbPut('protokolle', PD).catch(e=>console.warn('Draft nach Foto-Löschung:', e));
+  renderProtRaeume();
+}
 
 function buildMangelSummary(){
   let h='';
@@ -5078,6 +5428,11 @@ async function finishProt(){
   });
   PD.status='fertig';PD.abgeschlossenAm=now();
   await idbPut('protokolle',PD);
+  // Temporäre Einzelfoto-Sicherungen aufräumen (sind jetzt final im Protokoll enthalten)
+  try {
+    const tmp = await idbGetAll('fotos', 'protId', PD.id);
+    for (const fo of tmp) await idbDelete('fotos', fo.id).catch(()=>{});
+  } catch(e) { console.warn('Foto-Aufräumung:', e); }
   // Auto-Mängel aus Protokoll speichern
   if(PD._autoMaengel?.length){
     for(const m of PD._autoMaengel) await idbPut('maengel',m);
@@ -5097,6 +5452,7 @@ async function editProtokoll(id){
   const p=await idbGet('protokolle',id);
   if(!p) return;
   PD={...p};pRoomIdx=0;
+  if(p.status==='draft') await restoreFotosForPD();
   const step = p.status==='draft' ? (p._draftStep||0) : 0;
   renderProt(step);
 }
@@ -5318,6 +5674,14 @@ async function renderSettings(){
     </div>
 
     <div class="card">
+      <div class="card-hdr"><i class="ti ti-calendar-stats"></i> Wartungsfristen</div>
+      <p style="font-size:13px;color:var(--ink-40);margin-bottom:12px;line-height:1.6">
+        Wiederkehrende Fristen wie Heizungswartung, Rauchmelder-Prüfung oder Legionellenuntersuchung verwalten. Fällige Termine erscheinen automatisch im Dashboard.
+      </p>
+      <button class="btn btn-primary btn-full" onclick="nav('wartung')"><i class="ti ti-calendar-stats"></i> Wartungsfristen öffnen</button>
+    </div>
+
+    <div class="card">
       <div class="card-hdr"><i class="ti ti-file-spreadsheet"></i> Mieterdaten (Excel-Import)</div>
       <p style="font-size:13px;color:var(--ink-40);margin-bottom:12px;line-height:1.6">
         Excel-Datei (.xlsm) hochladen um Mieter- und Objektdaten zu aktualisieren. Bestehende Protokolle, Aufgaben und Mängel bleiben erhalten.
@@ -5503,7 +5867,7 @@ async function delUser(id){
 ═══════════════════════════════════════════════════════════ */
 async function exportBackup(){
   const backup={};
-  for(const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine']){
+  for(const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung']){
     backup[s]=await idbGetAll(s);
   }
   backup.exportedAt=now();backup.version=2;
@@ -5521,7 +5885,7 @@ async function importBackup(input){
   reader.onload=async function(e){
     try{
       const backup=JSON.parse(e.target.result);
-      for(const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine']){
+      for(const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung']){
         if(backup[s]){
           await idbClear(s);
           for(const item of backup[s]) await idbPut(s,item);
@@ -5722,7 +6086,7 @@ async function syncToOneDrive() {
   setSyncStatus('pending');
   try {
     const backup = {};
-    for (const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine']) {
+    for (const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung']) {
       backup[s] = await idbGetAll(s);
     }
     backup.updatedAt = now();
@@ -5737,6 +6101,7 @@ async function syncToOneDrive() {
     });
     if (!r.ok) throw new Error('HTTP '+r.status);
     lastSyncHash = hash;
+    try { await idbPut('settings', { id:'lastSync', value: new Date().toISOString() }); } catch(e){}
     setSyncStatus('ok');
   } catch(e) {
     console.warn('Sync Upload:', e);
@@ -5761,7 +6126,7 @@ async function syncFromOneDrive() {
     const localTime  = ls?.value||'';
     if (remoteTime > localTime) {
       // Merge: Protokolle/Aufgaben/Mängel niemals überschreiben wenn lokal neuer
-      const mergeStores = ['protokolle','aufgaben','maengel','reparaturen','dokumente','nka_archiv','einkaufsliste'];
+      const mergeStores = ['protokolle','aufgaben','maengel','reparaturen','dokumente','nka_archiv','einkaufsliste','wartung'];
       for (const s of mergeStores) {
         if (!backup[s]) continue;
         for (const item of backup[s]) {
@@ -5849,6 +6214,10 @@ function closeModal(){
    UTILS
 ═══════════════════════════════════════════════════════════ */
 function uid(){return 'id_'+Date.now()+'_'+Math.random().toString(36).slice(2,7);}
+function esc(v){
+  if(v===null||v===undefined) return '';
+  return String(v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
 function today(){return new Date().toISOString().split('T')[0];}
 function now(){return new Date().toLocaleString('de-DE');}
 function fmtDate(v){
@@ -5878,6 +6247,7 @@ const _nav=nav;
 window.nav=async function(id,title,sub,push=true){
   _nav(id,title,sub,push);
   if(id==='aufgaben')          await renderAufgaben();
+  if(id==='wartung')           await renderWartung();
   if(id==='settings')          await renderSettings();
   if(id==='protokoll-archiv')  await renderProtokollArchiv();
   if(id==='kalender')          await renderKalender();
@@ -6268,29 +6638,60 @@ document.getElementById('photoIn').addEventListener('change', async function() {
 
     if (pPhotoRoom) {
       if (PD && PD.raeume && PD.raeume[pPhotoRoom]) {
+        // 1. Foto SOFORT einzeln sichern (kleiner, schneller Schreibvorgang)
+        const fotoId = uid();
+        try {
+          await idbPut('fotos', { id: fotoId, protId: PD.id, slot: 'room:'+pPhotoRoom, data, erstellt: now() });
+        } catch(e) { console.warn('Einzelfoto-Sicherung:', e); toast('Foto konnte nicht gesichert werden – bitte erneut'); continue; }
+        // 2. Ins Protokoll einfügen (mit ID-Verknüpfung) und Gesamt-Entwurf nachziehen
         PD.raeume[pPhotoRoom].photos.push(data);
+        PD.raeume[pPhotoRoom].photoIds = PD.raeume[pPhotoRoom].photoIds || [];
+        PD.raeume[pPhotoRoom].photoIds.push(fotoId);
         PD.status = 'draft';
-        idbPut('protokolle', PD).catch(e=>console.warn('Draft nach Foto:', e));
+        try { await idbPut('protokolle', PD); } catch(e){ console.warn('Draft nach Foto:', e); }
         renderProtRaeume();
       }
     } else if (window._zaehlerIdx !== null && window._zaehlerIdx !== undefined) {
       if (PD && PD.zaehler && PD.zaehler[window._zaehlerIdx] !== undefined) {
-        PD.zaehler[window._zaehlerIdx].foto = data;
+        const idx = window._zaehlerIdx;
+        const fotoId = uid();
+        try {
+          await idbPut('fotos', { id: fotoId, protId: PD.id, slot: 'zaehler:'+idx, data, erstellt: now() });
+        } catch(e) { console.warn('Einzelfoto-Sicherung:', e); toast('Foto konnte nicht gesichert werden – bitte erneut'); window._zaehlerIdx = null; continue; }
+        PD.zaehler[idx].foto = data;
+        PD.zaehler[idx].fotoId = fotoId;
         PD.status = 'draft';
-        idbPut('protokolle', PD).catch(e=>console.warn('Draft nach Zählerfoto:', e));
+        try { await idbPut('protokolle', PD); } catch(e){ console.warn('Draft nach Zählerfoto:', e); }
         renderProt(2);
       }
       window._zaehlerIdx = null;
     } else if (Array.isArray(window._mangelPhotos)) {
+      // Foto sofort einzeln sichern (überlebt OS-Reload während Mangel-Erfassung)
+      const fid = uid();
+      window._mangelFotoIds = window._mangelFotoIds || [];
+      try {
+        await idbPut('fotos', { id: fid, protId: '__mangel_offen__', slot: 'mangel', data, erstellt: now() });
+        window._mangelFotoIds.push(fid);
+      } catch(e) { console.warn('Mangel-Foto-Sicherung:', e); }
       window._mangelPhotos.push(data);
       const grid = document.getElementById('mgPhotoGrid');
       if (grid) {
         grid.style.display = 'grid';
         grid.innerHTML = window._mangelPhotos.map((p,i) =>
-          '<div class="ph-thumb"><img src="'+p+'"><button class="ph-del" onclick="window._mangelPhotos.splice('+i+',1);this.parentNode.remove()">'+String.fromCharCode(10005)+'</button></div>'
+          '<div class="ph-thumb"><img src="'+p+'"><button class="ph-del" onclick="delMangelFoto('+i+')">'+String.fromCharCode(10005)+'</button></div>'
         ).join('');
       }
     }
+  }
+});
+
+// Sicherheitsnetz: aktuellen Protokoll-Entwurf sichern, sobald die App in den
+// Hintergrund geht (z. B. beim Öffnen der Kamera). Schützt vor Datenverlust,
+// falls das Betriebssystem die App entlädt, bevor regulär gespeichert wurde.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden' && PD && PD.id) {
+    PD.status = 'draft';
+    idbPut('protokolle', PD).catch(e => console.warn('Auto-Sicherung (hidden):', e));
   }
 });
 
