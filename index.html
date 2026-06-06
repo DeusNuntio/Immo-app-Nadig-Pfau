@@ -927,8 +927,9 @@ async function initApp(){
 ═══════════════════════════════════════════════════════════ */
 async function renderDash() {
   const myObj = await getMyObjekte();
+  await aktiviereFaelligeMieterwechsel();
   const allMieter = await idbGetAll('mieter');
-  const myMieter  = allMieter.filter(m => myObj.some(o => o.id === m.objektId));
+  const myMieter  = allMieter.filter(m => myObj.some(o => o.id === m.objektId) && !m._vormieter && !m._zukuenftig);
   const aufgaben  = await idbGetAll('aufgaben');
   const maengel   = await idbGetAll('maengel');
   const prots     = await idbGetAll('protokolle');
@@ -1131,12 +1132,48 @@ async function renderObjTab(t){
   if(t==='nka')        await renderNKAArchiv(el, currentObjId);
 }
 
+// Prüft alle Objekte/Mieter auf fällige Mieterwechsel (Mietbeginn erreicht)
+// und führt sie automatisch durch. Idempotent – mehrfacher Aufruf schadet nicht.
+async function aktiviereFaelligeMieterwechsel() {
+  try {
+    const heute = new Date(); heute.setHours(0,0,0,0);
+    const alle = await idbGetAll('mieter');
+    const zukunft = alle.filter(m=>m._zukuenftig && m.einzugISO);
+    let geaendert = false;
+    for (const neu of zukunft) {
+      const start = new Date(neu.einzugISO); start.setHours(0,0,0,0);
+      if (start > heute) continue; // noch nicht fällig
+      // Wechsel durchführen
+      const alt = neu._ersetztMieterId ? alle.find(m=>m.id===neu._ersetztMieterId) : null;
+      if (alt && !alt._vormieter) {
+        await mieterZuVormieter(alt, neu);
+      }
+      delete neu._zukuenftig;
+      neu._vormieterId = alt?.id || neu._vormieterId || null;
+      await idbPut('mieter', neu);
+      geaendert = true;
+    }
+    if (geaendert) {
+      clearTimeout(window._syncTimer);
+      window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
+    }
+    return geaendert;
+  } catch(e) { console.warn('Mieterwechsel-Prüfung:', e); return false; }
+}
+
 async function renderObjMieter(el){
-  const mieter=(await idbGetAll('mieter','objektId',currentObjId))
+  await aktiviereFaelligeMieterwechsel();
+  const all=(await idbGetAll('mieter','objektId',currentObjId));
+  // Aktive Mieter (kein Vormieter, nicht zukünftig)
+  const mieter = all.filter(m=>!m._vormieter && !m._zukuenftig)
     .sort((a,b)=>Number(a.weNr)-Number(b.weNr));
-  if(!mieter.length){
-    el.innerHTML=`<div class="empty"><i class="ti ti-user-off"></i><p>Keine Mieterdaten vorhanden.<br>Bitte Excel importieren.</p></div>
-      <button class="btn btn-primary btn-full" style="margin-top:12px" onclick="nav('settings')"><i class="ti ti-upload"></i> Excel importieren</button>`;
+  // Zukünftige Mieter separat
+  const zukuenftig = all.filter(m=>m._zukuenftig)
+    .sort((a,b)=>new Date(a.einzugISO||0)-new Date(b.einzugISO||0));
+  if(!mieter.length && !zukuenftig.length){
+    el.innerHTML=`<div class="empty"><i class="ti ti-user-off"></i><p>Keine Mieterdaten vorhanden.<br>Bitte Excel importieren oder neuen Mieter anlegen.</p></div>
+      <button class="btn btn-copper btn-full" style="margin-top:12px" onclick="modalAddMieter('${currentObjId}')"><i class="ti ti-user-plus"></i> Neuer Mieter</button>
+      <button class="btn btn-primary btn-full" style="margin-top:8px" onclick="nav('settings')"><i class="ti ti-upload"></i> Excel importieren</button>`;
     return;
   }
   // Grundrisse laden
@@ -1166,6 +1203,21 @@ async function renderObjMieter(el){
       <div class="m-we">WE ${m.weNr}</div>
     </div>`;
   });
+  // Zukünftige Mieter unten als eigener Abschnitt
+  if(zukuenftig.length){
+    h+=`<div class="card-hdr" style="margin:16px 0 8px"><i class="ti ti-user-clock"></i> Zukünftige Mieter (${zukuenftig.length})</div>`;
+    zukuenftig.forEach(m=>{
+      const ini=initials(m.mieter);
+      h+=`<div class="mieter-row" style="border-style:dashed;background:var(--ink-02)" onclick="showMieter('${m.id}')">
+        <div class="m-avatar" style="background:var(--amber)">${ini}</div>
+        <div class="m-body">
+          <div class="m-name"><span class="chip chip-warn" style="font-size:10px;margin-right:4px"><i class="ti ti-clock" style="font-size:9px"></i> ab ${m.einzug}</span> ${m.mieter}</div>
+          <div class="m-sub">${m.etage||''} · WE ${m.weNr}</div>
+        </div>
+        <div class="m-we">WE ${m.weNr}</div>
+      </div>`;
+    });
+  }
   el.innerHTML=h;
 }
 
@@ -1236,6 +1288,12 @@ async function showMieter(id){
         <div class="det-we">${obj?.name||''} · WE ${m.weNr} · ${m.etage||''}${m.leerstand?' · \u26A0 LEERSTAND':''}</div>
       </div>
     </div>
+    ${m._zukuenftig?`<div style="background:var(--amber-l);border-radius:8px;padding:8px 12px;margin-top:8px;font-size:12px;color:var(--amber)">
+      <i class="ti ti-user-clock"></i> Zukünftiger Mieter – aktiv ab ${m.einzug}. Rückt automatisch in die Übersicht auf, sobald der Mietbeginn erreicht ist.
+    </div>`:''}
+    ${m._vormieter?`<div style="background:var(--ink-05);border-radius:8px;padding:8px 12px;margin-top:8px;font-size:12px;color:var(--ink-60)">
+      <i class="ti ti-history"></i> Ehemaliger Mieter (ausgezogen${m.auszug?' am '+m.auszug:''}).${m.neueAdresse?' Neue Anschrift: '+m.neueAdresse:''}
+    </div>`:''}
     <div class="det-grid">
       ${CU?.role==='admin'?`<div class="det-field"><label>Miete</label><span>${fmtEur(m.miete)}</span></div>
       <div class="det-field"><label>NK-Vorauszahlung</label><span>${fmtEur(m.nk)}</span></div>
@@ -1263,9 +1321,11 @@ async function showMieter(id){
     <button class="btn btn-sm" onclick="modalAddReparatur('${m.id}','${m.objektId}')"><i class="ti ti-tools"></i> Reparatur</button>
     <button class="btn btn-sm" onclick="modalEditMieter('${m.id}')"><i class="ti ti-pencil"></i> Bearbeiten</button>
     ${CU?.role==='admin'?`<button class="btn btn-sm btn-copper" onclick="modalMieterhoehung('${m.id}')"><i class="ti ti-trending-up"></i> Mieterhöhung</button>`:''}
-    <button class="btn btn-sm" onclick="showMieterDokumente('${m.id}')"><i class="ti ti-paperclip"></i> Dokumente</button>
+    <button class="btn btn-sm" onclick="showMieterDokumente('${m.id}')"><i class="ti ti-paperclip"></i> Archiv & Dokumente</button>
     <button class="btn btn-sm" onclick="druckeWohnungsgeberBescheinigung('${m.id}')"><i class="ti ti-file-certificate"></i> WGB</button>
     <button class="btn btn-sm" onclick="modalBrief('${m.id}','${m.objektId}')"><i class="ti ti-mail"></i> Brief</button>
+    ${m._vormieterId?`<button class="btn btn-sm" onclick="zeigeVormieter('${m._vormieterId}')"><i class="ti ti-history"></i> Vormieter</button>`:''}
+    ${m._vormieter?`<button class="btn btn-sm" onclick="modalNeueAdresse('${m.id}')"><i class="ti ti-map-pin"></i> Neue Anschrift</button>`:''}
     <button class="btn btn-sm btn-danger" onclick="deleteMieterConfirm('${m.id}')"><i class="ti ti-trash"></i></button>
   </div>`;
 
@@ -1807,8 +1867,64 @@ const DOK_TYPEN = [
   {val:'ausweis', label:'Ausweisdokument',      icon:'ti-id'},
   {val:'vertrag', label:'Mietvertrag',          icon:'ti-file-text'},
   {val:'abrechnung',label:'Abrechnung',         icon:'ti-receipt'},
+  {val:'nka',     label:'Nebenkostenabrechnung',icon:'ti-receipt-2'},
+  {val:'brief',   label:'Schreiben / Brief',    icon:'ti-mail'},
+  {val:'mieterhoehung',label:'Mieterhöhung',    icon:'ti-trending-up'},
+  {val:'wgb',     label:'Wohnungsgeberbescheinigung',icon:'ti-file-certificate'},
+  {val:'protokoll',label:'Übergabeprotokoll',   icon:'ti-clipboard-check'},
   {val:'sonstiges',label:'Sonstiges',           icon:'ti-paperclip'},
 ];
+
+/* ═══════════════════════════════════════════════════════════
+   MIETER-ARCHIV: erzeugte Schreiben automatisch beim Mieter ablegen
+   Speichert generiertes HTML als druckbares Dokument im 'dokumente'-Store
+   (vorhandener mieterId-Index). So bleibt jedes Schreiben pro Mieter
+   abrufbar und weiterleitbar – auch für ausgezogene (Vor-)Mieter.
+═══════════════════════════════════════════════════════════ */
+async function archiviereMieterDokument({mieterId, objektId, typ, name, html, mimeType}) {
+  if (!mieterId) return null;
+  try {
+    const entry = {
+      id: uid(),
+      objektId: objektId || null,
+      mieterId,
+      typ: typ || 'sonstiges',
+      name: name || 'Dokument',
+      erstellt: now(),
+      ersteller: CU?.name || '',
+      mimeType: mimeType || (html ? 'text/html' : 'application/octet-stream'),
+    };
+    if (html) {
+      // HTML als selbsttragendes, druckbares Dokument als Data-URL ablegen
+      entry.data = 'data:text/html;charset=utf-8,' + encodeURIComponent(html);
+      entry.size = new Blob([html]).size;
+      entry.istHtml = true;
+    }
+    await idbPut('dokumente', entry);
+    clearTimeout(window._syncTimer);
+    window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
+    return entry.id;
+  } catch (e) {
+    console.warn('Archivierung fehlgeschlagen:', e);
+    return null;
+  }
+}
+
+// Archiviertes HTML-Dokument in neuem Fenster öffnen (Ansicht / Druck / Weiterleitung)
+async function openArchivDok(id) {
+  const d = await idbGet('dokumente', id);
+  if (!d || !d.data) return;
+  if (d.istHtml) {
+    const html = decodeURIComponent(d.data.replace(/^data:text\/html;charset=utf-8,/, ''));
+    const ok = printViaIframe(html);
+    if (!ok) {
+      const win = window.open('', '_blank');
+      if (win) { win.document.write(html); win.document.close(); }
+    }
+  } else {
+    downloadDok(id);
+  }
+}
 
 async function renderDokumente(el, objektId, mieterId) {
   const alle = await idbGetAll('dokumente');
@@ -1839,17 +1955,19 @@ async function renderDokumente(el, objektId, mieterId) {
     list.forEach(d => {
       const isImg = d.mimeType?.startsWith('image/');
       const isPdf = d.mimeType === 'application/pdf';
+      const isHtmlDok = d.istHtml === true;
       h += `<div style="background:var(--white);border:1px solid var(--ink-10);border-radius:var(--radius);padding:10px 12px;margin-bottom:6px;display:flex;gap:10px;align-items:center">
         <div style="width:38px;height:38px;border-radius:8px;background:var(--ink-05);display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:18px;color:var(--copper)">
-          <i class="ti ${isImg?'ti-photo':isPdf?'ti-file-type-pdf':'ti-file'}"></i>
+          <i class="ti ${isImg?'ti-photo':isPdf?'ti-file-type-pdf':isHtmlDok?typ.icon:'ti-file'}"></i>
         </div>
         <div style="flex:1;min-width:0">
           <div style="font-size:13px;font-weight:600;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${d.name}</div>
-          <div style="font-size:11px;color:var(--ink-40);margin-top:1px">${d.erstellt||''} · ${fmtBytes(d.size||0)}</div>
+          <div style="font-size:11px;color:var(--ink-40);margin-top:1px">${d.erstellt||''} · ${isHtmlDok?'Schreiben':fmtBytes(d.size||0)}</div>
           ${d.notiz?`<div style="font-size:11px;color:var(--ink-60);margin-top:2px;font-style:italic">${d.notiz}</div>`:''}
         </div>
         <div style="display:flex;gap:5px;flex-shrink:0">
           ${isImg?`<button class="btn btn-sm" onclick="openFoto('${d.id}','dok')"><i class="ti ti-eye"></i></button>`:''}
+          ${isHtmlDok?`<button class="btn btn-sm" onclick="openArchivDok('${d.id}')" title="Öffnen / Drucken / Weiterleiten"><i class="ti ti-eye"></i></button>`:''}
           <button class="btn btn-sm" onclick="downloadDok('${d.id}')"><i class="ti ti-download"></i></button>
           <button class="btn btn-sm btn-danger" onclick="deleteDok('${d.id}')"><i class="ti ti-trash"></i></button>
         </div>
@@ -2082,7 +2200,7 @@ async function modalNKA(objektId) {
   const vorlage  = getNKAVorlage(objektId);
   if (!vorlage) { toast('Keine NKA-Vorlage für dieses Objekt'); return; }
   const mieter   = (await idbGetAll('mieter','objektId',objektId))
-    .filter(m=>m.mieter).sort((a,b)=>Number(a.weNr)-Number(b.weNr));
+    .filter(m=>m.mieter && !m._vormieter && !m._zukuenftig).sort((a,b)=>Number(a.weNr)-Number(b.weNr));
   const anzahlWE = mieter.length;
 
   let kostenHTML = vorlage.kosten.map(k => {
@@ -2170,7 +2288,7 @@ async function erstelleNKA(objektId) {
   const bk      = getBriefkopf(objektId);
 
   const mieter = (await idbGetAll('mieter','objektId',objektId))
-    .filter(m=>m.mieter).sort((a,b)=>Number(a.weNr)-Number(b.weNr));
+    .filter(m=>m.mieter && !m._vormieter && !m._zukuenftig).sort((a,b)=>Number(a.weNr)-Number(b.weNr));
 
   // Gesamtanteile
   const gesamtWFL      = mieter.reduce((s,m)=>s+(parseFloat(m.flaeche)||0),0)*12;
@@ -2440,11 +2558,7 @@ async function erstelleNKA(objektId) {
   window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
   toast('NKA gespeichert und wird gedruckt...');
 
-  // PDF-Fenster öffnen
-  const win = window.open('', '_blank');
-  if (!win) { toast('Popup blockiert'); return; }
-
-  win.document.write(`<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8">
+  const nkaHtml = `<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8">
 <title>Nebenkostenabrechnung ${jahr} – ${obj?.name}</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
@@ -2542,7 +2656,22 @@ h2{font-size:11px;font-weight:700;color:#1F4E79}
 ${briefeHTML}
 
 <scr` + `ipt>window.onload=()=>setTimeout(()=>window.print(),700)</scr` + `ipt>
-</body></html>`);
+</body></html>`;
+
+  // Pro Mieter im Archiv ablegen (auch für ausgezogene/Vormieter abrufbar)
+  for (const {m} of mieterErgebnisse) {
+    await archiviereMieterDokument({
+      mieterId: m.id, objektId,
+      typ: 'nka',
+      name: `Nebenkostenabrechnung ${jahr} – ${obj?.name||''}`,
+      html: nkaHtml,
+    });
+  }
+
+  // PDF-Fenster öffnen
+  const win = window.open('', '_blank');
+  if (!win) { toast('Popup blockiert – Abrechnung wurde im Archiv gespeichert'); return; }
+  win.document.write(nkaHtml);
   win.document.close();
 }
 
@@ -2776,9 +2905,8 @@ async function druckeWohnungsgeberBescheinigung(mieterId) {
   }
 
   const win = window.open('', '_blank');
-  if (!win) { toast('Popup blockiert'); return; }
 
-  win.document.write(`<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8">
+  const wgbHtml = `<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8">
 <title>Wohnungsgeberbescheinigung – ${m.mieter}</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
@@ -2864,7 +2992,17 @@ oder zur Verfügung zu stellen, obwohl ein tatsächlicher Bezug der Wohnung wede
 </div>
 
 <scr` + `ipt>window.onload=()=>setTimeout(()=>window.print(),500)</scr` + `ipt>
-</body></html>`);
+</body></html>`;
+
+  await archiviereMieterDokument({
+    mieterId: m.id, objektId: m.objektId,
+    typ: 'wgb',
+    name: `Wohnungsgeberbescheinigung – ${heute}`,
+    html: wgbHtml,
+  });
+
+  if (!win) { toast('WGB archiviert – Popup blockiert'); return; }
+  win.document.write(wgbHtml);
   win.document.close();
 }
 
@@ -2992,7 +3130,7 @@ async function modalBrief(mieterId, objektId) {
     if (m) mieter = [m];
   } else if (objektId) {
     mieter = (await idbGetAll('mieter','objektId',objektId))
-      .filter(m=>m.mieter).sort((a,b)=>Number(a.weNr)-Number(b.weNr));
+      .filter(m=>m.mieter && !m._vormieter && !m._zukuenftig).sort((a,b)=>Number(a.weNr)-Number(b.weNr));
   }
   const myObj = await getMyObjekte();
 
@@ -3080,9 +3218,10 @@ async function druckeBrief(mieterId, objektId) {
 
   // Mehrere Empfänger = mehrere Seiten
   let briefeHTML = '';
+  const briefSeiten = []; // {m, pageHTML} je Empfänger für Archivierung
   for (const m of empfaenger) {
     const empfAnrede = empfSel === 'all' ? getAnrede(m) : anrede;
-    briefeHTML += `
+    const pageHTML = `
     <div class="page">
       <div class="bk-box">
         <div class="bk-left">
@@ -3104,9 +3243,9 @@ async function druckeBrief(mieterId, objektId) {
           <div style="font-size:7px;color:#999;text-decoration:underline;margin-bottom:2mm">${abs.name}${abs.strasse?' · '+abs.strasse+' · '+abs.ort:''}</div>
           <div style="font-size:10px;line-height:1.7">
             <strong>${m.mieter}</strong><br>
-            ${obj?.name||m.objekt||''}<br>
+            ${m._vormieter&&m.neueAdresse?m.neueAdresse.replace(/\n/g,'<br>'):`${obj?.name||m.objekt||''}<br>
             WE ${m.weNr}${m.etage?' · '+m.etage:''}<br>
-            ${obj?.ort||''}
+            ${obj?.ort||''}`}
           </div>
           <div style="margin-top:8mm;font-size:10px;color:#555">${fmtD(datum)}</div>
         </div>
@@ -3118,6 +3257,8 @@ async function druckeBrief(mieterId, objektId) {
       <div style="font-size:11px;margin-bottom:16mm">${gruss}</div>
       <div style="font-size:11px">${abs.name}</div>
     </div>`;
+    briefeHTML += pageHTML;
+    briefSeiten.push({m, pageHTML});
   }
 
   const win = window.open('', '_blank');
@@ -3139,6 +3280,27 @@ ${briefeHTML}
 \x3cscript\x3ewindow.onload=()=>setTimeout(()=>window.print(),500)\x3c/script\x3e
 </body></html>`);
   win.document.close();
+
+  // Jeden Brief beim jeweiligen Mieter archivieren
+  const briefStyleHead = `<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8"><title>Brief – ${betreff}</title><style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:Arial,sans-serif;font-size:11px;color:#111;padding:20px}
+.page{padding-bottom:20px}
+.bk-box{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:0}
+.bk-left{width:85mm;padding-top:5mm}
+.bk-right{width:85mm;padding-top:45mm;text-align:left}
+@page{margin:1.5cm;size:A4}
+@media print{body{padding:0;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+</style></head><body>`;
+  for (const {m, pageHTML} of briefSeiten) {
+    const einzelHtml = `${briefStyleHead}${pageHTML}<scr`+`ipt>window.onload=()=>setTimeout(()=>window.print(),400)</scr`+`ipt></body></html>`;
+    await archiviereMieterDokument({
+      mieterId: m.id, objektId: m.objektId,
+      typ: 'brief',
+      name: `${betreff} (${fmtD(datum)})`,
+      html: einzelHtml,
+    });
+  }
 }
 
 // ── Aushang ──────────────────────────────────────────────────
@@ -3921,9 +4083,8 @@ async function saveMieterhoehung(mieterId) {
   }
 
   const win = window.open('', '_blank');
-  if (!win) { toast('Protokoll gespeichert – Popup blockiert'); return; }
 
-  win.document.write(`<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8">
+  const mhHtml = `<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8">
 <title>Mieterhöhung – ${m.mieter}</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
@@ -3994,7 +4155,18 @@ ${istZustimmung
   Mieterhöhungsschreiben · ${obj?.name||''} WE ${m.weNr} · ${m.mieter} · ${heute} · Nadig Pfau Hausverwaltung
 </div>
 \x3cscript\x3ewindow.onload=()=>setTimeout(()=>window.print(),600)\x3c/script\x3e
-</body></html>`);
+</body></html>`;
+
+  // Im Mieter-Archiv ablegen
+  await archiviereMieterDokument({
+    mieterId: m.id, objektId: m.objektId,
+    typ: 'mieterhoehung',
+    name: `${ueberschrift} ${wirksamAb} – ${fmtEur(neueMiete)}`,
+    html: mhHtml,
+  });
+
+  if (!win) { toast('Mieterhöhung gespeichert & archiviert – Popup blockiert'); await showMieter(mieterId); return; }
+  win.document.write(mhHtml);
   win.document.close();
   await showMieter(mieterId);
   toast('Mieterhöhung gespeichert ✓');
@@ -4712,9 +4884,73 @@ function getPersonenFromForm() {
 
 async function modalAddMieter(objektId) {
   const obj = getObj(objektId);
+  // Bestehende Mieter (für WE-Auswahl + Datenübernahme)
+  const alle = (await idbGetAll('mieter','objektId',objektId)).filter(m=>!m._vormieter);
+  // WE-Liste: vorhandene Einheiten + Möglichkeit, neue WE-Nr. einzugeben
+  const weMap = {};
+  alle.forEach(m=>{ if(m.weNr!=null && m.weNr!=='') weMap[String(m.weNr)] = m; });
+  const weNrs = Object.keys(weMap).sort((a,b)=>Number(a)-Number(b));
+  window._addMieterWeMap = weMap;
+
   showModal(`
     <div class="m-title"><i class="ti ti-user-plus"></i> Neuer Mieter – ${obj?.name||''}</div>
-    ${mieterFormHTML(obj)}
+    <div class="f"><label>Wohneinheit *</label>
+      <select id="mWeSelect" onchange="onAddMieterWeChange()">
+        <option value="">– Wohnung wählen –</option>
+        ${weNrs.map(w=>`<option value="${w}">WE ${w}${weMap[w].etage?' · '+weMap[w].etage:''}${weMap[w].mieter&&!weMap[w].leerstand?' · derzeit: '+weMap[w].mieter:' · Leerstand'}</option>`).join('')}
+        <option value="__neu">+ Neue Wohneinheit anlegen</option>
+      </select>
+      <div style="font-size:11px;color:var(--ink-40);margin-top:4px">
+        Bei Auswahl einer bestehenden Wohnung werden Fläche, Etage und Lage automatisch übernommen.
+      </div>
+    </div>
+    <div id="mWeNeuWrap" style="display:none">
+      <div class="f-row">
+        <div class="f"><label>Neue WE-Nr. *</label><input type="number" id="mWeNrNeu" placeholder="z. B. 5"></div>
+        <div class="f"><label>Wohnfläche (m²)</label><input type="number" id="mFlaecheNeu" step="0.01" placeholder="0"></div>
+      </div>
+      <div class="f"><label>Etage / Lage</label><input type="text" id="mEtageNeu" placeholder="z. B. 1.OG rechts"></div>
+    </div>
+
+    <div id="mWeInfo" style="display:none;background:var(--ink-05);border-radius:8px;padding:10px 12px;margin-bottom:10px;font-size:13px;color:var(--ink-60)"></div>
+
+    <div class="f-section-title"><i class="ti ti-users"></i> Neuer Mieter</div>
+    <div class="f-row">
+      <div class="f"><label>Anrede</label>
+        <select id="mAnrede">
+          <option value="Herr">Herr</option>
+          <option value="Frau">Frau</option>
+          <option value="Divers">Divers / Keine</option>
+        </select></div>
+      <div class="f"><label>Personen (Anzahl)</label>
+        <input type="number" id="mPersonen" value="1" min="1" max="20" onchange="syncPersonenAnzahl(this.value)"></div>
+    </div>
+    <div style="font-size:11px;color:var(--ink-40);margin-bottom:6px">Name · Geburtsdatum</div>
+    <div id="personenListe">
+      <div class="f-row" style="margin-bottom:4px" id="pRow_0">
+        <div class="f"><input type="text" id="pName_0" placeholder="Vor- und Nachname Person 1" style="font-size:13px"></div>
+        <div class="f"><input type="date" id="pGeb_0" style="font-size:13px" title="Geburtsdatum"></div>
+      </div>
+    </div>
+    <button class="btn btn-sm" style="margin-bottom:12px" onclick="addPersonRow()">
+      <i class="ti ti-user-plus"></i> Person hinzufügen
+    </button>
+
+    <div class="f-section-title"><i class="ti ti-cash"></i> Mietkonditionen</div>
+    <div class="f-row">
+      <div class="f"><label>Miete (€)</label><input type="number" id="mMiete" step="0.01"></div>
+      <div class="f"><label>NK-Vorauszahlung (€/Monat)</label><input type="number" id="mNk" step="0.01"></div>
+    </div>
+    <div class="f-row">
+      <div class="f"><label>Mietbeginn *</label><input type="date" id="mEinzug" value="${today()}"></div>
+      <div class="f"><label>Kaution (€)</label><input type="number" id="mKaution" step="0.01"></div>
+    </div>
+    <div class="f-row">
+      <div class="f"><label>Telefon</label><input type="tel" id="mTel" placeholder="+49 ..."></div>
+      <div class="f"><label>E-Mail</label><input type="email" id="mEmail" placeholder="name@domain.de"></div>
+    </div>
+    <div class="f"><label>TG-Stellplatz Nr.</label><input type="text" id="mTgNr"></div>
+
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="saveNewMieter('${objektId}')">
         <i class="ti ti-check"></i> Speichern
@@ -4723,37 +4959,129 @@ async function modalAddMieter(objektId) {
     </div>`);
 }
 
+// Reaktion auf WE-Auswahl: Daten übernehmen + Hinweis zu Mieterwechsel
+function onAddMieterWeChange() {
+  const sel = document.getElementById('mWeSelect');
+  const neuWrap = document.getElementById('mWeNeuWrap');
+  const info = document.getElementById('mWeInfo');
+  if (!sel) return;
+  const val = sel.value;
+  if (val === '__neu') {
+    neuWrap.style.display = 'block';
+    info.style.display = 'none';
+    return;
+  }
+  neuWrap.style.display = 'none';
+  const weMap = window._addMieterWeMap || {};
+  const cur = weMap[val];
+  if (!val || !cur) { info.style.display = 'none'; return; }
+  // Hinweis je nachdem, ob die Wohnung aktuell belegt ist
+  if (cur.mieter && !cur.leerstand) {
+    info.style.display = 'block';
+    info.innerHTML = `<i class="ti ti-info-circle"></i> Diese Wohnung ist derzeit an <strong>${cur.mieter}</strong> vermietet
+      (Fläche ${cur.flaeche?cur.flaeche+' m²':'–'}, ${cur.etage||'–'}).<br>
+      Der neue Mieter wird als <strong>zukünftiger Mieter</strong> erfasst. Sobald der Mietbeginn erreicht ist,
+      rückt er automatisch in die Übersicht auf und ${cur.mieter} wird als Vormieter hinterlegt.`;
+  } else {
+    info.style.display = 'block';
+    info.innerHTML = `<i class="ti ti-info-circle"></i> Wohnung WE ${val} ist als Leerstand / frei erfasst
+      (Fläche ${cur.flaeche?cur.flaeche+' m²':'–'}, ${cur.etage||'–'}). Die Wohnungsdaten werden übernommen.`;
+  }
+}
+
 async function saveNewMieter(objektId) {
   const persListe = getPersonenFromForm();
   const name = persListe[0]?.name || document.getElementById('pName_0')?.value?.trim() || '';
-  const weNr = document.getElementById('mWeNr').value.trim();
-  if (!name || !weNr) { toast('Name der ersten Person und WE-Nr. sind Pflichtfelder'); return; }
-  const obj  = getObj(objektId);
-  const id   = 'm_' + objektId + '_' + weNr + '_' + name.replace(/\W/g,'').slice(0,10);
-  const einzug = document.getElementById('mEinzug').value;
-  await idbPut('mieter', {
-    id, objektId, objekt: obj?.name||'',
-    weNr, etage:   document.getElementById('mEtage').value,
+  const sel  = document.getElementById('mWeSelect')?.value || '';
+  if (!name) { toast('Name der ersten Person ist ein Pflichtfeld'); return; }
+  if (!sel)  { toast('Bitte eine Wohneinheit auswählen'); return; }
+
+  const obj = getObj(objektId);
+  const weMap = window._addMieterWeMap || {};
+  let weNr, flaeche, etage, vorhanden = null;
+
+  if (sel === '__neu') {
+    weNr = document.getElementById('mWeNrNeu')?.value?.trim();
+    if (!weNr) { toast('Bitte WE-Nr. für die neue Wohneinheit eingeben'); return; }
+    flaeche = document.getElementById('mFlaecheNeu')?.value || '';
+    etage   = document.getElementById('mEtageNeu')?.value || '';
+  } else {
+    weNr = sel;
+    vorhanden = weMap[weNr] || null;
+    flaeche = vorhanden?.flaeche || '';
+    etage   = vorhanden?.etage || '';
+  }
+
+  const einzugRaw = document.getElementById('mEinzug')?.value;
+  if (!einzugRaw) { toast('Bitte Mietbeginn angeben'); return; }
+  const einzugDate = new Date(einzugRaw);
+  const heute = new Date(); heute.setHours(0,0,0,0);
+  const istZukunft = einzugDate > heute;
+
+  const miete = parseFloat(document.getElementById('mMiete')?.value)||'';
+  const nk    = parseFloat(document.getElementById('mNk')?.value)||'';
+
+  const neuerMieter = {
+    id: 'm_' + objektId + '_' + weNr + '_' + name.replace(/\W/g,'').slice(0,10) + '_' + Date.now().toString(36),
+    objektId, objekt: obj?.name||'',
+    weNr, etage, flaeche,
     mieter: name,
-    miete:  parseFloat(document.getElementById('mMiete').value)||'',
-    nk:     parseFloat(document.getElementById('mNk').value)||'',
-    gesamt: (parseFloat(document.getElementById('mMiete').value)||0) +
-            (parseFloat(document.getElementById('mNk').value)||0) || '',
-    flaeche: document.getElementById('mFlaeche').value,
-    einzug:  einzug ? new Date(einzug).toLocaleDateString('de-DE') : '',
-    auszug:  document.getElementById('mAuszug').value
-             ? new Date(document.getElementById('mAuszug').value).toLocaleDateString('de-DE') : '',
-    kaution: parseFloat(document.getElementById('mKaution').value)||'',
-    telefon: document.getElementById('mTel').value,
-    email:   document.getElementById('mEmail').value,
-    tgNr:    document.getElementById('mTgNr').value,
-  });
+    anrede: document.getElementById('mAnrede')?.value || 'Herr',
+    personen: parseInt(document.getElementById('mPersonen')?.value)||persListe.length||1,
+    personen_liste: persListe,
+    miete, nk,
+    gesamt: (parseFloat(miete)||0)+(parseFloat(nk)||0) || '',
+    einzug: einzugDate.toLocaleDateString('de-DE'),
+    einzugISO: einzugRaw,
+    kaution: parseFloat(document.getElementById('mKaution')?.value)||'',
+    telefon: document.getElementById('mTel')?.value||'',
+    email:   document.getElementById('mEmail')?.value||'',
+    tgNr:    document.getElementById('mTgNr')?.value||'',
+    leerstand: false,
+  };
+
+  if (istZukunft && vorhanden && vorhanden.mieter && !vorhanden.leerstand) {
+    // Zukünftiger Mieter: noch nicht aktiv, alter Mieter bleibt vorerst sichtbar
+    neuerMieter._zukuenftig = true;
+    neuerMieter._ersetztMieterId = vorhanden.id;
+    await idbPut('mieter', neuerMieter);
+    toast(`Zukünftiger Mieter erfasst – aktiv ab ${neuerMieter.einzug}`);
+  } else {
+    // Sofort aktiv: ggf. vorhandenen Mieter zum Vormieter machen
+    if (vorhanden && vorhanden.mieter && !vorhanden.leerstand && vorhanden.id !== neuerMieter.id) {
+      await mieterZuVormieter(vorhanden, neuerMieter);
+    } else if (vorhanden && vorhanden.leerstand) {
+      // Leerstand-Datensatz mit neuem Mieter überschreiben (gleiche WE freigeben)
+      await idbDelete('mieter', vorhanden.id).catch(()=>{});
+    }
+    await idbPut('mieter', neuerMieter);
+    toast('Mieter gespeichert ✓');
+  }
+
   closeModal();
   clearTimeout(window._syncTimer);
   window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
-  await renderObjMieter(document.getElementById('objTabContent'));
+  const tabEl = document.getElementById('objTabContent');
+  if (tabEl) await renderObjMieter(tabEl);
   await renderDash();
-  toast('Mieter gespeichert ✓');
+}
+
+// Macht einen bisherigen Mieter zum Vormieter und verknüpft ihn mit dem Nachmieter.
+// Übernimmt die neue Adresse aus dem letzten Auszugsprotokoll, falls vorhanden.
+async function mieterZuVormieter(alt, neu) {
+  alt._vormieter = true;
+  alt._nachmieterId = neu.id;
+  alt.auszug = alt.auszug || neu.einzug;
+  // Neue Adresse aus letztem Protokoll des alten Mieters ziehen
+  try {
+    const prots = (await idbGetAll('protokolle')).filter(p=>p.mieterId===alt.id);
+    const letzt = prots.sort((a,b)=>new Date(b.datum||0)-new Date(a.datum||0))[0];
+    const adr = letzt?.neueAdresse || letzt?.neue_anschrift || letzt?.mieterNeueAdresse;
+    if (adr && !alt.neueAdresse) alt.neueAdresse = adr;
+  } catch(e){}
+  await idbPut('mieter', alt);
+  neu._vormieterId = alt.id;
+  // neu wird vom Aufrufer gespeichert
 }
 
 async function modalEditMieter(id) {
@@ -4814,6 +5142,42 @@ async function deleteMieterConfirm(id) {
   await renderDash();
   goBack();
   toast('Mieter gelöscht');
+}
+
+// Vormieter eines Mieters anzeigen (öffnet die Detailansicht des Vormieters)
+async function zeigeVormieter(vormieterId) {
+  const vm = await idbGet('mieter', vormieterId);
+  if (!vm) { toast('Vormieter nicht gefunden'); return; }
+  await showMieter(vormieterId);
+}
+
+// Neue Anschrift eines (Vor-)Mieters erfassen/ändern – z. B. für Nachsendung von NKA
+async function modalNeueAdresse(mieterId) {
+  const m = await idbGet('mieter', mieterId);
+  if (!m) return;
+  showModal(`
+    <div class="m-title"><i class="ti ti-map-pin"></i> Neue Anschrift – ${m.mieter}</div>
+    <p style="font-size:12px;color:var(--ink-40);margin-bottom:10px">
+      Anschrift nach dem Auszug, z. B. für die Zustellung der Nebenkostenabrechnung.
+    </p>
+    <div class="f"><label>Neue Anschrift</label>
+      <textarea id="vmAdresse" style="min-height:80px" placeholder="Straße Hausnr.&#10;PLZ Ort">${m.neueAdresse||''}</textarea></div>
+    <div class="f-row" style="margin-top:12px">
+      <button class="btn btn-copper btn-full" onclick="saveNeueAdresse('${mieterId}')"><i class="ti ti-check"></i> Speichern</button>
+      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+    </div>`);
+}
+
+async function saveNeueAdresse(mieterId) {
+  const m = await idbGet('mieter', mieterId);
+  if (!m) return;
+  m.neueAdresse = document.getElementById('vmAdresse')?.value?.trim()||'';
+  await idbPut('mieter', m);
+  closeModal();
+  clearTimeout(window._syncTimer);
+  window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
+  await showMieter(mieterId);
+  toast('Anschrift gespeichert ✓');
 }
 
 
@@ -5522,7 +5886,28 @@ function initSigs(){
     c.addEventListener('mousedown',start);c.addEventListener('mousemove',move);c.addEventListener('mouseup',end);c.addEventListener('mouseleave',end);
     c.addEventListener('touchstart',start,{passive:false});c.addEventListener('touchmove',move,{passive:false});c.addEventListener('touchend',end,{passive:false});
     pSigPads[id]=true;
+    // Bereits vorhandene Unterschrift (z. B. bei Admin-Bearbeitung) wieder einzeichnen
+    restoreSigToCanvas(id);
   });
+}
+
+// Zeichnet eine in PD gespeicherte Unterschrift zurück auf das Canvas,
+// damit sie bei der Admin-Bearbeitung erhalten bleibt und nicht neu erfasst werden muss.
+function restoreSigToCanvas(id){
+  if(!PD) return;
+  const c=document.getElementById(id);
+  if(!c) return;
+  const key = id==='sigV'?'sigVermieter':id==='sigM'?'sigMieter':'sigZeuge';
+  const dataUrl = PD[key];
+  if(!dataUrl) return;
+  const img=new Image();
+  img.onload=()=>{
+    const ctx=c.getContext('2d');
+    const dpr=window.devicePixelRatio||1;
+    // In CSS-Pixeln zeichnen (Kontext ist bereits per scale(dpr) skaliert)
+    ctx.drawImage(img, 0, 0, c.width/dpr, c.height/dpr);
+  };
+  img.src=dataUrl;
 }
 
 function clearSig(id){
