@@ -605,7 +605,23 @@ body{background:var(--surface);color:var(--ink);font-size:15px;-webkit-font-smoo
 <!-- TOAST -->
 <div class="toast" id="toastEl"></div>
 <input type="file" id="photoIn" accept="image/*" multiple style="display:none">
+<input type="file" id="galleryIn" accept="image/*" multiple style="display:none">
 <input type="file" id="xlsxIn"  accept=".xlsx,.xlsm" style="display:none" onchange="importExcel(this)">
+
+<!-- IN-APP KAMERA -->
+<div id="camOverlay" style="display:none;position:fixed;inset:0;z-index:9999;background:#000;flex-direction:column">
+  <div style="position:relative;flex:1;overflow:hidden;display:flex;align-items:center;justify-content:center">
+    <video id="camVideo" playsinline autoplay muted style="width:100%;height:100%;object-fit:cover"></video>
+    <div id="camShotCount" style="position:absolute;top:14px;left:14px;background:rgba(0,0,0,.6);color:#fff;font-size:13px;padding:5px 12px;border-radius:20px;display:none"></div>
+    <button onclick="closeCam()" style="position:absolute;top:12px;right:12px;width:42px;height:42px;border-radius:50%;border:none;background:rgba(0,0,0,.5);color:#fff;font-size:22px;cursor:pointer">✕</button>
+  </div>
+  <div style="padding:18px 20px calc(18px + env(safe-area-inset-bottom));background:#000;display:flex;align-items:center;justify-content:space-between;gap:16px">
+    <button onclick="camPickGallery()" title="Aus Galerie wählen" style="width:52px;height:52px;border-radius:12px;border:1.5px solid rgba(255,255,255,.3);background:rgba(255,255,255,.08);color:#fff;font-size:22px;cursor:pointer;display:flex;align-items:center;justify-content:center"><i class="ti ti-photo"></i></button>
+    <button id="camShutter" onclick="camCapture()" style="width:72px;height:72px;border-radius:50%;border:5px solid #fff;background:rgba(255,255,255,.25);cursor:pointer;flex-shrink:0"></button>
+    <button onclick="camFlip()" title="Kamera wechseln" style="width:52px;height:52px;border-radius:12px;border:1.5px solid rgba(255,255,255,.3);background:rgba(255,255,255,.08);color:#fff;font-size:22px;cursor:pointer;display:flex;align-items:center;justify-content:center"><i class="ti ti-camera-rotate"></i></button>
+  </div>
+  <canvas id="camCanvas" style="display:none"></canvas>
+</div>
 
 <script>
 /* ═══════════════════════════════════════════════════════════
@@ -863,6 +879,10 @@ function nav(id,title,sub,push=true){
 
 // Android Zurück-Button abfangen
 window.addEventListener('popstate', function(e) {
+  // Wenn Kamera offen → Kamera schließen
+  if(document.getElementById('camOverlay')?.style.display==='flex'){
+    closeCam(); history.pushState({}, '', window.location.pathname); return;
+  }
   // Wenn Modal offen → Modal schließen
   if(document.getElementById('modalBg')?.classList.contains('open')){
     closeModal(); history.pushState({}, '', window.location.pathname); return;
@@ -4918,7 +4938,7 @@ function delMangelFoto(i){
   }
 }
 
-function openPhotoForMangel(){pPhotoRoom=null;window._mangelPhotos=window._mangelPhotos||[];document.getElementById('photoIn').value='';document.getElementById('photoIn').click();}
+function openPhotoForMangel(){pPhotoRoom=null;window._zaehlerIdx=null;window._mangelPhotos=window._mangelPhotos||[];openCam();}
 
 async function cancelMangel(){
   // Verworfene Mangel-Erfassung: temporäre Fotos aufräumen
@@ -5391,8 +5411,8 @@ function setRoomCondNote(room,cond,val){
   if(!PD.raeume[room].condNotes) PD.raeume[room].condNotes={};
   PD.raeume[room].condNotes[cond]=val;
 }
-function openRoomCam(room){pPhotoRoom=room;window._zaehlerIdx=null;document.getElementById('photoIn').value='';document.getElementById('photoIn').click();}
-function openZaehlerCam(idx){window._zaehlerIdx=idx;pPhotoRoom=null;document.getElementById('photoIn').value='';document.getElementById('photoIn').click();}
+function openRoomCam(room){pPhotoRoom=room;window._zaehlerIdx=null;window._mangelPhotos=null;openCam();}
+function openZaehlerCam(idx){window._zaehlerIdx=idx;pPhotoRoom=null;window._mangelPhotos=null;openCam();}
 function delZaehlerFoto(i){
   if (!PD || !PD.zaehler || !PD.zaehler[i]) return;
   const fid = PD.zaehler[i].fotoId;
@@ -6742,20 +6762,33 @@ document.getElementById('photoIn').addEventListener('change', async function() {
   const files = Array.from(this.files);
   this.value = '';
   if (!files.length) return;
-
   for (const f of files) {
     let data;
     try { data = await compressFoto(f); } catch(e) { console.warn('Foto-Komprimierung:', e); continue; }
-    if (!data) continue;
+    if (data) await processPhoto(data);
+  }
+});
 
+// Galerie-Auswahl (separater Input, Mehrfachauswahl)
+document.getElementById('galleryIn').addEventListener('change', async function() {
+  const files = Array.from(this.files);
+  this.value = '';
+  if (!files.length) return;
+  for (const f of files) {
+    let data;
+    try { data = await compressFoto(f); } catch(e) { console.warn('Foto-Komprimierung:', e); continue; }
+    if (data) await processPhoto(data);
+  }
+});
+
+// Verarbeitet ein fertiges (komprimiertes) Foto je nach aktivem Kontext.
+async function processPhoto(data) {
     if (pPhotoRoom) {
       if (PD && PD.raeume && PD.raeume[pPhotoRoom]) {
-        // 1. Foto SOFORT einzeln sichern (kleiner, schneller Schreibvorgang)
         const fotoId = uid();
         try {
           await idbPut('fotos', { id: fotoId, protId: PD.id, slot: 'room:'+pPhotoRoom, data, erstellt: now() });
-        } catch(e) { console.warn('Einzelfoto-Sicherung:', e); toast('Foto konnte nicht gesichert werden – bitte erneut'); continue; }
-        // 2. Ins Protokoll einfügen (mit ID-Verknüpfung) und Gesamt-Entwurf nachziehen
+        } catch(e) { console.warn('Einzelfoto-Sicherung:', e); toast('Foto konnte nicht gesichert werden – bitte erneut'); return; }
         PD.raeume[pPhotoRoom].photos.push(data);
         PD.raeume[pPhotoRoom].photoIds = PD.raeume[pPhotoRoom].photoIds || [];
         PD.raeume[pPhotoRoom].photoIds.push(fotoId);
@@ -6769,16 +6802,15 @@ document.getElementById('photoIn').addEventListener('change', async function() {
         const fotoId = uid();
         try {
           await idbPut('fotos', { id: fotoId, protId: PD.id, slot: 'zaehler:'+idx, data, erstellt: now() });
-        } catch(e) { console.warn('Einzelfoto-Sicherung:', e); toast('Foto konnte nicht gesichert werden – bitte erneut'); window._zaehlerIdx = null; continue; }
+        } catch(e) { console.warn('Einzelfoto-Sicherung:', e); toast('Foto konnte nicht gesichert werden – bitte erneut'); return; }
         PD.zaehler[idx].foto = data;
         PD.zaehler[idx].fotoId = fotoId;
         PD.status = 'draft';
         try { await idbPut('protokolle', PD); } catch(e){ console.warn('Draft nach Zählerfoto:', e); }
         renderProt(2);
+        if(document.getElementById('camOverlay')?.style.display==='flex') closeCam();
       }
-      window._zaehlerIdx = null;
     } else if (Array.isArray(window._mangelPhotos)) {
-      // Foto sofort einzeln sichern (überlebt OS-Reload während Mangel-Erfassung)
       const fid = uid();
       window._mangelFotoIds = window._mangelFotoIds || [];
       try {
@@ -6794,8 +6826,80 @@ document.getElementById('photoIn').addEventListener('change', async function() {
         ).join('');
       }
     }
+}
+
+/* ═══════════════════════════════════════════════════════════
+   IN-APP KAMERA
+═══════════════════════════════════════════════════════════ */
+let camStream=null, camFacing='environment', camShots=0;
+
+async function openCam(){
+  camShots=0;
+  const ov=document.getElementById('camOverlay');
+  ov.style.display='flex';
+  document.getElementById('camShotCount').style.display='none';
+  try {
+    await startCamStream();
+  } catch(e) {
+    console.warn('Kamera nicht verfügbar:', e);
+    // Fallback: native Galerie/Kamera über File-Input
+    closeCam();
+    toast('Kamera nicht verfügbar – bitte Foto auswählen');
+    document.getElementById('photoIn').click();
   }
-});
+}
+
+async function startCamStream(){
+  if(camStream){ camStream.getTracks().forEach(t=>t.stop()); camStream=null; }
+  camStream = await navigator.mediaDevices.getUserMedia({
+    video: { facingMode: camFacing, width:{ideal:1920}, height:{ideal:1080} },
+    audio: false
+  });
+  const v=document.getElementById('camVideo');
+  v.srcObject=camStream;
+  await v.play().catch(()=>{});
+}
+
+async function camFlip(){
+  camFacing = camFacing==='environment' ? 'user' : 'environment';
+  try { await startCamStream(); } catch(e){ toast('Kamerawechsel nicht möglich'); }
+}
+
+async function camCapture(){
+  const v=document.getElementById('camVideo');
+  if(!v.videoWidth){ toast('Kamera lädt noch…'); return; }
+  const canvas=document.getElementById('camCanvas');
+  canvas.width=v.videoWidth; canvas.height=v.videoHeight;
+  canvas.getContext('2d').drawImage(v,0,0);
+  // kurzes visuelles Feedback
+  const sh=document.getElementById('camShutter');
+  sh.style.background='rgba(255,255,255,.7)'; setTimeout(()=>sh.style.background='rgba(255,255,255,.25)',120);
+  let data;
+  try {
+    const blob=await new Promise(res=>canvas.toBlob(res,'image/jpeg',0.85));
+    data=await compressFoto(blob);
+  } catch(e){ console.warn('Aufnahme:', e); toast('Foto konnte nicht verarbeitet werden'); return; }
+  if(data){
+    await processPhoto(data);
+    camShots++;
+    const c=document.getElementById('camShotCount');
+    c.style.display='block'; c.textContent=camShots+(camShots===1?' Foto':' Fotos');
+    toast('Foto aufgenommen ✓');
+  }
+}
+
+function camPickGallery(){
+  closeCam();
+  document.getElementById('galleryIn').click();
+}
+
+function closeCam(){
+  if(camStream){ camStream.getTracks().forEach(t=>t.stop()); camStream=null; }
+  const ov=document.getElementById('camOverlay');
+  if(ov) ov.style.display='none';
+  const v=document.getElementById('camVideo');
+  if(v) v.srcObject=null;
+}
 
 // Sicherheitsnetz: aktuellen Protokoll-Entwurf sichern, sobald die App in den
 // Hintergrund geht (z. B. beim Öffnen der Kamera). Schützt vor Datenverlust,
