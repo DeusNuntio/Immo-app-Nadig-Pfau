@@ -604,7 +604,7 @@ body{background:var(--surface);color:var(--ink);font-size:15px;-webkit-font-smoo
 
 <!-- TOAST -->
 <div class="toast" id="toastEl"></div>
-<input type="file" id="photoIn" accept="image/*" capture="environment" multiple style="display:none">
+<input type="file" id="photoIn" accept="image/*" multiple style="display:none">
 <input type="file" id="xlsxIn"  accept=".xlsx,.xlsm" style="display:none" onchange="importExcel(this)">
 
 <script>
@@ -837,6 +837,7 @@ function showScreen(id){
 }
 
 function nav(id,title,sub,push=true){
+  if(id!=='protokoll'){ try { localStorage.removeItem('openProtokoll'); } catch(e){} }
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.getElementById('page-'+id)?.classList.add('active');
   const TITLES={dash:'Dashboard',aufgaben:'Aufgaben & Mängel',settings:'Einstellungen',
@@ -942,7 +943,7 @@ async function renderDash() {
     <button class="qa-btn copper" onclick="newProtokoll()"><i class="ti ti-clipboard-check"></i> Neues Protokoll</button>
     <button class="qa-btn" onclick="nav('aufgaben')"><i class="ti ti-checklist"></i> Aufgaben</button>
     <button class="qa-btn" onclick="modalAddAufgabe(null,null)"><i class="ti ti-plus"></i> ToDo</button>
-    <button class="qa-btn" onclick="modalAddMangel(null,null,'mangel')"><i class="ti ti-alert-triangle"></i> Mangel</button>
+    <button class="qa-btn" onclick="modalAddMangel(null,null)"><i class="ti ti-alert-triangle"></i> Mangel</button>
     <button class="qa-btn" onclick="nav('wartung')"><i class="ti ti-calendar-stats"></i> Wartung</button>
     <button class="qa-btn" onclick="nav('settings')"><i class="ti ti-upload"></i> Excel-Import</button>
   </div>`;
@@ -1177,10 +1178,9 @@ async function renderObjAufgaben(el){
 
 async function renderObjMaengel(el){
   const maengel=await idbGetAll('maengel','objektId',currentObjId);
-  const reps=await idbGetAll('reparaturen','objektId',currentObjId);
+  const reps=(await idbGetAll('reparaturen','objektId',currentObjId)).map(r=>({...r,istReparatur:true,_altStore:true}));
   let h=`<div class="s-hdr">
-    <button class="btn btn-sm btn-copper" onclick="modalAddMangel(null,'${currentObjId}','mangel')"><i class="ti ti-plus"></i> Mangel</button>
-    <button class="btn btn-sm" onclick="modalAddMangel(null,'${currentObjId}','reparatur')"><i class="ti ti-tools"></i> Reparatur</button>
+    <button class="btn btn-sm btn-copper" onclick="modalAddMangel(null,'${currentObjId}')"><i class="ti ti-plus"></i> Mangel / Reparatur</button>
   </div>`;
   if(!maengel.length&&!reps.length){h+='<div class="empty"><i class="ti ti-mood-smile"></i><p>Keine Mängel oder Reparaturen</p></div>';}
   else{
@@ -1478,19 +1478,18 @@ async function renderAufgaben(){
   const myObj=await getMyObjekte();
   const myIds=myObj.map(o=>o.id);
   const aufgaben=(await idbGetAll('aufgaben')).filter(a=>myIds.includes(a.objektId));
-  const maengel=(await idbGetAll('maengel')).filter(m=>myIds.includes(m.objektId));
-  const reps=(await idbGetAll('reparaturen')).filter(r=>myIds.includes(r.objektId));
+  const maengelRaw=(await idbGetAll('maengel')).filter(m=>myIds.includes(m.objektId));
+  const altReps=(await idbGetAll('reparaturen')).filter(r=>myIds.includes(r.objektId)).map(r=>({...r,istReparatur:true,_altStore:true}));
+  const maengel=[...maengelRaw,...altReps];
   const el=document.getElementById('page-aufgaben');
 
   const offen=aufgaben.filter(a=>a.status!=='erledigt');
   const erledigt=aufgaben.filter(a=>a.status==='erledigt');
-  const offMng=maengel.filter(m=>m.status!=='behoben');
-  const offRep=reps.filter(r=>r.status!=='erledigt');
+  const offMng=maengel.filter(m=>m.status!=='behoben'&&m.status!=='erledigt');
 
   let h=`<div class="tab-bar">
     <button class="tab-btn active" onclick="aufgabenTab('todos',this)">ToDos (${offen.length})</button>
-    <button class="tab-btn" onclick="aufgabenTab('maengel',this)">Mängel (${offMng.length})</button>
-    <button class="tab-btn" onclick="aufgabenTab('reparaturen',this)">Reparaturen (${offRep.length})</button>
+    <button class="tab-btn" onclick="aufgabenTab('maengel',this)">Mängel & Reparaturen (${offMng.length})</button>
     <button class="tab-btn" onclick="aufgabenTab('einkauf',this)"><i class="ti ti-shopping-cart"></i> Einkauf</button>
   </div>
   <div id="auf-todos">`;
@@ -1508,9 +1507,6 @@ async function renderAufgaben(){
   <div id="auf-maengel" style="display:none">`;
   if(!maengel.length){h+=`<div class="empty"><i class="ti ti-mood-smile"></i><p>Keine Mängel erfasst</p></div>`;}
   else maengel.sort((a,b)=>new Date(b.erstellt)-new Date(a.erstellt)).forEach(m=>h+=mangelHTML(m));
-  h+=`</div><div id="auf-reparaturen" style="display:none">`;
-  if(!reps.length){h+=`<div class="empty"><i class="ti ti-tools"></i><p>Keine Reparaturen erfasst</p></div>`;}
-  else reps.sort((a,b)=>new Date(b.erstellt)-new Date(a.erstellt)).forEach(r=>h+=reparaturHTML(r));
   h+=`</div><div id="auf-einkauf" style="display:none"><div id="einkaufListeContent"></div></div>`;
   el.innerHTML=h;
   updateBadge();
@@ -1519,10 +1515,11 @@ async function renderAufgaben(){
 function aufgabenTab(t,btn){
   document.querySelectorAll('#page-aufgaben .tab-btn').forEach(b=>b.classList.remove('active'));
   if(btn) btn.classList.add('active');
-  ['todos','maengel','reparaturen','einkauf'].forEach(x=>{
+  ['todos','maengel','einkauf'].forEach(x=>{
     const el=document.getElementById('auf-'+x);
     if(el) el.style.display=x===t?'block':'none';
   });
+  window._aufTab=t;
   if(t==='einkauf') renderEinkaufsliste();
 }
 
@@ -1573,23 +1570,25 @@ function taskHTML(t) {
 
 function mangelHTML(m){
   const obj=getObj(m.objektId);
-  const done=m.status==='behoben';
+  const done=m.status==='behoben'||m.status==='erledigt';
   const pc=m.schwere==='schwerwiegend'?'prio-h':m.schwere==='mittel'?'prio-m':'prio-l';
+  const istRep=m.istReparatur||m.type==='reparatur';
   return `<div class="task-item" style="cursor:pointer" onclick="showMangelDetail('${m.id}')">
     <div class="t-prio ${pc}"></div>
     <div class="t-check ${done?'done':''}" onclick="event.stopPropagation();toggleMangel('${m.id}')">
       ${done?'<i class="ti ti-check" style="font-size:12px"></i>':''}
     </div>
     <div class="t-body">
-      <div class="t-title ${done?'done':''}">${m.titel}</div>
+      <div class="t-title ${done?'done':''}">${m.nummer?`<span style="color:var(--ink-40);font-weight:600">${esc(m.nummer)}</span> · `:''}${esc(m.titel)}</div>
       <div class="t-meta">
-        <span>${obj?.name||''}</span>
-        ${m.weNr?`<span>WE ${m.weNr}</span>`:''}
-        <span>${m.datum||''}</span>
+        ${istRep?`<span class="chip chip-copper" style="font-size:10px;padding:1px 6px"><i class="ti ti-tools" style="font-size:10px"></i> Reparatur</span>`:''}
+        <span>${esc(obj?.name||'')}</span>
+        ${m.weNr?`<span>WE ${esc(m.weNr)}</span>`:''}
+        <span>${esc(m.datum||'')}</span>
         <span class="chip chip-${done?'ok':'err'}" style="font-size:10px;padding:1px 6px">${done?'Behoben':'Offen'}</span>
         ${m.kosten?`<span class="chip chip-copper" style="font-size:10px;padding:1px 6px">${fmtEur(m.kosten)}</span>`:''}
       </div>
-      ${m.beschreibung?`<div style="font-size:12px;color:var(--ink-40);margin-top:3px;font-style:italic">${m.beschreibung.slice(0,60)}${m.beschreibung.length>60?'…':''}</div>`:''}
+      ${m.beschreibung?`<div style="font-size:12px;color:var(--ink-40);margin-top:3px;font-style:italic">${esc(m.beschreibung.slice(0,60))}${m.beschreibung.length>60?'…':''}</div>`:''}
     </div>
     <div class="t-actions">
       <button class="btn btn-sm btn-danger" onclick="event.stopPropagation();deleteMangel('${m.id}')"><i class="ti ti-trash"></i></button>
@@ -1649,14 +1648,20 @@ async function deleteAufgabe(id){
   toast('Aufgabe gelöscht');
 }
 async function toggleMangel(id){
-  let m=await idbGet('maengel',id); if(!m) return;
-  m.status=m.status==='behoben'?'offen':'behoben';
-  await idbPut('maengel',m); bcSend('mangel_changed',{id});
+  let store='maengel';
+  let m=await idbGet('maengel',id);
+  if(!m){ m=await idbGet('reparaturen',id).catch(()=>null); if(m) store='reparaturen'; }
+  if(!m) return;
+  const done=m.status==='behoben'||m.status==='erledigt';
+  m.status=done?'offen':(store==='reparaturen'?'erledigt':'behoben');
+  await idbPut(store,m); bcSend('mangel_changed',{id});
   await refreshAufgaben(); if(curPage==='objekt') await renderObjTab('maengel');
   await renderDash(); toast('Status aktualisiert');
 }
 async function deleteMangel(id){
-  await idbDelete('maengel',id); bcSend('mangel_changed',{id});
+  let store='maengel';
+  if(!(await idbGet('maengel',id))){ if(await idbGet('reparaturen',id).catch(()=>null)) store='reparaturen'; }
+  await idbDelete(store,id); bcSend('mangel_changed',{id});
   await refreshAufgaben(); toast('Mangel gelöscht');
 }
 async function toggleReparatur(id){
@@ -3637,12 +3642,16 @@ function einkaufHTML(e) {
   </div>`;
 }
 
-async function modalAddEinkauf(refId, refTyp, prefillArtikel) {
+async function modalAddEinkauf(refId, refTyp, prefillArtikel, opts) {
   const myObj = await getMyObjekte();
+  opts = opts || {};
+  const vorObjekt = opts.objektId || '';
+  const bezugText = opts.bezugText || (refId ? (refTyp||'Bezug')+' '+String(refId).slice(-6) : '');
+  const weHint = opts.weNr ? ` · WE ${opts.weNr}` : '';
   showModal(`
     <div class="m-title"><i class="ti ti-shopping-cart"></i> Material / Artikel eintragen</div>
     <div class="f"><label>Artikel / Bezeichnung *</label>
-      <input type="text" id="ekArtikel" value="${prefillArtikel||''}"
+      <input type="text" id="ekArtikel" value="${esc(prefillArtikel||'')}"
         placeholder="z. B. Dichtung 3/4 Zoll, Glühbirne E27..."></div>
     <div class="f-row">
       <div class="f"><label>Menge</label>
@@ -3671,14 +3680,15 @@ async function modalAddEinkauf(refId, refTyp, prefillArtikel) {
         <option value="Sonstiges">Sonstiges</option>
       </select>
     </div>
-    <div class="f"><label>Objekt (optional)</label>
+    <div class="f"><label>Objekt${weHint?' / Wohneinheit':''} (optional)</label>
       <select id="ekObjekt">
         <option value="">– Kein Objekt –</option>
-        ${myObj.map(o=>`<option value="${o.id}">${o.name}</option>`).join('')}
+        ${myObj.map(o=>`<option value="${o.id}" ${o.id===vorObjekt?'selected':''}>${esc(o.name)}${o.id===vorObjekt?esc(weHint):''}</option>`).join('')}
       </select>
     </div>
-    <div class="f"><label>Bezug (Mangel / Reparatur / ToDo)</label>
-      <input type="text" id="ekReferenz" value="${refId?refTyp+' #'+refId.slice(-6):''}"
+    <input type="hidden" id="ekWeNr" value="${esc(opts.weNr||'')}">
+    <div class="f"><label>Bezug (Mangel / ToDo)</label>
+      <input type="text" id="ekReferenz" value="${esc(bezugText)}"
         placeholder="z. B. Reparatur Bad WE 3..."></div>
     <div class="f"><label>Notiz</label>
       <textarea id="ekNotiz" placeholder="Artikelnummer, Lieferant, Hinweis..." style="min-height:60px"></textarea></div>
@@ -3700,6 +3710,7 @@ async function saveEinkauf() {
     einheit:  document.getElementById('ekEinheit')?.value||'Stk.',
     kategorie:document.getElementById('ekKategorie')?.value||'',
     objektId: document.getElementById('ekObjekt')?.value||null,
+    weNr:     document.getElementById('ekWeNr')?.value||'',
     referenz: document.getElementById('ekReferenz')?.value||'',
     notiz:    document.getElementById('ekNotiz')?.value||'',
     status:   'offen',
@@ -4796,22 +4807,25 @@ async function modalAddMangel(mieterId,objektId,type='mangel'){
   const myObj=await getMyObjekte();
   const mieter=await idbGetAll('mieter');
   const myMieter=mieter.filter(m=>myObj.some(o=>o.id===m.objektId));
-  let photos=[];
+  window._mangelAlleMieter=myMieter;
+  const vorObj=objektId||(myObj[0]?.id||'');
+  const istRep=type==='reparatur';
 
   showModal(`
-    <div class="m-title"><i class="ti ti-${type==='mangel'?'alert-triangle':'tools'}"></i>
-      ${type==='mangel'?'Mangel erfassen':'Kleinreparatur erfassen'}
-    </div>
-    <div class="f"><label>Objekt</label><select id="mgObjId">
-      ${myObj.map(o=>`<option value="${o.id}" ${o.id===objektId?'selected':''}>${o.name}</option>`).join('')}
+    <div class="m-title"><i class="ti ti-alert-triangle"></i> Mangel erfassen</div>
+    <div class="f"><label>Objekt</label><select id="mgObjId" onchange="mangelObjChange()">
+      ${myObj.map(o=>`<option value="${o.id}" ${o.id===vorObj?'selected':''}>${esc(o.name)}</option>`).join('')}
     </select></div>
-    <div class="f"><label>Mieter (optional)</label><select id="mgMietId">
+    <div class="f"><label>Mieter / Wohneinheit (optional)</label><select id="mgMietId">
       <option value="">– keinem Mieter –</option>
-      ${myMieter.map(m=>`<option value="${m.id}" ${m.id===mieterId?'selected':''}>${m.mieter} (WE ${m.weNr})</option>`).join('')}
     </select></div>
-    <div class="f"><label>Bezeichnung *</label><input type="text" id="mgTitel" placeholder="${type==='mangel'?'z. B. Wasserhahn tropft':'z. B. Türklinke defekt'}"></div>
+    <div class="f"><label>Bezeichnung *</label><input type="text" id="mgTitel" placeholder="z. B. Wasserhahn tropft"></div>
+    <label style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--ink-05);border-radius:10px;margin-bottom:12px;cursor:pointer">
+      <input type="checkbox" id="mgIstRep" ${istRep?'checked':''} style="width:18px;height:18px;flex-shrink:0">
+      <span style="font-size:13px">Dies ist eine <strong>Kleinreparatur</strong> (Material & Arbeitszeit erfassen)</span>
+    </label>
     <div class="f-row">
-      <div class="f"><label>${type==='mangel'?'Schwere':'Dringlichkeit'}</label><select id="mgSchwere">
+      <div class="f"><label>Schwere / Dringlichkeit</label><select id="mgSchwere">
         <option value="gering">Gering</option>
         <option value="mittel" selected>Mittel</option>
         <option value="schwerwiegend">Schwerwiegend</option>
@@ -4820,26 +4834,53 @@ async function modalAddMangel(mieterId,objektId,type='mangel'){
     </div>
     <div class="f"><label>Beschreibung</label><textarea id="mgBeschr" placeholder="Detaillierte Beschreibung..."></textarea></div>
     <div class="f-row">
-      <div class="f"><label>Kosten (€)</label><input type="number" id="mgKosten" placeholder="0,00" step="0.01"></div>
+      <div class="f"><label>Materialkosten Teile (€)</label><input type="number" id="mgTeile" placeholder="0,00" step="0.01" oninput="mangelKostenUpdate()"></div>
       <div class="f"><label>Status</label><select id="mgStatus">
         <option value="offen">Offen</option>
-        <option value="${type==='mangel'?'behoben':'erledigt'}">${type==='mangel'?'Behoben':'Erledigt'}</option>
+        <option value="behoben">Behoben / Erledigt</option>
       </select></div>
     </div>
-    <div id="mgPhotoGrid" class="ph-grid" style="${photos.length?'':'display:none'}"></div>
+    <div class="f-row">
+      <div class="f"><label>Arbeitsstunden</label><input type="number" id="mgStunden" placeholder="0" step="0.25" oninput="mangelKostenUpdate()"></div>
+      <div class="f"><label>Stundensatz (€/h)</label><input type="number" id="mgSatz" placeholder="0,00" step="0.01" oninput="mangelKostenUpdate()"></div>
+    </div>
+    <div id="mgKostenSum" style="font-size:13px;color:var(--ink-60);margin-bottom:12px;padding:8px 12px;background:var(--ink-05);border-radius:8px;display:none"></div>
+    <div id="mgPhotoGrid" class="ph-grid" style="display:none"></div>
     <div class="ph-area" onclick="openPhotoForMangel()">
-      <i class="ti ti-camera"></i><span>Foto hinzufügen</span>
+      <i class="ti ti-camera"></i><span>Fotos hinzufügen</span>
     </div>
     <div class="f-row" style="margin-top:12px">
-      <button class="btn btn-copper btn-full" onclick="saveMangel('${type}')"><i class="ti ti-check"></i> Speichern</button>
+      <button class="btn btn-copper btn-full" onclick="saveMangel()"><i class="ti ti-check"></i> Speichern</button>
       <button class="btn btn-full" onclick="cancelMangel()">Abbrechen</button>
     </div>`);
 
+  mangelObjChange(mieterId);
+  mangelKostenUpdate();
   window._mangelPhotos=[];
   window._mangelSession='mangel_'+Date.now();
-  // Eventuell aus abgebrochener Sitzung verbliebene Fotos anbieten
   restoreMangelFotos();
   }
+
+function mangelObjChange(preselectMieter){
+  const objId=document.getElementById('mgObjId')?.value;
+  const sel=document.getElementById('mgMietId');
+  if(!sel) return;
+  const liste=(window._mangelAlleMieter||[]).filter(m=>m.objektId===objId);
+  sel.innerHTML='<option value="">– keinem Mieter –</option>'+
+    liste.map(m=>`<option value="${m.id}" ${m.id===preselectMieter?'selected':''}>${esc(m.mieter)} (WE ${esc(m.weNr)})</option>`).join('');
+}
+
+function mangelKostenUpdate(){
+  const teile=parseFloat(document.getElementById('mgTeile')?.value)||0;
+  const std=parseFloat(document.getElementById('mgStunden')?.value)||0;
+  const satz=parseFloat(document.getElementById('mgSatz')?.value)||0;
+  const arbeit=std*satz, sum=teile+arbeit;
+  const el=document.getElementById('mgKostenSum');
+  if(!el) return;
+  if(teile||arbeit){ el.style.display='block';
+    el.innerHTML=`Material: <strong>${fmtEur(teile)}</strong> &nbsp;·&nbsp; Arbeit: <strong>${fmtEur(arbeit)}</strong> (${std} h × ${fmtEur(satz)}) &nbsp;·&nbsp; Gesamt: <strong>${fmtEur(sum)}</strong>`;
+  } else el.style.display='none';
+}
 
 // Stellt Fotos einer unterbrochenen Mangel-Erfassung wieder her
 async function restoreMangelFotos(){
@@ -4890,25 +4931,31 @@ async function cancelMangel(){
   closeModal();
 }
 
-async function saveMangel(type){
+async function saveMangel(){
   const titel=document.getElementById('mgTitel').value.trim();
   if(!titel){toast('Bitte Bezeichnung eingeben');return;}
+  const objektId=document.getElementById('mgObjId').value;
   const mieterId=document.getElementById('mgMietId').value;
   const m=mieterId?(await idbGet('mieter',mieterId)):null;
+  const istRep=document.getElementById('mgIstRep')?.checked||false;
+  const teile=parseFloat(document.getElementById('mgTeile')?.value)||0;
+  const stunden=parseFloat(document.getElementById('mgStunden')?.value)||0;
+  const satz=parseFloat(document.getElementById('mgSatz')?.value)||0;
+  const arbeit=stunden*satz, gesamt=teile+arbeit;
+  const nummer=await naechsteMangelNr(objektId);
   const entry={
-    id:uid(),type,objektId:document.getElementById('mgObjId').value,
-    mieterId:mieterId||null,weNr:m?.weNr||'',
+    id:uid(),type:istRep?'reparatur':'mangel',istReparatur:istRep,nummer,
+    objektId, mieterId:mieterId||null, weNr:m?.weNr||'',
     titel,schwere:document.getElementById('mgSchwere').value,
     datum:document.getElementById('mgDatum').value,
     beschreibung:document.getElementById('mgBeschr').value,
-    kosten:parseFloat(document.getElementById('mgKosten').value)||null,
+    kostenTeile:teile||null, stunden:stunden||null, stundensatz:satz||null,
+    kostenArbeit:arbeit||null, kosten:gesamt||null,
     status:document.getElementById('mgStatus').value,
     fotos:window._mangelPhotos||[],
     erstellt:now(),ersteller:CU?.name||'',
   };
-  const store=type==='reparatur'?'reparaturen':'maengel';
-  await idbPut(store,entry);
-  // Temporäre Einzelfoto-Sicherungen der Mangel-Erfassung aufräumen
+  await idbPut('maengel',entry);
   try {
     const offen = await idbGetAll('fotos', 'protId', '__mangel_offen__');
     for(const fo of offen) await idbDelete('fotos', fo.id).catch(()=>{});
@@ -4916,15 +4963,33 @@ async function saveMangel(type){
   window._mangelFotoIds = [];
   closeModal(); bcSend('mangel_changed',{});
   await refreshAufgaben(); await renderDash();
-  if(curPage==='objekt') await renderObjTab(type==='reparatur'?'maengel':'maengel');
-  toast('Erfasst ✓');
+  if(curPage==='objekt') await renderObjTab('maengel');
+  toast(`Erfasst ✓ (${nummer})`);
+}
+
+async function naechsteMangelNr(objektId){
+  const obj=getObj(objektId);
+  const gruppe=obj?.nr||0;
+  const alle=await idbGetAll('maengel');
+  let max=0;
+  for(const x of alle){
+    if(!x.nummer) continue;
+    const mt=String(x.nummer).match(/^M-(\d+)-(\d+)$/);
+    if(mt && parseInt(mt[1],10)===gruppe){ const nn=parseInt(mt[2],10); if(nn>max) max=nn; }
+  }
+  return `M-${gruppe}-${String(max+1).padStart(3,'0')}`;
 }
 
 /* ═══════════════════════════════════════════════════════════
    FAB ACTION
 ═══════════════════════════════════════════════════════════ */
 function fabAction(){
-  if(curPage==='aufgaben') modalAddAufgabe(null,null);
+  if(curPage==='aufgaben'){
+    const tab=window._aufTab||'todos';
+    if(tab==='maengel') modalAddMangel(null,null);
+    else if(tab==='einkauf') modalAddEinkauf();
+    else modalAddAufgabe(null,null);
+  }
   else if(curPage==='objekt') modalAddAufgabe(null,currentObjId);
   else if(curPage==='kalender') modalAddTermin();
 }
@@ -5443,9 +5508,12 @@ async function finishProt(){
     const tmp = await idbGetAll('fotos', 'protId', PD.id);
     for (const fo of tmp) await idbDelete('fotos', fo.id).catch(()=>{});
   } catch(e) { console.warn('Foto-Aufräumung:', e); }
-  // Auto-Mängel aus Protokoll speichern
+  // Auto-Mängel aus Protokoll speichern (mit laufender Nummer)
   if(PD._autoMaengel?.length){
-    for(const m of PD._autoMaengel) await idbPut('maengel',m);
+    for(const m of PD._autoMaengel){
+      if(!m.nummer) m.nummer = await naechsteMangelNr(m.objektId);
+      await idbPut('maengel',m);
+    }
     toast(`Protokoll gespeichert ✓ – ${PD._autoMaengel.length} Mängel übernommen`);
   } else {
     toast('Protokoll gespeichert ✓');
@@ -6342,17 +6410,23 @@ async function showMangelDetail(id, store='maengel') {
   const done = m.status==='behoben'||m.status==='erledigt';
 
   showModal(`
-    <div class="m-title"><i class="ti ti-${m.type==='reparatur'?'tools':'alert-triangle'}" style="color:${done?'var(--green)':'var(--red)'}"></i>
-      ${m.titel}
+    <div class="m-title"><i class="ti ti-${m.type==='reparatur'||m.istReparatur?'tools':'alert-triangle'}" style="color:${done?'var(--green)':'var(--red)'}"></i>
+      ${m.nummer?esc(m.nummer)+' · ':''}${esc(m.titel)}
     </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">
       <span class="status-badge ${done?'sb-behoben':'sb-offen'}" onclick="toggleMangelFromDetail('${id}','${store}')">
         <i class="ti ti-${done?'circle-check':'circle'}"></i>
-        ${done?m.type==='reparatur'?'Erledigt':'Behoben':'Offen'} · Tippen zum Ändern
+        ${done?(m.type==='reparatur'||m.istReparatur?'Erledigt':'Behoben'):'Offen'} · Tippen zum Ändern
       </span>
-      <span class="chip chip-${m.schwere==='schwerwiegend'?'err':m.schwere==='mittel'?'warn':'ok'}">${m.schwere||'–'}</span>
+      ${(m.istReparatur||m.type==='reparatur')?`<span class="chip chip-copper"><i class="ti ti-tools" style="font-size:11px"></i> Reparatur</span>`:''}
+      <span class="chip chip-${m.schwere==='schwerwiegend'?'err':m.schwere==='mittel'?'warn':'ok'}">${esc(m.schwere||'–')}</span>
       ${m.kosten?`<span class="chip chip-copper">${fmtEur(m.kosten)}</span>`:''}
     </div>
+    ${(m.kostenTeile||m.kostenArbeit)?`<div style="font-size:13px;color:var(--ink-60);margin-bottom:12px;padding:8px 12px;background:var(--ink-05);border-radius:8px">
+      ${m.kostenTeile?`Material: <strong>${fmtEur(m.kostenTeile)}</strong>`:''}
+      ${m.kostenArbeit?`${m.kostenTeile?' · ':''}Arbeit: <strong>${fmtEur(m.kostenArbeit)}</strong>${m.stunden&&m.stundensatz?` (${m.stunden} h × ${fmtEur(m.stundensatz)})`:''}`:''}
+      ${m.kosten?` · Gesamt: <strong>${fmtEur(m.kosten)}</strong>`:''}
+    </div>`:''}
     <div style="font-size:13px;color:var(--ink-40);margin-bottom:10px;display:flex;gap:12px;flex-wrap:wrap">
       <span><i class="ti ti-building" style="font-size:12px"></i> ${obj?.name||'–'}</span>
       ${mieter?`<span><i class="ti ti-user" style="font-size:12px"></i> ${mieter.mieter} · WE ${mieter.weNr}</span>`:''}
@@ -6387,7 +6461,7 @@ async function showMangelDetail(id, store='maengel') {
         <i class="ti ti-${done?'rotate-ccw':'check'}"></i> ${done?'Wieder öffnen':'Als erledigt markieren'}
       </button>
       <button class="btn btn-sm" onclick="editMangel('${id}','${store}')"><i class="ti ti-pencil"></i> Bearbeiten</button>
-      <button class="btn btn-sm" onclick="modalAddEinkauf('${id}','Mangel','')"><i class="ti ti-shopping-cart"></i></button>
+      <button class="btn btn-sm" onclick="modalAddEinkauf('${id}','Mangel','',{objektId:'${m.objektId||''}',weNr:'${esc(m.weNr||'')}',bezugText:'${esc((m.nummer?m.nummer+' · ':'')+m.titel)}'})"><i class="ti ti-shopping-cart"></i></button>
       <button class="btn btn-sm btn-danger" onclick="deleteMangelConfirm('${id}','${store}')"><i class="ti ti-trash"></i></button>
     </div>`);
 }
@@ -6423,35 +6497,63 @@ async function editMangel(id, store) {
   const m = await idbGet(store, id);
   if (!m) return;
   closeModal();
-  const myObj = await getMyObjekte();
-  const mieter = await idbGetAll('mieter');
+  const istRep = m.istReparatur||m.type==='reparatur';
   showModal(`
-    <div class="m-title"><i class="ti ti-pencil"></i> Bearbeiten</div>
-    <div class="f"><label>Bezeichnung</label><input type="text" id="em_titel" value="${m.titel}"></div>
+    <div class="m-title"><i class="ti ti-pencil"></i> Bearbeiten${m.nummer?' · '+esc(m.nummer):''}</div>
+    <div class="f"><label>Bezeichnung</label><input type="text" id="em_titel" value="${esc(m.titel)}"></div>
+    <label style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--ink-05);border-radius:10px;margin-bottom:12px;cursor:pointer">
+      <input type="checkbox" id="em_istRep" ${istRep?'checked':''} style="width:18px;height:18px;flex-shrink:0">
+      <span style="font-size:13px">Dies ist eine <strong>Kleinreparatur</strong></span>
+    </label>
     <div class="f-row">
       <div class="f"><label>Schwere</label><select id="em_schwere">
         ${['gering','mittel','schwerwiegend'].map(v=>`<option ${m.schwere===v?'selected':''}>${v}</option>`).join('')}
       </select></div>
-      <div class="f"><label>Kosten (€)</label><input type="number" id="em_kosten" value="${m.kosten||''}" step="0.01"></div>
+      <div class="f"><label>Materialkosten Teile (€)</label><input type="number" id="em_teile" value="${m.kostenTeile||''}" step="0.01" oninput="emKostenUpdate()"></div>
     </div>
-    <div class="f"><label>Beschreibung</label><textarea id="em_beschr">${m.beschreibung||''}</textarea></div>
+    <div class="f-row">
+      <div class="f"><label>Arbeitsstunden</label><input type="number" id="em_stunden" value="${m.stunden||''}" step="0.25" oninput="emKostenUpdate()"></div>
+      <div class="f"><label>Stundensatz (€/h)</label><input type="number" id="em_satz" value="${m.stundensatz||''}" step="0.01" oninput="emKostenUpdate()"></div>
+    </div>
+    <div id="em_kostenSum" style="font-size:13px;color:var(--ink-60);margin-bottom:12px;padding:8px 12px;background:var(--ink-05);border-radius:8px;display:none"></div>
+    <div class="f"><label>Beschreibung</label><textarea id="em_beschr">${esc(m.beschreibung||'')}</textarea></div>
     <div class="f-row">
       <button class="btn btn-copper btn-full" onclick="saveEditMangel('${id}','${store}')"><i class="ti ti-check"></i> Speichern</button>
       <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
     </div>`);
+  emKostenUpdate();
+}
+
+function emKostenUpdate(){
+  const teile=parseFloat(document.getElementById('em_teile')?.value)||0;
+  const std=parseFloat(document.getElementById('em_stunden')?.value)||0;
+  const satz=parseFloat(document.getElementById('em_satz')?.value)||0;
+  const arbeit=std*satz, sum=teile+arbeit;
+  const el=document.getElementById('em_kostenSum');
+  if(!el) return;
+  if(teile||arbeit){ el.style.display='block';
+    el.innerHTML=`Material: <strong>${fmtEur(teile)}</strong> · Arbeit: <strong>${fmtEur(arbeit)}</strong> · Gesamt: <strong>${fmtEur(sum)}</strong>`;
+  } else el.style.display='none';
 }
 
 async function saveEditMangel(id, store) {
   const m = await idbGet(store, id);
   if (!m) return;
-  m.titel      = document.getElementById('em_titel').value.trim() || m.titel;
-  m.schwere    = document.getElementById('em_schwere').value;
-  m.beschreibung=document.getElementById('em_beschr').value;
-  m.kosten     = parseFloat(document.getElementById('em_kosten').value) || null;
+  m.titel       = document.getElementById('em_titel').value.trim() || m.titel;
+  m.schwere     = document.getElementById('em_schwere').value;
+  m.beschreibung= document.getElementById('em_beschr').value;
+  m.istReparatur= document.getElementById('em_istRep')?.checked||false;
+  m.type        = m.istReparatur?'reparatur':'mangel';
+  const teile   = parseFloat(document.getElementById('em_teile').value)||0;
+  const stunden = parseFloat(document.getElementById('em_stunden').value)||0;
+  const satz    = parseFloat(document.getElementById('em_satz').value)||0;
+  m.kostenTeile = teile||null; m.stunden=stunden||null; m.stundensatz=satz||null;
+  m.kostenArbeit= (stunden*satz)||null;
+  m.kosten      = (teile+stunden*satz)||null;
   m.bearbeitetAm = now(); m.bearbeitetVon = CU?.name||'';
   await idbPut(store, m);
   closeModal(); toast('Gespeichert ✓');
-  await refreshAufgaben();
+  await refreshAufgaben(); await renderDash();
 }
 
 async function deleteMangelConfirm(id, store) {
@@ -6702,6 +6804,7 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden' && PD && PD.id) {
     PD.status = 'draft';
     idbPut('protokolle', PD).catch(e => console.warn('Auto-Sicherung (hidden):', e));
+    try { localStorage.setItem('openProtokoll', JSON.stringify({ id: PD.id, step: PD._draftStep||0, ts: Date.now() })); } catch(e) {}
   }
 });
 
@@ -6755,11 +6858,25 @@ window.addEventListener('DOMContentLoaded', async () => {
       const user = await idbGet('users', sessionUid).catch(()=>null);
       if (user && user.aktiv !== false) {
         CU = user;
-        // Zeitstempel auffrischen
         try { sessionStorage.setItem('activeSession', sessionUid); } catch(e) {}
         try { localStorage.setItem('activeSession', JSON.stringify({uid: sessionUid, ts: Date.now()})); } catch(e) {}
         showScreen('appScreen');
         await initApp();
+        try {
+          const rawP = localStorage.getItem('openProtokoll');
+          if (rawP) {
+            const op = JSON.parse(rawP);
+            if (op && op.id && op.ts && (Date.now() - op.ts) < 60*60*1000) {
+              const prot = await idbGet('protokolle', op.id).catch(()=>null);
+              if (prot && prot.status === 'draft') {
+                PD = {...prot};
+                await restoreFotosForPD();
+                renderProt(op.step || prot._draftStep || 0);
+              }
+            }
+            localStorage.removeItem('openProtokoll');
+          }
+        } catch(e) { console.warn('Protokoll-Wiederherstellung:', e); }
         return;
       }
     }
