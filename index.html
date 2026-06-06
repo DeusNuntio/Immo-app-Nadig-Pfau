@@ -5192,9 +5192,15 @@ function renderProt(step){
   pSigPads={};
   // Draft nach jedem Schritt automatisch speichern
   if (PD) {
-    PD.status = 'draft';
-    PD._draftStep = step;
-    idbPut('protokolle', PD).catch(e=>console.warn('Draft-Speicherung:', e));
+    if (PD._adminEditOriginal) {
+      // Admin bearbeitet ein archiviertes Protokoll: NICHT als Draft speichern,
+      // damit es bei Abbruch nicht aus dem Archiv verschwindet. Status bleibt 'fertig'.
+      PD._draftStep = step;
+    } else {
+      PD.status = 'draft';
+      PD._draftStep = step;
+      idbPut('protokolle', PD).catch(e=>console.warn('Draft-Speicherung:', e));
+    }
   }
 
   let stepsH='';
@@ -5562,6 +5568,33 @@ async function finishProt(){
       }
     }
   });
+  // Admin-Änderungen an einem bereits abgeschlossenen Protokoll erkennen und protokollieren
+  if(PD._adminEditOriginal){
+    const orig=PD._adminEditOriginal;
+    const aend=PD.aenderungen||[];
+    const wann=new Date().toLocaleString('de-DE');
+    const von=CU?.name||'Admin';
+    // Raumzustände vergleichen
+    for(const rn of ROOMS){
+      const oC=orig.raeume?.[rn]?.conditions||{};
+      const nC=PD.raeume?.[rn]?.conditions||{};
+      const keys=new Set([...Object.keys(oC),...Object.keys(nC)]);
+      for(const c of keys){
+        const a=oC[c]||'Einwandfrei', n=nC[c]||'Einwandfrei';
+        if(a!==n) aend.push({feld:`${rn} – ${c}`, alt:a, neu:n, von, wann});
+      }
+    }
+    // Vereinbarungen / Gesamtzustand
+    if((orig.vereinbarungen||'')!==(PD.vereinbarungen||'')) aend.push({feld:'Vereinbarungen', alt:orig.vereinbarungen||'–', neu:PD.vereinbarungen||'–', von, wann});
+    if((orig.gesamtzustand||'')!==(PD.gesamtzustand||'')) aend.push({feld:'Gesamtzustand', alt:orig.gesamtzustand||'–', neu:PD.gesamtzustand||'–', von, wann});
+    // Zählerstände
+    (orig.zaehler||[]).forEach((z,i)=>{
+      const nz=PD.zaehler?.[i];
+      if(nz && (z.stand||'')!==(nz.stand||'')) aend.push({feld:`Zähler ${z.typ}`, alt:z.stand||'–', neu:nz.stand||'–', von, wann});
+    });
+    PD.aenderungen=aend;
+    delete PD._adminEditOriginal;
+  }
   PD.status='fertig';PD.abgeschlossenAm=now();
   await idbPut('protokolle',PD);
   // Temporäre Einzelfoto-Sicherungen aufräumen (sind jetzt final im Protokoll enthalten)
@@ -5597,10 +5630,112 @@ async function finishProt(){
 async function editProtokoll(id){
   const p=await idbGet('protokolle',id);
   if(!p) return;
+  // Fertige Protokolle: schreibgeschützte Ansicht. Nur Entwürfe direkt in den Wizard.
+  if(p.status==='fertig'){ viewProtokoll(id); return; }
   PD={...p};pRoomIdx=0;
   if(p.status==='draft') await restoreFotosForPD();
   const step = p.status==='draft' ? (p._draftStep||0) : 0;
   renderProt(step);
+}
+
+// Schreibgeschützte Übersicht eines archivierten Protokolls
+async function viewProtokoll(id){
+  const p=await idbGet('protokolle',id);
+  if(!p) return;
+  const obj=getObj(p.objektId);
+  const istAdmin=CU?.role==='admin';
+  const aenderungen=p.aenderungen||[];
+
+  const condRows=(rn,rd)=>{
+    if(!rd||rd.vorhanden===false) return '';
+    let rows=`<div style="font-weight:600;font-size:13px;margin:10px 0 4px;color:var(--ink-60)">${esc(rn)}</div>`;
+    const conds=condsForRoom(rn);
+    let any=false;
+    for(const c of conds){
+      const val=rd.conditions?.[c]||'Einwandfrei';
+      const note=rd.condNotes?.[c]||'';
+      if(val==='Einwandfrei'&&!note) continue;
+      any=true;
+      const col=val==='Beschädigt'?'var(--red)':val==='Einwandfrei'?'var(--green)':'var(--amber)';
+      rows+=`<div style="display:flex;gap:8px;font-size:12px;padding:3px 0;border-bottom:1px solid var(--ink-05)">
+        <span style="flex:1">${esc(c)}</span>
+        <span style="color:${col};font-weight:600">${esc(val)}</span>
+        ${note?`<span style="flex:1;color:var(--ink-40);font-style:italic">${esc(note)}</span>`:''}
+      </div>`;
+    }
+    if(!any) rows+=`<div style="font-size:12px;color:var(--ink-40)">Einwandfrei</div>`;
+    if(rd.photos?.length){
+      rows+=`<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px">`;
+      rd.photos.forEach((ph,i)=>{ rows+=`<img src="${ph}" onclick="openFoto('${ph}','${esc(rn)} – Foto ${i+1}')" style="width:64px;height:64px;object-fit:cover;border-radius:6px;cursor:pointer;border:1px solid var(--ink-10)">`; });
+      rows+=`</div>`;
+    }
+    return rows;
+  };
+
+  let roomsH='';
+  for(const rn of ROOMS){ roomsH+=condRows(rn,p.raeume?.[rn]); }
+
+  let zaehlerH='';
+  (p.zaehler||[]).filter(z=>z.stand).forEach(z=>{
+    zaehlerH+=`<div style="display:flex;gap:8px;font-size:12px;padding:3px 0">
+      <span style="flex:1">${esc(z.typ)} (${esc(z.nr||'–')})</span>
+      <span style="font-weight:600">${esc(z.stand)} ${esc(z.einheit||'')}</span>
+      ${z.foto?`<img src="${z.foto}" onclick="openFoto('${z.foto}','${esc(z.typ)}')" style="width:40px;height:30px;object-fit:cover;border-radius:4px;cursor:pointer">`:''}
+    </div>`;
+  });
+
+  const sig=(label,data)=>data?`<div style="flex:1;min-width:130px"><div style="font-size:11px;color:var(--ink-40);margin-bottom:4px">${label}</div><img src="${data}" style="width:100%;max-width:180px;border:1px solid var(--ink-10);border-radius:6px;background:#fff"></div>`:'';
+
+  let aendH='';
+  if(aenderungen.length){
+    aendH=`<div style="margin-top:16px;padding:12px;border:1px solid var(--red);border-radius:10px;background:#fdecea">
+      <div style="font-weight:700;font-size:13px;color:var(--red);margin-bottom:8px"><i class="ti ti-history"></i> Nachträgliche Änderungen</div>
+      ${aenderungen.map(a=>`<div style="font-size:12px;color:var(--red);padding:3px 0;border-bottom:1px solid rgba(192,57,43,.15)">
+        <strong>${esc(a.feld)}:</strong> „${esc(a.alt||'–')}" → „${esc(a.neu||'–')}"<br>
+        <span style="font-size:11px;opacity:.8">geändert von ${esc(a.von)} am ${esc(a.wann)}</span>
+      </div>`).join('')}
+    </div>`;
+  }
+
+  showModal(`
+    <div class="m-title"><i class="ti ti-clipboard-check"></i> Protokoll (archiviert)</div>
+    <div style="font-size:12px;color:var(--ink-40);margin-bottom:6px">
+      <span class="chip chip-ok" style="font-size:10px;padding:1px 6px">Abgeschlossen</span>
+      Schreibgeschützt – nur Ansicht
+    </div>
+    <div style="font-size:13px;line-height:1.7;margin-bottom:12px">
+      <strong>${esc(obj?.name||'')}</strong> · WE ${esc(p.weNr||'?')}<br>
+      ${esc(p.mieterName||'–')} · ${esc(p.art||'Übergabe')}<br>
+      Datum: ${fmtDate(p.datum)} · Abgeschlossen: ${esc(p.abgeschlossenAm||'–')}
+    </div>
+    <div class="card-hdr" style="margin:10px 0 6px"><i class="ti ti-door"></i> Räume & Zustand</div>
+    ${roomsH||'<div style="font-size:12px;color:var(--ink-40)">Keine Angaben</div>'}
+    ${zaehlerH?`<div class="card-hdr" style="margin:14px 0 6px"><i class="ti ti-gauge"></i> Zählerstände</div>${zaehlerH}`:''}
+    ${p.notes||p.vereinbarungen?`<div class="card-hdr" style="margin:14px 0 6px"><i class="ti ti-note"></i> Anmerkungen</div><div style="font-size:12px;color:var(--ink-60)">${esc(p.vereinbarungen||'')}</div>`:''}
+    ${(p.sigVermieter||p.sigMieter||p.sigZeuge)?`<div class="card-hdr" style="margin:14px 0 6px"><i class="ti ti-signature"></i> Unterschriften</div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap">${sig('Vermieter',p.sigVermieter)}${sig('Mieter',p.sigMieter)}${sig('Zeuge',p.sigZeuge)}</div>`:''}
+    ${aendH}
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:16px">
+      <button class="btn btn-sm btn-copper" onclick="printProt('${id}')"><i class="ti ti-printer"></i> PDF / Drucken</button>
+      ${istAdmin?`<button class="btn btn-sm" onclick="adminEditProtokoll('${id}')"><i class="ti ti-edit"></i> Ändern (Admin)</button>`:''}
+      <button class="btn btn-sm" onclick="closeModal()">Schließen</button>
+    </div>`);
+}
+
+// Admin-Bearbeitung eines fertigen Protokolls: Wizard öffnen, Originalzustand merken
+async function adminEditProtokoll(id){
+  const p=await idbGet('protokolle',id);
+  if(!p){ return; }
+  if(CU?.role!=='admin'){ toast('Nur Administratoren dürfen archivierte Protokolle ändern'); return; }
+  if(!confirm('Dieses archivierte Protokoll bearbeiten? Änderungen werden rot protokolliert.')) return;
+  closeModal();
+  PD={...p};pRoomIdx=0;
+  PD._adminEditOriginal = JSON.parse(JSON.stringify({
+    raeume:p.raeume, zaehler:p.zaehler, vereinbarungen:p.vereinbarungen,
+    gesamtzustand:p.gesamtzustand, schluessel:p.schluessel
+  }));
+  await restoreFotosForPD();
+  renderProt(0);
 }
 
 async function printProt(id){
@@ -5744,6 +5879,12 @@ ${d.vereinbarungen?`<div style="background:#f0f4f9;border-radius:3px;padding:6px
   <div class="sig-box">${d.sigMieter?`<img src="${d.sigMieter}">`:'<div style="height:65px;border:1px dashed #ccd"></div>'}<p><strong>${d.mieterName||'Mieter'}</strong><br>&nbsp;<br>Datum: ${datum}</p></div>
 </div>
 ${d.zeugeName&&d.sigZeuge?`<div style="max-width:50%;margin-top:8px"><div class="sig-box"><img src="${d.sigZeuge}"><p><strong>${d.zeugeName}</strong><br>${d.zeugeFunktion||'Zeuge'}<br>Datum: ${datum}</p></div></div>`:''}
+${(d.aenderungen&&d.aenderungen.length)?`<div style="margin-top:12px;padding:8px 10px;border:1.5px solid #C0392B;border-radius:5px">
+  <div style="font-size:11px;font-weight:700;color:#C0392B;margin-bottom:5px">NACHTRÄGLICHE ÄNDERUNGEN</div>
+  ${d.aenderungen.map(a=>`<div style="font-size:9px;color:#C0392B;padding:2px 0;border-bottom:1px solid #f3c0bb">
+    <strong>${a.feld}:</strong> „${a.alt||'–'}" &rarr; „${a.neu||'–'}" · geändert von ${a.von} am ${a.wann}
+  </div>`).join('')}
+</div>`:''}
 <div class="footer">Übergabeprotokoll · ${d.objektName} · WE ${d.weNr||'?'} · ${datum} · ${d.abgeschlossenAm||now()} · Nadig Pfau Hausverwaltung</div>
 
 
@@ -6897,7 +7038,7 @@ async function processPhoto(data) {
         PD.raeume[pPhotoRoom].photos.push(data);
         PD.raeume[pPhotoRoom].photoIds = PD.raeume[pPhotoRoom].photoIds || [];
         PD.raeume[pPhotoRoom].photoIds.push(fotoId);
-        PD.status = 'draft';
+        if(!PD._adminEditOriginal) PD.status = 'draft';
         try { await idbPut('protokolle', PD); } catch(e){ console.warn('Draft nach Foto:', e); }
         renderProtRaeume();
       }
@@ -6910,7 +7051,7 @@ async function processPhoto(data) {
         } catch(e) { console.warn('Einzelfoto-Sicherung:', e); toast('Foto konnte nicht gesichert werden – bitte erneut'); return; }
         PD.zaehler[idx].foto = data;
         PD.zaehler[idx].fotoId = fotoId;
-        PD.status = 'draft';
+        if(!PD._adminEditOriginal) PD.status = 'draft';
         try { await idbPut('protokolle', PD); } catch(e){ console.warn('Draft nach Zählerfoto:', e); }
         renderProt(2);
         if(document.getElementById('camOverlay')?.style.display==='flex') closeCam();
@@ -7011,7 +7152,7 @@ function closeCam(){
 // falls das Betriebssystem die App entlädt, bevor regulär gespeichert wurde.
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden' && PD && PD.id) {
-    PD.status = 'draft';
+    if(!PD._adminEditOriginal) PD.status = 'draft';
     idbPut('protokolle', PD).catch(e => console.warn('Auto-Sicherung (hidden):', e));
     try { localStorage.setItem('openProtokoll', JSON.stringify({ id: PD.id, step: PD._draftStep||0, ts: Date.now() })); } catch(e) {}
   }
