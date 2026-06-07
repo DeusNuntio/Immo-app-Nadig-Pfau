@@ -126,6 +126,9 @@ body{background:var(--surface);color:var(--ink);font-size:15px;-webkit-font-smoo
 .obj-meta{font-size:12px;color:var(--ink-40);margin-top:2px}
 .obj-chips{display:flex;gap:6px;margin-top:6px;flex-wrap:wrap}
 .chip{padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600}
+.chip-active{background:var(--ink);color:#fff;border:1px solid var(--ink)}
+button.chip{padding:6px 14px;font-size:12px;white-space:nowrap;background:var(--ink-05);color:var(--ink-60);border:1px solid var(--ink-10);cursor:pointer;flex-shrink:0}
+button.chip.chip-active{background:var(--ink);color:#fff;border-color:var(--ink)}
 .chip-gray{background:var(--ink-05);color:var(--ink-60)}
 .chip-warn{background:var(--amber-l);color:var(--amber)}
 .chip-ok{background:var(--green-l);color:var(--green)}
@@ -560,6 +563,7 @@ body{background:var(--surface);color:var(--ink);font-size:15px;-webkit-font-smoo
     <div id="page-protokoll-archiv" class="page"></div>
     <div id="page-aufgaben" class="page"></div>
     <div id="page-wartung" class="page"></div>
+    <div id="page-lager" class="page"></div>
     <div id="page-settings" class="page"></div>
   </div>
 
@@ -870,7 +874,7 @@ function nav(id,title,sub,push=true){
   const TITLES={dash:'Dashboard',aufgaben:'Aufgaben & Mängel',settings:'Einstellungen',
                 objekt:'Objekt',mieter:'Mieter',protokoll:'Übergabeprotokoll',
                 'protokoll-archiv':'Protokoll-Archiv',
-                'kalender':'Kalender','wartung':'Wartungsfristen'};
+                'kalender':'Kalender','wartung':'Wartungsfristen','lager':'Lager & Material'};
   document.getElementById('hdrTitle').textContent=title||TITLES[id]||id;
   document.getElementById('hdrSub').textContent=sub||'';
   document.getElementById('hdrBack').classList.toggle('vis',push&&id!=='dash');
@@ -977,6 +981,7 @@ async function renderDash() {
     <button class="qa-btn" onclick="modalAddAufgabe(null,null)"><i class="ti ti-plus"></i> ToDo</button>
     <button class="qa-btn" onclick="modalAddMangel(null,null)"><i class="ti ti-alert-triangle"></i> Mangel</button>
     <button class="qa-btn" onclick="nav('wartung')"><i class="ti ti-calendar-stats"></i> Wartung</button>
+    <button class="qa-btn" onclick="nav('lager')"><i class="ti ti-package"></i> Lager</button>
     <button class="qa-btn" onclick="nav('settings')"><i class="ti ti-upload"></i> Excel-Import</button>
   </div>`;
 
@@ -1404,8 +1409,1520 @@ async function saveNeuerZaehler(objektId){
   toast('Zähler angelegt ✓');
 }
 
-// Prüft alle Objekte/Mieter auf fällige Mieterwechsel (Mietbeginn erreicht)
-// und führt sie automatisch durch. Idempotent – mehrfacher Aufruf schadet nicht.
+/* ═══════════════════════════════════════════════════════════
+   VERSORGER / VERTRÄGE (nur Admin)
+   Stammdaten je Objekt inkl. Vertrag, Preise, Zugangsdaten.
+   Automatische Kalender-Erinnerung 1 Monat vor Kündigungsfrist.
+═══════════════════════════════════════════════════════════ */
+const VERSORGER_SPARTE = [
+  {val:'strom',  label:'Strom',   icon:'ti-bolt'},
+  {val:'gas',    label:'Gas',     icon:'ti-flame'},
+  {val:'wasser', label:'Wasser',  icon:'ti-droplet'},
+  {val:'heizung',label:'Heizung/Fernwärme', icon:'ti-temperature'},
+  {val:'muell',  label:'Abfall / Entsorgung', icon:'ti-trash'},
+  {val:'internet',label:'Internet / TK', icon:'ti-wifi'},
+  {val:'sonstige',label:'Sonstige', icon:'ti-file-dollar'},
+];
+/* ═══════════════════════════════════════════════════════════
+   VERSCHLÜSSELUNG (WebCrypto / AES-GCM, Schlüssel aus Master-Passwort)
+   Für sensible Zugangsdaten (Versorger-Passwörter). Master-Passwort wird
+   nie gespeichert; der abgeleitete Schlüssel lebt nur in der Sitzung.
+═══════════════════════════════════════════════════════════ */
+let _cryptoKey = null;            // abgeleiteter AES-Schlüssel (nur im RAM, pro Sitzung)
+const _txtEnc = new TextEncoder();
+const _txtDec = new TextDecoder();
+function _b64(buf){ let s=''; const b=new Uint8Array(buf); for(let i=0;i<b.length;i++) s+=String.fromCharCode(b[i]); return btoa(s); }
+function _unb64(s){ const bin=atob(s); const a=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++) a[i]=bin.charCodeAt(i); return a; }
+
+async function _deriveKey(masterPw, saltB64){
+  const salt=_unb64(saltB64);
+  const base=await crypto.subtle.importKey('raw', _txtEnc.encode(masterPw), 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey(
+    {name:'PBKDF2', salt, iterations:200000, hash:'SHA-256'},
+    base, {name:'AES-GCM', length:256}, false, ['encrypt','decrypt']);
+}
+async function _encryptVal(plain){
+  if(!_cryptoKey || !plain) return null;
+  const iv=crypto.getRandomValues(new Uint8Array(12));
+  const ct=await crypto.subtle.encrypt({name:'AES-GCM', iv}, _cryptoKey, _txtEnc.encode(plain));
+  return {iv:_b64(iv), ct:_b64(ct)};
+}
+async function _decryptVal(obj){
+  if(!_cryptoKey || !obj || !obj.ct) return '';
+  try{
+    const pt=await crypto.subtle.decrypt({name:'AES-GCM', iv:_unb64(obj.iv)}, _cryptoKey, _unb64(obj.ct));
+    return _txtDec.decode(pt);
+  }catch(e){ return ''; }
+}
+
+// Ist die Verschlüsselung bereits eingerichtet (Master-PW gesetzt)?
+async function cryptoIstEingerichtet(){
+  const s=await idbGet('settings','cryptoConfig').catch(()=>null);
+  return !!(s && s.salt && s.check);
+}
+// Schlüssel für die Sitzung entsperrt?
+function cryptoIstEntsperrt(){ return !!_cryptoKey; }
+
+// Master-Passwort erstmalig einrichten
+async function cryptoEinrichten(masterPw){
+  const salt=_b64(crypto.getRandomValues(new Uint8Array(16)));
+  _cryptoKey=await _deriveKey(masterPw, salt);
+  const iv=crypto.getRandomValues(new Uint8Array(12));
+  const ct=await crypto.subtle.encrypt({name:'AES-GCM', iv}, _cryptoKey, _txtEnc.encode('CHECK_OK'));
+  await idbPut('settings',{id:'cryptoConfig', salt, check:{iv:_b64(iv), ct:_b64(ct)}, erstellt:now()});
+}
+// Sitzung mit Master-Passwort entsperren; true bei Erfolg
+async function cryptoEntsperren(masterPw){
+  const cfg=await idbGet('settings','cryptoConfig').catch(()=>null);
+  if(!cfg) return false;
+  try{
+    const key=await _deriveKey(masterPw, cfg.salt);
+    const pt=await crypto.subtle.decrypt({name:'AES-GCM', iv:_unb64(cfg.check.iv)}, key, _unb64(cfg.check.ct));
+    if(_txtDec.decode(pt)==='CHECK_OK'){ _cryptoKey=key; return true; }
+  }catch(e){}
+  return false;
+}
+function cryptoSperren(){ _cryptoKey=null; }
+
+// Dialog: einrichten oder entsperren. onDone() wird nach Erfolg aufgerufen.
+async function modalCryptoUnlock(onDoneName, ...args){
+  const eingerichtet=await cryptoIstEingerichtet();
+  if(eingerichtet){
+    showModal(`
+      <div class="m-title"><i class="ti ti-lock"></i> Zugangsdaten entsperren</div>
+      <p style="font-size:12px;color:var(--ink-40);margin-bottom:10px">Bitte Master-Passwort eingeben, um die verschlüsselten Zugangsdaten anzuzeigen.</p>
+      <div class="f"><label>Master-Passwort</label><input type="password" id="cryptoPw" autocomplete="off"></div>
+      <div id="cryptoErr" style="color:#C0392B;font-size:12px;margin-bottom:8px"></div>
+      <div class="f-row">
+        <button class="btn btn-copper btn-full" onclick="tryCryptoUnlock('${onDoneName}', ${JSON.stringify(args).slice(1,-1)})"><i class="ti ti-lock-open"></i> Entsperren</button>
+        <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      </div>`);
+  } else {
+    showModal(`
+      <div class="m-title"><i class="ti ti-shield-lock"></i> Verschlüsselung einrichten</div>
+      <p style="font-size:12px;color:var(--ink-40);margin-bottom:10px">
+        Legen Sie ein Master-Passwort fest. Damit werden Zugangsdaten verschlüsselt.
+        <strong>Wichtig:</strong> Ohne dieses Passwort sind verschlüsselte Daten nicht wiederherstellbar – bitte sicher notieren.
+      </p>
+      <div class="f"><label>Master-Passwort (min. 8 Zeichen)</label><input type="password" id="cryptoPw" autocomplete="off"></div>
+      <div class="f"><label>Wiederholen</label><input type="password" id="cryptoPw2" autocomplete="off"></div>
+      <div id="cryptoErr" style="color:#C0392B;font-size:12px;margin-bottom:8px"></div>
+      <div class="f-row">
+        <button class="btn btn-copper btn-full" onclick="trySetupCrypto('${onDoneName}', ${JSON.stringify(args).slice(1,-1)})"><i class="ti ti-check"></i> Einrichten</button>
+        <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      </div>`);
+  }
+}
+async function trySetupCrypto(onDoneName, ...args){
+  const pw=document.getElementById('cryptoPw')?.value||'';
+  const pw2=document.getElementById('cryptoPw2')?.value||'';
+  const err=document.getElementById('cryptoErr');
+  if(pw.length<8){ err.textContent='Master-Passwort muss mindestens 8 Zeichen haben.'; return; }
+  if(pw!==pw2){ err.textContent='Die Passwörter stimmen nicht überein.'; return; }
+  await cryptoEinrichten(pw);
+  closeModal();
+  toast('Verschlüsselung eingerichtet ✓');
+  if(onDoneName && window[onDoneName]) window[onDoneName](...args);
+}
+async function tryCryptoUnlock(onDoneName, ...args){
+  const pw=document.getElementById('cryptoPw')?.value||'';
+  const err=document.getElementById('cryptoErr');
+  const ok=await cryptoEntsperren(pw);
+  if(!ok){ if(err) err.textContent='Falsches Master-Passwort.'; return; }
+  closeModal();
+  if(onDoneName && window[onDoneName]) window[onDoneName](...args);
+}
+
+function getSparte(v){ return VERSORGER_SPARTE.find(s=>s.val===v)||VERSORGER_SPARTE[VERSORGER_SPARTE.length-1]; }
+
+// Zieht Monate von einem Datum ab, ohne Monatsüberlauf (31.12. − 3 Mon. = 30.09., nicht 01.10.).
+// Wichtig für rechtssichere Kündigungsfristen: rundet bei kürzeren Monaten auf das Monatsende ab.
+function monateAbziehen(datum, monate){
+  const d=new Date(datum);
+  const zielTag=d.getDate();
+  d.setDate(1);                       // erst auf Monatsersten, um Überlauf zu vermeiden
+  d.setMonth(d.getMonth()-monate);
+  // letzter Tag des Zielmonats
+  const letzterTag=new Date(d.getFullYear(), d.getMonth()+1, 0).getDate();
+  d.setDate(Math.min(zielTag, letzterTag));
+  return d;
+}
+
+async function renderObjVersorger(el){
+  if(CU?.role!=='admin'){ el.innerHTML='<div class="empty"><i class="ti ti-lock"></i><p>Nur für Administratoren sichtbar.</p></div>'; return; }
+  const liste=(await idbGetAll('versorger','objektId',currentObjId))
+    .sort((a,b)=>a.sparte.localeCompare(b.sparte));
+  let h=`<div class="s-hdr"><div class="s-title"><i class="ti ti-file-dollar"></i> Versorger & Verträge (${liste.length})</div>
+    <button class="btn btn-sm btn-copper" onclick="modalVersorger('${currentObjId}')"><i class="ti ti-plus"></i> Versorger</button>
+  </div>
+  <div style="font-size:11px;color:var(--ink-40);margin-bottom:10px">
+    <i class="ti ti-info-circle"></i> Zugangsdaten sind nur für Administratoren sichtbar. Eine Erinnerung wird automatisch einen Monat vor Ablauf der Kündigungsfrist im Kalender hinterlegt.
+  </div>`;
+  if(!liste.length){
+    h+='<div class="empty"><i class="ti ti-file-off"></i><p>Noch keine Versorger erfasst.</p></div>';
+    el.innerHTML=h; return;
+  }
+  const heute=new Date(); heute.setHours(0,0,0,0);
+  for(const v of liste){
+    const sp=getSparte(v.sparte);
+    // Kündigungsstichtag berechnen
+    let fristInfo='';
+    if(v.vertragsende){
+      const ende=new Date(v.vertragsende);
+      const kuendMonate=parseInt(v.kuendigungsfristMonate)||0;
+      const stichtag=monateAbziehen(ende, kuendMonate);
+      const tageBis=Math.round((stichtag-heute)/86400000);
+      const warn = tageBis<=60 && tageBis>=0;
+      const ueber = tageBis<0;
+      fristInfo=`<div style="font-size:12px;margin-top:4px;color:${warn?'#C0392B':ueber?'#888':'var(--ink-60)'}">
+        <i class="ti ti-calendar-due"></i> Kündigung bis spätestens <strong>${stichtag.toLocaleDateString('de-DE')}</strong>
+        (Vertragsende ${ende.toLocaleDateString('de-DE')}${kuendMonate?`, Frist ${kuendMonate} Mon.`:''})
+        ${warn?' · <strong>bald fällig!</strong>':ueber?' · Frist verstrichen':''}
+      </div>`;
+    }
+    h+=`<div class="card" style="margin-bottom:10px">
+      <div style="display:flex;align-items:center;gap:10px">
+        <div style="width:36px;height:36px;border-radius:8px;background:var(--ink-05);display:flex;align-items:center;justify-content:center;font-size:17px;color:var(--copper)"><i class="ti ${sp.icon}"></i></div>
+        <div style="flex:1">
+          <div style="font-weight:600;font-size:14px">${v.anbieter||sp.label}</div>
+          <div style="font-size:12px;color:var(--ink-40)">${sp.label}${v.vertragsnummer?' · Vertrag '+v.vertragsnummer:''}</div>
+        </div>
+        <button class="btn btn-sm" onclick="modalVersorger('${currentObjId}','${v.id}')"><i class="ti ti-pencil"></i></button>
+      </div>
+      ${fristInfo}
+      <div style="font-size:12px;color:var(--ink-60);margin-top:6px;display:flex;flex-wrap:wrap;gap:10px">
+        ${v.grundpreis?`<span>Grundpreis: <strong>${fmtEur(v.grundpreis)}/Monat</strong></span>`:''}
+        ${v.arbeitspreis?`<span>Arbeitspreis: <strong>${v.arbeitspreis} ct/${v.einheit||'Einheit'}</strong></span>`:''}
+      </div>
+      <button class="btn btn-sm" style="width:100%;margin-top:8px" onclick="zeigeVersorgerDetail('${v.id}')"><i class="ti ti-eye"></i> Details & Zugangsdaten</button>
+    </div>`;
+  }
+  el.innerHTML=h;
+}
+
+async function modalVersorger(objektId, versorgerId){
+  const v = versorgerId ? await idbGet('versorger', versorgerId) : {};
+  const isEdit = !!versorgerId;
+  // Passwort nur anzeigen, wenn entsperrt; sonst Platzhalter
+  let pwWert='', pwHinweis='';
+  if(v.passwortEnc){
+    if(cryptoIstEntsperrt()){
+      pwWert = await _decryptVal(v.passwortEnc);
+    } else {
+      pwHinweis = '<div style="font-size:11px;color:#C0392B;margin-bottom:4px"><i class="ti ti-lock"></i> Gespeichertes Passwort ist verschlüsselt. Zum Anzeigen/Ändern erst entsperren.</div>';
+    }
+  }
+  showModal(`
+    <div class="m-title"><i class="ti ti-file-dollar"></i> ${isEdit?'Versorger bearbeiten':'Neuer Versorger'}</div>
+    <div class="f-row">
+      <div class="f"><label>Sparte</label>
+        <select id="vSparte">${VERSORGER_SPARTE.map(s=>`<option value="${s.val}" ${v.sparte===s.val?'selected':''}>${s.label}</option>`).join('')}</select></div>
+      <div class="f"><label>Anbieter *</label><input type="text" id="vAnbieter" value="${v.anbieter||''}" placeholder="z. B. Stadtwerke"></div>
+    </div>
+    <div class="f"><label>Vertragsnummer</label><input type="text" id="vVertragsnr" value="${v.vertragsnummer||''}"></div>
+    <div class="f-row">
+      <div class="f"><label>Vertragsbeginn</label><input type="date" id="vBeginn" value="${v.vertragsbeginn||''}"></div>
+      <div class="f"><label>Vertragsende</label><input type="date" id="vEnde" value="${v.vertragsende||''}"></div>
+    </div>
+    <div class="f-row">
+      <div class="f"><label>Kündigungsfrist (Monate)</label><input type="number" id="vKuendFrist" min="0" step="1" value="${v.kuendigungsfristMonate||''}" placeholder="z. B. 1"></div>
+      <div class="f"><label>Abrechnungseinheit</label><input type="text" id="vEinheit" value="${v.einheit||''}" placeholder="kWh / m³"></div>
+    </div>
+    <div class="f-row">
+      <div class="f"><label>Grundpreis (€/Monat)</label><input type="number" id="vGrundpreis" step="0.01" value="${v.grundpreis||''}"></div>
+      <div class="f"><label>Arbeitspreis (ct/Einheit)</label><input type="number" id="vArbeitspreis" step="0.001" value="${v.arbeitspreis||''}"></div>
+    </div>
+    <div class="f-section-title"><i class="ti ti-lock"></i> Zugangsdaten (nur Admin, verschlüsselt)</div>
+    <div class="f"><label>Website / Kundenportal</label><input type="url" id="vWebsite" value="${v.website||''}" placeholder="https://..."></div>
+    <div class="f-row">
+      <div class="f"><label>Benutzername / Kundennr.</label><input type="text" id="vLogin" value="${v.login||''}"></div>
+      <div class="f"><label>Passwort</label>${pwHinweis}<input type="text" id="vPasswort" value="${pwWert.replace(/"/g,'&quot;')}" placeholder="${v.passwortEnc&&!cryptoIstEntsperrt()?'•••••• (verschlüsselt)':''}"></div>
+    </div>
+    <div class="f"><label>Notizen</label><textarea id="vNotiz" style="min-height:50px">${v.notiz||''}</textarea></div>
+    <div class="f-row" style="margin-top:12px">
+      <button class="btn btn-copper btn-full" onclick="saveVersorger('${objektId}','${versorgerId||''}')"><i class="ti ti-check"></i> Speichern</button>
+      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+    </div>
+    ${isEdit?`<button class="btn btn-danger btn-full" style="margin-top:8px" onclick="deleteVersorger('${versorgerId}','${objektId}')"><i class="ti ti-trash"></i> Versorger löschen</button>`:''}`);
+}
+
+async function saveVersorger(objektId, versorgerId){
+  const anbieter=document.getElementById('vAnbieter')?.value?.trim();
+  if(!anbieter){ toast('Bitte Anbieter eingeben'); return; }
+  const pwKlartext = document.getElementById('vPasswort')?.value||'';
+  // Formularwerte einsammeln
+  const formData={
+    objektId, versorgerId,
+    sparte: document.getElementById('vSparte')?.value||'sonstige',
+    anbieter,
+    vertragsnummer: document.getElementById('vVertragsnr')?.value?.trim()||'',
+    vertragsbeginn: document.getElementById('vBeginn')?.value||'',
+    vertragsende:   document.getElementById('vEnde')?.value||'',
+    kuendigungsfristMonate: parseInt(document.getElementById('vKuendFrist')?.value)||'',
+    einheit: document.getElementById('vEinheit')?.value?.trim()||'',
+    grundpreis: parseFloat(document.getElementById('vGrundpreis')?.value)||'',
+    arbeitspreis: parseFloat(document.getElementById('vArbeitspreis')?.value)||'',
+    website: document.getElementById('vWebsite')?.value?.trim()||'',
+    login: document.getElementById('vLogin')?.value?.trim()||'',
+    notiz: document.getElementById('vNotiz')?.value?.trim()||'',
+    pwKlartext,
+  };
+  // Passwort eingegeben, aber Verschlüsselung nicht bereit? Erst einrichten/entsperren.
+  if(pwKlartext && !cryptoIstEntsperrt()){
+    window._pendingVersorger = formData;
+    await modalCryptoUnlock('saveVersorgerFortsetzen');
+    return;
+  }
+  await saveVersorgerFortsetzen(formData);
+}
+
+async function saveVersorgerFortsetzen(formData){
+  const fd = formData || window._pendingVersorger;
+  window._pendingVersorger = null;
+  if(!fd) return;
+  const alt = fd.versorgerId ? await idbGet('versorger', fd.versorgerId) : null;
+  let passwortEnc = alt?.passwortEnc || null;
+  if(fd.pwKlartext){
+    if(cryptoIstEntsperrt()){
+      passwortEnc = await _encryptVal(fd.pwKlartext);
+    } else {
+      toast('Passwort konnte nicht verschlüsselt werden');
+    }
+  }
+  const v = {
+    id: fd.versorgerId || ('vs_'+fd.objektId+'_'+Math.random().toString(36).slice(2,7)),
+    objektId: fd.objektId,
+    sparte: fd.sparte, anbieter: fd.anbieter,
+    vertragsnummer: fd.vertragsnummer, vertragsbeginn: fd.vertragsbeginn,
+    vertragsende: fd.vertragsende, kuendigungsfristMonate: fd.kuendigungsfristMonate,
+    einheit: fd.einheit, grundpreis: fd.grundpreis, arbeitspreis: fd.arbeitspreis,
+    website: fd.website, login: fd.login, passwortEnc, notiz: fd.notiz,
+    erstellt: alt?.erstellt||now(), terminId: alt?.terminId||null,
+  };
+  await idbPut('versorger', v);
+  await syncVersorgerErinnerung(v);
+  closeModal();
+  clearTimeout(window._syncTimer);
+  window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
+  const tabEl=document.getElementById('objTabContent');
+  if(tabEl) await renderObjVersorger(tabEl);
+  toast('Versorger gespeichert ✓');
+}
+
+// Erstellt/aktualisiert die Kalender-Erinnerung 1 Monat vor Kündigungsstichtag.
+async function syncVersorgerErinnerung(v){
+  // Bestehende Erinnerung entfernen, falls vorhanden
+  if(v.terminId){ await idbDelete('termine', v.terminId).catch(()=>{}); v.terminId=null; }
+  if(!v.vertragsende){ await idbPut('versorger', v); return; }
+  const ende=new Date(v.vertragsende);
+  const kuendMonate=parseInt(v.kuendigungsfristMonate)||0;
+  // Kündigungsstichtag = Vertragsende minus Kündigungsfrist (ohne Monatsüberlauf)
+  const stichtag=monateAbziehen(ende, kuendMonate);
+  // Erinnerung = 1 Monat vor Stichtag
+  const erinnerung=monateAbziehen(stichtag, 1);
+  const obj=getObj(v.objektId);
+  const sp=getSparte(v.sparte);
+  const terminId=uid();
+  await idbPut('termine', {
+    id: terminId,
+    titel: `Kündigungsfrist ${sp.label} – ${v.anbieter}`,
+    typ: 'vertrag',
+    datum: erinnerung.toISOString().split('T')[0],
+    uhrzeit:'', uhrzeitEnd:'', erinnerung:'',
+    objektId: v.objektId,
+    mieterId:null, mieterName:'',
+    notiz: `Vertrag ${v.anbieter} (${sp.label}) läuft am ${ende.toLocaleDateString('de-DE')} aus. `+
+           `Kündigung spätestens bis ${stichtag.toLocaleDateString('de-DE')}`+
+           `${v.kuendigungsfristMonate?` (Frist ${v.kuendigungsfristMonate} Monate)`:''}. `+
+           `${v.vertragsnummer?'Vertragsnr.: '+v.vertragsnummer:''}`,
+    zugewiesen:'', status:'offen',
+    erstellt: now(), ersteller: CU?.name||'', autoVersorger:true,
+  });
+  v.terminId=terminId;
+  await idbPut('versorger', v);
+}
+
+async function deleteVersorger(versorgerId, objektId){
+  if(!confirm('Versorger wirklich löschen? Die zugehörige Kalender-Erinnerung wird ebenfalls entfernt.')) return;
+  const v=await idbGet('versorger', versorgerId);
+  if(v?.terminId) await idbDelete('termine', v.terminId).catch(()=>{});
+  await idbDelete('versorger', versorgerId);
+  closeModal();
+  clearTimeout(window._syncTimer);
+  window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
+  await renderObjVersorger(document.getElementById('objTabContent'));
+  toast('Versorger gelöscht');
+}
+
+async function zeigeVersorgerDetail(versorgerId){
+  const v=await idbGet('versorger', versorgerId);
+  if(!v) return;
+  const sp=getSparte(v.sparte);
+  const obj=getObj(v.objektId);
+  const zeile=(label,val,opts={})=> val ? `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--ink-10);font-size:13px">
+      <span style="color:var(--ink-40)">${label}</span>
+      <span style="font-weight:600;text-align:right;${opts.mono?'font-family:monospace':''}">${opts.link?`<a href="${val}" target="_blank" rel="noopener" style="color:var(--copper)">${val}</a>`:val}</span>
+    </div>` : '';
+  // Passwort-Darstellung je nach Entsperr-Status
+  let pwZeile='';
+  if(v.passwortEnc){
+    if(cryptoIstEntsperrt()){
+      const klar=await _decryptVal(v.passwortEnc);
+      pwZeile=zeile('Passwort', klar||'(nicht entschlüsselbar)', {mono:true});
+    } else {
+      pwZeile=`<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--ink-10);font-size:13px">
+        <span style="color:var(--ink-40)">Passwort</span>
+        <button class="btn btn-sm" onclick="modalCryptoUnlock('zeigeVersorgerDetail','${versorgerId}')"><i class="ti ti-lock-open"></i> Entsperren</button>
+      </div>`;
+    }
+  }
+  showModal(`
+    <div class="m-title"><i class="ti ${sp.icon}"></i> ${v.anbieter}</div>
+    <div style="font-size:12px;color:var(--ink-40);margin-bottom:10px">${sp.label} · ${obj?.name||''}</div>
+    ${zeile('Vertragsnummer', v.vertragsnummer)}
+    ${zeile('Vertragsbeginn', v.vertragsbeginn?new Date(v.vertragsbeginn).toLocaleDateString('de-DE'):'')}
+    ${zeile('Vertragsende', v.vertragsende?new Date(v.vertragsende).toLocaleDateString('de-DE'):'')}
+    ${zeile('Kündigungsfrist', v.kuendigungsfristMonate?v.kuendigungsfristMonate+' Monate':'')}
+    ${zeile('Grundpreis', v.grundpreis?fmtEur(v.grundpreis)+' / Monat':'')}
+    ${zeile('Arbeitspreis', v.arbeitspreis?v.arbeitspreis+' ct/'+(v.einheit||'Einheit'):'')}
+    <div class="f-section-title" style="margin-top:14px"><i class="ti ti-lock"></i> Zugangsdaten</div>
+    ${zeile('Website', v.website, {link:true})}
+    ${zeile('Benutzer / Kundennr.', v.login, {mono:true})}
+    ${pwZeile}
+    ${v.notiz?`<div style="margin-top:10px;font-size:13px;color:var(--ink-60)"><strong>Notiz:</strong><br>${v.notiz.replace(/\n/g,'<br>')}</div>`:''}
+    <div class="f-row" style="margin-top:14px">
+      <button class="btn btn-copper btn-full" onclick="modalVersorger('${v.objektId}','${v.id}')"><i class="ti ti-pencil"></i> Bearbeiten</button>
+      <button class="btn btn-full" onclick="closeModal()">Schließen</button>
+    </div>`);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   LAGER & MATERIAL  (Schritt L1: Struktur & Übersicht)
+   Standorte je Stadt, Kategorien mit Unterkategorien.
+   Artikel werden im Store 'lager' gehalten (objektId = Standort-Schlüssel).
+═══════════════════════════════════════════════════════════ */
+// Standorte des Lagers (an den Verwaltungsstandorten)
+// alleSichtbar:true → unabhängig von Objekt-/Gruppenzugehörigkeit für alle sichtbar
+const LAGER_STANDORTE = [
+  {id:'duesseldorf', label:'Düsseldorf'},
+  {id:'mg',          label:'Mönchengladbach'},
+  {id:'krefeld',     label:'Krefeld'},
+  {id:'monheim',     label:'Monheim am Rhein', alleSichtbar:true},
+  {id:'hilden',      label:'Hilden',           alleSichtbar:true},
+];
+function getLagerStandort(id){ return LAGER_STANDORTE.find(s=>s.id===id)||{id,label:id}; }
+
+// Kategorien mit Unterkategorien (Reihenfolge wie in der Praxis besprochen)
+const LAGER_KATEGORIEN = [
+  {id:'werkzeug', label:'Werkzeuge', icon:'ti-tool', color:'#185FA5',
+   sub:['Handwerkzeuge','Elektrowerkzeuge','Messgeräte','Leitern & Gerüste','Spezialwerkzeuge']},
+  {id:'ersatzteil', label:'Ersatzteile', icon:'ti-settings', color:'#9E5E24',
+   sub:['Sanitär – Dichtungen','Sanitär – Ventile','Sanitär – Mischkartuschen','Sanitär – Siphons','Sanitär – Schwimmerventile',
+        'Elektro – Sicherungen','Elektro – Schalter','Elektro – Steckdosen','Elektro – Leuchtmittel','Elektro – Bewegungsmelder',
+        'Türen/Fenster – Schlösser','Türen/Fenster – Zylinder','Türen/Fenster – Türdrücker','Türen/Fenster – Fenstergriffe','Türen/Fenster – Scharniere',
+        'Heizung – Thermostatköpfe','Heizung – Entlüftungsventile','Heizung – Umwälzpumpen-Teile']},
+  {id:'verbrauch', label:'Verbrauchsmittel', icon:'ti-droplet-half-2', color:'#2E7D52',
+   sub:['Schrauben','Dübel','Nägel','Kabelbinder','Klebeband','Silikon','Acryl','Montagekleber',
+        'Reinigungsmittel','Müllsäcke','Batterien','Handschuhe']},
+  {id:'psa', label:'Persönliche Schutzausrüstung', icon:'ti-shield-half', color:'#C0392B',
+   sub:['Arbeitshandschuhe','Schutzbrillen','Gehörschutz','Warnwesten','Atemschutzmasken']},
+  {id:'befestigung', label:'Befestigungs- & Montagematerial', icon:'ti-screw', color:'#8B6914',
+   sub:['Schrauben (nach Größe)','Muttern','Unterlegscheiben','Gewindestangen','Montagewinkel','Rohrschellen']},
+  {id:'elektromaterial', label:'Elektro-Material', icon:'ti-plug', color:'#0E7C7B',
+   sub:['Kabel','Lüsterklemmen','WAGO-Klemmen','Installationsrohre','Sicherungsautomaten','Verlängerungskabel']},
+  {id:'schluessel', label:'Schlüssel & Schließanlagen', icon:'ti-key', color:'#555',
+   sub:['Reserveschlüssel','Schließzylinder','Schlüsselanhänger','Schließpläne','Briefkastenschlösser','Türschließer']},
+  {id:'sonstige', label:'Sonstiges', icon:'ti-package', color:'#888',
+   sub:['Rauchwarnmelder','Namensschilder','Teflonband','WC-Sitze','Schlauchschellen','Sonstiges']},
+];
+function getLagerKat(id){ return LAGER_KATEGORIEN.find(k=>k.id===id)||LAGER_KATEGORIEN[LAGER_KATEGORIEN.length-1]; }
+
+// Lager-State (aktueller Standort/Kategorie-Filter)
+let _lagerStandort = 'alle';
+let _lagerKat = 'alle';
+
+async function renderLager(){
+  const el=document.getElementById('page-lager');
+  if(!el) return;
+  const alle=await idbGetAll('lager');
+  // Sichtbarkeit: an Objekt-Gruppen gekoppelt; Standorte mit alleSichtbar sind immer sichtbar
+  const meineObjekte=await getMyObjekte();
+  const meineGruppen=new Set(meineObjekte.map(o=>o.gruppe));
+  const sichtbareStandorte=LAGER_STANDORTE.filter(s=>s.alleSichtbar||meineGruppen.has(s.id));
+
+  // Artikel zählen je Standort und Mindestbestand-Warnungen
+  const warnungen=alle.filter(a=>istLagerWarnung(a)).length;
+
+  let h=`<div class="s-hdr"><div class="s-title"><i class="ti ti-package"></i> Lager & Material</div>
+    <div style="display:flex;gap:6px">
+      <button class="btn btn-sm" onclick="startInventur()"><i class="ti ti-clipboard-list"></i> Inventur</button>
+      <button class="btn btn-sm btn-copper" onclick="modalLagerArtikel()"><i class="ti ti-plus"></i> Artikel</button>
+    </div>
+  </div>`;
+
+  // Hinweis-Banner Nachbestellung
+  if(warnungen>0){
+    h+=`<div class="card" style="border-left:3px solid #C0392B;background:#FDECEA;margin-bottom:12px;cursor:pointer" onclick="zeigeLagerNachbestellung()">
+      <div style="display:flex;align-items:center;gap:10px">
+        <i class="ti ti-alert-triangle" style="font-size:22px;color:#C0392B"></i>
+        <div style="flex:1">
+          <div style="font-weight:600;color:#C0392B">${warnungen} Artikel nachbestellen</div>
+          <div style="font-size:12px;color:var(--ink-60)">Mindestbestand erreicht oder unterschritten – tippen für Liste</div>
+        </div>
+        <i class="ti ti-chevron-right" style="color:#C0392B"></i>
+      </div>
+    </div>`;
+  }
+
+  // Hinweis-Banner offene Materialanforderungen
+  const offeneAnf=(await idbGetAll('lager_anforderung')).filter(x=>x.status==='offen');
+  if(offeneAnf.length>0){
+    h+=`<div class="card" style="border-left:3px solid #0E7C7B;margin-bottom:12px;cursor:pointer" onclick="zeigeLagerAnforderungen()">
+      <div style="display:flex;align-items:center;gap:10px">
+        <i class="ti ti-truck-delivery" style="font-size:22px;color:#0E7C7B"></i>
+        <div style="flex:1">
+          <div style="font-weight:600;color:#0E7C7B">${offeneAnf.length} offene Materialanforderung${offeneAnf.length>1?'en':''}</div>
+          <div style="font-size:12px;color:var(--ink-60)">Material von anderen Standorten mitbringen – tippen für Liste</div>
+        </div>
+        <i class="ti ti-chevron-right" style="color:#0E7C7B"></i>
+      </div>
+    </div>`;
+  }
+
+  // Standort-Filter
+  h+=`<div style="display:flex;gap:6px;overflow-x:auto;padding-bottom:8px;margin-bottom:8px">
+    <button class="chip ${_lagerStandort==='alle'?'chip-active':''}" onclick="setLagerStandort('alle')">Alle Standorte</button>
+    ${sichtbareStandorte.map(s=>`<button class="chip ${_lagerStandort===s.id?'chip-active':''}" onclick="setLagerStandort('${s.id}')">${s.label}</button>`).join('')}
+  </div>`;
+
+  // Kategorie-Kacheln mit Artikelzahl (gefiltert nach Standort)
+  const standortGefiltert=alle.filter(a=>_lagerStandort==='alle'||a.standort===_lagerStandort);
+  h+=`<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px">`;
+  for(const kat of LAGER_KATEGORIEN){
+    const cnt=standortGefiltert.filter(a=>a.kategorie===kat.id).length;
+    const warnCnt=standortGefiltert.filter(a=>a.kategorie===kat.id&&istLagerWarnung(a)).length;
+    h+=`<div class="card" style="cursor:pointer;padding:14px" onclick="zeigeLagerKategorie('${kat.id}')">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
+        <div style="width:38px;height:38px;border-radius:9px;background:${kat.color}1a;display:flex;align-items:center;justify-content:center;font-size:19px;color:${kat.color}">
+          <i class="ti ${kat.icon}"></i>
+        </div>
+        ${warnCnt>0?`<span class="chip chip-warn" style="font-size:10px;margin-left:auto"><i class="ti ti-alert-triangle" style="font-size:9px"></i> ${warnCnt}</span>`:''}
+      </div>
+      <div style="font-weight:600;font-size:13px;line-height:1.25">${kat.label}</div>
+      <div style="font-size:12px;color:var(--ink-40);margin-top:2px">${cnt} Artikel</div>
+    </div>`;
+  }
+  h+=`</div>`;
+
+  // Globale Suche im Lager + Barcode-Scan (L4)
+  h+=`<div style="margin-top:14px">
+    <div style="display:flex;gap:8px">
+      <input type="search" id="lagerSuche" placeholder="Artikel, Inventar- oder Barcode-Nr. suchen…"
+        oninput="sucheLager(this.value)" style="flex:1;padding:10px 12px;border:1px solid var(--ink-10);border-radius:10px;font-size:14px">
+      <button class="btn btn-copper" onclick="scanLagerBarcode()" title="Barcode scannen"><i class="ti ti-scan"></i></button>
+    </div>
+    <div id="lagerSucheResult"></div>
+  </div>`;
+
+  el.innerHTML=h;
+}
+
+// Warn-Logik (L3): Nachbestell-Bedarf erkennen.
+// - Mengenstufen-Artikel: Stufe "wenig" gilt als Nachbestell-Signal.
+// - Zahl-Artikel: Bestand <= Mindestbestand (falls gesetzt) bzw. Bestand <= 0.
+// - Pro Artikel über warnungAus deaktivierbar.
+function istLagerWarnung(a){
+  if(!a || a.warnungAus) return false;
+  if(a.mengenstufe){
+    return a.mengenstufe==='wenig';
+  }
+  const best=parseFloat(a.bestand);
+  const minb=parseFloat(a.mindestbestand);
+  if(isNaN(best)) return false;
+  if(!isNaN(minb)&&minb>0) return best<=minb;
+  return best<=0;
+}
+
+function setLagerStandort(id){ _lagerStandort=id; renderLager(); }
+
+// ── L2: Kategorie-Artikelliste, gruppiert nach Unterkategorie ──
+async function zeigeLagerKategorie(katId){
+  _lagerKat=katId;
+  const kat=getLagerKat(katId);
+  const el=document.getElementById('page-lager');
+  if(!el) return;
+  const alle=await idbGetAll('lager','kategorie',katId);
+  const gefiltert=alle.filter(a=>_lagerStandort==='alle'||a.standort===_lagerStandort)
+    .sort((a,b)=>(a.bezeichnung||'').localeCompare(b.bezeichnung||''));
+
+  let h=`<div class="s-hdr">
+    <button class="btn btn-sm" onclick="renderLager()"><i class="ti ti-arrow-left"></i></button>
+    <div class="s-title" style="display:flex;align-items:center;gap:8px"><i class="ti ${kat.icon}" style="color:${kat.color}"></i> ${kat.label}</div>
+    <button class="btn btn-sm btn-copper" onclick="modalLagerArtikel(null,'${katId}')"><i class="ti ti-plus"></i> Artikel</button>
+  </div>
+  <div style="font-size:12px;color:var(--ink-40);margin-bottom:10px">${gefiltert.length} Artikel${_lagerStandort!=='alle'?` · ${getLagerStandort(_lagerStandort).label}`:''}</div>`;
+
+  if(!gefiltert.length){
+    h+=`<div class="empty"><i class="ti ${kat.icon}"></i><p>Noch keine Artikel in dieser Kategorie.</p></div>
+      <button class="btn btn-copper btn-full" style="margin-top:10px" onclick="modalLagerArtikel(null,'${katId}')"><i class="ti ti-plus"></i> Ersten Artikel anlegen</button>`;
+    el.innerHTML=h; return;
+  }
+
+  // Nach Unterkategorie gruppieren
+  const gruppen={};
+  for(const a of gefiltert){ const u=a.unterkategorie||'Ohne Unterkategorie'; (gruppen[u]=gruppen[u]||[]).push(a); }
+  for(const u of Object.keys(gruppen).sort()){
+    h+=`<div class="card-hdr" style="margin:12px 0 6px">${u}</div>`;
+    for(const a of gruppen[u]){
+      const warn=istLagerWarnung(a);
+      const bestandTxt = a.mengenstufe ? mengenstufeLabel(a.mengenstufe) : (a.bestand??'–');
+      h+=`<div class="card" style="margin-bottom:6px;cursor:pointer;${warn?'border-left:3px solid #C0392B':''}" onclick="zeigeLagerArtikel('${a.id}')">
+        <div style="display:flex;align-items:center;gap:10px">
+          ${a.foto?`<img src="${a.foto}" style="width:42px;height:42px;border-radius:8px;object-fit:cover;flex-shrink:0">`:`<div style="width:42px;height:42px;border-radius:8px;background:${kat.color}1a;display:flex;align-items:center;justify-content:center;color:${kat.color};flex-shrink:0"><i class="ti ${kat.icon}"></i></div>`}
+          <div style="flex:1;min-width:0">
+            <div style="font-weight:600;font-size:13px">${a.bezeichnung||'(ohne Namen)'}</div>
+            <div style="font-size:11px;color:var(--ink-40)">
+              ${getLagerStandort(a.standort).label}${a.lagerort?' · '+a.lagerort:''}${a.groesse?' · '+a.groesse:''}
+            </div>
+          </div>
+          <div style="text-align:right;flex-shrink:0">
+            <div style="font-weight:600;font-size:13px;${warn?'color:#C0392B':''}">${bestandTxt}</div>
+            ${warn?`<div style="font-size:10px;color:#C0392B"><i class="ti ti-alert-triangle" style="font-size:9px"></i> nachbestellen</div>`:''}
+          </div>
+        </div>
+      </div>`;
+    }
+  }
+  el.innerHTML=h;
+}
+
+function mengenstufeLabel(s){ return ({viel:'viel',mittel:'mittel',wenig:'wenig'})[s]||s; }
+
+// ── L2: Artikel anlegen / bearbeiten ──
+async function modalLagerArtikel(artikelId, vorgewaehlteKat){
+  const a = artikelId ? (await idbGet('lager', artikelId))||{} : {};
+  if(vorgewaehlteKat && !a.kategorie) a.kategorie=vorgewaehlteKat;
+  renderLagerArtikelForm(a, artikelId);
+}
+
+// Reines Formular-Rendering auf Basis eines Datensatz-Objekts (kein DB-Zugriff).
+// Wird auch beim Kategoriewechsel mit den zwischengespeicherten Eingaben aufgerufen.
+async function renderLagerArtikelForm(a, artikelId){
+  a=a||{};
+  window._lagerEditId = artikelId || null;
+  const isEdit=!!artikelId;
+  const katId = a.kategorie || 'werkzeug';
+  const kat=getLagerKat(katId);
+  const meineObjekte=await getMyObjekte();
+  const meineGruppen=new Set(meineObjekte.map(o=>o.gruppe));
+  const standorte=LAGER_STANDORTE.filter(s=>s.alleSichtbar||meineGruppen.has(s.id));
+  const istVerbrauch = katId==='verbrauch';
+  const istErsatzteil = katId==='ersatzteil' || katId==='befestigung';
+
+  window._lagerFoto = a.foto || null;
+
+  showModal(`
+    <div class="m-title"><i class="ti ${kat.icon}"></i> ${isEdit?'Artikel bearbeiten':'Neuer Artikel'}</div>
+    <div class="f"><label>Bezeichnung *</label><input type="text" id="laBez" value="${(a.bezeichnung||'').replace(/"/g,'&quot;')}" placeholder="z. B. Akkuschrauber Bosch"></div>
+    <div class="f-row">
+      <div class="f"><label>Kategorie</label>
+        <select id="laKat" onchange="lagerKatWechsel('${artikelId||''}')">
+          ${LAGER_KATEGORIEN.map(k=>`<option value="${k.id}" ${k.id===katId?'selected':''}>${k.label}</option>`).join('')}
+        </select></div>
+      <div class="f"><label>Unterkategorie</label>
+        <select id="laUnterkat">
+          <option value="">– keine –</option>
+          ${(kat.sub||[]).map(u=>`<option value="${u}" ${a.unterkategorie===u?'selected':''}>${u}</option>`).join('')}
+        </select></div>
+    </div>
+    <div class="f-row">
+      <div class="f"><label>Standort *</label>
+        <select id="laStandort">${standorte.map(s=>`<option value="${s.id}" ${a.standort===s.id?'selected':''}>${s.label}</option>`).join('')}</select></div>
+      <div class="f"><label>Lagerort</label><input type="text" id="laLagerort" value="${(a.lagerort||'').replace(/"/g,'&quot;')}" placeholder="Regal A1 / Kiste 3 / am Haken"></div>
+    </div>
+    ${istErsatzteil?`<div class="f-row">
+      <div class="f"><label>Größe</label><input type="text" id="laGroesse" value="${(a.groesse||'').replace(/"/g,'&quot;')}" placeholder="z. B. 110 mm / M8"></div>
+      <div class="f"><label>Art / Typ</label><input type="text" id="laTyp" value="${(a.typ||'').replace(/"/g,'&quot;')}" placeholder="z. B. Standard"></div>
+    </div>`:''}
+
+    <div class="f-section-title"><i class="ti ti-stack-2"></i> Bestand</div>
+    ${istVerbrauch?`
+    <div class="f"><label>Bestandsführung</label>
+      <select id="laBestandModus" onchange="toggleMengenstufe()">
+        <option value="zahl" ${!a.mengenstufe?'selected':''}>Genaue Stückzahl</option>
+        <option value="stufe" ${a.mengenstufe?'selected':''}>Mengenstufe (viel/mittel/wenig)</option>
+      </select></div>
+    <div id="laStufeWrap" style="display:${a.mengenstufe?'block':'none'}">
+      <div class="f"><label>Menge</label>
+        <select id="laMengenstufe">
+          <option value="viel" ${a.mengenstufe==='viel'?'selected':''}>viel</option>
+          <option value="mittel" ${a.mengenstufe==='mittel'?'selected':''}>mittel</option>
+          <option value="wenig" ${a.mengenstufe==='wenig'?'selected':''}>wenig</option>
+        </select></div>
+    </div>
+    <div id="laZahlWrap" style="display:${a.mengenstufe?'none':'block'}">
+      <div class="f-row">
+        <div class="f"><label>Bestand</label><input type="number" id="laBestand" step="1" value="${a.bestand??''}"></div>
+        <div class="f"><label>Mindestbestand</label><input type="number" id="laMindest" step="1" value="${a.mindestbestand??''}"></div>
+      </div>
+    </div>`:`
+    <div class="f-row">
+      <div class="f"><label>Bestand</label><input type="number" id="laBestand" step="1" value="${a.bestand??''}"></div>
+      <div class="f"><label>Mindestbestand</label><input type="number" id="laMindest" step="1" value="${a.mindestbestand??''}"></div>
+    </div>`}
+    <label style="display:flex;align-items:center;gap:8px;font-size:13px;margin:6px 0 4px;cursor:pointer">
+      <input type="checkbox" id="laWarnungAus" ${a.warnungAus?'checked':''} style="width:auto"> Nachbestell-Warnung für diesen Artikel deaktivieren
+    </label>
+
+    <div class="f-section-title"><i class="ti ti-barcode"></i> Identifikation & Beschaffung</div>
+    <div class="f-row">
+      <div class="f"><label>Inventarnummer</label><input type="text" id="laInv" value="${(a.inventarnummer||'').replace(/"/g,'&quot;')}"></div>
+      <div class="f"><label>Barcode-Nr.</label>
+        <div style="display:flex;gap:6px">
+          <input type="text" id="laBarcode" value="${(a.barcode||'').replace(/"/g,'&quot;')}" placeholder="EAN / Code" style="flex:1">
+          <button type="button" class="btn" onclick="scanLagerBarcode('erfassen')" title="Barcode scannen"><i class="ti ti-scan"></i></button>
+        </div>
+      </div>
+    </div>
+    <div class="f"><label>Produktlink (Nachbestellung)</label><input type="url" id="laLink" value="${(a.produktlink||'').replace(/"/g,'&quot;')}" placeholder="https://..."></div>
+    <div class="f-row">
+      <div class="f"><label>Kaufdatum</label><input type="date" id="laKaufdatum" value="${a.kaufdatum||''}"></div>
+      <div class="f"><label>Preis (€)</label><input type="number" id="laPreis" step="0.01" value="${a.preis??''}"></div>
+    </div>
+    <div class="f-row">
+      <div class="f"><label>Zustand</label>
+        <select id="laZustand">
+          ${['neu','gut','gebraucht','reparaturbedürftig','defekt'].map(z=>`<option value="${z}" ${a.zustand===z?'selected':''}>${z.charAt(0).toUpperCase()+z.slice(1)}</option>`).join('')}
+        </select></div>
+      <div class="f"><label>Verantwortlich</label><input type="text" id="laVerantwortlich" value="${(a.verantwortlicher||'').replace(/"/g,'&quot;')}" placeholder="Mitarbeiter"></div>
+    </div>
+
+    <div class="f"><label>Foto</label>
+      <input type="file" id="laFotoIn" accept="image/*" capture="environment" style="display:none" onchange="onLagerFoto(this)">
+      <button class="btn btn-full" onclick="document.getElementById('laFotoIn').click()"><i class="ti ti-camera"></i> Foto aufnehmen / wählen</button>
+      <div id="laFotoPreview" style="margin-top:8px">${a.foto?`<img src="${a.foto}" style="max-width:100%;border-radius:8px;border:1px solid var(--ink-10)">`:''}</div>
+    </div>
+    <div class="f"><label>Notiz</label><textarea id="laNotiz" style="min-height:50px">${a.notiz||''}</textarea></div>
+
+    <div class="f-row" style="margin-top:12px">
+      <button class="btn btn-copper btn-full" onclick="saveLagerArtikel('${artikelId||''}')"><i class="ti ti-check"></i> Speichern</button>
+      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+    </div>
+    ${isEdit?`<button class="btn btn-danger btn-full" style="margin-top:8px" onclick="deleteLagerArtikel('${artikelId}')"><i class="ti ti-trash"></i> Artikel löschen</button>`:''}`);
+}
+
+// Kategorie im Formular gewechselt → Eingaben sichern, Formular mit neuer Kategorie neu rendern
+function lagerKatWechsel(artikelId){
+  const data=leseLagerForm();
+  renderLagerArtikelForm(data, artikelId&&artikelId!==''?artikelId:null);
+}
+
+// Liest die aktuellen Formularwerte in ein Datensatz-Objekt
+function leseLagerForm(){
+  const modus=document.getElementById('laBestandModus')?.value;
+  const nutzeStufe=modus==='stufe';
+  return {
+    bezeichnung: document.getElementById('laBez')?.value||'',
+    kategorie: document.getElementById('laKat')?.value||'werkzeug',
+    unterkategorie: document.getElementById('laUnterkat')?.value||'',
+    standort: document.getElementById('laStandort')?.value||'',
+    lagerort: document.getElementById('laLagerort')?.value||'',
+    groesse: document.getElementById('laGroesse')?.value||'',
+    typ: document.getElementById('laTyp')?.value||'',
+    bestand: document.getElementById('laBestand')?.value||'',
+    mindestbestand: document.getElementById('laMindest')?.value||'',
+    mengenstufe: nutzeStufe ? (document.getElementById('laMengenstufe')?.value||'mittel') : '',
+    warnungAus: document.getElementById('laWarnungAus')?.checked||false,
+    inventarnummer: document.getElementById('laInv')?.value||'',
+    barcode: document.getElementById('laBarcode')?.value||'',
+    produktlink: document.getElementById('laLink')?.value||'',
+    kaufdatum: document.getElementById('laKaufdatum')?.value||'',
+    preis: document.getElementById('laPreis')?.value||'',
+    zustand: document.getElementById('laZustand')?.value||'',
+    verantwortlicher: document.getElementById('laVerantwortlich')?.value||'',
+    notiz: document.getElementById('laNotiz')?.value||'',
+    foto: window._lagerFoto||null,
+  };
+}
+
+function toggleMengenstufe(){
+  const modus=document.getElementById('laBestandModus')?.value;
+  const stufe=document.getElementById('laStufeWrap');
+  const zahl=document.getElementById('laZahlWrap');
+  if(stufe&&zahl){ stufe.style.display=modus==='stufe'?'block':'none'; zahl.style.display=modus==='stufe'?'none':'block'; }
+}
+
+async function onLagerFoto(input){
+  const file=input.files[0]; if(!file) return;
+  const dataUrl=await compressFoto(file, 1400, 0.78);
+  window._lagerFoto=dataUrl;
+  const prev=document.getElementById('laFotoPreview');
+  if(prev) prev.innerHTML=`<img src="${dataUrl}" style="max-width:100%;border-radius:8px;border:1px solid var(--ink-10)">
+    <button class="btn btn-sm btn-danger" style="margin-top:4px" onclick="window._lagerFoto=null;document.getElementById('laFotoPreview').innerHTML=''"><i class="ti ti-trash"></i> Foto entfernen</button>`;
+}
+
+async function saveLagerArtikel(artikelId){
+  const bez=document.getElementById('laBez')?.value?.trim();
+  if(!bez){ toast('Bitte Bezeichnung eingeben'); return; }
+  const standort=document.getElementById('laStandort')?.value;
+  if(!standort){ toast('Bitte Standort wählen'); return; }
+  const realId = artikelId || null;
+  const alt = realId ? await idbGet('lager', realId) : null;
+  const katId=document.getElementById('laKat')?.value||'sonstige';
+  const istVerbrauch = katId==='verbrauch';
+  const modus=document.getElementById('laBestandModus')?.value;
+  const nutzeStufe = istVerbrauch && modus==='stufe';
+  const bestVal=document.getElementById('laBestand')?.value;
+  const minVal=document.getElementById('laMindest')?.value;
+  const preisVal=document.getElementById('laPreis')?.value;
+
+  const a = {
+    id: realId || ('la_'+standort+'_'+Math.random().toString(36).slice(2,8)),
+    objektId: standort,            // für vorhandenen Index nutzbar
+    standort,
+    kategorie: katId,
+    unterkategorie: document.getElementById('laUnterkat')?.value||'',
+    bezeichnung: bez,
+    lagerort: document.getElementById('laLagerort')?.value?.trim()||'',
+    groesse: document.getElementById('laGroesse')?.value?.trim()||'',
+    typ: document.getElementById('laTyp')?.value?.trim()||'',
+    bestand: nutzeStufe ? '' : (bestVal!==''&&bestVal!=null ? parseFloat(bestVal) : ''),
+    mindestbestand: nutzeStufe ? '' : (minVal!==''&&minVal!=null ? parseFloat(minVal) : ''),
+    mengenstufe: nutzeStufe ? (document.getElementById('laMengenstufe')?.value||'mittel') : '',
+    warnungAus: document.getElementById('laWarnungAus')?.checked||false,
+    inventarnummer: document.getElementById('laInv')?.value?.trim()||'',
+    barcode: document.getElementById('laBarcode')?.value?.trim()||'',
+    produktlink: document.getElementById('laLink')?.value?.trim()||'',
+    kaufdatum: document.getElementById('laKaufdatum')?.value||'',
+    preis: preisVal!==''&&preisVal!=null ? parseFloat(preisVal) : '',
+    zustand: document.getElementById('laZustand')?.value||'',
+    verantwortlicher: document.getElementById('laVerantwortlich')?.value?.trim()||'',
+    foto: window._lagerFoto||'',
+    notiz: document.getElementById('laNotiz')?.value?.trim()||'',
+    erstellt: alt?.erstellt||now(),
+    geaendert: now(),
+  };
+  await idbPut('lager', a);
+  window._lagerFoto=null;
+  closeModal();
+  clearTimeout(window._syncTimer);
+  window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
+  await zeigeLagerKategorie(a.kategorie);
+  toast('Artikel gespeichert ✓');
+}
+
+async function deleteLagerArtikel(artikelId){
+  const a=await idbGet('lager', artikelId);
+  if(!a) return;
+  if(!confirm(`Artikel „${a.bezeichnung}" wirklich löschen?`)) return;
+  await idbDelete('lager', artikelId);
+  closeModal();
+  clearTimeout(window._syncTimer);
+  window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
+  await zeigeLagerKategorie(a.kategorie);
+  toast('Artikel gelöscht');
+}
+
+// Artikel-Detailansicht
+async function zeigeLagerArtikel(artikelId){
+  const a=await idbGet('lager', artikelId);
+  if(!a) return;
+  const kat=getLagerKat(a.kategorie);
+  const warn=istLagerWarnung(a);
+  const zeile=(label,val,opts={})=> (val!==''&&val!=null&&val!==undefined) ? `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--ink-10);font-size:13px">
+      <span style="color:var(--ink-40)">${label}</span>
+      <span style="font-weight:600;text-align:right">${opts.link?`<a href="${val}" target="_blank" rel="noopener" style="color:var(--copper)">Produkt öffnen</a>`:val}</span>
+    </div>` : '';
+  const bestandTxt = a.mengenstufe ? mengenstufeLabel(a.mengenstufe) : (a.bestand??'–');
+  showModal(`
+    <div class="m-title"><i class="ti ${kat.icon}"></i> ${a.bezeichnung}</div>
+    ${a.foto?`<img src="${a.foto}" style="width:100%;border-radius:10px;margin-bottom:10px;cursor:pointer" onclick="openFoto('${a.id}','lager')">`:''}
+    <div style="font-size:12px;color:var(--ink-40);margin-bottom:8px">${kat.label}${a.unterkategorie?' · '+a.unterkategorie:''}</div>
+    ${warn?`<div style="background:#FDECEA;color:#C0392B;border-radius:8px;padding:8px 12px;margin-bottom:10px;font-size:13px"><i class="ti ti-alert-triangle"></i> Mindestbestand erreicht – nachbestellen${a.produktlink?' (Produktlink unten)':''}</div>`:''}
+    ${zeile('Bestand', bestandTxt)}
+    ${zeile('Mindestbestand', a.mindestbestand)}
+    ${zeile('Standort', getLagerStandort(a.standort).label)}
+    ${zeile('Lagerort', a.lagerort)}
+    ${zeile('Größe', a.groesse)}
+    ${zeile('Art / Typ', a.typ)}
+    ${zeile('Inventarnummer', a.inventarnummer)}
+    ${zeile('Barcode', a.barcode)}
+    ${zeile('Kaufdatum', a.kaufdatum?new Date(a.kaufdatum).toLocaleDateString('de-DE'):'')}
+    ${zeile('Preis', a.preis!==''&&a.preis!=null?fmtEur(a.preis):'')}
+    ${zeile('Zustand', a.zustand)}
+    ${zeile('Verantwortlich', a.verantwortlicher)}
+    ${zeile('Produktlink', a.produktlink, {link:true})}
+    ${a.notiz?`<div style="margin-top:10px;font-size:13px;color:var(--ink-60)"><strong>Notiz:</strong><br>${a.notiz.replace(/\n/g,'<br>')}</div>`:''}
+    ${(a.entnahmen&&a.entnahmen.length)?`
+      <div class="f-section-title" style="margin-top:14px"><i class="ti ti-history"></i> Letzte Entnahmen</div>
+      <div style="max-height:160px;overflow-y:auto">
+        ${a.entnahmen.slice(0,10).map(e=>`<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--ink-10);font-size:12px">
+          <span>${e.datum} · <strong>${e.menge}</strong>${e.zweck?' · '+e.zweck:''}</span>
+          <span style="color:var(--ink-40)">${e.von||''}</span>
+        </div>`).join('')}
+      </div>`:''}
+    <div style="display:flex;gap:6px;margin-top:14px">
+      <button class="btn btn-copper" style="flex:1" onclick="modalLagerEntnahme('${a.id}')"><i class="ti ti-package-export"></i> Entnehmen</button>
+      <button class="btn" style="flex:1" onclick="modalLagerAnforderung('${a.id}')"><i class="ti ti-truck-delivery"></i> Anfordern</button>
+    </div>
+    <div class="f-row" style="margin-top:6px">
+      <button class="btn btn-full" onclick="modalLagerArtikel('${a.id}')"><i class="ti ti-pencil"></i> Bearbeiten</button>
+      <button class="btn btn-full" onclick="closeModal()">Schließen</button>
+    </div>`);
+}
+async function zeigeLagerNachbestellung(){
+  const el=document.getElementById('page-lager');
+  if(!el) return;
+  const alle=await idbGetAll('lager');
+  // Sichtbare Standorte berücksichtigen
+  const meineObjekte=await getMyObjekte();
+  const meineGruppen=new Set(meineObjekte.map(o=>o.gruppe));
+  const sichtbar=s=>{const st=LAGER_STANDORTE.find(x=>x.id===s);return st&&(st.alleSichtbar||meineGruppen.has(st.id));};
+  const betroffen=alle.filter(a=>istLagerWarnung(a)&&sichtbar(a.standort));
+
+  let h=`<div class="s-hdr">
+    <button class="btn btn-sm" onclick="renderLager()"><i class="ti ti-arrow-left"></i></button>
+    <div class="s-title"><i class="ti ti-shopping-cart"></i> Nachbestellen</div>
+    <span></span>
+  </div>`;
+
+  if(!betroffen.length){
+    h+=`<div class="empty"><i class="ti ti-circle-check"></i><p>Keine Artikel unter Mindestbestand.<br>Alle Bestände sind ausreichend.</p></div>`;
+    el.innerHTML=h; return;
+  }
+
+  h+=`<div style="font-size:12px;color:var(--ink-40);margin-bottom:10px">${betroffen.length} Artikel erreichen oder unterschreiten den Mindestbestand.</div>`;
+
+  // Nach Standort gruppieren
+  const proStandort={};
+  for(const a of betroffen){ (proStandort[a.standort]=proStandort[a.standort]||[]).push(a); }
+  for(const stId of Object.keys(proStandort).sort()){
+    const st=getLagerStandort(stId);
+    h+=`<div class="card-hdr" style="margin:12px 0 6px"><i class="ti ti-map-pin" style="font-size:13px"></i> ${st.label} (${proStandort[stId].length})</div>`;
+    for(const a of proStandort[stId].sort((x,y)=>(x.bezeichnung||'').localeCompare(y.bezeichnung||''))){
+      const kat=getLagerKat(a.kategorie);
+      const bestelltVor = a.bestelltAm;
+      h+=`<div class="card" style="margin-bottom:6px;${bestelltVor?'opacity:0.55':'border-left:3px solid #C0392B'}">
+        <div style="display:flex;align-items:center;gap:10px">
+          <div style="width:36px;height:36px;border-radius:8px;background:${kat.color}1a;display:flex;align-items:center;justify-content:center;color:${kat.color};flex-shrink:0"><i class="ti ${kat.icon}"></i></div>
+          <div style="flex:1;min-width:0;cursor:pointer" onclick="zeigeLagerArtikel('${a.id}')">
+            <div style="font-weight:600;font-size:13px">${a.bezeichnung||'(ohne Namen)'}</div>
+            <div style="font-size:11px;color:var(--ink-40)">
+              Bestand <strong style="color:#C0392B">${a.bestand??0}</strong> / Min. ${a.mindestbestand??0}${a.lagerort?' · '+a.lagerort:''}
+              ${bestelltVor?` · <span style="color:#2E7D52">bestellt am ${a.bestelltAm}</span>`:''}
+            </div>
+          </div>
+        </div>
+        <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">
+          ${a.produktlink?`<a href="${a.produktlink}" target="_blank" rel="noopener" class="btn btn-sm" style="text-decoration:none"><i class="ti ti-external-link"></i> Nachbestellen</a>`:''}
+          <button class="btn btn-sm" onclick="lagerBestandSchnell('${a.id}')"><i class="ti ti-package"></i> Bestand</button>
+          ${bestelltVor
+            ? `<button class="btn btn-sm" onclick="lagerBestellungZuruecksetzen('${a.id}')"><i class="ti ti-rotate"></i> Zurücksetzen</button>`
+            : `<button class="btn btn-sm" style="color:#2E7D52" onclick="lagerAlsBestellt('${a.id}')"><i class="ti ti-check"></i> Bestellt</button>`}
+        </div>
+      </div>`;
+    }
+  }
+  el.innerHTML=h;
+}
+
+// Artikel als bestellt markieren (bleibt in Liste, aber abgesetzt dargestellt)
+async function lagerAlsBestellt(id){
+  const a=await idbGet('lager', id); if(!a) return;
+  a.bestelltAm=new Date().toLocaleDateString('de-DE');
+  await idbPut('lager', a);
+  clearTimeout(window._syncTimer); window._syncTimer=setTimeout(()=>syncToOneDrive(),3000);
+  await zeigeLagerNachbestellung();
+  toast('Als bestellt markiert');
+}
+async function lagerBestellungZuruecksetzen(id){
+  const a=await idbGet('lager', id); if(!a) return;
+  delete a.bestelltAm;
+  await idbPut('lager', a);
+  clearTimeout(window._syncTimer); window._syncTimer=setTimeout(()=>syncToOneDrive(),3000);
+  await zeigeLagerNachbestellung();
+  toast('Markierung zurückgesetzt');
+}
+
+// Schnelles Aktualisieren des Bestands (z. B. nach Wareneingang)
+async function lagerBestandSchnell(id){
+  const a=await idbGet('lager', id); if(!a) return;
+  if(a.mengenstufe){
+    // Mengenstufen-Artikel: Stufe wählen
+    showModal(`
+      <div class="m-title"><i class="ti ti-package"></i> Menge – ${a.bezeichnung}</div>
+      <div class="f"><label>Aktuelle Menge</label>
+        <select id="lbsStufe">
+          <option value="viel" ${a.mengenstufe==='viel'?'selected':''}>viel</option>
+          <option value="mittel" ${a.mengenstufe==='mittel'?'selected':''}>mittel</option>
+          <option value="wenig" ${a.mengenstufe==='wenig'?'selected':''}>wenig</option>
+        </select></div>
+      <div class="f-row" style="margin-top:12px">
+        <button class="btn btn-copper btn-full" onclick="saveLagerBestandSchnell('${id}',true)"><i class="ti ti-check"></i> Speichern</button>
+        <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      </div>`);
+  } else {
+    showModal(`
+      <div class="m-title"><i class="ti ti-package"></i> Bestand – ${a.bezeichnung}</div>
+      <div class="f-row">
+        <div class="f"><label>Neuer Bestand</label><input type="number" id="lbsBestand" step="1" value="${a.bestand??0}"></div>
+        <div class="f"><label>Mindestbestand</label><input type="number" id="lbsMindest" step="1" value="${a.mindestbestand??''}"></div>
+      </div>
+      <div class="f-row" style="margin-top:12px">
+        <button class="btn btn-copper btn-full" onclick="saveLagerBestandSchnell('${id}',false)"><i class="ti ti-check"></i> Speichern</button>
+        <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      </div>`);
+  }
+}
+async function saveLagerBestandSchnell(id, istStufe){
+  const a=await idbGet('lager', id); if(!a) return;
+  if(istStufe){
+    a.mengenstufe=document.getElementById('lbsStufe')?.value||a.mengenstufe;
+  } else {
+    const b=document.getElementById('lbsBestand')?.value;
+    const m=document.getElementById('lbsMindest')?.value;
+    a.bestand = b!==''&&b!=null ? parseFloat(b) : a.bestand;
+    a.mindestbestand = m!==''&&m!=null ? parseFloat(m) : a.mindestbestand;
+    // Wenn wieder über Mindestbestand: Bestellt-Markierung entfernen
+    if(!istLagerWarnung(a)) delete a.bestelltAm;
+  }
+  a.geaendert=now();
+  await idbPut('lager', a);
+  closeModal();
+  clearTimeout(window._syncTimer); window._syncTimer=setTimeout(()=>syncToOneDrive(),3000);
+  await zeigeLagerNachbestellung();
+  toast('Bestand aktualisiert ✓');
+}
+
+/* ── L4: Barcode-Scan ──────────────────────────────────────
+   Nutzt die native BarcodeDetector API (keine externe Bibliothek).
+   Ist sie nicht verfügbar, greift automatisch die manuelle Eingabe.
+   Kontext steuert das Verhalten nach erfolgreichem Scan:
+   - 'suche'  → Artikel mit dieser Barcode-Nr. suchen/öffnen
+   - 'erfassen'→ Barcode in das offene Artikelformular (#laBarcode) eintragen
+*/
+let _bcStream=null, _bcRunning=false, _bcContext='suche';
+
+async function scanLagerBarcode(context){
+  _bcContext = context || 'suche';
+  // Beim Scannen aus dem Artikelformular: aktuelle Eingaben sichern, um sie danach wiederherzustellen
+  if(_bcContext==='erfassen'){
+    window._bcFormState = (typeof leseLagerForm==='function' && document.getElementById('laBez')) ? leseLagerForm() : null;
+    window._bcFormEditId = window._lagerEditId || null;
+  }
+  const unterstuetzt = ('BarcodeDetector' in window);
+  showModal(`
+    <div class="m-title"><i class="ti ti-scan"></i> Barcode scannen</div>
+    ${unterstuetzt?`
+      <div style="position:relative;border-radius:12px;overflow:hidden;background:#000;aspect-ratio:4/3;margin-bottom:10px">
+        <video id="bcVideo" playsinline style="width:100%;height:100%;object-fit:cover"></video>
+        <div style="position:absolute;inset:18% 8%;border:3px solid rgba(255,255,255,0.8);border-radius:10px;box-shadow:0 0 0 9999px rgba(0,0,0,0.25)"></div>
+      </div>
+      <div id="bcStatus" style="text-align:center;font-size:12px;color:var(--ink-40);margin-bottom:10px">Kamera startet…</div>
+    `:`
+      <div style="background:#FEF3E2;border-left:3px solid #D4820A;padding:10px 12px;border-radius:6px;font-size:12px;margin-bottom:12px">
+        <i class="ti ti-info-circle"></i> Kamera-Scan wird auf diesem Gerät nicht unterstützt. Bitte Barcode-Nummer manuell eingeben.
+      </div>
+    `}
+    <div class="f"><label>Barcode-Nr. manuell</label>
+      <input type="text" id="bcManual" inputmode="numeric" placeholder="Nummer eintippen" onkeydown="if(event.key==='Enter')bcManualSubmit()">
+    </div>
+    <div class="f-row" style="margin-top:8px">
+      <button class="btn btn-copper btn-full" onclick="bcManualSubmit()"><i class="ti ti-check"></i> Übernehmen</button>
+      <button class="btn btn-full" onclick="stopScanLagerBarcode()">Abbrechen</button>
+    </div>`);
+  if(unterstuetzt){
+    try{ await bcStart(); }
+    catch(e){
+      console.warn('Barcode-Scanner:', e);
+      const st=document.getElementById('bcStatus');
+      if(st) st.textContent='Kamera nicht verfügbar – bitte manuell eingeben.';
+    }
+  }
+}
+
+async function bcStart(){
+  const detector = new window.BarcodeDetector({
+    formats:['ean_13','ean_8','code_128','code_39','upc_a','upc_e','itf','codabar','qr_code']
+  });
+  _bcStream = await navigator.mediaDevices.getUserMedia({
+    video:{ facingMode:'environment', width:{ideal:1280}, height:{ideal:720} }, audio:false
+  });
+  const v=document.getElementById('bcVideo');
+  if(!v){ // Modal bereits geschlossen
+    _bcStream.getTracks().forEach(t=>t.stop()); _bcStream=null; return;
+  }
+  v.srcObject=_bcStream;
+  await v.play().catch(()=>{});
+  const st=document.getElementById('bcStatus');
+  if(st) st.textContent='Barcode in den Rahmen halten…';
+  _bcRunning=true;
+  const tick=async()=>{
+    if(!_bcRunning) return;
+    const vid=document.getElementById('bcVideo');
+    if(!vid || !vid.videoWidth){ requestAnimationFrame(tick); return; }
+    try{
+      const codes=await detector.detect(vid);
+      if(codes && codes.length){
+        const wert=(codes[0].rawValue||'').trim();
+        if(wert){ await bcOnDetected(wert); return; }
+      }
+    }catch(e){ /* einzelne Frames können fehlschlagen – weiterlaufen */ }
+    setTimeout(tick, 300); // ~3 Scans/Sek., schont Akku
+  };
+  requestAnimationFrame(tick);
+}
+
+function _bcStopStream(){
+  _bcRunning=false;
+  if(_bcStream){ _bcStream.getTracks().forEach(t=>t.stop()); _bcStream=null; }
+}
+
+async function bcOnDetected(wert){
+  _bcStopStream();
+  // kurzes haptisches Feedback, falls verfügbar
+  if(navigator.vibrate) try{ navigator.vibrate(80); }catch(e){}
+  await bcVerarbeite(wert);
+}
+
+async function bcManualSubmit(){
+  const wert=document.getElementById('bcManual')?.value?.trim();
+  if(!wert){ toast('Bitte Barcode-Nummer eingeben'); return; }
+  _bcStopStream();
+  await bcVerarbeite(wert);
+}
+
+function stopScanLagerBarcode(){
+  _bcStopStream();
+  closeModal();
+}
+
+// Verarbeitet einen erkannten/eingegebenen Barcode je nach Kontext
+async function bcVerarbeite(wert){
+  if(_bcContext==='erfassen'){
+    const state = window._bcFormState || {};
+    state.barcode = wert;
+    window._bcFormState = null;
+    await renderLagerArtikelForm(state, window._bcFormEditId||null);
+    toast('Barcode übernommen ✓');
+    return;
+  }
+  // Kontext 'suche': Artikel mit exakt dieser Barcode-Nr. finden
+  const alle=await idbGetAll('lager');
+  const treffer=alle.filter(a=>(a.barcode||'').trim()===wert);
+  closeModal();
+  if(treffer.length===1){
+    await zeigeLagerArtikel(treffer[0].id);
+  } else if(treffer.length>1){
+    // mehrere: Auswahl anzeigen
+    showModal(`<div class="m-title"><i class="ti ti-scan"></i> ${treffer.length} Treffer</div>
+      <div style="font-size:12px;color:var(--ink-40);margin-bottom:8px">Barcode ${wert}</div>
+      ${treffer.map(a=>{const kat=getLagerKat(a.kategorie);return `<div class="card" style="margin-bottom:6px;cursor:pointer" onclick="closeModal();zeigeLagerArtikel('${a.id}')">
+        <div style="display:flex;align-items:center;gap:10px"><i class="ti ${kat.icon}" style="color:${kat.color}"></i>
+        <div><div style="font-weight:600;font-size:13px">${a.bezeichnung}</div>
+        <div style="font-size:11px;color:var(--ink-40)">${getLagerStandort(a.standort).label} · Bestand ${a.bestand??'–'}</div></div></div></div>`;}).join('')}
+      <button class="btn btn-full" style="margin-top:8px" onclick="closeModal()">Schließen</button>`);
+  } else {
+    // kein Treffer: anbieten, neuen Artikel mit dieser Barcode anzulegen
+    showModal(`<div class="m-title"><i class="ti ti-scan-eye"></i> Kein Artikel gefunden</div>
+      <p style="font-size:13px;color:var(--ink-60);margin-bottom:12px">Für den Barcode <strong>${wert}</strong> ist kein Artikel hinterlegt. Möchten Sie einen neuen Artikel mit dieser Nummer anlegen?</p>
+      <div class="f-row">
+        <button class="btn btn-copper btn-full" onclick="closeModal();neuerArtikelMitBarcode('${wert.replace(/'/g,'')}')"><i class="ti ti-plus"></i> Artikel anlegen</button>
+        <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      </div>`);
+  }
+}
+
+async function neuerArtikelMitBarcode(wert){
+  await renderLagerArtikelForm({barcode:wert, kategorie:'werkzeug'}, null);
+}
+
+/* ── L5: Inventur-Modus ────────────────────────────────────
+   Standort durchgehen, Ist-Bestand bestätigen oder korrigieren.
+   Änderungen werden sofort gespeichert; am Ende eine Zusammenfassung.
+*/
+let _invStandort=null, _invIndex=0, _invListe=[], _invGeprueft=0, _invKorrigiert=0;
+
+async function startInventur(){
+  const meineObjekte=await getMyObjekte();
+  const meineGruppen=new Set(meineObjekte.map(o=>o.gruppe));
+  const standorte=LAGER_STANDORTE.filter(s=>s.alleSichtbar||meineGruppen.has(s.id));
+  showModal(`
+    <div class="m-title"><i class="ti ti-clipboard-list"></i> Inventur starten</div>
+    <p style="font-size:13px;color:var(--ink-60);margin-bottom:10px">Wählen Sie den Standort, dessen Bestand Sie aufnehmen möchten.</p>
+    <div class="f"><label>Standort</label>
+      <select id="invStandortSel">
+        ${standorte.map(s=>`<option value="${s.id}">${s.label}</option>`).join('')}
+      </select></div>
+    <div class="f-row" style="margin-top:12px">
+      <button class="btn btn-copper btn-full" onclick="inventurLos()"><i class="ti ti-player-play"></i> Inventur beginnen</button>
+      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+    </div>`);
+}
+
+async function inventurLos(){
+  _invStandort=document.getElementById('invStandortSel')?.value;
+  const alle=await idbGetAll('lager','standort',_invStandort);
+  _invListe=alle.sort((a,b)=>{
+    const ka=getLagerKat(a.kategorie).label, kb=getLagerKat(b.kategorie).label;
+    return ka.localeCompare(kb)||(a.bezeichnung||'').localeCompare(b.bezeichnung||'');
+  });
+  _invIndex=0; _invGeprueft=0; _invKorrigiert=0;
+  if(!_invListe.length){ toast('Keine Artikel an diesem Standort'); closeModal(); return; }
+  renderInventurSchritt();
+}
+
+function renderInventurSchritt(){
+  if(_invIndex>=_invListe.length){ renderInventurFertig(); return; }
+  const a=_invListe[_invIndex];
+  const kat=getLagerKat(a.kategorie);
+  const fortschritt=Math.round((_invIndex/_invListe.length)*100);
+  const bestandAktuell = a.mengenstufe ? mengenstufeLabel(a.mengenstufe) : (a.bestand??0);
+  showModal(`
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+      <div style="font-size:12px;color:var(--ink-40)">Inventur · ${getLagerStandort(_invStandort).label}</div>
+      <div style="font-size:12px;color:var(--ink-40)">${_invIndex+1} / ${_invListe.length}</div>
+    </div>
+    <div style="height:5px;background:var(--ink-10);border-radius:3px;margin-bottom:12px;overflow:hidden">
+      <div style="height:100%;width:${fortschritt}%;background:var(--copper);transition:width .2s"></div>
+    </div>
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+      ${a.foto?`<img src="${a.foto}" style="width:48px;height:48px;border-radius:8px;object-fit:cover">`:`<div style="width:48px;height:48px;border-radius:8px;background:${kat.color}1a;display:flex;align-items:center;justify-content:center;color:${kat.color}"><i class="ti ${kat.icon}"></i></div>`}
+      <div style="flex:1">
+        <div style="font-weight:600;font-size:15px">${a.bezeichnung||'(ohne Namen)'}</div>
+        <div style="font-size:12px;color:var(--ink-40)">${kat.label}${a.lagerort?' · '+a.lagerort:''}</div>
+      </div>
+    </div>
+    <div style="text-align:center;background:var(--ink-05);border-radius:10px;padding:12px;margin-bottom:12px">
+      <div style="font-size:12px;color:var(--ink-40)">erfasster Bestand</div>
+      <div style="font-size:26px;font-weight:700">${bestandAktuell}</div>
+    </div>
+    ${a.mengenstufe?`
+      <div class="f"><label>Tatsächliche Menge</label>
+        <select id="invStufe">
+          <option value="viel" ${a.mengenstufe==='viel'?'selected':''}>viel</option>
+          <option value="mittel" ${a.mengenstufe==='mittel'?'selected':''}>mittel</option>
+          <option value="wenig" ${a.mengenstufe==='wenig'?'selected':''}>wenig</option>
+        </select></div>
+      <button class="btn btn-copper btn-full" style="margin-bottom:6px" onclick="inventurKorrigieren()"><i class="ti ti-edit"></i> Menge übernehmen</button>
+    `:`
+      <div class="f"><label>Tatsächlicher Bestand (bei Abweichung)</label>
+        <input type="number" id="invBestand" step="1" inputmode="numeric" placeholder="${a.bestand??0}"></div>
+      <button class="btn btn-copper btn-full" style="margin-bottom:6px" onclick="inventurKorrigieren()"><i class="ti ti-edit"></i> Bestand korrigieren</button>
+    `}
+    <button class="btn btn-full" style="margin-bottom:6px;color:#2E7D52" onclick="inventurBestaetigen()"><i class="ti ti-check"></i> Passt – weiter</button>
+    <div style="display:flex;gap:6px">
+      <button class="btn" style="flex:1" onclick="if(_invIndex>0){_invIndex--;renderInventurSchritt();}"><i class="ti ti-arrow-left"></i> Zurück</button>
+      <button class="btn" style="flex:1" onclick="inventurAbbrechen()">Beenden</button>
+    </div>`);
+}
+
+async function inventurBestaetigen(){
+  const a=_invListe[_invIndex];
+  a.inventurAm=new Date().toLocaleDateString('de-DE');
+  a.inventurVon=CU?.name||'';
+  await idbPut('lager', a);
+  _invGeprueft++;
+  _invIndex++;
+  renderInventurSchritt();
+}
+
+async function inventurKorrigieren(){
+  const a=_invListe[_invIndex];
+  if(a.mengenstufe){
+    a.mengenstufe=document.getElementById('invStufe')?.value||a.mengenstufe;
+  } else {
+    const v=document.getElementById('invBestand')?.value;
+    if(v===''||v==null){ toast('Bitte Bestand eingeben oder „Passt" wählen'); return; }
+    const neu=parseFloat(v);
+    if(neu!==a.bestand){ _invKorrigiert++; }
+    a.bestand=neu;
+    if(!istLagerWarnung(a)) delete a.bestelltAm;
+  }
+  a.inventurAm=new Date().toLocaleDateString('de-DE');
+  a.inventurVon=CU?.name||'';
+  a.geaendert=now();
+  await idbPut('lager', a);
+  _invGeprueft++;
+  _invIndex++;
+  clearTimeout(window._syncTimer); window._syncTimer=setTimeout(()=>syncToOneDrive(),3000);
+  renderInventurSchritt();
+}
+
+function inventurAbbrechen(){
+  if(_invGeprueft>0 || _invIndex>0){
+    if(!confirm('Inventur beenden? Bereits erfasste Stände bleiben gespeichert.')) return;
+  }
+  renderInventurFertig(true);
+}
+
+function renderInventurFertig(vorzeitig){
+  closeModal();
+  clearTimeout(window._syncTimer); window._syncTimer=setTimeout(()=>syncToOneDrive(),3000);
+  showModal(`
+    <div class="m-title"><i class="ti ti-circle-check" style="color:#2E7D52"></i> Inventur ${vorzeitig?'beendet':'abgeschlossen'}</div>
+    <div style="text-align:center;padding:10px 0">
+      <div style="font-size:13px;color:var(--ink-60);margin-bottom:10px">${getLagerStandort(_invStandort).label}</div>
+      <div style="display:flex;gap:10px;justify-content:center">
+        <div style="background:var(--ink-05);border-radius:10px;padding:12px 18px">
+          <div style="font-size:24px;font-weight:700">${_invGeprueft}</div>
+          <div style="font-size:11px;color:var(--ink-40)">geprüft</div>
+        </div>
+        <div style="background:var(--ink-05);border-radius:10px;padding:12px 18px">
+          <div style="font-size:24px;font-weight:700;color:var(--copper)">${_invKorrigiert}</div>
+          <div style="font-size:11px;color:var(--ink-40)">korrigiert</div>
+        </div>
+      </div>
+    </div>
+    <button class="btn btn-copper btn-full" style="margin-top:12px" onclick="closeModal();renderLager()"><i class="ti ti-check"></i> Fertig</button>`);
+}
+
+/* ── L6: Materialentnahme & standortübergreifende Anforderung ──
+   Entnahme: Bestand sinkt sofort, optional mit Mangel-/Reparaturbezug.
+   Anforderung: Material an anderem Standort „bitte mitbringen" – wird dort
+   sichtbar und beim Verbrauch quittiert; erst dann sinkt der Bestand.
+*/
+async function modalLagerEntnahme(artikelId, mangelId){
+  const a=await idbGet('lager', artikelId); if(!a) return;
+  const istStufe=!!a.mengenstufe;
+  showModal(`
+    <div class="m-title"><i class="ti ti-package-export"></i> Entnehmen – ${a.bezeichnung}</div>
+    <div style="background:var(--ink-05);border-radius:8px;padding:8px 12px;margin-bottom:10px;font-size:13px">
+      Standort: <strong>${getLagerStandort(a.standort).label}</strong>${a.lagerort?' · '+a.lagerort:''}<br>
+      Aktueller Bestand: <strong>${istStufe?mengenstufeLabel(a.mengenstufe):(a.bestand??0)}</strong>
+    </div>
+    ${istStufe?`
+      <div class="f"><label>Neue Menge nach Entnahme</label>
+        <select id="entStufe">
+          <option value="viel" ${a.mengenstufe==='viel'?'selected':''}>viel</option>
+          <option value="mittel" ${a.mengenstufe==='mittel'?'selected':''}>mittel</option>
+          <option value="wenig" ${a.mengenstufe==='wenig'?'selected':''}>wenig</option>
+        </select></div>
+    `:`
+      <div class="f"><label>Entnommene Menge *</label>
+        <input type="number" id="entMenge" step="1" min="1" inputmode="numeric" value="1"></div>
+    `}
+    <div class="f"><label>Verwendung / Bezug (optional)</label>
+      <input type="text" id="entZweck" placeholder="z. B. Reparatur WE 3, Mindener Str. 23" value="${mangelId?'Mangel-Behebung':''}"></div>
+    <div class="f-row" style="margin-top:12px">
+      <button class="btn btn-copper btn-full" onclick="saveLagerEntnahme('${artikelId}','${mangelId||''}')"><i class="ti ti-check"></i> Entnahme buchen</button>
+      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+    </div>`);
+}
+
+async function saveLagerEntnahme(artikelId, mangelId){
+  const a=await idbGet('lager', artikelId); if(!a) return;
+  let menge=0;
+  if(a.mengenstufe){
+    a.mengenstufe=document.getElementById('entStufe')?.value||a.mengenstufe;
+  } else {
+    menge=parseFloat(document.getElementById('entMenge')?.value);
+    if(isNaN(menge)||menge<=0){ toast('Bitte gültige Menge eingeben'); return; }
+    const best=parseFloat(a.bestand)||0;
+    if(menge>best){
+      if(!confirm(`Entnahme (${menge}) übersteigt den Bestand (${best}). Bestand auf 0 setzen?`)) return;
+      a.bestand=0;
+    } else {
+      a.bestand=best-menge;
+    }
+    if(!istLagerWarnung(a)) {} // Warnung ggf. neu aktiv – bewusst nicht zurücksetzen
+  }
+  const zweck=document.getElementById('entZweck')?.value?.trim()||'';
+  // Entnahme protokollieren (Historie am Artikel)
+  a.entnahmen = a.entnahmen||[];
+  a.entnahmen.unshift({datum:new Date().toLocaleDateString('de-DE'), menge: a.mengenstufe?('→ '+a.mengenstufe):menge, zweck, von:CU?.name||'', mangelId:mangelId||null});
+  if(a.entnahmen.length>50) a.entnahmen=a.entnahmen.slice(0,50);
+  a.geaendert=now();
+  await idbPut('lager', a);
+  closeModal();
+  clearTimeout(window._syncTimer); window._syncTimer=setTimeout(()=>syncToOneDrive(),3000);
+  // Falls aus Mangel-Kontext aufgerufen: dorthin zurück, sonst Artikel zeigen
+  if(mangelId && typeof showMangelDetail==='function'){
+    await showMangelDetail(mangelId, window._mangelMatStore||'maengel');
+  } else {
+    await zeigeLagerArtikel(artikelId);
+  }
+  toast('Entnahme gebucht ✓');
+}
+
+async function modalLagerAnforderung(artikelId, mangelId){
+  const a=await idbGet('lager', artikelId); if(!a) return;
+  const istStufe=!!a.mengenstufe;
+  showModal(`
+    <div class="m-title"><i class="ti ti-truck-delivery"></i> Material anfordern</div>
+    <p style="font-size:13px;color:var(--ink-60);margin-bottom:10px">
+      „${a.bezeichnung}" liegt am Standort <strong>${getLagerStandort(a.standort).label}</strong>.
+      Die Anforderung wird für alle sichtbar, die Zugang zu diesem Standort haben – zum Mitbringen.
+    </p>
+    ${istStufe?'':`<div class="f"><label>Benötigte Menge</label><input type="number" id="anfMenge" step="1" min="1" value="1"></div>`}
+    <div class="f"><label>Benötigt für / Zielort</label>
+      <input type="text" id="anfZiel" placeholder="z. B. Krefeld, Wilmendyk 11"></div>
+    <div class="f"><label>Dringlichkeit</label>
+      <select id="anfPrio">
+        <option value="normal">Normal</option>
+        <option value="hoch">Hoch / dringend</option>
+      </select></div>
+    <div class="f"><label>Notiz (optional)</label><textarea id="anfNotiz" style="min-height:44px"></textarea></div>
+    <div class="f-row" style="margin-top:12px">
+      <button class="btn btn-copper btn-full" onclick="saveLagerAnforderung('${artikelId}','${mangelId||''}')"><i class="ti ti-check"></i> Anfordern</button>
+      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+    </div>`);
+}
+
+async function saveLagerAnforderung(artikelId, mangelId){
+  const a=await idbGet('lager', artikelId); if(!a) return;
+  const menge=a.mengenstufe?null:(parseFloat(document.getElementById('anfMenge')?.value)||1);
+  const anf={
+    id:uid(),
+    artikelId, artikelName:a.bezeichnung,
+    standort:a.standort,                 // wo das Material liegt
+    standortLabel:getLagerStandort(a.standort).label,
+    menge,
+    ziel:document.getElementById('anfZiel')?.value?.trim()||'',
+    prio:document.getElementById('anfPrio')?.value||'normal',
+    notiz:document.getElementById('anfNotiz')?.value?.trim()||'',
+    mangelId:mangelId||null,
+    status:'offen',
+    erstellt:now(), ersteller:CU?.name||'',
+  };
+  await idbPut('lager_anforderung', anf);
+  closeModal();
+  clearTimeout(window._syncTimer); window._syncTimer=setTimeout(()=>syncToOneDrive(),3000);
+  if(mangelId && typeof showMangelDetail==='function'){
+    await showMangelDetail(mangelId, window._mangelMatStore||'maengel');
+  }
+  toast('Anforderung erstellt ✓');
+}
+
+// L7: Materialauswahl für einen Mangel/Reparatur – entnehmen oder anfordern
+async function materialFuerMangel(mangelId, store){
+  window._mangelMatStore = store||'maengel';
+  const alle=(await idbGetAll('lager')).sort((a,b)=>(a.bezeichnung||'').localeCompare(b.bezeichnung||''));
+  const meineObjekte=await getMyObjekte();
+  const meineGruppen=new Set(meineObjekte.map(o=>o.gruppe));
+  const sichtbar=alle.filter(a=>{const st=LAGER_STANDORTE.find(x=>x.id===a.standort);return st&&(st.alleSichtbar||meineGruppen.has(st.id));});
+  showModal(`
+    <div class="m-title"><i class="ti ti-package"></i> Material für Vorgang</div>
+    <input type="search" id="matSuche" placeholder="Artikel suchen…" oninput="filterMaterialPicker(this.value)"
+      style="width:100%;padding:10px 12px;border:1px solid var(--ink-10);border-radius:10px;font-size:14px;margin-bottom:10px">
+    <div id="matPickerList" style="max-height:55vh;overflow-y:auto">
+      ${sichtbar.length?sichtbar.map(a=>materialPickerRow(a, mangelId)).join(''):'<div class="empty"><i class="ti ti-package-off"></i><p>Keine Artikel vorhanden.</p></div>'}
+    </div>
+    <button class="btn btn-full" style="margin-top:10px" onclick="showMangelDetail('${mangelId}','${store||'maengel'}')">Zurück zum Vorgang</button>`);
+  window._matPickerData=sichtbar; window._matPickerMangel=mangelId;
+}
+
+function materialPickerRow(a, mangelId){
+  const kat=getLagerKat(a.kategorie);
+  const best=a.mengenstufe?mengenstufeLabel(a.mengenstufe):(a.bestand??'–');
+  return `<div class="card" style="margin-bottom:6px" data-name="${(a.bezeichnung||'').toLowerCase()}">
+    <div style="display:flex;align-items:center;gap:10px">
+      <div style="width:34px;height:34px;border-radius:8px;background:${kat.color}1a;display:flex;align-items:center;justify-content:center;color:${kat.color};flex-shrink:0"><i class="ti ${kat.icon}"></i></div>
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:600;font-size:13px">${a.bezeichnung||'(ohne Namen)'}</div>
+        <div style="font-size:11px;color:var(--ink-40)">${getLagerStandort(a.standort).label} · Bestand ${best}</div>
+      </div>
+      <div style="display:flex;gap:4px;flex-shrink:0">
+        <button class="btn btn-sm btn-copper" onclick="modalLagerEntnahme('${a.id}','${mangelId}')" title="Entnehmen"><i class="ti ti-package-export"></i></button>
+        <button class="btn btn-sm" onclick="modalLagerAnforderung('${a.id}','${mangelId}')" title="Anfordern"><i class="ti ti-truck-delivery"></i></button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function filterMaterialPicker(q){
+  const list=document.getElementById('matPickerList');
+  if(!list) return;
+  const ql=(q||'').toLowerCase();
+  list.querySelectorAll('[data-name]').forEach(el=>{
+    el.style.display = !ql || el.getAttribute('data-name').includes(ql) ? '' : 'none';
+  });
+}
+
+// Übersicht offener Anforderungen (im Lager-Bereich)
+async function zeigeLagerAnforderungen(){
+  const el=document.getElementById('page-lager');
+  if(!el) return;
+  const alle=await idbGetAll('lager_anforderung');
+  const offen=alle.filter(x=>x.status==='offen')
+    .sort((a,b)=>(a.prio==='hoch'?-1:1)-(b.prio==='hoch'?-1:1));
+  let h=`<div class="s-hdr">
+    <button class="btn btn-sm" onclick="renderLager()"><i class="ti ti-arrow-left"></i></button>
+    <div class="s-title"><i class="ti ti-truck-delivery"></i> Materialanforderungen</div>
+    <span></span>
+  </div>`;
+  if(!offen.length){
+    h+=`<div class="empty"><i class="ti ti-circle-check"></i><p>Keine offenen Anforderungen.</p></div>`;
+    el.innerHTML=h; return;
+  }
+  for(const x of offen){
+    h+=`<div class="card" style="margin-bottom:8px;${x.prio==='hoch'?'border-left:3px solid #C0392B':''}">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+        ${x.prio==='hoch'?'<span class="chip chip-warn" style="font-size:10px">dringend</span>':''}
+        <div style="font-weight:600;font-size:14px;flex:1">${x.artikelName}${x.menge?` · ${x.menge} Stk.`:''}</div>
+      </div>
+      <div style="font-size:12px;color:var(--ink-60)">
+        Von Standort <strong>${x.standortLabel}</strong> mitbringen${x.ziel?` nach <strong>${x.ziel}</strong>`:''}.<br>
+        ${x.notiz?x.notiz+'<br>':''}
+        <span style="color:var(--ink-40)">${x.ersteller} · ${x.erstellt}</span>
+      </div>
+      <div style="display:flex;gap:6px;margin-top:8px">
+        <button class="btn btn-sm btn-copper" style="flex:1" onclick="anforderungErledigt('${x.id}')"><i class="ti ti-check"></i> Erledigt (Bestand buchen)</button>
+        <button class="btn btn-sm" onclick="anforderungLoeschen('${x.id}')"><i class="ti ti-trash"></i></button>
+      </div>
+    </div>`;
+  }
+  el.innerHTML=h;
+}
+
+// Anforderung erledigt: Material wurde mitgebracht/verbraucht → Bestand am Quellstandort mindern
+async function anforderungErledigt(anfId){
+  const x=await idbGet('lager_anforderung', anfId); if(!x) return;
+  const a=await idbGet('lager', x.artikelId);
+  if(a && !a.mengenstufe && x.menge){
+    const best=parseFloat(a.bestand)||0;
+    a.bestand=Math.max(0, best-x.menge);
+    a.entnahmen=a.entnahmen||[];
+    a.entnahmen.unshift({datum:new Date().toLocaleDateString('de-DE'), menge:x.menge, zweck:'Anforderung'+(x.ziel?' → '+x.ziel:''), von:CU?.name||'', mangelId:x.mangelId||null});
+    a.geaendert=now();
+    await idbPut('lager', a);
+  }
+  x.status='erledigt'; x.erledigtAm=now(); x.erledigtVon=CU?.name||'';
+  await idbPut('lager_anforderung', x);
+  clearTimeout(window._syncTimer); window._syncTimer=setTimeout(()=>syncToOneDrive(),3000);
+  await zeigeLagerAnforderungen();
+  toast('Anforderung erledigt – Bestand gebucht ✓');
+}
+
+async function anforderungLoeschen(anfId){
+  if(!confirm('Anforderung löschen?')) return;
+  await idbDelete('lager_anforderung', anfId);
+  clearTimeout(window._syncTimer); window._syncTimer=setTimeout(()=>syncToOneDrive(),3000);
+  await zeigeLagerAnforderungen();
+  toast('Anforderung gelöscht');
+}
+
+async function sucheLager(q){
+  const res=document.getElementById('lagerSucheResult');
+  if(!res) return;
+  if(!q||q.length<2){ res.innerHTML=''; return; }
+  const alle=await idbGetAll('lager');
+  const tref=alle.filter(a=>
+    (a.bezeichnung||'').toLowerCase().includes(q.toLowerCase())||
+    (a.inventarnummer||'').toLowerCase().includes(q.toLowerCase())||
+    (a.barcode||'').toLowerCase().includes(q.toLowerCase()));
+  if(!tref.length){ res.innerHTML='<div style="padding:10px;color:var(--ink-40);font-size:13px">Keine Treffer</div>'; return; }
+  res.innerHTML=tref.slice(0,20).map(a=>{
+    const kat=getLagerKat(a.kategorie);
+    return `<div class="card" style="margin-top:6px;cursor:pointer" onclick="zeigeLagerArtikel('${a.id}')">
+      <div style="display:flex;align-items:center;gap:10px">
+        <i class="ti ${kat.icon}" style="color:${kat.color}"></i>
+        <div style="flex:1"><div style="font-weight:600;font-size:13px">${a.bezeichnung||'(ohne Namen)'}</div>
+          <div style="font-size:11px;color:var(--ink-40)">${kat.label} · ${getLagerStandort(a.standort).label} · Bestand: ${a.bestand??'–'}</div></div>
+      </div></div>`;
+  }).join('');
+}
+
 async function aktiviereFaelligeMieterwechsel() {
   try {
     const heute = new Date(); heute.setHours(0,0,0,0);
@@ -4607,6 +6124,7 @@ const TERMIN_TYPEN = [
   {val:'kuendigung',    label:'Kündigung / Auszug',     icon:'ti-door-exit',     color:'#C0392B'},
   {val:'mieterhoehung', label:'Mieterhöhung',           icon:'ti-trending-up',   color:'#8B008B'},
   {val:'versicherung',  label:'Versicherung / Behörde', icon:'ti-building-bank', color:'#555'},
+  {val:'vertrag',       label:'Vertrag / Versorger',     icon:'ti-file-dollar',   color:'#0E7C7B'},
   {val:'sonstiges',     label:'Sonstiges',               icon:'ti-calendar',      color:'#888'},
 ];
 
@@ -7224,6 +8742,7 @@ window.nav=async function(id,title,sub,push=true){
   if(id==='settings')          await renderSettings();
   if(id==='protokoll-archiv')  await renderProtokollArchiv();
   if(id==='kalender')          await renderKalender();
+  if(id==='lager')             await renderLager();
 };
 
 
@@ -7265,6 +8784,11 @@ async function openFoto(src, caption='') {
   if (caption === 'zaehlerstand' && src && !src.startsWith('data:')) {
     const s = await idbGet('zaehlerstaende', src).catch(()=>null);
     if (s) { src = s.foto; caption = `Zählerstand ${s.wert} ${s.einheit||''} · ${s.datum||''}`; }
+  }
+  // Lager-Artikelfoto aus IDB laden
+  if (caption === 'lager' && src && !src.startsWith('data:')) {
+    const a = await idbGet('lager', src).catch(()=>null);
+    if (a) { src = a.foto; caption = a.bezeichnung||'Artikel'; }
   }
   window._currentFoto = src;
   window._currentFotoName = caption || 'Foto';
@@ -7337,6 +8861,26 @@ async function showMangelDetail(id, store='maengel') {
   const kommentare = m.kommentare || [];
   const done = m.status==='behoben'||m.status==='erledigt';
 
+  // L7: bereits für diesen Mangel verbuchtes Material sammeln
+  let materialHTML='';
+  try{
+    const alleArtikel=await idbGetAll('lager');
+    const verwendet=[];
+    for(const art of alleArtikel){
+      (art.entnahmen||[]).forEach(e=>{ if(e.mangelId===id) verwendet.push({name:art.bezeichnung, menge:e.menge, datum:e.datum, von:e.von}); });
+    }
+    const offeneAnf=(await idbGetAll('lager_anforderung')).filter(x=>x.mangelId===id&&x.status==='offen');
+    if(verwendet.length||offeneAnf.length){
+      materialHTML=`<div class="card-hdr" style="margin-bottom:8px"><i class="ti ti-package"></i> Material</div><div style="margin-bottom:12px">`;
+      verwendet.forEach(v=>{ materialHTML+=`<div style="font-size:13px;padding:5px 0;border-bottom:1px solid var(--ink-10)">
+        <i class="ti ti-package-export" style="font-size:12px;color:var(--copper)"></i> ${v.menge}× ${v.name}
+        <span style="color:var(--ink-40);font-size:11px"> · ${v.datum}${v.von?' · '+v.von:''}</span></div>`; });
+      offeneAnf.forEach(x=>{ materialHTML+=`<div style="font-size:13px;padding:5px 0;border-bottom:1px solid var(--ink-10);color:#0E7C7B">
+        <i class="ti ti-truck-delivery" style="font-size:12px"></i> angefordert: ${x.menge?x.menge+'× ':''}${x.artikelName} <span style="font-size:11px">(${x.standortLabel})</span></div>`; });
+      materialHTML+=`</div>`;
+    }
+  }catch(e){}
+
   showModal(`
     <div class="m-title"><i class="ti ti-${m.type==='reparatur'||m.istReparatur?'tools':'alert-triangle'}" style="color:${done?'var(--green)':'var(--red)'}"></i>
       ${m.nummer?esc(m.nummer)+' · ':''}${esc(m.titel)}
@@ -7371,6 +8915,7 @@ async function showMangelDetail(id, store='maengel') {
       </div>`).join('')}
     </div>` : ''}
 
+    ${materialHTML}
     <div class="card-hdr" style="margin-bottom:8px"><i class="ti ti-message"></i> Kommentare (${kommentare.length})</div>
     ${kommentare.length ? `<div class="comment-box" style="margin-bottom:10px">
       ${kommentare.map(k=>`<div class="comment-item">
@@ -7389,6 +8934,7 @@ async function showMangelDetail(id, store='maengel') {
         <i class="ti ti-${done?'rotate-ccw':'check'}"></i> ${done?'Wieder öffnen':'Als erledigt markieren'}
       </button>
       <button class="btn btn-sm" onclick="editMangel('${id}','${store}')"><i class="ti ti-pencil"></i> Bearbeiten</button>
+      <button class="btn btn-sm" onclick="materialFuerMangel('${id}','${store}')"><i class="ti ti-package"></i> Material</button>
       <button class="btn btn-sm" onclick="modalAddEinkauf('${id}','Mangel','',{objektId:'${m.objektId||''}',weNr:'${esc(m.weNr||'')}',bezugText:'${esc((m.nummer?m.nummer+' · ':'')+m.titel)}'})"><i class="ti ti-shopping-cart"></i></button>
       <button class="btn btn-sm btn-danger" onclick="deleteMangelConfirm('${id}','${store}')"><i class="ti ti-trash"></i></button>
     </div>`);
