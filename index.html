@@ -636,7 +636,7 @@ button.chip.chip-active{background:var(--ink);color:#fff;border-color:var(--ink)
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=10;
-const APP_VERSION = '2026-06-07-v9';
+const APP_VERSION = '2026-06-07-v11';
 let idb=null;
 
 function openIDB(){
@@ -2378,8 +2378,11 @@ async function renderLagerArtikelForm(a, artikelId){
     </div>
 
     <div class="f"><label>Foto</label>
-      <input type="file" id="laFotoIn" accept="image/*" capture="environment" style="display:none" onchange="onLagerFoto(this)">
-      <button class="btn btn-full" onclick="document.getElementById('laFotoIn').click()"><i class="ti ti-camera"></i> Foto aufnehmen / wählen</button>
+      <input type="file" id="laFotoIn" accept="image/*" style="display:none" onchange="onLagerFoto(this)">
+      <div style="display:flex;gap:6px">
+        <button class="btn" style="flex:1" onclick="openCamLager()"><i class="ti ti-camera"></i> Foto aufnehmen</button>
+        <button class="btn" style="flex:1" onclick="document.getElementById('laFotoIn').click()"><i class="ti ti-photo"></i> Aus Galerie</button>
+      </div>
       <div id="laFotoPreview" style="margin-top:8px">${a.foto?`<img src="${a.foto}" style="max-width:100%;border-radius:8px;border:1px solid var(--ink-10)">`:''}</div>
     </div>
     <div class="f"><label>Notiz</label><textarea id="laNotiz" style="min-height:50px">${a.notiz||''}</textarea></div>
@@ -2435,11 +2438,31 @@ function toggleMengenstufe(){
 
 async function onLagerFoto(input){
   const file=input.files[0]; if(!file) return;
+  window._lagerCamActive=false;
   const dataUrl=await compressFoto(file, 1400, 0.78);
   window._lagerFoto=dataUrl;
   const prev=document.getElementById('laFotoPreview');
   if(prev) prev.innerHTML=`<img src="${dataUrl}" style="max-width:100%;border-radius:8px;border:1px solid var(--ink-10)">
     <button class="btn btn-sm btn-danger" style="margin-top:4px" onclick="window._lagerFoto=null;document.getElementById('laFotoPreview').innerHTML=''"><i class="ti ti-trash"></i> Foto entfernen</button>`;
+}
+
+// Lager-Foto über das robuste In-App-Kamera-Overlay (getUserMedia, kein PWA-Reload)
+function openCamLager(){
+  // konkurrierende Foto-Kontexte zurücksetzen, damit processPhoto den Lager-Zweig nimmt
+  pPhotoRoom=null;
+  window._zaehlerIdx=null;
+  window._mangelPhotos=null;
+  window._lagerCamActive=true;
+  if(typeof openCam==='function'){ openCam(); }
+  else { document.getElementById('laFotoIn')?.click(); }
+}
+// Wird von processPhoto im Lager-Kontext aufgerufen
+function lagerFotoAusKamera(data){
+  window._lagerFoto=data;
+  const prev=document.getElementById('laFotoPreview');
+  if(prev) prev.innerHTML=`<img src="${data}" style="max-width:100%;border-radius:8px;border:1px solid var(--ink-10)">
+    <button class="btn btn-sm btn-danger" style="margin-top:4px" onclick="window._lagerFoto=null;document.getElementById('laFotoPreview').innerHTML=''"><i class="ti ti-trash"></i> Foto entfernen</button>`;
+  toast('Foto aufgenommen ✓');
 }
 
 async function saveLagerArtikel(artikelId){
@@ -7910,7 +7933,7 @@ function setRoomCondFull(room,cond,val){
         weNr:PD.weNr||'',
         titel,schwere:'mittel',
         datum:PD.datum||today(),
-        beschreibung:'Erfasst im Übergabeprotokoll',
+        beschreibung:'',
         status:'offen',fotos:[],
         erstellt:now(),ersteller:CU?.name||'',
       };
@@ -8102,7 +8125,7 @@ async function finishProt(){
         const rd=PD.raeume?.[room];
         const note=rd?.condNotes?.[cond];
         if(note && note.trim()){
-          m.beschreibung = 'Erfasst im Übergabeprotokoll: '+note.trim();
+          m.beschreibung = note.trim();
         }
         // Zugehörige Raum-Fotos als Daten-URLs übernehmen
         if(rd?.photoIds?.length){
@@ -9327,11 +9350,55 @@ async function editMangel(id, store) {
     </div>
     <div id="em_kostenSum" style="font-size:13px;color:var(--ink-60);margin-bottom:12px;padding:8px 12px;background:var(--ink-05);border-radius:8px;display:none"></div>
     <div class="f"><label>Beschreibung</label><textarea id="em_beschr">${esc(m.beschreibung||'')}</textarea></div>
+    <div class="f"><label>Fotos</label>
+      <div id="em_fotoGrid" style="display:${(m.fotos&&m.fotos.length)?'grid':'none'};grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:8px"></div>
+      <div style="display:flex;gap:6px">
+        <button class="btn" style="flex:1" onclick="openCamMangelEdit()"><i class="ti ti-camera"></i> Foto aufnehmen</button>
+        <button class="btn" style="flex:1" onclick="document.getElementById('em_fotoIn').click()"><i class="ti ti-photo"></i> Aus Galerie</button>
+      </div>
+      <input type="file" id="em_fotoIn" accept="image/*" style="display:none" onchange="onMangelEditFoto(this)">
+    </div>
     <div class="f-row">
       <button class="btn btn-copper btn-full" onclick="saveEditMangel('${id}','${store}')"><i class="ti ti-check"></i> Speichern</button>
       <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
     </div>`);
+  window._emFotos = (m.fotos||[]).slice();
+  renderEmFotoGrid();
   emKostenUpdate();
+}
+
+function renderEmFotoGrid(){
+  const grid=document.getElementById('em_fotoGrid');
+  if(!grid) return;
+  const fotos=window._emFotos||[];
+  if(!fotos.length){ grid.style.display='none'; grid.innerHTML=''; return; }
+  grid.style.display='grid';
+  grid.innerHTML=fotos.map((f,i)=>`<div style="position:relative">
+    <img src="${f}" style="width:100%;aspect-ratio:1;object-fit:cover;border-radius:8px;border:1px solid var(--ink-10)">
+    <button onclick="delEmFoto(${i})" style="position:absolute;top:2px;right:2px;width:22px;height:22px;border-radius:50%;border:none;background:#C0392B;color:#fff;font-size:13px;cursor:pointer;display:flex;align-items:center;justify-content:center">&times;</button>
+  </div>`).join('');
+}
+
+function delEmFoto(i){
+  window._emFotos=(window._emFotos||[]).filter((_,idx)=>idx!==i);
+  renderEmFotoGrid();
+}
+
+async function onMangelEditFoto(input){
+  const file=input.files[0]; if(!file) return;
+  window._mangelEditCamActive=false;
+  const data=await compressFoto(file, 1400, 0.78);
+  window._emFotos=window._emFotos||[];
+  window._emFotos.push(data);
+  renderEmFotoGrid();
+}
+
+// In-App-Kamera für Mangel-Bearbeitung (kein PWA-Reload)
+function openCamMangelEdit(){
+  pPhotoRoom=null; window._zaehlerIdx=null; window._mangelPhotos=null; window._lagerCamActive=false;
+  window._mangelEditCamActive=true;
+  if(typeof openCam==='function'){ openCam(); }
+  else { document.getElementById('em_fotoIn')?.click(); }
 }
 
 function emKostenUpdate(){
@@ -9360,9 +9427,12 @@ async function saveEditMangel(id, store) {
   m.kostenTeile = teile||null; m.stunden=stunden||null; m.stundensatz=satz||null;
   m.kostenArbeit= (stunden*satz)||null;
   m.kosten      = (teile+stunden*satz)||null;
+  m.fotos       = window._emFotos || m.fotos || [];
   m.bearbeitetAm = now(); m.bearbeitetVon = CU?.name||'';
   await idbPut(store, m);
+  window._emFotos=null;
   closeModal(); toast('Gespeichert ✓');
+  clearTimeout(window._syncTimer); window._syncTimer=setTimeout(()=>syncToOneDrive(),3000);
   await refreshAufgaben(); await renderDash();
 }
 
@@ -9573,6 +9643,21 @@ document.getElementById('galleryIn').addEventListener('change', async function()
 
 // Verarbeitet ein fertiges (komprimiertes) Foto je nach aktivem Kontext.
 async function processPhoto(data) {
+    if (window._mangelEditCamActive) {
+      window._mangelEditCamActive=false;
+      window._emFotos=window._emFotos||[];
+      window._emFotos.push(data);
+      renderEmFotoGrid();
+      if(document.getElementById('camOverlay')?.style.display==='flex') closeCam();
+      toast('Foto aufgenommen ✓');
+      return;
+    }
+    if (window._lagerCamActive) {
+      window._lagerCamActive=false;
+      lagerFotoAusKamera(data);
+      if(document.getElementById('camOverlay')?.style.display==='flex') closeCam();
+      return;
+    }
     if (pPhotoRoom) {
       if (PD && PD.raeume && PD.raeume[pPhotoRoom]) {
         const fotoId = uid();
@@ -9635,7 +9720,8 @@ async function openCam(){
     // Fallback: native Galerie/Kamera über File-Input
     closeCam();
     toast('Kamera nicht verfügbar – bitte Foto auswählen');
-    document.getElementById('photoIn').click();
+    if(window._lagerCamActive){ document.getElementById('laFotoIn').click(); }
+    else { document.getElementById('photoIn').click(); }
   }
 }
 
