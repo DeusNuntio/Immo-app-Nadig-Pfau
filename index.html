@@ -12,6 +12,7 @@
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,wght@0,300;0,400;0,500;0,600;1,400&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.7.0/dist/tabler-icons.min.css">
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
 <style>
 /* ═══════════════════════ DESIGN SYSTEM ═══════════════════════ */
 :root{
@@ -636,6 +637,7 @@ button.chip.chip-active{background:var(--ink);color:#fff;border-color:var(--ink)
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=10;
+const APP_VERSION = '2026-06-07-v8';
 let idb=null;
 
 function openIDB(){
@@ -1837,6 +1839,249 @@ const LAGER_KATEGORIEN = [
 ];
 function getLagerKat(id){ return LAGER_KATEGORIEN.find(k=>k.id===id)||LAGER_KATEGORIEN[LAGER_KATEGORIEN.length-1]; }
 
+// Trennt echte Artikel von Lagerort-Definitionen (beide liegen im 'lager'-Store)
+async function getLagerArtikel(idxField, idxVal){
+  const alle = idxField ? await idbGetAll('lager', idxField, idxVal) : await idbGetAll('lager');
+  return alle.filter(x=>x._typ!=='lagerort');
+}
+async function getLagerorte(standort){
+  const alle = await idbGetAll('lager');
+  let orte = alle.filter(x=>x._typ==='lagerort');
+  if(standort && standort!=='alle') orte=orte.filter(o=>o.standort===standort);
+  return orte.sort((a,b)=>(a.bezeichnung||'').localeCompare(b.bezeichnung||''));
+}
+
+/* ── Lagerorte (Regale/Kisten) + QR-Etiketten ──────────────
+   Lagerorte werden zentral je Standort angelegt. Jeder Ort hat eine QR-ID;
+   das QR-Etikett trägt den QR-Code plus Klartext-Name. Beim Scannen eines
+   Ort-QR übernimmt die App den Lagerort in den Artikel.
+*/
+let _lagerorteStandort='alle';
+
+async function zeigeLagerorte(){
+  const el=document.getElementById('page-lager');
+  if(!el) return;
+  const meineObjekte=await getMyObjekte();
+  const meineGruppen=new Set(meineObjekte.map(o=>o.gruppe));
+  const standorte=LAGER_STANDORTE.filter(s=>s.alleSichtbar||meineGruppen.has(s.id));
+  const orte=await getLagerorte(_lagerorteStandort==='alle'?null:_lagerorteStandort);
+
+  let h=`<div class="s-hdr">
+    <button class="btn btn-sm" onclick="renderLager()"><i class="ti ti-arrow-left"></i></button>
+    <div class="s-title"><i class="ti ti-map-2"></i> Lagerorte</div>
+    <button class="btn btn-sm btn-copper" onclick="modalLagerort()"><i class="ti ti-plus"></i> Ort</button>
+  </div>
+  <div style="font-size:12px;color:var(--ink-40);margin-bottom:10px">
+    Regale, Fächer und Kisten anlegen und QR-Etiketten drucken. Beim Einlagern den Ort-QR scannen – der Lagerort wird automatisch übernommen.
+  </div>
+  <div style="display:flex;gap:6px;overflow-x:auto;padding-bottom:8px;margin-bottom:6px">
+    <button class="chip ${_lagerorteStandort==='alle'?'chip-copper':''}" onclick="_lagerorteStandort='alle';zeigeLagerorte()">Alle</button>
+    ${standorte.map(s=>`<button class="chip ${_lagerorteStandort===s.id?'chip-copper':''}" onclick="_lagerorteStandort='${s.id}';zeigeLagerorte()">${s.label}</button>`).join('')}
+  </div>`;
+
+  if(!orte.length){
+    h+=`<div class="empty"><i class="ti ti-map-off"></i><p>Noch keine Lagerorte angelegt.</p></div>
+      <button class="btn btn-copper btn-full" style="margin-top:10px" onclick="modalLagerort()"><i class="ti ti-plus"></i> Ersten Lagerort anlegen</button>`;
+    el.innerHTML=h; return;
+  }
+  // Nach Standort gruppieren
+  const proStandort={};
+  for(const o of orte){ (proStandort[o.standort]=proStandort[o.standort]||[]).push(o); }
+  for(const stId of Object.keys(proStandort).sort()){
+    h+=`<div class="card-hdr" style="margin:12px 0 6px"><i class="ti ti-map-pin" style="font-size:13px"></i> ${getLagerStandort(stId).label}</div>`;
+    for(const o of proStandort[stId]){
+      h+=`<div class="card" style="margin-bottom:6px">
+        <div style="display:flex;align-items:center;gap:10px">
+          <div style="width:36px;height:36px;border-radius:8px;background:var(--ink-05);display:flex;align-items:center;justify-content:center;color:var(--copper);flex-shrink:0"><i class="ti ti-box"></i></div>
+          <div style="flex:1;min-width:0">
+            <div style="font-weight:600;font-size:13px">${o.bezeichnung}</div>
+            ${o.pfad?`<div style="font-size:11px;color:var(--ink-40)">${o.pfad}</div>`:''}
+          </div>
+          <div style="display:flex;gap:4px;flex-shrink:0">
+            <button class="btn btn-sm" onclick="druckeLagerortEtikett('${o.id}')" title="QR-Etikett drucken"><i class="ti ti-qrcode"></i></button>
+            <button class="btn btn-sm" onclick="modalLagerort('${o.id}')"><i class="ti ti-pencil"></i></button>
+            <button class="btn btn-sm btn-danger" onclick="deleteLagerort('${o.id}')"><i class="ti ti-trash"></i></button>
+          </div>
+        </div>
+      </div>`;
+    }
+  }
+  el.innerHTML=h;
+}
+
+async function modalLagerort(ortId){
+  const o = ortId ? (await idbGet('lager', ortId))||{} : {};
+  const isEdit=!!ortId;
+  const meineObjekte=await getMyObjekte();
+  const meineGruppen=new Set(meineObjekte.map(x=>x.gruppe));
+  const standorte=LAGER_STANDORTE.filter(s=>s.alleSichtbar||meineGruppen.has(s.id));
+  showModal(`
+    <div class="m-title"><i class="ti ti-box"></i> ${isEdit?'Lagerort bearbeiten':'Neuer Lagerort'}</div>
+    <div class="f"><label>Standort *</label>
+      <select id="loStandort">${standorte.map(s=>`<option value="${s.id}" ${o.standort===s.id?'selected':''}>${s.label}</option>`).join('')}</select></div>
+    <div class="f"><label>Bezeichnung * (kurz, fürs Etikett)</label>
+      <input type="text" id="loBez" value="${(o.bezeichnung||'').replace(/"/g,'&quot;')}" placeholder="z. B. Regal 3 / Kiste 5 / Werkzeugkoffer"></div>
+    <div class="f"><label>Beschreibung / Pfad (optional)</label>
+      <input type="text" id="loPfad" value="${(o.pfad||'').replace(/"/g,'&quot;')}" placeholder="z. B. Linkes Lager › Regal 3 › Fach 4"></div>
+    <div class="f-row" style="margin-top:12px">
+      <button class="btn btn-copper btn-full" onclick="saveLagerort('${ortId||''}')"><i class="ti ti-check"></i> Speichern</button>
+      <button class="btn btn-full" onclick="zeigeLagerorte()">Abbrechen</button>
+    </div>
+    ${isEdit?`<button class="btn btn-full" style="margin-top:8px" onclick="druckeLagerortEtikett('${ortId}')"><i class="ti ti-qrcode"></i> QR-Etikett drucken</button>`:''}`);
+}
+
+async function saveLagerort(ortId){
+  const bez=document.getElementById('loBez')?.value?.trim();
+  if(!bez){ toast('Bitte Bezeichnung eingeben'); return; }
+  const standort=document.getElementById('loStandort')?.value;
+  const alt = ortId ? await idbGet('lager', ortId) : null;
+  const o={
+    id: ortId || ('lo_'+standort+'_'+Math.random().toString(36).slice(2,8)),
+    _typ:'lagerort',
+    standort,
+    bezeichnung: bez,
+    pfad: document.getElementById('loPfad')?.value?.trim()||'',
+    qrId: alt?.qrId || ('ORT-'+Math.random().toString(36).slice(2,8).toUpperCase()),
+    erstellt: alt?.erstellt||now(),
+  };
+  await idbPut('lager', o);
+  clearTimeout(window._syncTimer); window._syncTimer=setTimeout(()=>syncToOneDrive(),3000);
+  await zeigeLagerorte();
+  toast('Lagerort gespeichert ✓');
+}
+
+async function deleteLagerort(ortId){
+  const o=await idbGet('lager', ortId);
+  if(!o) return;
+  if(!confirm(`Lagerort „${o.bezeichnung}" löschen? Artikel bleiben erhalten, verlieren aber diese Ortszuordnung.`)) return;
+  // Ortszuordnung aus Artikeln entfernen
+  const artikel=await getLagerArtikel();
+  for(const a of artikel){
+    if(a.lagerorte?.includes(ortId)){ a.lagerorte=a.lagerorte.filter(x=>x!==ortId); await idbPut('lager', a); }
+  }
+  await idbDelete('lager', ortId);
+  clearTimeout(window._syncTimer); window._syncTimer=setTimeout(()=>syncToOneDrive(),3000);
+  await zeigeLagerorte();
+  toast('Lagerort gelöscht');
+}
+
+// QR-Daten-URL über die QR-Bibliothek erzeugen (Promise)
+function qrDataUrl(text, size=240){
+  return new Promise((resolve,reject)=>{
+    if(typeof QRCode==='undefined'||!QRCode.toDataURL){ reject(new Error('QR-Bibliothek nicht geladen')); return; }
+    QRCode.toDataURL(text, {width:size, margin:1, errorCorrectionLevel:'M'}, (err,url)=>{ if(err)reject(err); else resolve(url); });
+  });
+}
+
+async function druckeLagerortEtikett(ortId){
+  const o=await idbGet('lager', ortId);
+  if(!o) return;
+  let qr;
+  try{ qr=await qrDataUrl('LAGERORT:'+o.qrId, 300); }
+  catch(e){ toast('QR-Bibliothek nicht geladen – bitte online erneut versuchen'); return; }
+  const html=`<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8"><title>Etikett ${o.bezeichnung}</title>
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{font-family:Arial,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:10mm}
+    .etikett{border:2px solid #0C447C;border-radius:8px;padding:6mm 8mm;text-align:center;width:70mm}
+    .etikett img{width:42mm;height:42mm}
+    .etikett .name{font-size:15pt;font-weight:700;color:#0C447C;margin-top:3mm}
+    .etikett .pfad{font-size:9pt;color:#555;margin-top:1mm}
+    .etikett .ort{font-size:8pt;color:#888;margin-top:2mm}
+    @media print{@page{margin:0}body{padding:0}}
+  </style></head><body>
+    <div class="etikett">
+      <img src="${qr}" alt="QR">
+      <div class="name">${o.bezeichnung}</div>
+      ${o.pfad?`<div class="pfad">${o.pfad}</div>`:''}
+      <div class="ort">${getLagerStandort(o.standort).label}</div>
+    </div>
+    <scr`+`ipt>window.onload=()=>setTimeout(()=>window.print(),400)</scr`+`ipt>
+  </body></html>`;
+  const ok=printViaIframe(html);
+  if(!ok){ const w=window.open('','_blank'); if(w){ w.document.write(html); w.document.close(); } }
+}
+
+// Artikel-Etikett (für Gegenstände ohne eigenen Barcode): QR mit Artikel-ID + Name
+async function druckeArtikelEtikett(artikelId){
+  const a=await idbGet('lager', artikelId);
+  if(!a) return;
+  const code = a.barcode ? a.barcode : ('ARTIKEL:'+a.id);
+  let qr;
+  try{ qr=await qrDataUrl(code, 300); }
+  catch(e){ toast('QR-Bibliothek nicht geladen – bitte online erneut versuchen'); return; }
+  const html=`<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8"><title>Etikett ${a.bezeichnung}</title>
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{font-family:Arial,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:10mm}
+    .etikett{border:2px solid #0C447C;border-radius:8px;padding:6mm 8mm;text-align:center;width:60mm}
+    .etikett img{width:36mm;height:36mm}
+    .etikett .name{font-size:13pt;font-weight:700;color:#0C447C;margin-top:3mm}
+    .etikett .inv{font-size:9pt;color:#555;margin-top:1mm}
+    @media print{@page{margin:0}body{padding:0}}
+  </style></head><body>
+    <div class="etikett">
+      <img src="${qr}" alt="QR">
+      <div class="name">${a.bezeichnung}</div>
+      ${a.inventarnummer?`<div class="inv">Inv.-Nr. ${a.inventarnummer}</div>`:''}
+    </div>
+    <scr`+`ipt>window.onload=()=>setTimeout(()=>window.print(),400)</scr`+`ipt>
+  </body></html>`;
+  const ok=printViaIframe(html);
+  if(!ok){ const w=window.open('','_blank'); if(w){ w.document.write(html); w.document.close(); } }
+}
+
+// Nächste fortlaufende Inventarnummer je Standort (z. B. DUS-0001)
+const STANDORT_KUERZEL={duesseldorf:'DUS',mg:'MG',krefeld:'KR',monheim:'MON',hilden:'HIL'};
+async function naechsteInventarnummer(standort){
+  const kuerzel=STANDORT_KUERZEL[standort]||standort.slice(0,3).toUpperCase();
+  const artikel=await getLagerArtikel();
+  let max=0;
+  artikel.forEach(a=>{
+    const m=(a.inventarnummer||'').match(new RegExp('^'+kuerzel+'-(\\d+)$'));
+    if(m){ const n=parseInt(m[1]); if(n>max) max=n; }
+  });
+  return kuerzel+'-'+String(max+1).padStart(4,'0');
+}
+
+// Lagerort-Chips im Artikelformular rendern
+function renderLaOrteChips(ortIds, alleOrte){
+  if(!ortIds||!ortIds.length) return '<span style="font-size:12px;color:var(--ink-40)">Keine Lagerorte zugeordnet</span>';
+  return ortIds.map(id=>{
+    const o=alleOrte.find(x=>x.id===id);
+    const label=o?(getLagerStandort(o.standort).label+' · '+o.bezeichnung):'Unbekannt';
+    return `<span class="chip chip-copper" style="margin:2px 4px 2px 0;display:inline-flex;align-items:center;gap:4px">${label}
+      <i class="ti ti-x" style="cursor:pointer;font-size:11px" onclick="laOrtEntfernen('${id}')"></i></span>`;
+  }).join('');
+}
+
+async function laOrtHinzufuegen(){
+  const sel=document.getElementById('laOrtSelect');
+  const id=sel?.value;
+  if(!id) return;
+  window._laOrte=window._laOrte||[];
+  if(!window._laOrte.includes(id)) window._laOrte.push(id);
+  const alleOrte=await getLagerorte();
+  const liste=document.getElementById('laOrteListe');
+  if(liste) liste.innerHTML=renderLaOrteChips(window._laOrte, alleOrte);
+}
+
+async function laOrtEntfernen(id){
+  window._laOrte=(window._laOrte||[]).filter(x=>x!==id);
+  const alleOrte=await getLagerorte();
+  const liste=document.getElementById('laOrteListe');
+  if(liste) liste.innerHTML=renderLaOrteChips(window._laOrte, alleOrte);
+}
+
+// QR eines Lagerorts scannen und dem Artikel zuordnen
+async function scanLagerortQR(){
+  // Formularzustand sichern (Scan ersetzt das Modal)
+  window._bcFormState = (typeof leseLagerForm==='function' && document.getElementById('laBez')) ? leseLagerForm() : null;
+  window._bcFormEditId = window._lagerEditId || null;
+  _bcContext='lagerort';
+  await scanLagerBarcode('lagerort');
+}
+
 // Lager-State (aktueller Standort/Kategorie-Filter)
 let _lagerStandort = 'alle';
 let _lagerKat = 'alle';
@@ -1844,7 +2089,7 @@ let _lagerKat = 'alle';
 async function renderLager(){
   const el=document.getElementById('page-lager');
   if(!el) return;
-  const alle=await idbGetAll('lager');
+  const alle=await getLagerArtikel();
   // Sichtbarkeit: an Objekt-Gruppen gekoppelt; Standorte mit alleSichtbar sind immer sichtbar
   const meineObjekte=await getMyObjekte();
   const meineGruppen=new Set(meineObjekte.map(o=>o.gruppe));
@@ -1854,7 +2099,8 @@ async function renderLager(){
   const warnungen=alle.filter(a=>istLagerWarnung(a)).length;
 
   let h=`<div class="s-hdr"><div class="s-title"><i class="ti ti-package"></i> Lager & Material</div>
-    <div style="display:flex;gap:6px">
+    <div style="display:flex;gap:6px;flex-wrap:wrap">
+      <button class="btn btn-sm" onclick="zeigeLagerorte()"><i class="ti ti-map-2"></i> Lagerorte</button>
       <button class="btn btn-sm" onclick="startInventur()"><i class="ti ti-clipboard-list"></i> Inventur</button>
       <button class="btn btn-sm btn-copper" onclick="modalLagerArtikel()"><i class="ti ti-plus"></i> Artikel</button>
     </div>
@@ -1951,7 +2197,7 @@ async function zeigeLagerKategorie(katId){
   const kat=getLagerKat(katId);
   const el=document.getElementById('page-lager');
   if(!el) return;
-  const alle=await idbGetAll('lager','kategorie',katId);
+  const alle=await getLagerArtikel('kategorie',katId);
   const gefiltert=alle.filter(a=>_lagerStandort==='alle'||a.standort===_lagerStandort)
     .sort((a,b)=>(a.bezeichnung||'').localeCompare(b.bezeichnung||''));
 
@@ -2020,6 +2266,13 @@ async function renderLagerArtikelForm(a, artikelId){
   const istErsatzteil = katId==='ersatzteil' || katId==='befestigung';
 
   window._lagerFoto = a.foto || null;
+  // Lagerorte des (vorausgewählten) Standorts laden
+  const aktStandort = a.standort || standorte[0]?.id;
+  const alleOrte = await getLagerorte();
+  window._laOrte = a.lagerorte || [];
+  // Inventarnummer-Vorschlag für neue Artikel
+  let invVorschlag = a.inventarnummer || '';
+  if(!isEdit && !invVorschlag && aktStandort){ invVorschlag = await naechsteInventarnummer(aktStandort); }
 
   showModal(`
     <div class="m-title"><i class="ti ${kat.icon}"></i> ${isEdit?'Artikel bearbeiten':'Neuer Artikel'}</div>
@@ -2038,7 +2291,18 @@ async function renderLagerArtikelForm(a, artikelId){
     <div class="f-row">
       <div class="f"><label>Standort *</label>
         <select id="laStandort">${standorte.map(s=>`<option value="${s.id}" ${a.standort===s.id?'selected':''}>${s.label}</option>`).join('')}</select></div>
-      <div class="f"><label>Lagerort</label><input type="text" id="laLagerort" value="${(a.lagerort||'').replace(/"/g,'&quot;')}" placeholder="Regal A1 / Kiste 3 / am Haken"></div>
+      <div class="f"><label>Lagerort (frei)</label><input type="text" id="laLagerort" value="${(a.lagerort||'').replace(/"/g,'&quot;')}" placeholder="z. B. am Haken"></div>
+    </div>
+    <div class="f"><label>Lagerorte (Regale/Kisten) – mehrere möglich</label>
+      <div id="laOrteListe" style="margin-bottom:6px">${renderLaOrteChips(window._laOrte, alleOrte)}</div>
+      <div style="display:flex;gap:6px">
+        <select id="laOrtSelect" style="flex:1">
+          <option value="">– Lagerort wählen –</option>
+          ${alleOrte.map(o=>`<option value="${o.id}">${getLagerStandort(o.standort).label} · ${o.bezeichnung}</option>`).join('')}
+        </select>
+        <button type="button" class="btn" onclick="laOrtHinzufuegen()" title="Hinzufügen"><i class="ti ti-plus"></i></button>
+        <button type="button" class="btn btn-copper" onclick="scanLagerortQR()" title="Lagerort-QR scannen"><i class="ti ti-qrcode"></i></button>
+      </div>
     </div>
     ${istErsatzteil?`<div class="f-row">
       <div class="f"><label>Größe</label><input type="text" id="laGroesse" value="${(a.groesse||'').replace(/"/g,'&quot;')}" placeholder="z. B. 110 mm / M8"></div>
@@ -2076,7 +2340,7 @@ async function renderLagerArtikelForm(a, artikelId){
 
     <div class="f-section-title"><i class="ti ti-barcode"></i> Identifikation & Beschaffung</div>
     <div class="f-row">
-      <div class="f"><label>Inventarnummer</label><input type="text" id="laInv" value="${(a.inventarnummer||'').replace(/"/g,'&quot;')}"></div>
+      <div class="f"><label>Inventarnummer ${!isEdit?'<span style="font-size:10px;color:var(--ink-40)">(automatisch)</span>':''}</label><input type="text" id="laInv" value="${(invVorschlag||'').replace(/"/g,'&quot;')}"></div>
       <div class="f"><label>Barcode-Nr.</label>
         <div style="display:flex;gap:6px">
           <input type="text" id="laBarcode" value="${(a.barcode||'').replace(/"/g,'&quot;')}" placeholder="EAN / Code" style="flex:1">
@@ -2142,6 +2406,7 @@ function leseLagerForm(){
     verantwortlicher: document.getElementById('laVerantwortlich')?.value||'',
     notiz: document.getElementById('laNotiz')?.value||'',
     foto: window._lagerFoto||null,
+    lagerorte: window._laOrte||[],
   };
 }
 
@@ -2199,9 +2464,12 @@ async function saveLagerArtikel(artikelId){
     verantwortlicher: document.getElementById('laVerantwortlich')?.value?.trim()||'',
     foto: window._lagerFoto||'',
     notiz: document.getElementById('laNotiz')?.value?.trim()||'',
+    lagerorte: window._laOrte||[],
     erstellt: alt?.erstellt||now(),
     geaendert: now(),
   };
+  // Auto-Inventarnummer, falls leer gelassen
+  if(!a.inventarnummer){ a.inventarnummer = await naechsteInventarnummer(standort); }
   await idbPut('lager', a);
   window._lagerFoto=null;
   closeModal();
@@ -2234,6 +2502,12 @@ async function zeigeLagerArtikel(artikelId){
       <span style="font-weight:600;text-align:right">${opts.link?`<a href="${val}" target="_blank" rel="noopener" style="color:var(--copper)">Produkt öffnen</a>`:val}</span>
     </div>` : '';
   const bestandTxt = a.mengenstufe ? mengenstufeLabel(a.mengenstufe) : (a.bestand??'–');
+  // zugeordnete Lagerorte auflösen
+  let orteTxt='';
+  if(a.lagerorte?.length){
+    const alleOrte=await getLagerorte();
+    orteTxt=a.lagerorte.map(id=>{const o=alleOrte.find(x=>x.id===id);return o?o.bezeichnung:null;}).filter(Boolean).join(', ');
+  }
   showModal(`
     <div class="m-title"><i class="ti ${kat.icon}"></i> ${a.bezeichnung}</div>
     ${a.foto?`<img src="${a.foto}" style="width:100%;border-radius:10px;margin-bottom:10px;cursor:pointer" onclick="openFoto('${a.id}','lager')">`:''}
@@ -2242,7 +2516,8 @@ async function zeigeLagerArtikel(artikelId){
     ${zeile('Bestand', bestandTxt)}
     ${zeile('Mindestbestand', a.mindestbestand)}
     ${zeile('Standort', getLagerStandort(a.standort).label)}
-    ${zeile('Lagerort', a.lagerort)}
+    ${zeile('Lagerort (frei)', a.lagerort)}
+    ${zeile('Lagerorte', orteTxt)}
     ${zeile('Größe', a.groesse)}
     ${zeile('Art / Typ', a.typ)}
     ${zeile('Inventarnummer', a.inventarnummer)}
@@ -2265,6 +2540,9 @@ async function zeigeLagerArtikel(artikelId){
       <button class="btn btn-copper" style="flex:1" onclick="modalLagerEntnahme('${a.id}')"><i class="ti ti-package-export"></i> Entnehmen</button>
       <button class="btn" style="flex:1" onclick="modalLagerAnforderung('${a.id}')"><i class="ti ti-truck-delivery"></i> Anfordern</button>
     </div>
+    <div style="display:flex;gap:6px;margin-top:6px">
+      <button class="btn" style="flex:1" onclick="druckeArtikelEtikett('${a.id}')"><i class="ti ti-qrcode"></i> Etikett drucken</button>
+    </div>
     <div class="f-row" style="margin-top:6px">
       <button class="btn btn-full" onclick="modalLagerArtikel('${a.id}')"><i class="ti ti-pencil"></i> Bearbeiten</button>
       <button class="btn btn-full" onclick="closeModal()">Schließen</button>
@@ -2273,7 +2551,7 @@ async function zeigeLagerArtikel(artikelId){
 async function zeigeLagerNachbestellung(){
   const el=document.getElementById('page-lager');
   if(!el) return;
-  const alle=await idbGetAll('lager');
+  const alle=await getLagerArtikel();
   // Sichtbare Standorte berücksichtigen
   const meineObjekte=await getMyObjekte();
   const meineGruppen=new Set(meineObjekte.map(o=>o.gruppe));
@@ -2507,8 +2785,27 @@ async function bcVerarbeite(wert){
     toast('Barcode übernommen ✓');
     return;
   }
+  if(_bcContext==='lagerort'){
+    // QR-Inhalt "LAGERORT:<qrId>" → passenden Lagerort finden
+    const qrId=wert.replace(/^LAGERORT:/,'').trim();
+    const orte=await getLagerorte();
+    const ort=orte.find(o=>o.qrId===qrId || o.qrId===wert);
+    const state=window._bcFormState||{};
+    window._bcFormState=null;
+    if(ort){
+      state.lagerorte=state.lagerorte||[];
+      if(!state.lagerorte.includes(ort.id)) state.lagerorte.push(ort.id);
+      window._laOrte=state.lagerorte;
+      await renderLagerArtikelForm(state, window._bcFormEditId||null);
+      toast('Lagerort übernommen: '+ort.bezeichnung+' ✓');
+    } else {
+      await renderLagerArtikelForm(state, window._bcFormEditId||null);
+      toast('Kein Lagerort zu diesem QR gefunden');
+    }
+    return;
+  }
   // Kontext 'suche': Artikel mit exakt dieser Barcode-Nr. finden
-  const alle=await idbGetAll('lager');
+  const alle=await getLagerArtikel();
   const treffer=alle.filter(a=>(a.barcode||'').trim()===wert);
   closeModal();
   if(treffer.length===1){
@@ -2562,7 +2859,7 @@ async function startInventur(){
 
 async function inventurLos(){
   _invStandort=document.getElementById('invStandortSel')?.value;
-  const alle=await idbGetAll('lager','standort',_invStandort);
+  const alle=await getLagerArtikel('standort',_invStandort);
   _invListe=alle.sort((a,b)=>{
     const ka=getLagerKat(a.kategorie).label, kb=getLagerKat(b.kategorie).label;
     return ka.localeCompare(kb)||(a.bezeichnung||'').localeCompare(b.bezeichnung||'');
@@ -2797,7 +3094,7 @@ async function saveLagerAnforderung(artikelId, mangelId){
 // L7: Materialauswahl für einen Mangel/Reparatur – entnehmen oder anfordern
 async function materialFuerMangel(mangelId, store){
   window._mangelMatStore = store||'maengel';
-  const alle=(await idbGetAll('lager')).sort((a,b)=>(a.bezeichnung||'').localeCompare(b.bezeichnung||''));
+  const alle=(await getLagerArtikel()).sort((a,b)=>(a.bezeichnung||'').localeCompare(b.bezeichnung||''));
   const meineObjekte=await getMyObjekte();
   const meineGruppen=new Set(meineObjekte.map(o=>o.gruppe));
   const sichtbar=alle.filter(a=>{const st=LAGER_STANDORTE.find(x=>x.id===a.standort);return st&&(st.alleSichtbar||meineGruppen.has(st.id));});
@@ -2906,7 +3203,7 @@ async function sucheLager(q){
   const res=document.getElementById('lagerSucheResult');
   if(!res) return;
   if(!q||q.length<2){ res.innerHTML=''; return; }
-  const alle=await idbGetAll('lager');
+  const alle=await getLagerArtikel();
   const tref=alle.filter(a=>
     (a.bezeichnung||'').toLowerCase().includes(q.toLowerCase())||
     (a.inventarnummer||'').toLowerCase().includes(q.toLowerCase())||
@@ -7777,10 +8074,28 @@ async function finishProt(){
     const tmp = await idbGetAll('fotos', 'protId', PD.id);
     for (const fo of tmp) await idbDelete('fotos', fo.id).catch(()=>{});
   } catch(e) { console.warn('Foto-Aufräumung:', e); }
-  // Auto-Mängel aus Protokoll speichern (mit laufender Nummer)
+  // Auto-Mängel aus Protokoll speichern (mit laufender Nummer, Bemerkung und Fotos)
   if(PD._autoMaengel?.length){
     for(const m of PD._autoMaengel){
       if(!m.nummer) m.nummer = await naechsteMangelNr(m.objektId);
+      // Bemerkung aus dem Protokoll übernehmen (Titel = "Raum – Bauteil")
+      const sep=m.titel.indexOf(' – ');
+      if(sep>0){
+        const room=m.titel.slice(0,sep);
+        const cond=m.titel.slice(sep+3);
+        const rd=PD.raeume?.[room];
+        const note=rd?.condNotes?.[cond];
+        if(note && note.trim()){
+          m.beschreibung = 'Erfasst im Übergabeprotokoll: '+note.trim();
+        }
+        // Zugehörige Raum-Fotos als Daten-URLs übernehmen
+        if(rd?.photoIds?.length){
+          m.fotos = m.fotos||[];
+          for(const fid of rd.photoIds){
+            try{ const fo=await idbGet('fotos', fid); if(fo?.data && !m.fotos.includes(fo.data)) m.fotos.push(fo.data); }catch(e){}
+          }
+        }
+      }
       await idbPut('maengel',m);
     }
     toast(`Protokoll gespeichert ✓ – ${PD._autoMaengel.length} Mängel übernommen`);
@@ -8228,6 +8543,11 @@ async function renderSettings(){
     <div class="card">
       <div class="card-hdr"><i class="ti ti-brand-onedrive"></i> OneDrive-Sync</div>
       <div id="onedriveSyncCard"></div>
+    </div>
+
+    <div style="text-align:center;padding:14px 0 24px;color:var(--ink-40);font-size:12px">
+      <i class="ti ti-package" style="font-size:14px"></i> Nadig Pfau Hausverwaltung<br>
+      App-Version ${APP_VERSION}
     </div>`;
   // OneDrive-Status-Karte befüllen
   const odCard = document.getElementById('onedriveSyncCard');
@@ -8864,7 +9184,7 @@ async function showMangelDetail(id, store='maengel') {
   // L7: bereits für diesen Mangel verbuchtes Material sammeln
   let materialHTML='';
   try{
-    const alleArtikel=await idbGetAll('lager');
+    const alleArtikel=await getLagerArtikel();
     const verwendet=[];
     for(const art of alleArtikel){
       (art.entnahmen||[]).forEach(e=>{ if(e.mangelId===id) verwendet.push({name:art.bezeichnung, menge:e.menge, datum:e.datum, von:e.von}); });
@@ -9480,7 +9800,6 @@ function showStartError(msg) {
     }).catch(()=>{});
   }
   // Force-Reload bei veralteter App-Version
-  const APP_VERSION = '2026-06-07-v7';
   const storedVersion = localStorage.getItem('app_version');
   if (storedVersion && storedVersion !== APP_VERSION) {
     localStorage.setItem('app_version', APP_VERSION);
