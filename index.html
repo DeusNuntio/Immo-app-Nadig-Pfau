@@ -642,7 +642,7 @@ button.chip.chip-active{background:var(--ink);color:#fff;border-color:var(--ink)
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=11;
-const APP_VERSION = '2026-06-08-v22';
+const APP_VERSION = '2026-06-08-v23';
 let idb=null;
 
 function openIDB(){
@@ -985,6 +985,21 @@ async function renderDash() {
     html += `<div style="font-size:11px;color:var(--ink-40);margin-bottom:10px;display:flex;align-items:center;gap:4px">
       <i class="ti ti-refresh" style="font-size:12px"></i> ${setting.value}
     </div>`;
+  }
+
+  // Stempeluhr-Kärtchen direkt unter den Kacheln (nur Hausmeister) – schneller Zugriff.
+  // Verlauf und Tätigkeits-QR-Liste bleiben hinter dem Button „Zeiterfassung".
+  if (CU?.role !== 'admin') {
+    const zSitzung = await getOffeneSitzung().catch(()=>null);
+    if (zSitzung && zSitzung.datum!==today()) {
+      html += `<div class="card" style="border-left:3px solid var(--amber);background:var(--amber-l);margin-bottom:12px">
+        <div style="font-size:13px;font-weight:600;color:var(--amber);margin-bottom:4px"><i class="ti ti-alert-triangle"></i> Offene Sitzung vom ${zSitzung.datum}</div>
+        <div style="font-size:12px;color:var(--ink-60);margin-bottom:8px">Vermutlich wurde das Ausstempeln vergessen. Bitte nachtragen.</div>
+        <button class="btn btn-sm btn-copper" onclick="modalSitzungNachtragen('${zSitzung.id}')"><i class="ti ti-pencil"></i> Endzeit nachtragen</button>
+      </div>`;
+    }
+    html += stempeluhrHtml(zSitzung);
+    html += `<div style="text-align:right;margin:-6px 0 12px"><button class="btn btn-sm" onclick="nav('zeit')"><i class="ti ti-clock"></i> Verlauf & Details</button></div>`;
   }
 
   // Quick-Actions – neue Reihenfolge; Aufgaben/Mangel laufen über die Counter oben; Excel-Import nur Admin
@@ -2190,6 +2205,51 @@ async function getTaetigkeitKat(nurSichtbar){
 function umlageLabel(u){ return u==='ja'?'umlagefähig':(u==='nein'?'nicht umlagefähig':'neutral'); }
 
 /* ── Zeiterfassung – Seite ── */
+// Aktualisiert die Stempeluhr-Anzeige je nach aktueller Seite
+// (Dashboard-Kärtchen oder Zeiterfassungsseite).
+function refreshZeit(){
+  if(curPage==='dash') renderDash();
+  else refreshZeit();
+}
+
+// Wiederverwendbare Stempeluhr-Kernsteuerung (Dashboard + Zeiterfassungsseite).
+function stempeluhrHtml(s){
+  const istPause = s && pauseAktiv(s);
+  const seg = s && offenesSegment(s);
+  if(!s){
+    return `<div class="card" style="text-align:center;padding:20px 14px;margin-bottom:14px">
+      <div style="font-size:13px;color:var(--ink-40);margin-bottom:12px">Nicht eingestempelt</div>
+      <button class="btn btn-copper" style="font-size:16px;padding:14px 28px" onclick="einstempeln()"><i class="ti ti-player-play"></i> Einstempeln</button>
+      <div style="margin-top:12px"><button class="btn btn-full" onclick="scanTaetigkeitQR()"><i class="ti ti-qrcode"></i> Tätigkeits-QR scannen</button></div>
+      <div style="font-size:11px;color:var(--ink-40);margin-top:6px">Scannen stempelt automatisch ein und startet die Tätigkeit.</div>
+    </div>`;
+  }
+  const min=sitzungMinuten(s);
+  let h=`<div class="card" style="margin-bottom:14px;${istPause?'border-left:3px solid var(--amber)':'border-left:3px solid var(--green)'}">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+      <div style="font-size:12px;color:var(--ink-40)">seit ${fmtUhr(s.start)} ${istPause?'· <span style="color:var(--amber)">Pause</span>':''}</div>
+      <div style="font-size:12px;color:var(--ink-40)">${s.datum}</div>
+    </div>
+    <div style="font-size:30px;font-weight:700;text-align:center;margin:6px 0">${fmtDauer(min)}</div>`;
+  if(seg && !istPause){
+    const tmin=Math.max(0,Math.round((new Date()-new Date(seg.start))/60000));
+    h+=`<div style="background:var(--copper-bg);border-radius:8px;padding:8px 12px;margin-bottom:8px;text-align:center">
+      <div style="font-size:13px;font-weight:600;color:var(--copper-d)">${seg.katName} läuft</div>
+      <div style="font-size:11px;color:var(--ink-40)">${getObj(seg.objId)?.name||''} · ${fmtDauer(tmin)}</div>
+    </div>
+    <button class="btn btn-full" style="margin-bottom:6px" onclick="taetigkeitBeenden()"><i class="ti ti-player-stop"></i> Tätigkeit beenden</button>
+    <button class="btn btn-full" style="margin-bottom:6px" onclick="scanTaetigkeitQR()"><i class="ti ti-qrcode"></i> Andere Tätigkeit per QR scannen</button>`;
+  } else if(!istPause){
+    h+=`<button class="btn btn-copper btn-full" style="margin-bottom:6px" onclick="modalTaetigkeitStart()"><i class="ti ti-player-play"></i> Tätigkeit starten</button>
+    <button class="btn btn-full" style="margin-bottom:6px" onclick="scanTaetigkeitQR()"><i class="ti ti-qrcode"></i> Tätigkeits-QR scannen</button>`;
+  }
+  h+=`<div style="display:flex;gap:6px">
+    <button class="btn" style="flex:1" onclick="pauseUmschalten()"><i class="ti ti-coffee"></i> ${istPause?'Pause beenden':'Pause'}</button>
+    <button class="btn btn-danger" style="flex:1" onclick="ausstempeln()"><i class="ti ti-player-stop"></i> Ausstempeln</button>
+  </div></div>`;
+  return h;
+}
+
 async function renderZeiterfassung(){
   const el=document.getElementById('page-zeit');
   if(!el) return;
@@ -2208,43 +2268,12 @@ async function renderZeiterfassung(){
       <button class="btn btn-sm btn-copper" onclick="modalSitzungNachtragen('${s.id}')"><i class="ti ti-pencil"></i> Endzeit nachtragen</button>
     </div>`;
   }
-  const istPause = s && pauseAktiv(s);
-  const seg = s && offenesSegment(s);
 
-  if(!s){
-    h+=`<div class="card" style="text-align:center;padding:20px 14px;margin-bottom:14px">
-      <div style="font-size:13px;color:var(--ink-40);margin-bottom:12px">Nicht eingestempelt</div>
-      <button class="btn btn-copper" style="font-size:16px;padding:14px 28px" onclick="einstempeln()"><i class="ti ti-player-play"></i> Einstempeln</button>
-      <div style="margin-top:12px"><button class="btn btn-full" onclick="scanTaetigkeitQR()"><i class="ti ti-qrcode"></i> Tätigkeits-QR scannen</button></div>
-      <div style="font-size:11px;color:var(--ink-40);margin-top:6px">Scannen stempelt automatisch ein und startet die Tätigkeit.</div>
-    </div>`;
-  } else {
-    const min=sitzungMinuten(s);
-    h+=`<div class="card" style="margin-bottom:14px;${istPause?'border-left:3px solid var(--amber)':'border-left:3px solid var(--green)'}">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
-        <div style="font-size:12px;color:var(--ink-40)">seit ${fmtUhr(s.start)} ${istPause?'· <span style="color:var(--amber)">Pause</span>':''}</div>
-        <div style="font-size:12px;color:var(--ink-40)">${s.datum}</div>
-      </div>
-      <div style="font-size:30px;font-weight:700;text-align:center;margin:6px 0">${fmtDauer(min)}</div>`;
-    // laufende Tätigkeit
-    if(seg && !istPause){
-      const tmin=Math.max(0,Math.round((new Date()-new Date(seg.start))/60000));
-      h+=`<div style="background:var(--copper-bg);border-radius:8px;padding:8px 12px;margin-bottom:8px;text-align:center">
-        <div style="font-size:13px;font-weight:600;color:var(--copper-d)">${seg.katName} läuft</div>
-        <div style="font-size:11px;color:var(--ink-40)">${getObj(seg.objId)?.name||''} · ${fmtDauer(tmin)}</div>
-      </div>
-      <button class="btn btn-full" style="margin-bottom:6px" onclick="taetigkeitBeenden()"><i class="ti ti-player-stop"></i> Tätigkeit beenden</button>
-      <button class="btn btn-full" style="margin-bottom:6px" onclick="scanTaetigkeitQR()"><i class="ti ti-qrcode"></i> Andere Tätigkeit per QR scannen</button>`;
-    } else if(!istPause){
-      h+=`<button class="btn btn-copper btn-full" style="margin-bottom:6px" onclick="modalTaetigkeitStart()"><i class="ti ti-player-play"></i> Tätigkeit starten</button>
-      <button class="btn btn-full" style="margin-bottom:6px" onclick="scanTaetigkeitQR()"><i class="ti ti-qrcode"></i> Tätigkeits-QR scannen</button>`;
-    }
-    // Pause / Ausstempeln
-    h+=`<div style="display:flex;gap:6px">
-      <button class="btn" style="flex:1" onclick="pauseUmschalten()"><i class="ti ti-coffee"></i> ${istPause?'Pause beenden':'Pause'}</button>
-      <button class="btn btn-danger" style="flex:1" onclick="ausstempeln()"><i class="ti ti-player-stop"></i> Ausstempeln</button>
-    </div></div>`;
-    // Zeitleiste der heutigen Sitzung
+  // Kernsteuerung (wird auch im Dashboard genutzt)
+  h += stempeluhrHtml(s);
+
+  if(s){
+    // Zeitleiste der heutigen Sitzung (nur auf der Zeiterfassungsseite)
     h+=renderZeitleiste(s);
   }
 
@@ -2427,7 +2456,7 @@ async function saveSegment(sId, segId){
   if(en) seg.ende=setTimeOnIso(seg.ende||s.start, en);
   s.geaendert=nowIso();
   await idbPut('arbeitszeit', s);
-  syncSoon(); closeModal(); renderZeiterfassung();
+  syncSoon(); closeModal(); refreshZeit();
   toast('Gespeichert ✓');
 }
 async function delSegment(sId, segId){
@@ -2435,7 +2464,7 @@ async function delSegment(sId, segId){
   const s=await idbGet('arbeitszeit', sId); if(!s) return;
   s.segmente=(s.segmente||[]).filter(x=>x.id!==segId); s.geaendert=nowIso();
   await idbPut('arbeitszeit', s);
-  syncSoon(); closeModal(); renderZeiterfassung();
+  syncSoon(); closeModal(); refreshZeit();
   toast('Gelöscht');
 }
 function setTimeOnIso(baseIso, hhmm){
@@ -2477,7 +2506,7 @@ async function saveSitzungNachtrag(sId){
   const p=(s.pausen||[]).find(x=>!x.bis); if(p) p.bis=endeIso;
   s.ende=endeIso; s.status='beendet'; s.geaendert=nowIso();
   await idbPut('arbeitszeit', s);
-  syncSoon(); closeModal(); renderZeiterfassung();
+  syncSoon(); closeModal(); refreshZeit();
   toast('Sitzung nachgetragen ✓');
 }
 
@@ -2665,7 +2694,7 @@ function nowIso(){ return new Date().toISOString(); }
 // ── Einstempeln ──
 async function einstempeln(){
   const offen=await getOffeneSitzung();
-  if(offen){ toast('Du bist bereits eingestempelt'); renderZeiterfassung(); return; }
+  if(offen){ toast('Du bist bereits eingestempelt'); refreshZeit(); return; }
   const s={
     id:uid(), userId:CU.id, userName:CU.name,
     datum: today(),
@@ -2677,7 +2706,7 @@ async function einstempeln(){
   await idbPut('arbeitszeit', s);
   syncSoon();
   toast('Eingestempelt ✓');
-  renderZeiterfassung();
+  refreshZeit();
 }
 
 // ── Pause an/aus ──
@@ -2699,7 +2728,7 @@ async function pauseUmschalten(){
   s.geaendert=nowIso();
   await idbPut('arbeitszeit', s);
   syncSoon();
-  renderZeiterfassung();
+  refreshZeit();
 }
 
 // ── Ausstempeln ──
@@ -2713,7 +2742,7 @@ async function ausstempeln(){
   await idbPut('arbeitszeit', s);
   syncSoon();
   toast('Ausgestempelt ✓');
-  renderZeiterfassung();
+  refreshZeit();
 }
 
 // ── Tätigkeit starten ──
@@ -2742,7 +2771,7 @@ async function taetigkeitStarten(katId, objId, notiz, mangelId){
   await idbPut('arbeitszeit', s);
   syncSoon();
   toast((kat?.name||'Tätigkeit')+' gestartet');
-  renderZeiterfassung();
+  refreshZeit();
 }
 
 // QR-Scanner für Tätigkeits-QR öffnen (nutzt die bestehende Scanner-Infrastruktur)
@@ -2764,7 +2793,7 @@ async function taetigkeitBeenden(){
   await idbPut('arbeitszeit', s);
   syncSoon();
   toast('Tätigkeit beendet');
-  renderZeiterfassung();
+  refreshZeit();
 }
 
 // QR-Start: vom Scanner aufgerufen
