@@ -642,7 +642,7 @@ button.chip.chip-active{background:var(--ink);color:#fff;border-color:var(--ink)
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=11;
-const APP_VERSION = '2026-06-08-v23';
+const APP_VERSION = '2026-06-09-v25';
 let idb=null;
 
 function openIDB(){
@@ -941,6 +941,7 @@ async function initApp(){
   initMSAL();
   initNotifications();
   updateKalBadge();
+  pruefeMonatsuebertrag();
   // PWA-Shortcut-Ziel auswerten (?go=zeit|protokoll|aufgaben)
   try {
     const go = new URLSearchParams(location.search).get('go');
@@ -999,15 +1000,14 @@ async function renderDash() {
       </div>`;
     }
     html += stempeluhrHtml(zSitzung);
-    html += `<div style="text-align:right;margin:-6px 0 12px"><button class="btn btn-sm" onclick="nav('zeit')"><i class="ti ti-clock"></i> Verlauf & Details</button></div>`;
   }
 
   // Quick-Actions – neue Reihenfolge; Aufgaben/Mangel laufen über die Counter oben; Excel-Import nur Admin
   html += `<div class="quick-actions">
-    <button class="qa-btn copper" onclick="nav('zeit')"><i class="ti ti-clock"></i> Zeiterfassung</button>
     <button class="qa-btn" onclick="modalAddAufgabe(null,null)"><i class="ti ti-plus"></i> ToDo</button>
     <button class="qa-btn" onclick="nav('lager')"><i class="ti ti-package"></i> Lager</button>
     <button class="qa-btn" onclick="newProtokoll()"><i class="ti ti-clipboard-check"></i> Neues Protokoll</button>
+    <button class="qa-btn copper" onclick="nav('zeit')"><i class="ti ti-clock"></i> Zeiterfassung</button>
     <button class="qa-btn" onclick="nav('wartung')"><i class="ti ti-calendar-stats"></i> Wartung</button>
     ${CU?.role==='admin'?`<button class="qa-btn" onclick="nav('settings')"><i class="ti ti-upload"></i> Excel-Import</button>`:''}
   </div>`;
@@ -1125,6 +1125,7 @@ async function renderDash() {
     }
   }
   el.innerHTML = html;
+  stempelTimerStart();
 }
 
 
@@ -2225,17 +2226,20 @@ function stempeluhrHtml(s){
     </div>`;
   }
   const min=sitzungMinuten(s);
-  let h=`<div class="card" style="margin-bottom:14px;${istPause?'border-left:3px solid var(--amber)':'border-left:3px solid var(--green)'}">
+  // Pausen-Summe (ms) und ggf. laufende Pause für den Live-Timer
+  const pausenMs=(s.pausen||[]).reduce((sum,p)=>{ const pb=p.bis||nowIso(); return sum+(p.von?(new Date(pb)-new Date(p.von)):0); },0);
+  const laufendePauseVon=(s.pausen||[]).find(p=>!p.bis)?.von||'';
+  let h=`<div class="card" id="stempelCard" style="margin-bottom:14px;${istPause?'border-left:3px solid var(--amber)':'border-left:3px solid var(--green)'}">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
       <div style="font-size:12px;color:var(--ink-40)">seit ${fmtUhr(s.start)} ${istPause?'· <span style="color:var(--amber)">Pause</span>':''}</div>
       <div style="font-size:12px;color:var(--ink-40)">${s.datum}</div>
     </div>
-    <div style="font-size:30px;font-weight:700;text-align:center;margin:6px 0">${fmtDauer(min)}</div>`;
+    <div id="stempelDauer" style="font-size:30px;font-weight:700;text-align:center;margin:6px 0"
+      data-start="${s.start}" data-pausen-ms="${pausenMs}" data-pause-von="${laufendePauseVon}">${fmtDauer(min)}</div>`;
   if(seg && !istPause){
-    const tmin=Math.max(0,Math.round((new Date()-new Date(seg.start))/60000));
     h+=`<div style="background:var(--copper-bg);border-radius:8px;padding:8px 12px;margin-bottom:8px;text-align:center">
       <div style="font-size:13px;font-weight:600;color:var(--copper-d)">${seg.katName} läuft</div>
-      <div style="font-size:11px;color:var(--ink-40)">${getObj(seg.objId)?.name||''} · ${fmtDauer(tmin)}</div>
+      <div style="font-size:11px;color:var(--ink-40)">${getObj(seg.objId)?.name||''} · <span id="stempelTaetDauer" data-start="${seg.start}">${fmtDauer(Math.max(0,Math.round((new Date()-new Date(seg.start))/60000)))}</span></div>
     </div>
     <button class="btn btn-full" style="margin-bottom:6px" onclick="taetigkeitBeenden()"><i class="ti ti-player-stop"></i> Tätigkeit beenden</button>
     <button class="btn btn-full" style="margin-bottom:6px" onclick="scanTaetigkeitQR()"><i class="ti ti-qrcode"></i> Andere Tätigkeit per QR scannen</button>`;
@@ -2249,6 +2253,37 @@ function stempeluhrHtml(s){
   </div></div>`;
   return h;
 }
+
+// Sekundengenaues Dauer-Format für den Live-Timer
+function fmtDauerSek(totalSek){
+  const h=Math.floor(totalSek/3600), m=Math.floor((totalSek%3600)/60), s=totalSek%60;
+  if(h>0) return `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')} Std.`;
+  return `${m}:${String(s).padStart(2,'0')} Min.`;
+}
+
+// Live-Timer: aktualisiert die Dauer-Anzeige(n) jede Sekunde, ohne die Seite neu zu rendern.
+let _stempelTimer=null;
+function stempelTimerStart(){
+  stempelTimerStop();
+  _stempelTimer=setInterval(()=>{
+    const dEl=document.getElementById('stempelDauer');
+    if(!dEl){ stempelTimerStop(); return; }
+    const start=dEl.getAttribute('data-start');
+    const pauseVon=dEl.getAttribute('data-pause-von');
+    let pausenMs=Number(dEl.getAttribute('data-pausen-ms')||0);
+    // Wenn gerade eine Pause läuft, tickt die Anzeige nicht weiter
+    if(pauseVon){ return; }
+    const sek=Math.max(0, Math.floor((Date.now()-new Date(start).getTime()-pausenMs)/1000));
+    dEl.textContent=fmtDauerSek(sek);
+    const tEl=document.getElementById('stempelTaetDauer');
+    if(tEl){
+      const tstart=tEl.getAttribute('data-start');
+      const tsek=Math.max(0, Math.floor((Date.now()-new Date(tstart).getTime())/1000));
+      tEl.textContent=fmtDauerSek(tsek);
+    }
+  },1000);
+}
+function stempelTimerStop(){ if(_stempelTimer){ clearInterval(_stempelTimer); _stempelTimer=null; } }
 
 async function renderZeiterfassung(){
   const el=document.getElementById('page-zeit');
@@ -2277,22 +2312,77 @@ async function renderZeiterfassung(){
     h+=renderZeitleiste(s);
   }
 
-  // Heutige bereits beendete Sitzungen
-  const heute=(await idbGetAll('arbeitszeit','userId',CU?.id).catch(()=>[]))
-    .filter(x=>x.datum===today() && x.status==='beendet')
-    .sort((a,b)=>(a.start||'').localeCompare(b.start||''));
-  if(heute.length){
-    h+=`<div class="card-hdr" style="margin:14px 0 6px">Heute abgeschlossen</div>`;
-    for(const x of heute){ h+=zeitSitzungCard(x); }
+  // ── Stundenkonto (für den eingeloggten Mitarbeiter; bei Admin als Eigenübersicht) ──
+  const konto=await berechneStundenkonto(CU);
+  const wColor = konto.wochenSaldo>=0 ? 'var(--green)' : 'var(--red)';
+  const gColor = konto.gesamtSaldo>=0 ? 'var(--green)' : 'var(--red)';
+  h+=`<div class="card" style="margin-top:16px;margin-bottom:6px">
+    <div class="card-hdr"><i class="ti ti-clock-hour-4"></i> Stundenkonto</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:4px">
+      <div><div style="font-size:11px;color:var(--ink-40)">Diese Woche</div>
+        <div style="font-size:17px;font-weight:700">${fmtStd(konto.wocheStd)}</div>
+        <div style="font-size:11px;color:var(--ink-40)">von ${fmtStd(konto.wochenSoll)} · <span style="color:${wColor};font-weight:600">${fmtSaldo(konto.wochenSaldo)}</span></div>
+      </div>
+      <div><div style="font-size:11px;color:var(--ink-40)">Dieser Monat</div>
+        <div style="font-size:17px;font-weight:700">${fmtStd(konto.monatStd)}</div>
+        <div style="font-size:11px;color:var(--ink-40)">Saldo: <span style="color:${gColor};font-weight:600">${fmtSaldo(konto.gesamtSaldo)}</span></div>
+      </div>
+    </div>
+    ${konto.uebertrag?`<div style="font-size:11px;color:var(--ink-40);margin-top:8px">Übertrag aus Vormonat: <span style="color:${konto.uebertrag>=0?'var(--green)':'var(--red)'};font-weight:600">${fmtSaldo(konto.uebertrag)}</span></div>`:''}
+    ${konto.wochenSaldo < -2 ? `<div style="background:var(--amber-l);border-radius:8px;padding:8px 10px;margin-top:8px;font-size:12px;color:var(--amber)"><i class="ti ti-alert-triangle"></i> In dieser Woche fehlen noch ${fmtStd(Math.abs(konto.wochenSaldo))}.</div>`:''}
+    ${konto.heuteStd > 10 ? `<div style="background:#FDECEA;border-radius:8px;padding:8px 10px;margin-top:8px;font-size:12px;color:var(--red)"><i class="ti ti-alert-circle"></i> Heute über 10 Std. erfasst – gesetzliche Höchstgrenze (§ 3 ArbZG) beachten.</div>`:''}
+  </div>`;
+
+  // Letzte abgeschlossene Sitzungen (nach Datum gruppiert, mit Datumsüberschrift)
+  const alleBeendet=(await idbGetAll('arbeitszeit','userId',CU?.id).catch(()=>[]))
+    .filter(x=>x.status==='beendet')
+    .sort((a,b)=>(b.datum||'').localeCompare(a.datum||'')||(b.start||'').localeCompare(a.start||''));
+  // auf die letzten 7 unterschiedlichen Tage begrenzen
+  const tage=[...new Set(alleBeendet.map(x=>x.datum))].slice(0,7);
+  if(tage.length){
+    h+=`<div class="card-hdr" style="margin:16px 0 6px"><i class="ti ti-history"></i> Letzte Sitzungen</div>`;
+    for(const tag of tage){
+      const sitzungenTag=alleBeendet.filter(x=>x.datum===tag).sort((a,b)=>(a.start||'').localeCompare(b.start||''));
+      const tagMin=sitzungenTag.reduce((sum,x)=>sum+sitzungMinuten(x),0);
+      h+=`<div style="display:flex;align-items:center;justify-content:space-between;margin:10px 0 4px">
+        <div style="font-size:12px;font-weight:600;color:var(--ink-60)">${fmtDatumLang(tag)}</div>
+        <div style="font-size:12px;font-weight:600;color:var(--copper-d)">${fmtDauer(tagMin)}</div>
+      </div>`;
+      for(const x of sitzungenTag){ h+=zeitSitzungCard(x); }
+    }
   }
 
   if(istAdmin){
+    h+=`<div class="card-hdr" style="margin:16px 0 6px"><i class="ti ti-users"></i> Mitarbeiter-Übersicht</div>`;
+    const mitarbeiter=(await idbGetAll('users')).filter(u=>u.role!=='admin' && u.aktiv!==false);
+    if(!mitarbeiter.length){
+      h+=`<div style="font-size:12px;color:var(--ink-40)">Keine Hausmeister angelegt.</div>`;
+    } else {
+      for(const m of mitarbeiter){
+        const k=await berechneStundenkonto(m);
+        const wColor=k.wochenSaldo>=0?'var(--green)':'var(--red)';
+        const gColor=k.gesamtSaldo>=0?'var(--green)':'var(--red)';
+        h+=`<div class="card" style="margin-bottom:6px;cursor:pointer" onclick="modalMitarbeiterZeit('${m.id}')">
+          <div style="display:flex;align-items:center;gap:10px">
+            <div class="det-av" style="width:34px;height:34px;font-size:12px;flex-shrink:0">${initials(m.name)}</div>
+            <div style="flex:1;min-width:0">
+              <div style="font-size:14px;font-weight:600">${esc(m.name)}</div>
+              <div style="font-size:11px;color:var(--ink-40)">Woche: ${fmtStd(k.wocheStd)} / ${fmtStd(k.wochenSoll)} · <span style="color:${wColor}">${fmtSaldo(k.wochenSaldo)}</span></div>
+            </div>
+            <div style="text-align:right;flex-shrink:0">
+              <div style="font-size:11px;color:var(--ink-40)">Saldo</div>
+              <div style="font-size:14px;font-weight:700;color:${gColor}">${fmtSaldo(k.gesamtSaldo)}</div>
+            </div>
+          </div>
+        </div>`;
+      }
+    }
     h+=`<div class="card-hdr" style="margin:16px 0 6px">Verwaltung</div>
-      <button class="btn btn-full" style="margin-bottom:6px" onclick="modalTaetigkeitQR()"><i class="ti ti-qrcode"></i> Tätigkeits-QR drucken</button>
-      <div style="font-size:12px;color:var(--ink-40);margin-top:8px">Mitarbeiter-Übersicht und Auswertung folgen im nächsten Schritt.</div>`;
+      <button class="btn btn-full" style="margin-bottom:6px" onclick="modalTaetigkeitQRListe()"><i class="ti ti-qrcode"></i> Tätigkeits-QR drucken</button>`;
   }
 
   el.innerHTML=h;
+  stempelTimerStart();
 }
 
 function fmtUhr(iso){ if(!iso)return''; const d=new Date(iso); return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0'); }
@@ -2447,6 +2537,7 @@ async function saveSegment(sId, segId){
   const kats=await getTaetigkeitKat();
   const katId=document.getElementById('seKat')?.value;
   const kat=kats.find(k=>k.id===katId);
+  const altName=seg.katName;
   seg.katId=katId; seg.katName=kat?.name||katId; seg.umlage=kat?.umlage||'neutral';
   seg.objId=document.getElementById('seObj')?.value||null;
   seg.notiz=document.getElementById('seNotiz')?.value?.trim()||'';
@@ -2454,15 +2545,25 @@ async function saveSegment(sId, segId){
   const st=document.getElementById('seStart')?.value, en=document.getElementById('seEnde')?.value;
   if(st) seg.start=setTimeOnIso(seg.start||s.start, st);
   if(en) seg.ende=setTimeOnIso(seg.ende||s.start, en);
+  protokolliereZeitAenderung(s, `Tätigkeit „${altName||'?'}" bearbeitet`);
   s.geaendert=nowIso();
   await idbPut('arbeitszeit', s);
   syncSoon(); closeModal(); refreshZeit();
   toast('Gespeichert ✓');
 }
+// Protokolliert eine Änderung an einer Arbeitszeit-Sitzung (für die Admin-Ansicht sichtbar).
+function protokolliereZeitAenderung(s, text){
+  s.aenderungen=s.aenderungen||[];
+  s.aenderungen.push({ wann:nowIso(), von:CU?.name||'', rolle:CU?.role||'', text });
+  if(s.aenderungen.length>30) s.aenderungen=s.aenderungen.slice(-30);
+}
 async function delSegment(sId, segId){
   if(!confirm('Tätigkeit löschen?')) return;
   const s=await idbGet('arbeitszeit', sId); if(!s) return;
-  s.segmente=(s.segmente||[]).filter(x=>x.id!==segId); s.geaendert=nowIso();
+  const seg=(s.segmente||[]).find(x=>x.id===segId);
+  s.segmente=(s.segmente||[]).filter(x=>x.id!==segId);
+  protokolliereZeitAenderung(s, `Tätigkeit „${seg?.katName||'?'}" gelöscht`);
+  s.geaendert=nowIso();
   await idbPut('arbeitszeit', s);
   syncSoon(); closeModal(); refreshZeit();
   toast('Gelöscht');
@@ -2471,6 +2572,70 @@ function setTimeOnIso(baseIso, hhmm){
   const d=new Date(baseIso); const [h,m]=hhmm.split(':');
   d.setHours(parseInt(h),parseInt(m),0,0); return d.toISOString();
 }
+// Admin: Detailansicht der Zeiterfassung eines Mitarbeiters (Stundenkonto, Verlauf, Änderungen)
+async function modalMitarbeiterZeit(userId){
+  const u=await idbGet('users', userId); if(!u) return;
+  const k=await berechneStundenkonto(u);
+  const sitzungen=(await getSitzungenUser(userId))
+    .sort((a,b)=>(b.datum||'').localeCompare(a.datum||'')||(b.start||'').localeCompare(a.start||''));
+  const tage=[...new Set(sitzungen.map(s=>s.datum))].slice(0,14);
+  const wColor=k.wochenSaldo>=0?'var(--green)':'var(--red)';
+  const gColor=k.gesamtSaldo>=0?'var(--green)':'var(--red)';
+
+  // Sitzungen mit Änderungsvermerk (nur für Admin sichtbar)
+  const mitAenderung=sitzungen.filter(s=>(s.aenderungen||[]).length);
+
+  let body=`<div class="m-title"><i class="ti ti-user-clock"></i> ${esc(u.name)}</div>
+    <div class="card" style="margin-bottom:10px">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <div><div style="font-size:11px;color:var(--ink-40)">Diese Woche</div>
+          <div style="font-size:17px;font-weight:700">${fmtStd(k.wocheStd)}</div>
+          <div style="font-size:11px;color:var(--ink-40)">von ${fmtStd(k.wochenSoll)} · <span style="color:${wColor};font-weight:600">${fmtSaldo(k.wochenSaldo)}</span></div></div>
+        <div><div style="font-size:11px;color:var(--ink-40)">Dieser Monat</div>
+          <div style="font-size:17px;font-weight:700">${fmtStd(k.monatStd)}</div>
+          <div style="font-size:11px;color:var(--ink-40)">Saldo: <span style="color:${gColor};font-weight:600">${fmtSaldo(k.gesamtSaldo)}</span></div></div>
+      </div>
+      ${k.uebertrag?`<div style="font-size:11px;color:var(--ink-40);margin-top:8px">Übertrag aus Vormonat: <span style="color:${k.uebertrag>=0?'var(--green)':'var(--red)'};font-weight:600">${fmtSaldo(k.uebertrag)}</span></div>`:''}
+    </div>`;
+
+  if(mitAenderung.length){
+    body+=`<div class="card-hdr" style="margin:8px 0 6px;color:var(--amber)"><i class="ti ti-pencil"></i> Nachträgliche Änderungen</div>`;
+    for(const s of mitAenderung.slice(0,8)){
+      for(const a of (s.aenderungen||[]).slice(-3)){
+        body+=`<div style="font-size:11px;color:var(--ink-60);padding:4px 0;border-bottom:1px solid var(--ink-10)">
+          <strong>${esc(s.datum)}:</strong> ${esc(a.text)} · ${esc(a.von||'')} am ${new Date(a.wann).toLocaleString('de-DE')}
+        </div>`;
+      }
+    }
+  }
+
+  body+=`<div class="card-hdr" style="margin:12px 0 6px"><i class="ti ti-history"></i> Verlauf</div>`;
+  if(!tage.length){
+    body+=`<div style="font-size:12px;color:var(--ink-40)">Noch keine erfassten Zeiten.</div>`;
+  } else {
+    for(const tag of tage){
+      const st=sitzungen.filter(s=>s.datum===tag).sort((a,b)=>(a.start||'').localeCompare(b.start||''));
+      const tagMin=st.reduce((sum,s)=>sum+sitzungMinuten(s),0);
+      const ueber10=tagMin>600;
+      body+=`<div style="display:flex;align-items:center;justify-content:space-between;margin:8px 0 4px">
+        <div style="font-size:12px;font-weight:600;color:var(--ink-60)">${fmtDatumLang(tag)}</div>
+        <div style="font-size:12px;font-weight:600;color:${ueber10?'var(--red)':'var(--copper-d)'}">${fmtDauer(tagMin)}${ueber10?' ⚠':''}</div>
+      </div>`;
+      for(const s of st){
+        const anzT=(s.segmente||[]).length;
+        body+=`<div class="card" style="margin-bottom:5px" onclick="modalSitzungDetail('${s.id}')">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <div><div style="font-weight:600;font-size:13px">${fmtUhr(s.start)}–${s.ende?fmtUhr(s.ende):'läuft'}</div>
+            <div style="font-size:11px;color:var(--ink-40)">${anzT} Tätigkeit${anzT===1?'':'en'}${(s.aenderungen||[]).length?' · <span style="color:var(--amber)">geändert</span>':''}</div></div>
+            <div style="font-weight:600">${fmtDauer(sitzungMinuten(s))}</div>
+          </div></div>`;
+      }
+    }
+  }
+  body+=`<button class="btn btn-full" style="margin-top:10px" onclick="closeModal()">Schließen</button>`;
+  showModal(body);
+}
+
 async function modalSitzungDetail(sId){
   const s=await idbGet('arbeitszeit', sId); if(!s) return;
   showModal(`<div class="m-title"><i class="ti ti-clock"></i> ${s.datum} · ${fmtUhr(s.start)}–${s.ende?fmtUhr(s.ende):'läuft'}</div>
@@ -2504,7 +2669,9 @@ async function saveSitzungNachtrag(sId){
   // offene Segmente/Pausen schließen
   const seg=offenesSegment(s); if(seg) seg.ende=endeIso;
   const p=(s.pausen||[]).find(x=>!x.bis); if(p) p.bis=endeIso;
-  s.ende=endeIso; s.status='beendet'; s.geaendert=nowIso();
+  s.ende=endeIso; s.status='beendet';
+  protokolliereZeitAenderung(s, `Endzeit nachgetragen: ${fmtUhr(endeIso)}`);
+  s.geaendert=nowIso();
   await idbPut('arbeitszeit', s);
   syncSoon(); closeModal(); refreshZeit();
   toast('Sitzung nachgetragen ✓');
@@ -2610,9 +2777,69 @@ async function modalTaetigkeitQRListe(){
   const kats=await getTaetigkeitKat(true);
   if(!kats.length){ toast('Keine Tätigkeiten angelegt'); return; }
   if(!objekte.length){ toast('Keine Objekte vorhanden'); return; }
+  // verfügbare Standorte (Gruppen) aus den Objekten ableiten
+  const gruppen=[...new Set(objekte.map(o=>o.gruppe))];
+  window._qrFilter={ standort:'all', objekt:'all' };
+  const standortOpts=`<option value="all">Alle Standorte</option>`+gruppen.map(g=>`<option value="${g}">${GRUPPE_LABEL[g]||g}</option>`).join('');
+  showModal(`
+    <div class="m-title"><i class="ti ti-qrcode"></i> Tätigkeits-QR drucken</div>
+    <div class="f"><label>Standort</label>
+      <select id="qrFilterStandort" onchange="qrFilterAendern()">${standortOpts}</select></div>
+    <div class="f"><label>Objekt</label>
+      <select id="qrFilterObjekt" onchange="qrFilterObjektAendern()"><option value="all">Alle Objekte</option></select></div>
+    <div style="font-size:12px;color:var(--ink-40);margin-bottom:8px">Es werden QR-Codes für die gewählte Auswahl × alle Tätigkeiten erzeugt.</div>
+    <div id="qrVorschau" style="max-height:42vh;overflow-y:auto;margin-bottom:10px"></div>
+    <button class="btn btn-copper btn-full" style="margin-bottom:6px" onclick="qrAuswahlDrucken()"><i class="ti ti-printer"></i> Auswahl drucken</button>
+    <button class="btn btn-full" onclick="closeModal()">Schließen</button>
+  `);
+  qrFilterAendern();
+}
+function qrFilterAendern(){
+  const g=document.getElementById('qrFilterStandort')?.value||'all';
+  window._qrFilter.standort=g;
+  window._qrFilter.objekt='all';
+  // Objektauswahl nach Standort befüllen
+  const sel=document.getElementById('qrFilterObjekt');
+  if(sel){
+    const objekte=(window._qrObjekteCache||[]);
+    const liste=g==='all'?objekte:objekte.filter(o=>o.gruppe===g);
+    sel.innerHTML=`<option value="all">Alle Objekte</option>`+liste.map(o=>`<option value="${o.id}">${esc(o.name)}</option>`).join('');
+  }
+  qrVorschauAktualisieren();
+}
+function qrFilterObjektAendern(){
+  window._qrFilter.objekt=document.getElementById('qrFilterObjekt')?.value||'all';
+  qrVorschauAktualisieren();
+}
+async function qrSelektierteObjekte(){
+  const objekte=await getMyObjekte();
+  window._qrObjekteCache=objekte;
+  const f=window._qrFilter||{standort:'all',objekt:'all'};
+  let liste=objekte;
+  if(f.standort!=='all') liste=liste.filter(o=>o.gruppe===f.standort);
+  if(f.objekt!=='all')   liste=liste.filter(o=>o.id===f.objekt);
+  return liste;
+}
+async function qrVorschauAktualisieren(){
+  const el=document.getElementById('qrVorschau');
+  if(!el) return;
+  const objekte=await qrSelektierteObjekte();
+  const kats=await getTaetigkeitKat(true);
+  if(!objekte.length){ el.innerHTML='<div style="font-size:13px;color:var(--ink-40);text-align:center;padding:14px">Keine Objekte in dieser Auswahl</div>'; return; }
+  let h=`<div style="font-size:12px;color:var(--ink-60);margin-bottom:6px">${objekte.length} Objekt(e) × ${kats.length} Tätigkeit(en) = ${objekte.length*kats.length} QR-Codes</div>`;
+  h+=objekte.map(o=>`<div style="border:1px solid var(--ink-10);border-radius:8px;padding:8px 10px;margin-bottom:6px">
+    <div style="font-weight:600;font-size:13px">${esc(o.name)}</div>
+    <div style="font-size:11px;color:var(--ink-40)">${GRUPPE_LABEL[o.gruppe]||o.gruppe} · ${kats.length} QR-Codes</div>
+  </div>`).join('');
+  el.innerHTML=h;
+}
+async function qrAuswahlDrucken(){
+  const objekte=await qrSelektierteObjekte();
+  const kats=await getTaetigkeitKat(true);
+  if(!objekte.length){ toast('Keine Objekte in der Auswahl'); return; }
   const cells=[];
-  for(const k of kats){
-    for(const o of objekte){
+  for(const o of objekte){
+    for(const k of kats){
       const qrText='TAETIGKEIT:'+k.id+':'+o.id;
       const img=qrDataUrl(qrText, 220);
       cells.push(`<div class="qrcell">
@@ -2622,8 +2849,12 @@ async function modalTaetigkeitQRListe(){
       </div>`);
     }
   }
+  const f=window._qrFilter||{};
+  const titel=f.objekt&&f.objekt!=='all'
+    ? (getObj(f.objekt)?.name||'')
+    : (f.standort&&f.standort!=='all' ? (GRUPPE_LABEL[f.standort]||f.standort) : 'Alle Standorte');
   const html=`<!DOCTYPE html><html lang="de"><head><meta charset="utf-8">
-    <title>Tätigkeits-QR-Codes · Nadig Pfau Hausverwaltung</title>
+    <title>Tätigkeits-QR-Codes · ${esc(titel)}</title>
     <style>
       *{box-sizing:border-box}
       body{font-family:Arial,Helvetica,sans-serif;margin:0;padding:14mm;color:#111}
@@ -2637,7 +2868,7 @@ async function modalTaetigkeitQRListe(){
       @media print{ body{padding:8mm} }
     </style></head><body>
     <h1>Tätigkeits-QR-Codes</h1>
-    <div class="sub">Nadig Pfau Hausverwaltung · ${kats.length} Tätigkeiten × ${objekte.length} Objekte · erstellt ${new Date().toLocaleDateString('de-DE')}</div>
+    <div class="sub">${esc(titel)} · ${cells.length} QR-Codes · erstellt ${new Date().toLocaleDateString('de-DE')}</div>
     <div class="grid">${cells.join('')}</div>
   </body></html>`;
   printViaIframe(html);
@@ -2690,6 +2921,106 @@ function fmtDauer(min){
   return h>0 ? `${h}:${String(m).padStart(2,'0')} Std.` : `${m} Min.`;
 }
 function nowIso(){ return new Date().toISOString(); }
+
+/* ═══════════════════════════════════════════════════════════
+   STUNDENKONTO – Wochen-/Monatsauswertung, Über-/Unterstunden
+   Woche: Mo–So (ISO 8601). Pausen zählen nicht als Arbeitszeit.
+═══════════════════════════════════════════════════════════ */
+// Montag (als YYYY-MM-DD) der Woche, in der dateStr liegt
+function montagDerWoche(dateStr){
+  const d=new Date(dateStr+'T00:00:00');
+  const tag=(d.getDay()+6)%7;
+  d.setDate(d.getDate()-tag);
+  return d.toISOString().split('T')[0];
+}
+function monatKey(dateStr){ return (dateStr||'').slice(0,7); } // YYYY-MM
+// Alle beendeten Sitzungen eines Users laden
+async function getSitzungenUser(userId){
+  return (await idbGetAll('arbeitszeit','userId',userId).catch(()=>[]))
+    .filter(x=>x.status==='beendet');
+}
+// Summe Arbeitsminuten gefiltert
+function summeMinuten(sitzungen, filterFn){
+  return sitzungen.filter(filterFn).reduce((sum,s)=>sum+sitzungMinuten(s),0);
+}
+// Stundenkonto für einen User: aktuelle Woche, aktueller Monat, Saldo inkl. Übertrag
+async function berechneStundenkonto(user){
+  const sitzungen=await getSitzungenUser(user.id);
+  const wochenSoll=(user.wochenSoll!=null?user.wochenSoll:40);
+  const heuteStr=today();
+  const dieseWocheMontag=montagDerWoche(heuteStr);
+  const dieserMonat=monatKey(heuteStr);
+  // Ist-Minuten dieser Woche / dieses Monats
+  const wocheMin=summeMinuten(sitzungen, s=>montagDerWoche(s.datum)===dieseWocheMontag);
+  const monatMin=summeMinuten(sitzungen, s=>monatKey(s.datum)===dieserMonat);
+  // Heutige Minuten (für 10-Std-Warnung)
+  const heuteMin=summeMinuten(sitzungen, s=>s.datum===heuteStr);
+  // Monatssoll = Anzahl voller Wochen-Anteile im Monat. Vereinfachung: Soll/Tag * Arbeitstage,
+  // aber da Mo–So frei einteilbar: Monatssoll = wochenSoll/7 * Tage-im-Monat-bis-heute.
+  const [jahr,mon]=dieserMonat.split('-').map(Number);
+  const tagImMonat=new Date(heuteStr+'T00:00:00').getDate();
+  const monatSollBisHeute=wochenSoll/7*tagImMonat;
+  const wochenSaldo=wocheMin/60 - wochenSoll;            // + = Überstunden
+  const monatSaldoBisHeute=monatMin/60 - monatSollBisHeute;
+  // Übertrag aus Vormonaten (gespeichert in settings)
+  const uebertrag=await getStundenUebertrag(user.id, dieserMonat);
+  return {
+    wochenSoll,
+    wocheStd: wocheMin/60,
+    monatStd: monatMin/60,
+    heuteStd: heuteMin/60,
+    wochenSaldo,
+    monatSaldoBisHeute,
+    uebertrag,
+    gesamtSaldo: monatSaldoBisHeute + uebertrag,
+  };
+}
+// Übertrag aus settings lesen (Schlüssel: stdkonto_<userId>)
+async function getStundenUebertrag(userId, bisMonat){
+  const rec=await idbGet('settings','stdkonto_'+userId).catch(()=>null);
+  if(!rec||!rec.uebertrag) return 0;
+  return Number(rec.uebertrag)||0;
+}
+// Automatischer Monatsübertrag: abgeschlossene Vormonate verrechnen und Übertrag fortschreiben.
+// Wird bei App-Start aufgerufen.
+async function pruefeMonatsuebertrag(){
+  try{
+    const users=(await idbGetAll('users')).filter(u=>u.role!=='admin');
+    const dieserMonat=monatKey(today());
+    for(const u of users){
+      const sitzungen=await getSitzungenUser(u.id);
+      if(!sitzungen.length) continue;
+      const wochenSoll=(u.wochenSoll!=null?u.wochenSoll:40);
+      const rec=await idbGet('settings','stdkonto_'+u.id).catch(()=>null)||{id:'stdkonto_'+u.id,uebertrag:0,verrechnet:[]};
+      rec.verrechnet=rec.verrechnet||[];
+      // alle Monate mit Sitzungen, die VOR dem aktuellen Monat liegen und noch nicht verrechnet sind
+      const monate=[...new Set(sitzungen.map(s=>monatKey(s.datum)))]
+        .filter(m=>m<dieserMonat && !rec.verrechnet.includes(m))
+        .sort();
+      let changed=false;
+      for(const m of monate){
+        const istMin=summeMinuten(sitzungen, s=>monatKey(s.datum)===m);
+        const [jr,mo]=m.split('-').map(Number);
+        const tageImMonat=new Date(jr,mo,0).getDate();
+        const monatSoll=wochenSoll/7*tageImMonat;
+        const saldo=istMin/60 - monatSoll;   // + Über, - Unter
+        rec.uebertrag=(Number(rec.uebertrag)||0)+saldo;
+        rec.verrechnet.push(m);
+        changed=true;
+      }
+      if(changed){ rec.geaendert=nowIso(); await idbPut('settings',rec); }
+    }
+  }catch(e){ console.warn('Monatsübertrag:', e); }
+}
+function fmtSaldo(std){
+  const v=Math.round(std*10)/10;
+  const vz=v>0?'+':'';
+  return vz+v.toLocaleString('de-DE',{minimumFractionDigits:1,maximumFractionDigits:1})+' Std.';
+}
+function fmtStd(std){
+  const v=Math.round(std*10)/10;
+  return v.toLocaleString('de-DE',{minimumFractionDigits:1,maximumFractionDigits:1})+' Std.';
+}
 
 // ── Einstempeln ──
 async function einstempeln(){
@@ -9609,6 +9940,9 @@ async function modalAddUser(){
       </select>
     </div>
     <p style="font-size:11px;color:var(--ink-40);margin-bottom:12px">Admin hat automatisch Zugriff auf alle Objekte.</p>
+    <div class="f"><label>Wochensoll (Stunden) – für Stundenkonto</label>
+      <input type="number" id="nuWochenSoll" value="40" min="0" max="60" step="0.5" inputmode="decimal"></div>
+    <p style="font-size:11px;color:var(--ink-40);margin-bottom:12px">Für Teilzeit anpassen (z. B. 20). Mo–So frei einteilbar.</p>
     <div class="f-row">
       <button class="btn btn-copper btn-full" onclick="saveNewUser()"><i class="ti ti-check"></i> Speichern</button>
       <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
@@ -9623,7 +9957,8 @@ async function saveNewUser(){
   const role=document.getElementById('nuRole').value;
   const sel=document.getElementById('nuObjekte');
   const objekte=role==='admin'?[]:Array.from(sel.selectedOptions).map(o=>o.value);
-  await idbPut('users',{id:uid(),name,pin,role,objekte,aktiv:true});
+  const wochenSoll=parseFloat(document.getElementById('nuWochenSoll')?.value)||40;
+  await idbPut('users',{id:uid(),name,pin,role,objekte,aktiv:true,wochenSoll,eintritt:today()});
   closeModal(); await renderUserList_(); toast('Benutzer gespeichert ✓');
 }
 
@@ -9643,6 +9978,8 @@ async function modalEditUser(id){
         ${['duesseldorf','mg','krefeld'].map(g=>`<option value="${g}" ${u.objekte?.includes(g)?'selected':''}>${GRUPPE_LABEL[g]||g}</option>`).join('')}
       </select>
     </div>
+    <div class="f"><label>Wochensoll (Stunden) – für Stundenkonto</label>
+      <input type="number" id="euWochenSoll" value="${u.wochenSoll!=null?u.wochenSoll:40}" min="0" max="60" step="0.5" inputmode="decimal"></div>
     <div class="f-row">
       <button class="btn btn-copper btn-full" onclick="saveEditUser('${id}')"><i class="ti ti-check"></i> Speichern</button>
       <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
@@ -9659,6 +9996,8 @@ async function saveEditUser(id){
   if(newPin.length>=4) u.pin=newPin;
   u.role=role;
   u.objekte=role==='admin'?[]:Array.from(sel.selectedOptions).map(o=>o.value);
+  const ws=parseFloat(document.getElementById('euWochenSoll')?.value);
+  if(!isNaN(ws)) u.wochenSoll=ws;
   await idbPut('users',u);
   closeModal(); await renderUserList_(); toast('Gespeichert ✓');
 }
@@ -10034,6 +10373,18 @@ function fmtDate(v){
   if(!v) return '–';
   if(/^\d{4}-\d{2}-\d{2}/.test(v)) return new Date(v).toLocaleDateString('de-DE');
   return v;
+}
+function fmtDatumLang(v){
+  if(!v) return '–';
+  const heute=today();
+  const d=new Date(v+'T00:00:00');
+  const gestern=new Date(); gestern.setDate(gestern.getDate()-1);
+  const gesternStr=gestern.toISOString().split('T')[0];
+  const wt=d.toLocaleDateString('de-DE',{weekday:'short'});
+  const datum=d.toLocaleDateString('de-DE',{day:'2-digit',month:'2-digit',year:'numeric'});
+  if(v===heute) return 'Heute · '+wt+' '+datum;
+  if(v===gesternStr) return 'Gestern · '+wt+' '+datum;
+  return wt+' '+datum;
 }
 function fmtEur(v){
   if(!v&&v!==0) return '–';
