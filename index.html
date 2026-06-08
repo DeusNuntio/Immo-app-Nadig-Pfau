@@ -636,7 +636,7 @@ button.chip.chip-active{background:var(--ink);color:#fff;border-color:var(--ink)
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=10;
-const APP_VERSION = '2026-06-07-v11';
+const APP_VERSION = '2026-06-07-v12';
 let idb=null;
 
 function openIDB(){
@@ -1893,7 +1893,7 @@ async function zeigeLagerorte(){
         <div style="display:flex;align-items:center;gap:10px">
           <div style="width:36px;height:36px;border-radius:8px;background:var(--ink-05);display:flex;align-items:center;justify-content:center;color:var(--copper);flex-shrink:0"><i class="ti ti-box"></i></div>
           <div style="flex:1;min-width:0">
-            <div style="font-weight:600;font-size:13px">${o.bezeichnung}</div>
+            <div style="font-weight:600;font-size:13px">${o.bezeichnung}${o.nummer?` <span style="font-weight:400;color:var(--ink-40);font-size:11px">· ${o.nummer}</span>`:''}</div>
             ${o.pfad?`<div style="font-size:11px;color:var(--ink-40)">${o.pfad}</div>`:''}
           </div>
           <div style="display:flex;gap:4px;flex-shrink:0">
@@ -1940,6 +1940,7 @@ async function saveLagerort(ortId){
     standort,
     bezeichnung: bez,
     pfad: document.getElementById('loPfad')?.value?.trim()||'',
+    nummer: alt?.nummer || await naechsteLagerortNr(standort),
     qrId: alt?.qrId || ('ORT-'+Math.random().toString(36).slice(2,8).toUpperCase()),
     erstellt: alt?.erstellt||now(),
   };
@@ -1993,58 +1994,143 @@ function qrDataUrl(text, size=300){
   return 'data:image/svg+xml;base64,'+btoa(unescape(encodeURIComponent(svg)));
 }
 
+/* ── Etikett als PDF (30×50 mm, Inhalt 90° gedreht) ──────────
+   Rendert QR + Text auf ein Canvas (quer), dreht es 90°, bettet es
+   als JPEG in ein einseitiges PDF ein. Dateiname = Nummer.
+*/
+// QR als PNG/Bild-Element laden (für Canvas)
+function qrImage(text, px){
+  return new Promise((resolve,reject)=>{
+    const img=new Image();
+    img.onload=()=>resolve(img);
+    img.onerror=reject;
+    img.src=qrDataUrl(text, px||300);
+  });
+}
+
+// Etikett auf Canvas zeichnen, 90° gedreht; gibt JPEG-DataURL + Pixelmaße zurück
+async function renderEtikettCanvas(qrText, zeile1, zeile2, zeile3){
+  const dpi=300, mmPx=dpi/25.4;
+  const wPx=Math.round(30*mmPx), hPx=Math.round(50*mmPx); // Zielseite hochkant
+  // Wir zeichnen auf ein Querformat-Canvas (hPx x wPx) und drehen danach.
+  const land=document.createElement('canvas');
+  land.width=hPx; land.height=wPx;            // 591 x 354
+  const ctx=land.getContext('2d');
+  ctx.fillStyle='#fff'; ctx.fillRect(0,0,land.width,land.height);
+  // QR links, quadratisch, mit etwas Rand
+  const pad=Math.round(2.2*mmPx);
+  const qrSize=land.height-2*pad;
+  const qrImg=await qrImage(qrText, 360);
+  ctx.imageSmoothingEnabled=false;
+  ctx.drawImage(qrImg, pad, pad, qrSize, qrSize);
+  // Text rechts daneben
+  const tx=pad+qrSize+Math.round(2*mmPx);
+  const tw=land.width-tx-pad;
+  ctx.fillStyle='#0C447C'; ctx.textBaseline='top';
+  let y=Math.round(land.height*0.18);
+  function line(txt, size, color, bold){
+    if(!txt) return;
+    ctx.fillStyle=color||'#0C447C';
+    ctx.font=(bold?'bold ':'')+size+'px Arial, sans-serif';
+    // einfacher Umbruch
+    const words=String(txt).split(' '); let cur='';
+    const lines=[];
+    for(const w of words){ const t=cur?cur+' '+w:w; if(ctx.measureText(t).width>tw && cur){ lines.push(cur); cur=w; } else cur=t; }
+    if(cur) lines.push(cur);
+    for(const ln of lines){ ctx.fillText(ln, tx, y); y+=Math.round(size*1.25); }
+  }
+  line(zeile1, 46, '#0C447C', true);
+  y+=Math.round(1.5*mmPx);
+  line(zeile2, 30, '#555', false);
+  line(zeile3, 24, '#888', false);
+  // 90° drehen → Hochformat (wPx x hPx)
+  const port=document.createElement('canvas');
+  port.width=wPx; port.height=hPx;
+  const pc=port.getContext('2d');
+  pc.fillStyle='#fff'; pc.fillRect(0,0,wPx,hPx);
+  pc.translate(wPx, 0);
+  pc.rotate(Math.PI/2);              // 90° im Uhrzeigersinn
+  pc.drawImage(land, 0, 0);
+  return { dataUrl: port.toDataURL('image/jpeg', 0.9), w:wPx, h:hPx };
+}
+
+// Einseitiges PDF mit bildschirmfüllendem JPEG bauen
+function buildLabelPdf(jpegB64, imgW, imgH, pageWmm, pageHmm){
+  function mm2pt(mm){ return mm*72/25.4; }
+  const W=mm2pt(pageWmm), H=mm2pt(pageHmm);
+  const bin=atob(jpegB64);
+  const header='%PDF-1.4\n%\xE2\xE3\xCF\xD3\n';
+  let body=''; const offset={};
+  function emit(n,s){ offset[n]=header.length+body.length; body+=`${n} 0 obj\n${s}\nendobj\n`; }
+  emit(1,'<< /Type /Catalog /Pages 2 0 R >>');
+  emit(2,'<< /Type /Pages /Kids [3 0 R] /Count 1 >>');
+  emit(3,`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${W.toFixed(2)} ${H.toFixed(2)}] /Resources << /XObject << /Im0 4 0 R >> >> /Contents 5 0 R >>`);
+  offset[4]=header.length+body.length;
+  body+=`4 0 obj\n<< /Type /XObject /Subtype /Image /Width ${imgW} /Height ${imgH} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${bin.length} >>\nstream\n`+bin+`\nendstream\nendobj\n`;
+  const content=`q\n${W.toFixed(2)} 0 0 ${H.toFixed(2)} 0 0 cm\n/Im0 Do\nQ\n`;
+  emit(5,`<< /Length ${content.length} >>\nstream\n${content}\nendstream`);
+  const xrefStart=header.length+body.length;
+  let xref='xref\n0 6\n0000000000 65535 f \n';
+  for(let i=1;i<=5;i++) xref+=String(offset[i]).padStart(10,'0')+' 00000 n \n';
+  const trailer=`trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${xrefStart}\n%%EOF`;
+  return header+body+xref+trailer;
+}
+
+// PDF erzeugen und als Download/Teilen bereitstellen
+async function etikettPdfSpeichern(qrText, dateiname, zeile1, zeile2, zeile3){
+  const lab=await renderEtikettCanvas(qrText, zeile1, zeile2, zeile3);
+  const jpegB64=lab.dataUrl.split(',')[1];
+  const pdfStr=buildLabelPdf(jpegB64, lab.w, lab.h, 30, 50);
+  // Latin1-String → Bytes
+  const bytes=new Uint8Array(pdfStr.length);
+  for(let i=0;i<pdfStr.length;i++) bytes[i]=pdfStr.charCodeAt(i)&0xff;
+  const blob=new Blob([bytes], {type:'application/pdf'});
+  const file=new File([blob], dateiname+'.pdf', {type:'application/pdf'});
+  // Teilen-Dialog (Smartphone) bevorzugen → Nutzer wählt Zielordner/App
+  if(navigator.canShare && navigator.canShare({files:[file]})){
+    try{ await navigator.share({files:[file], title:dateiname}); return; }
+    catch(e){ if(e.name==='AbortError') return; /* sonst Fallback */ }
+  }
+  // Fallback: Download
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url; a.download=dateiname+'.pdf';
+  document.body.appendChild(a); a.click();
+  setTimeout(()=>{ document.body.removeChild(a); URL.revokeObjectURL(url); }, 1000);
+}
+
 async function druckeLagerortEtikett(ortId){
   const o=await idbGet('lager', ortId);
   if(!o) return;
-  const qr=qrDataUrl('LAGERORT:'+o.qrId, 300);
-  const html=`<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8"><title>Etikett ${o.bezeichnung}</title>
-  <style>
-    *{margin:0;padding:0;box-sizing:border-box}
-    body{font-family:Arial,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:10mm}
-    .etikett{border:2px solid #0C447C;border-radius:8px;padding:6mm 8mm;text-align:center;width:70mm}
-    .etikett img{width:42mm;height:42mm}
-    .etikett .name{font-size:15pt;font-weight:700;color:#0C447C;margin-top:3mm}
-    .etikett .pfad{font-size:9pt;color:#555;margin-top:1mm}
-    .etikett .ort{font-size:8pt;color:#888;margin-top:2mm}
-    @media print{@page{margin:0}body{padding:0}}
-  </style></head><body>
-    <div class="etikett">
-      <img src="${qr}" alt="QR">
-      <div class="name">${o.bezeichnung}</div>
-      ${o.pfad?`<div class="pfad">${o.pfad}</div>`:''}
-      <div class="ort">${getLagerStandort(o.standort).label}</div>
-    </div>
-    <scr`+`ipt>window.onload=()=>setTimeout(()=>window.print(),400)</scr`+`ipt>
-  </body></html>`;
-  const ok=printViaIframe(html);
-  if(!ok){ const w=window.open('','_blank'); if(w){ w.document.write(html); w.document.close(); } }
+  const nummer=o.nummer||('ORT-'+(o.qrId||'')); 
+  toast('PDF wird erstellt…');
+  try{
+    await etikettPdfSpeichern(
+      'LAGERORT:'+o.qrId,
+      nummer,
+      o.bezeichnung,
+      o.pfad||'',
+      nummer+' · '+getLagerStandort(o.standort).label
+    );
+  }catch(e){ console.warn(e); toast('Fehler beim Erstellen des PDF'); }
 }
 
-// Artikel-Etikett (für Gegenstände ohne eigenen Barcode): QR mit Artikel-ID + Name
+// Artikel-Etikett: QR mit Barcode/Artikel-ID, Dateiname = Inventarnummer
 async function druckeArtikelEtikett(artikelId){
   const a=await idbGet('lager', artikelId);
   if(!a) return;
   const code = a.barcode ? a.barcode : ('ARTIKEL:'+a.id);
-  const qr=qrDataUrl(code, 300);
-  const html=`<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8"><title>Etikett ${a.bezeichnung}</title>
-  <style>
-    *{margin:0;padding:0;box-sizing:border-box}
-    body{font-family:Arial,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:10mm}
-    .etikett{border:2px solid #0C447C;border-radius:8px;padding:6mm 8mm;text-align:center;width:60mm}
-    .etikett img{width:36mm;height:36mm}
-    .etikett .name{font-size:13pt;font-weight:700;color:#0C447C;margin-top:3mm}
-    .etikett .inv{font-size:9pt;color:#555;margin-top:1mm}
-    @media print{@page{margin:0}body{padding:0}}
-  </style></head><body>
-    <div class="etikett">
-      <img src="${qr}" alt="QR">
-      <div class="name">${a.bezeichnung}</div>
-      ${a.inventarnummer?`<div class="inv">Inv.-Nr. ${a.inventarnummer}</div>`:''}
-    </div>
-    <scr`+`ipt>window.onload=()=>setTimeout(()=>window.print(),400)</scr`+`ipt>
-  </body></html>`;
-  const ok=printViaIframe(html);
-  if(!ok){ const w=window.open('','_blank'); if(w){ w.document.write(html); w.document.close(); } }
+  const nummer = a.inventarnummer || ('Artikel-'+a.id.slice(-4));
+  toast('PDF wird erstellt…');
+  try{
+    await etikettPdfSpeichern(
+      code,
+      nummer,
+      a.bezeichnung,
+      nummer,
+      getLagerStandort(a.standort).label
+    );
+  }catch(e){ console.warn(e); toast('Fehler beim Erstellen des PDF'); }
 }
 
 // Nächste fortlaufende Inventarnummer je Standort (z. B. DUS-0001)
@@ -2058,6 +2144,18 @@ async function naechsteInventarnummer(standort){
     if(m){ const n=parseInt(m[1]); if(n>max) max=n; }
   });
   return kuerzel+'-'+String(max+1).padStart(4,'0');
+}
+
+// Nächste fortlaufende Lagerortnummer je Standort (z. B. DUS-L-0001)
+async function naechsteLagerortNr(standort){
+  const kuerzel=STANDORT_KUERZEL[standort]||standort.slice(0,3).toUpperCase();
+  const orte=await getLagerorte();
+  let max=0;
+  orte.forEach(o=>{
+    const m=(o.nummer||'').match(new RegExp('^'+kuerzel+'-L-(\\d+)$'));
+    if(m){ const n=parseInt(m[1]); if(n>max) max=n; }
+  });
+  return kuerzel+'-L-'+String(max+1).padStart(4,'0');
 }
 
 // Lagerort-Chips im Artikelformular rendern
