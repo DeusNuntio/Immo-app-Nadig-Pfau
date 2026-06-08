@@ -564,6 +564,7 @@ button.chip.chip-active{background:var(--ink);color:#fff;border-color:var(--ink)
     <div id="page-aufgaben" class="page"></div>
     <div id="page-wartung" class="page"></div>
     <div id="page-lager" class="page"></div>
+    <div id="page-zeit" class="page"></div>
     <div id="page-settings" class="page"></div>
   </div>
 
@@ -635,8 +636,8 @@ button.chip.chip-active{background:var(--ink);color:#fff;border-color:var(--ink)
 /* ═══════════════════════════════════════════════════════════
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
-const DB_NAME='immo_v2', DB_VER=10;
-const APP_VERSION = '2026-06-07-v12';
+const DB_NAME='immo_v2', DB_VER=11;
+const APP_VERSION = '2026-06-08-v19';
 let idb=null;
 
 function openIDB(){
@@ -649,7 +650,7 @@ function openIDB(){
     const req=indexedDB.open(DB_NAME,DB_VER);
     req.onupgradeneeded=e=>{
       const db=e.target.result;
-      ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','fotos','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung'].forEach(s=>{
+      ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','fotos','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit'].forEach(s=>{
         if(!db.objectStoreNames.contains(s)){
           const store=db.createObjectStore(s,{keyPath:'id'});
           if(s==='mieter'){store.createIndex('objektId','objektId');store.createIndex('weNr','weNr')}
@@ -668,6 +669,8 @@ function openIDB(){
           if(s==='versorger'){store.createIndex('objektId','objektId')}
           if(s==='lager'){store.createIndex('objektId','objektId');store.createIndex('kategorie','kategorie')}
           if(s==='lager_anforderung'){store.createIndex('status','status')}
+          if(s==='arbeitszeit'){store.createIndex('userId','userId');store.createIndex('datum','datum')}
+          if(s==='abwesenheit'){store.createIndex('userId','userId')}
         }
       });
     };
@@ -962,14 +965,7 @@ async function renderDash() {
     <div class="stat"><div class="stat-n" style="color:${myMng.length?'var(--red)':'var(--green)'}">${myMng.length}</div><div class="stat-l">Mängel</div></div>
   </div>`;
 
-  if (!setting) {
-    html += `<div style="background:var(--amber-l);border-radius:10px;padding:10px 14px;margin-bottom:12px;display:flex;align-items:center;gap:10px">
-      <i class="ti ti-alert-triangle" style="color:var(--amber);font-size:18px;flex-shrink:0"></i>
-      <div style="flex:1"><div style="font-size:13px;font-weight:600;color:var(--amber)">Noch keine Mieterdaten</div>
-      <div style="font-size:12px;color:var(--amber)">Bitte Excel-Datei unter Einstellungen importieren.</div></div>
-      <button class="btn btn-sm" onclick="nav('settings')"><i class="ti ti-upload"></i></button>
-    </div>`;
-  } else {
+  if (setting) {
     html += `<div style="font-size:11px;color:var(--ink-40);margin-bottom:10px;display:flex;align-items:center;gap:4px">
       <i class="ti ti-refresh" style="font-size:12px"></i> ${setting.value}
     </div>`;
@@ -983,6 +979,7 @@ async function renderDash() {
     <button class="qa-btn" onclick="modalAddMangel(null,null)"><i class="ti ti-alert-triangle"></i> Mangel</button>
     <button class="qa-btn" onclick="nav('wartung')"><i class="ti ti-calendar-stats"></i> Wartung</button>
     <button class="qa-btn" onclick="nav('lager')"><i class="ti ti-package"></i> Lager</button>
+    <button class="qa-btn" onclick="nav('zeit')"><i class="ti ti-clock"></i> Zeiterfassung</button>
     <button class="qa-btn" onclick="nav('settings')"><i class="ti ti-upload"></i> Excel-Import</button>
   </div>`;
 
@@ -1243,8 +1240,11 @@ async function modalZaehlerstand(zaehlerId){
     <div class="f"><label>Zählernummer (optional)</label>
       <input type="text" id="zsNummer" value="${z.zaehlernummer||''}" placeholder="Gerätenummer"></div>
     <div class="f"><label>Foto des Zählers</label>
-      <input type="file" id="zsFotoIn" accept="image/*" capture="environment" style="display:none" onchange="onZsFoto(this)">
-      <button class="btn btn-full" onclick="document.getElementById('zsFotoIn').click()"><i class="ti ti-camera"></i> Foto aufnehmen / wählen</button>
+      <input type="file" id="zsFotoIn" accept="image/*" style="display:none" onchange="onZsFoto(this)">
+      <div style="display:flex;gap:6px">
+        <button class="btn" style="flex:1" onclick="openCamZaehlerstand()"><i class="ti ti-camera"></i> Foto aufnehmen</button>
+        <button class="btn" style="flex:1" onclick="document.getElementById('zsFotoIn').click()"><i class="ti ti-photo"></i> Aus Galerie</button>
+      </div>
       <div id="zsFotoPreview" style="margin-top:8px"></div>
     </div>
     <div class="f"><label>Bemerkung (optional)</label>
@@ -1258,11 +1258,25 @@ async function modalZaehlerstand(zaehlerId){
 async function onZsFoto(input){
   const file = input.files[0];
   if(!file) return;
+  window._zsCamActive=false;
   const dataUrl = await compressFoto(file, 1400, 0.78);
   window._zsFoto = dataUrl;
+  zsFotoVorschau(dataUrl);
+}
+
+function zsFotoVorschau(dataUrl){
   const prev = document.getElementById('zsFotoPreview');
   if(prev) prev.innerHTML = `<img src="${dataUrl}" style="max-width:100%;border-radius:8px;border:1px solid var(--ink-10)">
     <button class="btn btn-sm btn-danger" style="margin-top:4px" onclick="window._zsFoto=null;document.getElementById('zsFotoPreview').innerHTML=''"><i class="ti ti-trash"></i> Foto entfernen</button>`;
+}
+
+// Zählerstand-Foto über das robuste In-App-Kamera-Overlay (kein PWA-Reload)
+function openCamZaehlerstand(){
+  pPhotoRoom=null; window._zaehlerIdx=null; window._mangelPhotos=null;
+  window._lagerCamActive=false; window._mangelEditCamActive=false;
+  window._zsCamActive=true;
+  if(typeof openCam==='function'){ openCam(); }
+  else { document.getElementById('zsFotoIn')?.click(); }
 }
 
 async function saveZaehlerstand(zaehlerId){
@@ -2008,50 +2022,38 @@ function qrImage(text, px){
   });
 }
 
-// Etikett auf Canvas zeichnen, 90° gedreht; gibt JPEG-DataURL + Pixelmaße zurück
+// Etikett auf Canvas zeichnen: hochkant, QR oben, Text darunter (30×50 mm)
 async function renderEtikettCanvas(qrText, zeile1, zeile2, zeile3){
   const dpi=300, mmPx=dpi/25.4;
-  const wPx=Math.round(30*mmPx), hPx=Math.round(50*mmPx); // Zielseite hochkant
-  // Wir zeichnen auf ein Querformat-Canvas (hPx x wPx) und drehen danach.
-  const land=document.createElement('canvas');
-  land.width=hPx; land.height=wPx;            // 591 x 354
-  const ctx=land.getContext('2d');
-  ctx.fillStyle='#fff'; ctx.fillRect(0,0,land.width,land.height);
-  // QR links, quadratisch, mit etwas Rand
-  const pad=Math.round(2.2*mmPx);
-  const qrSize=land.height-2*pad;
+  const wPx=Math.round(30*mmPx), hPx=Math.round(50*mmPx); // 354 x 591 hochkant
+  const cv=document.createElement('canvas');
+  cv.width=wPx; cv.height=hPx;
+  const ctx=cv.getContext('2d');
+  ctx.fillStyle='#fff'; ctx.fillRect(0,0,wPx,hPx);
+  // QR oben, zentriert
+  const pad=Math.round(2*mmPx);
+  const qrSize=wPx-2*pad;
   const qrImg=await qrImage(qrText, 360);
   ctx.imageSmoothingEnabled=false;
   ctx.drawImage(qrImg, pad, pad, qrSize, qrSize);
-  // Text rechts daneben
-  const tx=pad+qrSize+Math.round(2*mmPx);
-  const tw=land.width-tx-pad;
-  ctx.fillStyle='#0C447C'; ctx.textBaseline='top';
-  let y=Math.round(land.height*0.18);
+  // Text darunter, zentriert
+  let y=pad+qrSize+Math.round(2.5*mmPx);
+  ctx.textAlign='center'; ctx.textBaseline='top';
+  const cx=wPx/2, tw=wPx-2*pad;
   function line(txt, size, color, bold){
     if(!txt) return;
     ctx.fillStyle=color||'#0C447C';
     ctx.font=(bold?'bold ':'')+size+'px Arial, sans-serif';
-    // einfacher Umbruch
-    const words=String(txt).split(' '); let cur='';
-    const lines=[];
+    const words=String(txt).split(' '); let cur=''; const lines=[];
     for(const w of words){ const t=cur?cur+' '+w:w; if(ctx.measureText(t).width>tw && cur){ lines.push(cur); cur=w; } else cur=t; }
     if(cur) lines.push(cur);
-    for(const ln of lines){ ctx.fillText(ln, tx, y); y+=Math.round(size*1.25); }
+    for(const ln of lines){ ctx.fillText(ln, cx, y); y+=Math.round(size*1.25); }
   }
-  line(zeile1, 46, '#0C447C', true);
+  line(zeile1, 40, '#0C447C', true);
   y+=Math.round(1.5*mmPx);
   line(zeile2, 30, '#555', false);
   line(zeile3, 24, '#888', false);
-  // 90° drehen → Hochformat (wPx x hPx)
-  const port=document.createElement('canvas');
-  port.width=wPx; port.height=hPx;
-  const pc=port.getContext('2d');
-  pc.fillStyle='#fff'; pc.fillRect(0,0,wPx,hPx);
-  pc.translate(wPx, 0);
-  pc.rotate(Math.PI/2);              // 90° im Uhrzeigersinn
-  pc.drawImage(land, 0, 0);
-  return { dataUrl: port.toDataURL('image/jpeg', 0.9), w:wPx, h:hPx };
+  return { dataUrl: cv.toDataURL('image/jpeg', 0.92), w:wPx, h:hPx };
 }
 
 // Einseitiges PDF mit bildschirmfüllendem JPEG bauen
@@ -2076,43 +2078,54 @@ function buildLabelPdf(jpegB64, imgW, imgH, pageWmm, pageHmm){
   return header+body+xref+trailer;
 }
 
-// PDF erzeugen und als Download/Teilen bereitstellen
+// PDF erzeugen und speichern. Standard: direkter Download (landet im Download-Ordner).
 async function etikettPdfSpeichern(qrText, dateiname, zeile1, zeile2, zeile3){
   const lab=await renderEtikettCanvas(qrText, zeile1, zeile2, zeile3);
   const jpegB64=lab.dataUrl.split(',')[1];
   const pdfStr=buildLabelPdf(jpegB64, lab.w, lab.h, 30, 50);
-  // Latin1-String → Bytes
   const bytes=new Uint8Array(pdfStr.length);
   for(let i=0;i<pdfStr.length;i++) bytes[i]=pdfStr.charCodeAt(i)&0xff;
   const blob=new Blob([bytes], {type:'application/pdf'});
-  const file=new File([blob], dateiname+'.pdf', {type:'application/pdf'});
-  // Teilen-Dialog (Smartphone) bevorzugen → Nutzer wählt Zielordner/App
-  if(navigator.canShare && navigator.canShare({files:[file]})){
-    try{ await navigator.share({files:[file], title:dateiname}); return; }
-    catch(e){ if(e.name==='AbortError') return; /* sonst Fallback */ }
-  }
-  // Fallback: Download
+  // Direkter Download → Datei landet im Download-Ordner mit der Nummer als Name
   const url=URL.createObjectURL(blob);
   const a=document.createElement('a');
   a.href=url; a.download=dateiname+'.pdf';
   document.body.appendChild(a); a.click();
-  setTimeout(()=>{ document.body.removeChild(a); URL.revokeObjectURL(url); }, 1000);
+  setTimeout(()=>{ document.body.removeChild(a); URL.revokeObjectURL(url); }, 1500);
+  toast('PDF gespeichert: '+dateiname+'.pdf');
+}
+
+// Alternativ: Etikett über Teilen-Dialog (für Cloud/Drucker-Apps)
+async function etikettPdfTeilen(qrText, dateiname, zeile1, zeile2, zeile3){
+  const lab=await renderEtikettCanvas(qrText, zeile1, zeile2, zeile3);
+  const jpegB64=lab.dataUrl.split(',')[1];
+  const pdfStr=buildLabelPdf(jpegB64, lab.w, lab.h, 30, 50);
+  const bytes=new Uint8Array(pdfStr.length);
+  for(let i=0;i<pdfStr.length;i++) bytes[i]=pdfStr.charCodeAt(i)&0xff;
+  const blob=new Blob([bytes], {type:'application/pdf'});
+  const file=new File([blob], dateiname+'.pdf', {type:'application/pdf'});
+  if(navigator.canShare && navigator.canShare({files:[file]})){
+    try{ await navigator.share({files:[file], title:dateiname}); return; }
+    catch(e){ if(e.name==='AbortError') return; }
+  }
+  // Fallback Download
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url; a.download=dateiname+'.pdf';
+  document.body.appendChild(a); a.click();
+  setTimeout(()=>{ document.body.removeChild(a); URL.revokeObjectURL(url); }, 1500);
 }
 
 async function druckeLagerortEtikett(ortId){
   const o=await idbGet('lager', ortId);
   if(!o) return;
-  const nummer=o.nummer||('ORT-'+(o.qrId||'')); 
-  toast('PDF wird erstellt…');
-  try{
-    await etikettPdfSpeichern(
-      'LAGERORT:'+o.qrId,
-      nummer,
-      o.bezeichnung,
-      o.pfad||'',
-      nummer+' · '+getLagerStandort(o.standort).label
-    );
-  }catch(e){ console.warn(e); toast('Fehler beim Erstellen des PDF'); }
+  const nummer=o.nummer||('ORT-'+(o.qrId||''));
+  showModal(`
+    <div class="m-title"><i class="ti ti-qrcode"></i> Etikett ${nummer}</div>
+    <p style="font-size:13px;color:var(--ink-60);margin-bottom:12px">PDF (30×50 mm) für „${o.bezeichnung}".</p>
+    <button class="btn btn-copper btn-full" style="margin-bottom:8px" onclick="closeModal();etikettPdfSpeichern('LAGERORT:${o.qrId}','${nummer}','${(o.bezeichnung||'').replace(/'/g,'')}','${(o.pfad||'').replace(/'/g,'')}','${nummer} · ${getLagerStandort(o.standort).label}')"><i class="ti ti-download"></i> Speichern (Download)</button>
+    <button class="btn btn-full" style="margin-bottom:8px" onclick="closeModal();etikettPdfTeilen('LAGERORT:${o.qrId}','${nummer}','${(o.bezeichnung||'').replace(/'/g,'')}','${(o.pfad||'').replace(/'/g,'')}','${nummer} · ${getLagerStandort(o.standort).label}')"><i class="ti ti-share"></i> Teilen / an Drucker</button>
+    <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>`);
 }
 
 // Artikel-Etikett: QR mit Barcode/Artikel-ID, Dateiname = Inventarnummer
@@ -2121,20 +2134,595 @@ async function druckeArtikelEtikett(artikelId){
   if(!a) return;
   const code = a.barcode ? a.barcode : ('ARTIKEL:'+a.id);
   const nummer = a.inventarnummer || ('Artikel-'+a.id.slice(-4));
-  toast('PDF wird erstellt…');
-  try{
-    await etikettPdfSpeichern(
-      code,
-      nummer,
-      a.bezeichnung,
-      nummer,
-      getLagerStandort(a.standort).label
-    );
-  }catch(e){ console.warn(e); toast('Fehler beim Erstellen des PDF'); }
+  showModal(`
+    <div class="m-title"><i class="ti ti-qrcode"></i> Etikett ${nummer}</div>
+    <p style="font-size:13px;color:var(--ink-60);margin-bottom:12px">PDF (30×50 mm) für „${a.bezeichnung}".</p>
+    <button class="btn btn-copper btn-full" style="margin-bottom:8px" onclick="closeModal();etikettPdfSpeichern('${code.replace(/'/g,'')}','${nummer}','${(a.bezeichnung||'').replace(/'/g,'')}','${nummer}','${getLagerStandort(a.standort).label}')"><i class="ti ti-download"></i> Speichern (Download)</button>
+    <button class="btn btn-full" style="margin-bottom:8px" onclick="closeModal();etikettPdfTeilen('${code.replace(/'/g,'')}','${nummer}','${(a.bezeichnung||'').replace(/'/g,'')}','${nummer}','${getLagerStandort(a.standort).label}')"><i class="ti ti-share"></i> Teilen / an Drucker</button>
+    <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>`);
 }
 
 // Nächste fortlaufende Inventarnummer je Standort (z. B. DUS-0001)
 const STANDORT_KUERZEL={duesseldorf:'DUS',mg:'MG',krefeld:'KR',monheim:'MON',hilden:'HIL'};
+
+/* ── Tätigkeits-Kategorien für die Zeiterfassung ──────────────
+   umlage: 'ja' | 'nein' | 'neutral'; mangel: true => mangelbezogen
+   Werden beim ersten Start in den Store 'taetigkeit_kat' geschrieben
+   und sind danach in den Einstellungen pflegbar. */
+const TAETIGKEIT_STANDARD=[
+  {id:'reinigung',     name:'Treppenhausreinigung', umlage:'ja',     mangel:false, sichtbar:true, sort:1},
+  {id:'aussen',        name:'Außenanlagenpflege',   umlage:'ja',     mangel:false, sichtbar:true, sort:2},
+  {id:'winterdienst',  name:'Winterdienst',         umlage:'ja',     mangel:false, sichtbar:true, sort:3},
+  {id:'muelltonne',    name:'Mülltonnenservice',    umlage:'ja',     mangel:false, sichtbar:true, sort:4},
+  {id:'muellrundgang', name:'Müllrundgang',         umlage:'ja',     mangel:false, sichtbar:true, sort:5},
+  {id:'kontrolle',     name:'Objektkontrolle',      umlage:'ja',     mangel:false, sichtbar:true, sort:6},
+  {id:'reparatur',     name:'Kleinreparatur',       umlage:'nein',   mangel:true,  sichtbar:true, sort:7},
+  {id:'handwerker',    name:'Handwerkerbetreuung',  umlage:'nein',   mangel:true,  sichtbar:true, sort:8},
+  {id:'notdienst',     name:'Notdienst / Störung',  umlage:'neutral',mangel:true,  sichtbar:true, sort:9},
+  {id:'wegezeit',      name:'Wegezeit',             umlage:'neutral',mangel:false, sichtbar:true, sort:10},
+  {id:'sonstiges',     name:'Sonstiges',            umlage:'neutral',mangel:false, sichtbar:true, sort:11},
+];
+
+async function ensureTaetigkeitKat(){
+  const vorhanden=await idbGetAll('taetigkeit_kat');
+  if(vorhanden.length) return vorhanden;
+  for(const k of TAETIGKEIT_STANDARD){ await idbPut('taetigkeit_kat', {...k, erstellt:now()}); }
+  return await idbGetAll('taetigkeit_kat');
+}
+async function getTaetigkeitKat(nurSichtbar){
+  const alle=(await idbGetAll('taetigkeit_kat')).sort((a,b)=>(a.sort||99)-(b.sort||99));
+  return nurSichtbar ? alle.filter(k=>k.sichtbar!==false) : alle;
+}
+function umlageLabel(u){ return u==='ja'?'umlagefähig':(u==='nein'?'nicht umlagefähig':'neutral'); }
+
+/* ── Zeiterfassung – Seite ── */
+async function renderZeiterfassung(){
+  const el=document.getElementById('page-zeit');
+  if(!el) return;
+  const istAdmin = CU?.role==='admin';
+  let h=`<div class="s-hdr"><div class="s-title"><i class="ti ti-clock"></i> Zeiterfassung</div>
+    ${istAdmin?`<button class="btn btn-sm" onclick="modalTaetigkeitQR()"><i class="ti ti-qrcode"></i> QR</button>`:'<span></span>'}
+  </div>`;
+
+  // ── Stempeluhr (alle Rollen, die erfassen) ──
+  const s=await getOffeneSitzung();
+  // Vergessen-Sicherung: offene Sitzung von früherem Tag?
+  if(s && s.datum!==today()){
+    h+=`<div class="card" style="border-left:3px solid var(--amber);background:var(--amber-l);margin-bottom:12px">
+      <div style="font-size:13px;font-weight:600;color:var(--amber);margin-bottom:4px"><i class="ti ti-alert-triangle"></i> Offene Sitzung vom ${s.datum}</div>
+      <div style="font-size:12px;color:var(--ink-60);margin-bottom:8px">Vermutlich wurde das Ausstempeln vergessen. Bitte Endzeit nachtragen oder Sitzung beenden.</div>
+      <button class="btn btn-sm btn-copper" onclick="modalSitzungNachtragen('${s.id}')"><i class="ti ti-pencil"></i> Endzeit nachtragen</button>
+    </div>`;
+  }
+  const istPause = s && pauseAktiv(s);
+  const seg = s && offenesSegment(s);
+
+  if(!s){
+    h+=`<div class="card" style="text-align:center;padding:20px 14px;margin-bottom:14px">
+      <div style="font-size:13px;color:var(--ink-40);margin-bottom:12px">Nicht eingestempelt</div>
+      <button class="btn btn-copper" style="font-size:16px;padding:14px 28px" onclick="einstempeln()"><i class="ti ti-player-play"></i> Einstempeln</button>
+    </div>`;
+  } else {
+    const min=sitzungMinuten(s);
+    h+=`<div class="card" style="margin-bottom:14px;${istPause?'border-left:3px solid var(--amber)':'border-left:3px solid var(--green)'}">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+        <div style="font-size:12px;color:var(--ink-40)">seit ${fmtUhr(s.start)} ${istPause?'· <span style="color:var(--amber)">Pause</span>':''}</div>
+        <div style="font-size:12px;color:var(--ink-40)">${s.datum}</div>
+      </div>
+      <div style="font-size:30px;font-weight:700;text-align:center;margin:6px 0">${fmtDauer(min)}</div>`;
+    // laufende Tätigkeit
+    if(seg && !istPause){
+      const tmin=Math.max(0,Math.round((new Date()-new Date(seg.start))/60000));
+      h+=`<div style="background:var(--copper-bg);border-radius:8px;padding:8px 12px;margin-bottom:8px;text-align:center">
+        <div style="font-size:13px;font-weight:600;color:var(--copper-d)">${seg.katName} läuft</div>
+        <div style="font-size:11px;color:var(--ink-40)">${getObj(seg.objId)?.name||''} · ${fmtDauer(tmin)}</div>
+      </div>
+      <button class="btn btn-full" style="margin-bottom:6px" onclick="taetigkeitBeenden()"><i class="ti ti-player-stop"></i> Tätigkeit beenden</button>`;
+    } else if(!istPause){
+      h+=`<button class="btn btn-copper btn-full" style="margin-bottom:6px" onclick="modalTaetigkeitStart()"><i class="ti ti-player-play"></i> Tätigkeit starten</button>`;
+    }
+    // Pause / Ausstempeln
+    h+=`<div style="display:flex;gap:6px">
+      <button class="btn" style="flex:1" onclick="pauseUmschalten()"><i class="ti ti-coffee"></i> ${istPause?'Pause beenden':'Pause'}</button>
+      <button class="btn btn-danger" style="flex:1" onclick="ausstempeln()"><i class="ti ti-player-stop"></i> Ausstempeln</button>
+    </div></div>`;
+    // Zeitleiste der heutigen Sitzung
+    h+=renderZeitleiste(s);
+  }
+
+  // Heutige bereits beendete Sitzungen
+  const heute=(await idbGetAll('arbeitszeit','userId',CU?.id).catch(()=>[]))
+    .filter(x=>x.datum===today() && x.status==='beendet')
+    .sort((a,b)=>(a.start||'').localeCompare(b.start||''));
+  if(heute.length){
+    h+=`<div class="card-hdr" style="margin:14px 0 6px">Heute abgeschlossen</div>`;
+    for(const x of heute){ h+=zeitSitzungCard(x); }
+  }
+
+  if(istAdmin){
+    h+=`<div class="card-hdr" style="margin:16px 0 6px">Verwaltung</div>
+      <button class="btn btn-full" style="margin-bottom:6px" onclick="modalTaetigkeitQR()"><i class="ti ti-qrcode"></i> Tätigkeits-QR drucken</button>
+      <div style="font-size:12px;color:var(--ink-40);margin-top:8px">Mitarbeiter-Übersicht und Auswertung folgen im nächsten Schritt.</div>`;
+  }
+
+  el.innerHTML=h;
+}
+
+function fmtUhr(iso){ if(!iso)return''; const d=new Date(iso); return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0'); }
+
+// Zeitleiste mit Tätigkeiten + automatischen Lücken (Wegezeit/Sonstiges)
+function renderZeitleiste(s){
+  const segs=(s.segmente||[]).slice().sort((a,b)=>(a.start||'').localeCompare(b.start||''));
+  if(!segs.length) return '';
+  let h=`<div class="card-hdr" style="margin:12px 0 6px">Verlauf</div><div style="margin-bottom:6px">`;
+  let prevEnd=s.start;
+  for(const seg of segs){
+    // Lücke vor diesem Segment?
+    if(seg.start>prevEnd){
+      const luecke=Math.round((new Date(seg.start)-new Date(prevEnd))/60000);
+      if(luecke>=1) h+=zeitLueckeRow(prevEnd, seg.start, luecke);
+    }
+    const dur = seg.ende ? Math.round((new Date(seg.ende)-new Date(seg.start))/60000) : Math.round((new Date()-new Date(seg.start))/60000);
+    const u=seg.umlage;
+    h+=`<div class="card" style="margin-bottom:5px;padding:8px 10px" onclick="modalSegmentBearbeiten('${s.id}','${seg.id}')">
+      <div style="display:flex;align-items:center;justify-content:space-between">
+        <div>
+          <div style="font-weight:600;font-size:13px">${seg.katName}${seg.ende?'':' <span style="color:var(--copper);font-size:11px">läuft</span>'}</div>
+          <div style="font-size:11px;color:var(--ink-40)">${fmtUhr(seg.start)}${seg.ende?'–'+fmtUhr(seg.ende):''} · ${getObj(seg.objId)?.name||'kein Objekt'}</div>
+          ${seg.notiz?`<div style="font-size:11px;color:var(--ink-60);margin-top:2px">${seg.notiz}</div>`:''}
+        </div>
+        <div style="text-align:right">
+          <div style="font-weight:600;font-size:13px">${fmtDauer(dur)}</div>
+          <span class="chip" style="font-size:9px;background:${u==='ja'?'#E8F5E9':(u==='nein'?'#FDECEA':'#F0F0F0')};color:${u==='ja'?'#2E7D52':(u==='nein'?'#C0392B':'#888')}">${umlageLabel(u)}</span>
+        </div>
+      </div>
+    </div>`;
+    prevEnd = seg.ende || prevEnd;
+  }
+  h+=`</div>`;
+  return h;
+}
+function zeitLueckeRow(von, bis, min){
+  return `<div style="display:flex;align-items:center;gap:8px;padding:4px 10px;margin-bottom:5px;font-size:11px;color:var(--ink-40);background:var(--ink-05);border-radius:6px">
+    <i class="ti ti-arrow-right" style="font-size:12px"></i> Wegezeit / Sonstiges · ${fmtUhr(von)}–${fmtUhr(bis)} · ${fmtDauer(min)}
+  </div>`;
+}
+function zeitSitzungCard(x){
+  const min=sitzungMinuten(x);
+  const anzT=(x.segmente||[]).length;
+  return `<div class="card" style="margin-bottom:6px" onclick="modalSitzungDetail('${x.id}')">
+    <div style="display:flex;align-items:center;justify-content:space-between">
+      <div><div style="font-weight:600;font-size:13px">${fmtUhr(x.start)}–${fmtUhr(x.ende)}</div>
+      <div style="font-size:11px;color:var(--ink-40)">${anzT} Tätigkeit${anzT===1?'':'en'}</div></div>
+      <div style="font-weight:600">${fmtDauer(min)}</div>
+    </div></div>`;
+}
+
+// Dialog: Tätigkeit starten
+async function modalTaetigkeitStart(){
+  window._tsNeuerMangelId=null;
+  const kats=await getTaetigkeitKat(true);
+  const objekte=await getMyObjekte();
+  showModal(`
+    <div class="m-title"><i class="ti ti-player-play"></i> Tätigkeit starten</div>
+    <div class="f"><label>Tätigkeit *</label>
+      <select id="tsKat" onchange="tsKatWechsel()">${kats.map(k=>`<option value="${k.id}" data-mangel="${k.mangel?'1':'0'}">${k.name}</option>`).join('')}</select></div>
+    <div class="f"><label>Objekt</label>
+      <select id="tsObj">${objekte.map(o=>`<option value="${o.id}">${o.name}</option>`).join('')}</select></div>
+    <div id="tsMangelWrap" style="display:none">
+      <div class="f"><label>Mangelbezug (optional)</label>
+        <select id="tsMangel"><option value="">– kein / neuer Mangel –</option></select></div>
+      <button type="button" class="btn btn-sm" style="margin-bottom:8px" onclick="tsNeuerMangel()"><i class="ti ti-plus"></i> Neuen Mangel anlegen</button>
+    </div>
+    <div class="f"><label>Notiz (optional)</label><input type="text" id="tsNotiz" placeholder="z. B. Leuchtmittel 3. OG"></div>
+    <div class="f-row" style="margin-top:12px">
+      <button class="btn btn-copper btn-full" onclick="tsStart()"><i class="ti ti-check"></i> Starten</button>
+      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+    </div>`);
+  tsKatWechsel();
+}
+async function tsKatWechsel(){
+  const sel=document.getElementById('tsKat');
+  const opt=sel?.options[sel.selectedIndex];
+  const istMangel=opt?.getAttribute('data-mangel')==='1';
+  const wrap=document.getElementById('tsMangelWrap');
+  if(wrap) wrap.style.display=istMangel?'block':'none';
+  if(istMangel){ await tsLadeMaengel(); }
+}
+async function tsLadeMaengel(){
+  const objId=document.getElementById('tsObj')?.value;
+  const sel=document.getElementById('tsMangel');
+  if(!sel) return;
+  const alle=await idbGet('maengel','objektId',objId).catch(()=>null);
+  const list=await idbGetAll('maengel','objektId',objId).catch(()=>[]);
+  const offen=(list||[]).filter(m=>m.status!=='behoben'&&m.status!=='erledigt');
+  sel.innerHTML='<option value="">– kein / neuer Mangel –</option>'+
+    offen.map(m=>`<option value="${m.id}" ${window._tsNeuerMangelId===m.id?'selected':''}>${m.nummer?m.nummer+' · ':''}${m.titel}</option>`).join('');
+}
+
+// Neuen Mangel direkt aus dem Tätigkeitsdialog anlegen (Minimal), dann auswählen
+async function tsNeuerMangel(){
+  const objId=document.getElementById('tsObj')?.value;
+  if(!objId){ toast('Bitte zuerst Objekt wählen'); return; }
+  const titel=prompt('Kurzbeschreibung des Mangels:');
+  if(!titel||!titel.trim()) return;
+  const obj=getObj(objId);
+  const m={
+    id:uid(), type:'mangel',
+    objektId:objId, mieterId:null, weNr:'',
+    titel:titel.trim(), schwere:'mittel',
+    datum:today(), beschreibung:'',
+    status:'offen', fotos:[],
+    erstellt:nowIso(), ersteller:CU?.name||'',
+  };
+  if(typeof naechsteMangelNr==='function'){ m.nummer=await naechsteMangelNr(objId); }
+  await idbPut('maengel', m);
+  syncSoon();
+  window._tsNeuerMangelId=m.id;
+  await tsLadeMaengel();
+  toast('Mangel angelegt: '+(m.nummer||titel.trim()));
+}
+async function tsStart(){
+  const katId=document.getElementById('tsKat')?.value;
+  const objId=document.getElementById('tsObj')?.value;
+  const notiz=document.getElementById('tsNotiz')?.value?.trim()||'';
+  const mangelId=document.getElementById('tsMangel')?.value||null;
+  closeModal();
+  await taetigkeitStarten(katId, objId, notiz, mangelId);
+}
+
+// Platzhalter – Segment/Sitzung-Detail (Bearbeitung folgt in nächster Stufe)
+async function modalSegmentBearbeiten(sId, segId){
+  const s=await idbGet('arbeitszeit', sId); if(!s) return;
+  const seg=(s.segmente||[]).find(x=>x.id===segId); if(!seg) return;
+  const kats=await getTaetigkeitKat(true);
+  const objekte=await getMyObjekte();
+  showModal(`
+    <div class="m-title"><i class="ti ti-pencil"></i> Tätigkeit bearbeiten</div>
+    <div class="f"><label>Tätigkeit</label>
+      <select id="seKat">${kats.map(k=>`<option value="${k.id}" ${k.id===seg.katId?'selected':''}>${k.name}</option>`).join('')}</select></div>
+    <div class="f"><label>Objekt</label>
+      <select id="seObj"><option value="">– kein Objekt –</option>${objekte.map(o=>`<option value="${o.id}" ${o.id===seg.objId?'selected':''}>${o.name}</option>`).join('')}</select></div>
+    <div class="f-row">
+      <div class="f"><label>Beginn</label><input type="time" id="seStart" value="${fmtUhr(seg.start)}"></div>
+      <div class="f"><label>Ende</label><input type="time" id="seEnde" value="${seg.ende?fmtUhr(seg.ende):''}"></div>
+    </div>
+    <div class="f"><label>Notiz</label><input type="text" id="seNotiz" value="${(seg.notiz||'').replace(/"/g,'&quot;')}"></div>
+    <div class="f-row" style="margin-top:12px">
+      <button class="btn btn-copper btn-full" onclick="saveSegment('${sId}','${segId}')"><i class="ti ti-check"></i> Speichern</button>
+      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+    </div>
+    <button class="btn btn-danger btn-full" style="margin-top:8px" onclick="delSegment('${sId}','${segId}')"><i class="ti ti-trash"></i> Tätigkeit löschen</button>`);
+}
+async function saveSegment(sId, segId){
+  const s=await idbGet('arbeitszeit', sId); if(!s) return;
+  const seg=(s.segmente||[]).find(x=>x.id===segId); if(!seg) return;
+  const kats=await getTaetigkeitKat();
+  const katId=document.getElementById('seKat')?.value;
+  const kat=kats.find(k=>k.id===katId);
+  seg.katId=katId; seg.katName=kat?.name||katId; seg.umlage=kat?.umlage||'neutral';
+  seg.objId=document.getElementById('seObj')?.value||null;
+  seg.notiz=document.getElementById('seNotiz')?.value?.trim()||'';
+  // Zeiten (nur Uhrzeit am selben Datum)
+  const st=document.getElementById('seStart')?.value, en=document.getElementById('seEnde')?.value;
+  if(st) seg.start=setTimeOnIso(seg.start||s.start, st);
+  if(en) seg.ende=setTimeOnIso(seg.ende||s.start, en);
+  s.geaendert=nowIso();
+  await idbPut('arbeitszeit', s);
+  syncSoon(); closeModal(); renderZeiterfassung();
+  toast('Gespeichert ✓');
+}
+async function delSegment(sId, segId){
+  if(!confirm('Tätigkeit löschen?')) return;
+  const s=await idbGet('arbeitszeit', sId); if(!s) return;
+  s.segmente=(s.segmente||[]).filter(x=>x.id!==segId); s.geaendert=nowIso();
+  await idbPut('arbeitszeit', s);
+  syncSoon(); closeModal(); renderZeiterfassung();
+  toast('Gelöscht');
+}
+function setTimeOnIso(baseIso, hhmm){
+  const d=new Date(baseIso); const [h,m]=hhmm.split(':');
+  d.setHours(parseInt(h),parseInt(m),0,0); return d.toISOString();
+}
+async function modalSitzungDetail(sId){
+  const s=await idbGet('arbeitszeit', sId); if(!s) return;
+  showModal(`<div class="m-title"><i class="ti ti-clock"></i> ${s.datum} · ${fmtUhr(s.start)}–${s.ende?fmtUhr(s.ende):'läuft'}</div>
+    <div style="font-size:13px;margin-bottom:8px">Gesamt: <strong>${fmtDauer(sitzungMinuten(s))}</strong></div>
+    ${renderZeitleiste(s)||'<div style="font-size:12px;color:var(--ink-40)">Keine Tätigkeiten erfasst.</div>'}
+    <button class="btn btn-full" style="margin-top:10px" onclick="closeModal()">Schließen</button>`);
+}
+
+// Vergessene Sitzung: Endzeit nachtragen und beenden
+async function modalSitzungNachtragen(sId){
+  const s=await idbGet('arbeitszeit', sId); if(!s) return;
+  showModal(`
+    <div class="m-title"><i class="ti ti-clock-pause"></i> Sitzung nachtragen</div>
+    <p style="font-size:13px;color:var(--ink-60);margin-bottom:10px">Sitzung vom ${s.datum}, begonnen um ${fmtUhr(s.start)}. Bitte tatsächliches Arbeitsende eintragen.</p>
+    <div class="f-row">
+      <div class="f"><label>Enddatum</label><input type="date" id="snDatum" value="${s.datum}"></div>
+      <div class="f"><label>Endzeit</label><input type="time" id="snZeit" value="17:00"></div>
+    </div>
+    <div class="f-row" style="margin-top:12px">
+      <button class="btn btn-copper btn-full" onclick="saveSitzungNachtrag('${sId}')"><i class="ti ti-check"></i> Beenden</button>
+      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+    </div>`);
+}
+async function saveSitzungNachtrag(sId){
+  const s=await idbGet('arbeitszeit', sId); if(!s) return;
+  const d=document.getElementById('snDatum')?.value;
+  const t=document.getElementById('snZeit')?.value;
+  if(!d||!t){ toast('Bitte Datum und Zeit angeben'); return; }
+  const endeIso=new Date(d+'T'+t+':00').toISOString();
+  if(new Date(endeIso)<=new Date(s.start)){ toast('Ende muss nach dem Beginn liegen'); return; }
+  // offene Segmente/Pausen schließen
+  const seg=offenesSegment(s); if(seg) seg.ende=endeIso;
+  const p=(s.pausen||[]).find(x=>!x.bis); if(p) p.bis=endeIso;
+  s.ende=endeIso; s.status='beendet'; s.geaendert=nowIso();
+  await idbPut('arbeitszeit', s);
+  syncSoon(); closeModal(); renderZeiterfassung();
+  toast('Sitzung nachgetragen ✓');
+}
+
+/* ── Tätigkeiten verwalten (Admin) ── */
+async function modalTaetigkeitenVerwalten(){
+  const kats=await getTaetigkeitKat(false);
+  let rows=kats.map(k=>`
+    <div class="card" style="margin-bottom:6px;padding:8px 10px">
+      <div style="display:flex;align-items:center;gap:8px">
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:600;font-size:13px;${k.sichtbar===false?'opacity:0.5':''}">${k.name}${k.sichtbar===false?' (ausgeblendet)':''}</div>
+          <div style="font-size:11px;color:var(--ink-40)">${umlageLabel(k.umlage)}${k.mangel?' · mangelbezogen':''}</div>
+        </div>
+        <button class="btn btn-sm" onclick="modalTaetigkeitKatEdit('${k.id}')"><i class="ti ti-pencil"></i></button>
+        <button class="btn btn-sm" onclick="taetigkeitKatToggle('${k.id}')"><i class="ti ti-eye${k.sichtbar===false?'-off':''}"></i></button>
+      </div>
+    </div>`).join('');
+  showModal(`
+    <div class="m-title"><i class="ti ti-clock-cog"></i> Tätigkeiten</div>
+    <div style="max-height:55vh;overflow-y:auto">${rows}</div>
+    <button class="btn btn-copper btn-full" style="margin-top:10px" onclick="modalTaetigkeitKatEdit(null)"><i class="ti ti-plus"></i> Neue Tätigkeit</button>
+    <button class="btn btn-full" style="margin-top:6px" onclick="closeModal()">Schließen</button>`);
+}
+
+async function modalTaetigkeitKatEdit(katId){
+  const kats=await getTaetigkeitKat(false);
+  const k = katId ? kats.find(x=>x.id===katId)||{} : {};
+  const isEdit=!!katId;
+  showModal(`
+    <div class="m-title"><i class="ti ti-clock-cog"></i> ${isEdit?'Tätigkeit bearbeiten':'Neue Tätigkeit'}</div>
+    <div class="f"><label>Name *</label><input type="text" id="tkName" value="${(k.name||'').replace(/"/g,'&quot;')}" placeholder="z. B. Laubentfernung"></div>
+    <div class="f"><label>Umlagefähigkeit</label>
+      <select id="tkUmlage">
+        <option value="ja" ${k.umlage==='ja'?'selected':''}>umlagefähig</option>
+        <option value="nein" ${k.umlage==='nein'?'selected':''}>nicht umlagefähig</option>
+        <option value="neutral" ${(!k.umlage||k.umlage==='neutral')?'selected':''}>neutral</option>
+      </select></div>
+    <label style="display:flex;align-items:center;gap:8px;font-size:13px;margin:6px 0;cursor:pointer">
+      <input type="checkbox" id="tkMangel" ${k.mangel?'checked':''} style="width:auto"> Mangelbezogen (Mangel-Auswahl beim Start anzeigen)
+    </label>
+    <div class="f-row" style="margin-top:12px">
+      <button class="btn btn-copper btn-full" onclick="saveTaetigkeitKat('${katId||''}')"><i class="ti ti-check"></i> Speichern</button>
+      <button class="btn btn-full" onclick="modalTaetigkeitenVerwalten()">Zurück</button>
+    </div>
+    ${isEdit && !['reinigung','reparatur','wegezeit','sonstiges'].includes(katId)?`<button class="btn btn-danger btn-full" style="margin-top:8px" onclick="delTaetigkeitKat('${katId}')"><i class="ti ti-trash"></i> Löschen</button>`:''}`);
+}
+
+async function saveTaetigkeitKat(katId){
+  const name=document.getElementById('tkName')?.value?.trim();
+  if(!name){ toast('Bitte Namen eingeben'); return; }
+  const kats=await getTaetigkeitKat(false);
+  const alt = katId ? kats.find(x=>x.id===katId) : null;
+  const k={
+    id: katId || ('tk_'+Math.random().toString(36).slice(2,8)),
+    name,
+    umlage: document.getElementById('tkUmlage')?.value||'neutral',
+    mangel: document.getElementById('tkMangel')?.checked||false,
+    sichtbar: alt?alt.sichtbar!==false:true,
+    sort: alt?.sort ?? (kats.length+1),
+    erstellt: alt?.erstellt||nowIso(), geaendert:nowIso(),
+  };
+  await idbPut('taetigkeit_kat', k);
+  syncSoon();
+  await modalTaetigkeitenVerwalten();
+  toast('Gespeichert ✓');
+}
+async function taetigkeitKatToggle(katId){
+  const k=await idbGet('taetigkeit_kat', katId); if(!k) return;
+  k.sichtbar = k.sichtbar===false; k.geaendert=nowIso();
+  await idbPut('taetigkeit_kat', k);
+  syncSoon();
+  await modalTaetigkeitenVerwalten();
+}
+async function delTaetigkeitKat(katId){
+  if(!confirm('Tätigkeit löschen? Bereits erfasste Zeiten behalten ihren Namen.')) return;
+  await idbDelete('taetigkeit_kat', katId);
+  syncSoon();
+  await modalTaetigkeitenVerwalten();
+  toast('Gelöscht');
+}
+
+  const objekte=await getMyObjekte();
+  const kats=await getTaetigkeitKat(true);
+  showModal(`
+    <div class="m-title"><i class="ti ti-qrcode"></i> Tätigkeits-QR</div>
+    <div class="f"><label>Tätigkeit *</label>
+      <select id="tqKat">${kats.map(k=>`<option value="${k.id}">${k.name}</option>`).join('')}</select></div>
+    <div class="f"><label>Objekt *</label>
+      <select id="tqObj">${objekte.map(o=>`<option value="${o.id}">${o.name}</option>`).join('')}</select></div>
+    <div style="font-size:11px;color:var(--ink-40);margin-bottom:10px">
+      Der QR kodiert Tätigkeit und Objekt. Beim Scannen startet die Tätigkeit am gewählten Objekt.
+    </div>
+    <button class="btn btn-copper btn-full" style="margin-bottom:8px" onclick="taetigkeitQrErstellen('speichern')"><i class="ti ti-download"></i> Speichern (Download)</button>
+    <button class="btn btn-full" style="margin-bottom:8px" onclick="taetigkeitQrErstellen('teilen')"><i class="ti ti-share"></i> Teilen / an Drucker</button>
+    <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>`);
+}
+
+async function taetigkeitQrErstellen(modus){
+  const katId=document.getElementById('tqKat')?.value;
+  const objId=document.getElementById('tqObj')?.value;
+  if(!katId||!objId){ toast('Bitte Tätigkeit und Objekt wählen'); return; }
+  const kats=await getTaetigkeitKat();
+  const kat=kats.find(k=>k.id===katId);
+  const obj=getObj(objId);
+  const qrText='TAETIGKEIT:'+katId+':'+objId;
+  const dateiname='TAET_'+katId+'_'+objId;
+  closeModal();
+  const fn = (modus==='teilen') ? etikettPdfTeilen : etikettPdfSpeichern;
+  await fn(qrText, dateiname, kat?.name||katId, obj?.name||objId, umlageLabel(kat?.umlage));
+}
+
+/* ══════════════════════════════════════════════════════════
+   STEMPELUHR – Arbeitszeiterfassung für Hausmeister
+   Eine Sitzung pro Stempel-Zyklus mit Tätigkeits-Segmenten.
+   Lücken zwischen Tätigkeiten werden als Wegezeit/Sonstiges erfasst.
+══════════════════════════════════════════════════════════ */
+
+// offene (laufende) Sitzung des aktuellen Users finden
+async function getOffeneSitzung(){
+  const alle=await idbGetAll('arbeitszeit','userId',CU?.id).catch(()=>[]);
+  return (alle||[]).find(s=>s.status==='offen')||null;
+}
+// laufendes (offenes) Segment in einer Sitzung
+function offenesSegment(s){ return (s?.segmente||[]).find(seg=>!seg.ende)||null; }
+// ist gerade Pause aktiv?
+function pauseAktiv(s){ const p=(s?.pausen||[]).find(x=>!x.bis); return !!p; }
+
+// Netto-Dauer einer Sitzung in Minuten (ohne Pausen)
+function sitzungMinuten(s, bis){
+  if(!s?.start) return 0;
+  const ende = s.ende || bis || nowIso();
+  let ms = new Date(ende)-new Date(s.start);
+  for(const p of (s.pausen||[])){
+    const pb = p.bis || bis || nowIso();
+    if(p.von) ms -= (new Date(pb)-new Date(p.von));
+  }
+  return Math.max(0, Math.round(ms/60000));
+}
+function fmtDauer(min){
+  const h=Math.floor(min/60), m=min%60;
+  return h>0 ? `${h}:${String(m).padStart(2,'0')} Std.` : `${m} Min.`;
+}
+function nowIso(){ return new Date().toISOString(); }
+
+// ── Einstempeln ──
+async function einstempeln(){
+  const offen=await getOffeneSitzung();
+  if(offen){ toast('Du bist bereits eingestempelt'); renderZeiterfassung(); return; }
+  const s={
+    id:uid(), userId:CU.id, userName:CU.name,
+    datum: today(),
+    start: nowIso(), ende:null,
+    pausen:[], segmente:[],
+    status:'offen',
+    erstellt:nowIso(), geaendert:nowIso(),
+  };
+  await idbPut('arbeitszeit', s);
+  syncSoon();
+  toast('Eingestempelt ✓');
+  renderZeiterfassung();
+}
+
+// ── Pause an/aus ──
+async function pauseUmschalten(){
+  const s=await getOffeneSitzung();
+  if(!s){ toast('Nicht eingestempelt'); return; }
+  const p=(s.pausen||[]).find(x=>!x.bis);
+  if(p){
+    p.bis=nowIso();                 // Pause beenden
+    toast('Pause beendet');
+  } else {
+    // laufende Tätigkeit beenden (Pause ist keine Tätigkeit)
+    const seg=offenesSegment(s);
+    if(seg){ seg.ende=nowIso(); }
+    s.pausen=s.pausen||[];
+    s.pausen.push({von:nowIso(), bis:null});
+    toast('Pause gestartet');
+  }
+  s.geaendert=nowIso();
+  await idbPut('arbeitszeit', s);
+  syncSoon();
+  renderZeiterfassung();
+}
+
+// ── Ausstempeln ──
+async function ausstempeln(){
+  const s=await getOffeneSitzung();
+  if(!s){ toast('Nicht eingestempelt'); return; }
+  // offene Tätigkeit und offene Pause schließen
+  const seg=offenesSegment(s); if(seg) seg.ende=nowIso();
+  const p=(s.pausen||[]).find(x=>!x.bis); if(p) p.bis=nowIso();
+  s.ende=nowIso(); s.status='beendet'; s.geaendert=nowIso();
+  await idbPut('arbeitszeit', s);
+  syncSoon();
+  toast('Ausgestempelt ✓');
+  renderZeiterfassung();
+}
+
+// ── Tätigkeit starten ──
+// Schließt automatisch ein laufendes Segment und fügt davor ggf. eine Lücke (Wegezeit/Sonstiges) ein.
+async function taetigkeitStarten(katId, objId, notiz, mangelId){
+  const s=await getOffeneSitzung();
+  if(!s){ toast('Bitte zuerst einstempeln'); return; }
+  if(pauseAktiv(s)){ toast('Erst Pause beenden'); return; }
+  const kats=await getTaetigkeitKat();
+  const kat=kats.find(k=>k.id===katId);
+  // laufendes Segment beenden
+  const vorher=offenesSegment(s);
+  if(vorher) vorher.ende=nowIso();
+  // Lücke seit letztem Segmentende bzw. seit Sitzungsstart als automatische Wegezeit/Sonstiges
+  const segs=s.segmente||[];
+  const letzterEnd = segs.length ? segs[segs.length-1].ende : s.start;
+  // (Die Lücke wird beim Rendern/Auswerten rechnerisch als Wegezeit dargestellt – wir speichern sie nicht als eigenes Segment,
+  //  sondern markieren Tätigkeits-Segmente; Lücken ergeben sich aus den Zwischenräumen.)
+  segs.push({
+    id:uid(), katId, objId:objId||null,
+    katName: kat?.name||katId, umlage: kat?.umlage||'neutral',
+    start: nowIso(), ende:null,
+    notiz: notiz||'', fotos:[], mangelId: mangelId||null,
+  });
+  s.segmente=segs; s.geaendert=nowIso();
+  await idbPut('arbeitszeit', s);
+  syncSoon();
+  toast((kat?.name||'Tätigkeit')+' gestartet');
+  renderZeiterfassung();
+}
+
+// ── Tätigkeit beenden ──
+async function taetigkeitBeenden(){
+  const s=await getOffeneSitzung();
+  if(!s) return;
+  const seg=offenesSegment(s);
+  if(!seg){ toast('Keine laufende Tätigkeit'); return; }
+  seg.ende=nowIso(); s.geaendert=nowIso();
+  await idbPut('arbeitszeit', s);
+  syncSoon();
+  toast('Tätigkeit beendet');
+  renderZeiterfassung();
+}
+
+// QR-Start: vom Scanner aufgerufen
+async function starteTaetigkeitVonQR(katId, objId){
+  let s=await getOffeneSitzung();
+  if(!s){
+    // nicht eingestempelt → anbieten
+    const kats=await getTaetigkeitKat(); const kat=kats.find(k=>k.id===katId); const obj=getObj(objId);
+    showModal(`<div class="m-title"><i class="ti ti-clock"></i> Nicht eingestempelt</div>
+      <p style="font-size:13px;color:var(--ink-60);margin-bottom:12px">Du bist nicht eingestempelt. Jetzt einstempeln und „${kat?.name||katId}" am Objekt ${obj?.name||objId} starten?</p>
+      <button class="btn btn-copper btn-full" style="margin-bottom:8px" onclick="closeModal();einstempelnUndStarten('${katId}','${objId}')"><i class="ti ti-player-play"></i> Einstempeln & starten</button>
+      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>`);
+    return;
+  }
+  await taetigkeitStarten(katId, objId);
+  nav('zeit');
+}
+async function einstempelnUndStarten(katId, objId){
+  await einstempeln();
+  await taetigkeitStarten(katId, objId);
+  nav('zeit');
+}
+
+function syncSoon(){ clearTimeout(window._syncTimer); window._syncTimer=setTimeout(()=>syncToOneDrive(),3000); }
+
 async function naechsteInventarnummer(standort){
   const kuerzel=STANDORT_KUERZEL[standort]||standort.slice(0,3).toUpperCase();
   const artikel=await getLagerArtikel();
@@ -2922,6 +3510,16 @@ async function bcVerarbeite(wert){
     toast('Barcode übernommen ✓');
     return;
   }
+  if(_bcContext==='inventurort'){
+    // Lagerort-QR für Inventur: passenden Ort finden, dessen Artikel zählen
+    const qrId=wert.replace(/^LAGERORT:/,'').trim();
+    const orte=await getLagerorte();
+    const ort=orte.find(o=>o.qrId===qrId || o.qrId===wert);
+    closeModal();
+    if(ort){ await inventurLosOrt(ort.id); }
+    else { toast('Kein Lagerort zu diesem QR gefunden'); await startInventur(); }
+    return;
+  }
   if(_bcContext==='lagerort'){
     // QR-Inhalt "LAGERORT:<qrId>" → passenden Lagerort finden
     const qrId=wert.replace(/^LAGERORT:/,'').trim();
@@ -2938,6 +3536,28 @@ async function bcVerarbeite(wert){
     } else {
       await renderLagerArtikelForm(state, window._bcFormEditId||null);
       toast('Kein Lagerort zu diesem QR gefunden');
+    }
+    return;
+  }
+  // Tätigkeits-QR erkannt: "TAETIGKEIT:<kat>:<obj>"
+  if(wert.indexOf('TAETIGKEIT:')===0){
+    closeModal();
+    const teile=wert.split(':');
+    const katId=teile[1], objId=teile[2];
+    const kats=await getTaetigkeitKat();
+    const kat=kats.find(k=>k.id===katId);
+    const obj=getObj(objId);
+    if(typeof starteTaetigkeitVonQR==='function'){
+      await starteTaetigkeitVonQR(katId, objId);
+    } else {
+      // Stempeluhr noch nicht aktiv – Inhalt zur Kontrolle anzeigen
+      showModal(`<div class="m-title"><i class="ti ti-clock"></i> Tätigkeits-QR erkannt</div>
+        <p style="font-size:13px;color:var(--ink-60);margin-bottom:6px">Dieser QR ist gültig:</p>
+        <div style="background:var(--ink-05);border-radius:8px;padding:10px 12px;font-size:13px;margin-bottom:12px">
+          <strong>${kat?kat.name:katId}</strong><br>${obj?obj.name:objId}
+        </div>
+        <p style="font-size:12px;color:var(--ink-40);margin-bottom:12px">Die Stempeluhr wird im nächsten Schritt aktiviert. Danach startet dieser Scan die Tätigkeit automatisch.</p>
+        <button class="btn btn-full" onclick="closeModal()">Schließen</button>`);
     }
     return;
   }
@@ -2975,7 +3595,7 @@ async function neuerArtikelMitBarcode(wert){
    Standort durchgehen, Ist-Bestand bestätigen oder korrigieren.
    Änderungen werden sofort gespeichert; am Ende eine Zusammenfassung.
 */
-let _invStandort=null, _invIndex=0, _invListe=[], _invGeprueft=0, _invKorrigiert=0;
+let _invStandort=null, _invIndex=0, _invListe=[], _invGeprueft=0, _invKorrigiert=0, _invOrtLabel=null;
 
 async function startInventur(){
   const meineObjekte=await getMyObjekte();
@@ -2983,19 +3603,59 @@ async function startInventur(){
   const standorte=LAGER_STANDORTE.filter(s=>s.alleSichtbar||meineGruppen.has(s.id));
   showModal(`
     <div class="m-title"><i class="ti ti-clipboard-list"></i> Inventur starten</div>
-    <p style="font-size:13px;color:var(--ink-60);margin-bottom:10px">Wählen Sie den Standort, dessen Bestand Sie aufnehmen möchten.</p>
-    <div class="f"><label>Standort</label>
+    <p style="font-size:13px;color:var(--ink-60);margin-bottom:10px">Ganzen Standort aufnehmen oder gezielt einen Lagerort (Regal/Kiste) scannen.</p>
+    <div class="f"><label>Standort (komplett)</label>
       <select id="invStandortSel">
         ${standorte.map(s=>`<option value="${s.id}">${s.label}</option>`).join('')}
       </select></div>
-    <div class="f-row" style="margin-top:12px">
-      <button class="btn btn-copper btn-full" onclick="inventurLos()"><i class="ti ti-player-play"></i> Inventur beginnen</button>
-      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
-    </div>`);
+    <button class="btn btn-copper btn-full" onclick="inventurLos()"><i class="ti ti-player-play"></i> Standort-Inventur beginnen</button>
+    <div style="text-align:center;font-size:12px;color:var(--ink-40);margin:12px 0 8px">— oder —</div>
+    <button class="btn btn-full" onclick="inventurLagerortScannen()"><i class="ti ti-qrcode"></i> Lagerort-QR scannen</button>
+    <button class="btn btn-full" style="margin-top:6px" onclick="inventurLagerortWaehlen()"><i class="ti ti-box"></i> Lagerort aus Liste wählen</button>
+    <button class="btn btn-full" style="margin-top:12px" onclick="closeModal()">Abbrechen</button>`);
+}
+
+// Lagerort-Inventur per QR-Scan
+async function inventurLagerortScannen(){
+  _bcContext='inventurort';
+  await scanLagerBarcode('inventurort');
+}
+
+// Lagerort-Inventur per Auswahl aus Liste
+async function inventurLagerortWaehlen(){
+  const orte=await getLagerorte();
+  if(!orte.length){ toast('Noch keine Lagerorte angelegt'); return; }
+  showModal(`
+    <div class="m-title"><i class="ti ti-box"></i> Lagerort wählen</div>
+    <div style="max-height:55vh;overflow-y:auto">
+      ${orte.map(o=>`<div class="card" style="margin-bottom:6px;cursor:pointer" onclick="inventurLosOrt('${o.id}')">
+        <div style="font-weight:600;font-size:13px">${o.bezeichnung}</div>
+        <div style="font-size:11px;color:var(--ink-40)">${getLagerStandort(o.standort).label}${o.pfad?' · '+o.pfad:''}</div>
+      </div>`).join('')}
+    </div>
+    <button class="btn btn-full" style="margin-top:8px" onclick="startInventur()">Zurück</button>`);
+}
+
+// Inventur für einen bestimmten Lagerort starten
+async function inventurLosOrt(ortId){
+  const ort=await idbGet('lager', ortId);
+  if(!ort){ toast('Lagerort nicht gefunden'); return; }
+  const alle=await getLagerArtikel();
+  _invListe=alle.filter(a=>a.lagerorte?.includes(ortId))
+    .sort((a,b)=>{
+      const ka=getLagerKat(a.kategorie).label, kb=getLagerKat(b.kategorie).label;
+      return ka.localeCompare(kb)||(a.bezeichnung||'').localeCompare(b.bezeichnung||'');
+    });
+  _invStandort=ort.standort;
+  _invOrtLabel=ort.bezeichnung;
+  _invIndex=0; _invGeprueft=0; _invKorrigiert=0;
+  if(!_invListe.length){ toast(`Keine Artikel am Lagerort „${ort.bezeichnung}" zugeordnet`); return; }
+  renderInventurSchritt();
 }
 
 async function inventurLos(){
   _invStandort=document.getElementById('invStandortSel')?.value;
+  _invOrtLabel=null;
   const alle=await getLagerArtikel('standort',_invStandort);
   _invListe=alle.sort((a,b)=>{
     const ka=getLagerKat(a.kategorie).label, kb=getLagerKat(b.kategorie).label;
@@ -3014,7 +3674,7 @@ function renderInventurSchritt(){
   const bestandAktuell = a.mengenstufe ? mengenstufeLabel(a.mengenstufe) : (a.bestand??0);
   showModal(`
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
-      <div style="font-size:12px;color:var(--ink-40)">Inventur · ${getLagerStandort(_invStandort).label}</div>
+      <div style="font-size:12px;color:var(--ink-40)">Inventur · ${_invOrtLabel?_invOrtLabel:getLagerStandort(_invStandort).label}</div>
       <div style="font-size:12px;color:var(--ink-40)">${_invIndex+1} / ${_invListe.length}</div>
     </div>
     <div style="height:5px;background:var(--ink-10);border-radius:3px;margin-bottom:12px;overflow:hidden">
@@ -3096,7 +3756,7 @@ function renderInventurFertig(vorzeitig){
   showModal(`
     <div class="m-title"><i class="ti ti-circle-check" style="color:#2E7D52"></i> Inventur ${vorzeitig?'beendet':'abgeschlossen'}</div>
     <div style="text-align:center;padding:10px 0">
-      <div style="font-size:13px;color:var(--ink-60);margin-bottom:10px">${getLagerStandort(_invStandort).label}</div>
+      <div style="font-size:13px;color:var(--ink-60);margin-bottom:10px">${_invOrtLabel?_invOrtLabel+' · ':''}${getLagerStandort(_invStandort).label}</div>
       <div style="display:flex;gap:10px;justify-content:center">
         <div style="background:var(--ink-05);border-radius:10px;padding:12px 18px">
           <div style="font-size:24px;font-weight:700">${_invGeprueft}</div>
@@ -7529,7 +8189,7 @@ function delMangelFoto(i){
   }
 }
 
-function openPhotoForMangel(){pPhotoRoom=null;window._zaehlerIdx=null;window._mangelPhotos=window._mangelPhotos||[];openCam();}
+function openPhotoForMangel(){pPhotoRoom=null;window._zaehlerIdx=null;window._zsCamActive=false;window._lagerCamActive=false;window._mangelEditCamActive=false;window._mangelPhotos=window._mangelPhotos||[];openCam();}
 
 async function cancelMangel(){
   // Verworfene Mangel-Erfassung: temporäre Fotos aufräumen
@@ -7810,7 +8470,7 @@ function renderProt(step){
     `<div class="steps">${stepsH}</div>`+getProtStep(step)+nav2;
 
   if(step===1) renderProtRaeume();
-  if(step===5) setTimeout(initSigs,200);
+  if(step===5){ pSigPads={}; setTimeout(initSigs,200); }
 }
 
 function getProtStep(step){
@@ -7917,14 +8577,17 @@ function getProtStep(step){
       Mit Unterzeichnung bestätigen beide Parteien die Vollständigkeit des Protokolls und die Schlüsselübergabe.
     </p>
     <div class="f"><label style="margin-bottom:6px">Vermieter / Verwalter: ${d.vermName}</label>
+      ${d.sigVermieter?`<div style="font-size:12px;color:var(--green);margin-bottom:4px"><i class="ti ti-circle-check"></i> Bereits unterschrieben – nur neu zeichnen, wenn Änderung gewünscht</div>`:''}
       <canvas class="sig-pad" id="sigV"></canvas>
       <div class="sig-row"><button class="btn btn-sm btn-danger" onclick="clearSig('sigV')"><i class="ti ti-trash"></i> Löschen</button></div>
     </div>
     <div class="f" style="margin-top:12px"><label style="margin-bottom:6px">Mieter: ${d.mieterName||'–'}</label>
+      ${d.sigMieter?`<div style="font-size:12px;color:var(--green);margin-bottom:4px"><i class="ti ti-circle-check"></i> Bereits unterschrieben – nur neu zeichnen, wenn Änderung gewünscht</div>`:''}
       <canvas class="sig-pad" id="sigM"></canvas>
       <div class="sig-row"><button class="btn btn-sm btn-danger" onclick="clearSig('sigM')"><i class="ti ti-trash"></i> Löschen</button></div>
     </div>
     ${d.zeugeName?`<div class="f" style="margin-top:12px"><label style="margin-bottom:6px">Zeuge: ${d.zeugeName}</label>
+      ${d.sigZeuge?`<div style="font-size:12px;color:var(--green);margin-bottom:4px"><i class="ti ti-circle-check"></i> Bereits unterschrieben – nur neu zeichnen, wenn Änderung gewünscht</div>`:''}
       <canvas class="sig-pad" id="sigZ"></canvas>
       <div class="sig-row"><button class="btn btn-sm btn-danger" onclick="clearSig('sigZ')"><i class="ti ti-trash"></i> Löschen</button></div>
     </div>`:''}
@@ -8046,8 +8709,8 @@ function setRoomCondNote(room,cond,val){
   if(!PD.raeume[room].condNotes) PD.raeume[room].condNotes={};
   PD.raeume[room].condNotes[cond]=val;
 }
-function openRoomCam(room){pPhotoRoom=room;window._zaehlerIdx=null;window._mangelPhotos=null;openCam();}
-function openZaehlerCam(idx){window._zaehlerIdx=idx;pPhotoRoom=null;window._mangelPhotos=null;openCam();}
+function openRoomCam(room){pPhotoRoom=room;window._zaehlerIdx=null;window._mangelPhotos=null;window._zsCamActive=false;window._lagerCamActive=false;window._mangelEditCamActive=false;openCam();}
+function openZaehlerCam(idx){window._zaehlerIdx=idx;pPhotoRoom=null;window._mangelPhotos=null;window._zsCamActive=false;window._lagerCamActive=false;window._mangelEditCamActive=false;openCam();}
 function delZaehlerFoto(i){
   if (!PD || !PD.zaehler || !PD.zaehler[i]) return;
   const fid = PD.zaehler[i].fotoId;
@@ -8678,6 +9341,12 @@ async function renderSettings(){
     </div>
 
     <div class="card">
+      <div class="card-hdr"><i class="ti ti-clock-cog"></i> Tätigkeiten (Zeiterfassung)</div>
+      <div style="font-size:12px;color:var(--ink-40);margin-bottom:8px">Tätigkeiten für die Zeiterfassung verwalten: ein-/ausblenden, umbenennen, Umlagefähigkeit festlegen, neue anlegen.</div>
+      <button class="btn btn-full" onclick="modalTaetigkeitenVerwalten()"><i class="ti ti-settings"></i> Tätigkeiten verwalten</button>
+    </div>
+
+    <div class="card">
       <div class="card-hdr"><i class="ti ti-brand-onedrive"></i> OneDrive-Sync</div>
       <div id="onedriveSyncCard"></div>
     </div>
@@ -9034,7 +9703,7 @@ async function syncToOneDrive() {
   setSyncStatus('pending');
   try {
     const backup = {};
-    for (const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung']) {
+    for (const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit']) {
       backup[s] = await idbGetAll(s);
     }
     backup.updatedAt = now();
@@ -9073,13 +9742,16 @@ async function syncFromOneDrive() {
     const ls = await idbGet('settings','lastSync').catch(()=>null);
     const localTime  = ls?.value||'';
     if (remoteTime > localTime) {
-      // Merge: Protokolle/Aufgaben/Mängel niemals überschreiben wenn lokal neuer
-      const mergeStores = ['protokolle','aufgaben','maengel','reparaturen','dokumente','nka_archiv','einkaufsliste','wartung'];
+      // Merge: ID-basiert, nur übernehmen wenn remote neuer oder lokal fehlt
+      const mergeStores = ['protokolle','aufgaben','maengel','reparaturen','dokumente','nka_archiv','einkaufsliste','wartung','termine','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit'];
       for (const s of mergeStores) {
         if (!backup[s]) continue;
         for (const item of backup[s]) {
+          if(!item || !item.id) continue;
           const local = await idbGet(s, item.id).catch(()=>null);
-          if (!local || (item.updatedAt||item.erstellt||'') >= (local.updatedAt||local.erstellt||'')) {
+          const remoteStamp = item.geaendert||item.updatedAt||item.erstellt||'';
+          const localStamp  = local ? (local.geaendert||local.updatedAt||local.erstellt||'') : '';
+          if (!local || remoteStamp >= localStamp) {
             await idbPut(s, item);
           }
         }
@@ -9200,6 +9872,7 @@ window.nav=async function(id,title,sub,push=true){
   if(id==='protokoll-archiv')  await renderProtokollArchiv();
   if(id==='kalender')          await renderKalender();
   if(id==='lager')             await renderLager();
+  if(id==='zeit')              await renderZeiterfassung();
 };
 
 
@@ -9337,6 +10010,31 @@ async function showMangelDetail(id, store='maengel') {
       materialHTML+=`</div>`;
     }
   }catch(e){}
+
+  // Arbeitszeit, die auf diesen Mangel gebucht wurde
+  let zeitHTML='';
+  try{
+    const sitzungen=await idbGetAll('arbeitszeit');
+    const eintraege=[];
+    let summeMin=0;
+    for(const s of (sitzungen||[])){
+      for(const seg of (s.segmente||[])){
+        if(seg.mangelId===id && seg.ende){
+          const min=Math.round((new Date(seg.ende)-new Date(seg.start))/60000);
+          summeMin+=min;
+          eintraege.push({min, datum:s.datum, von:s.userName||'', kat:seg.katName});
+        }
+      }
+    }
+    if(eintraege.length){
+      zeitHTML=`<div class="card-hdr" style="margin-bottom:8px"><i class="ti ti-clock"></i> Arbeitszeit (${fmtDauer(summeMin)})</div><div style="margin-bottom:12px">`;
+      eintraege.forEach(e=>{ zeitHTML+=`<div style="font-size:13px;padding:5px 0;border-bottom:1px solid var(--ink-10)">
+        <i class="ti ti-clock-hour-4" style="font-size:12px;color:var(--copper)"></i> ${fmtDauer(e.min)} · ${e.kat}
+        <span style="color:var(--ink-40);font-size:11px"> · ${e.datum}${e.von?' · '+e.von:''}</span></div>`; });
+      zeitHTML+=`</div>`;
+    }
+  }catch(e){}
+  materialHTML += zeitHTML;
 
   showModal(`
     <div class="m-title"><i class="ti ti-${m.type==='reparatur'||m.istReparatur?'tools':'alert-triangle'}" style="color:${done?'var(--green)':'var(--red)'}"></i>
@@ -9741,6 +10439,14 @@ document.getElementById('galleryIn').addEventListener('change', async function()
 
 // Verarbeitet ein fertiges (komprimiertes) Foto je nach aktivem Kontext.
 async function processPhoto(data) {
+    if (window._zsCamActive) {
+      window._zsCamActive=false;
+      window._zsFoto=data;
+      zsFotoVorschau(data);
+      if(document.getElementById('camOverlay')?.style.display==='flex') closeCam();
+      toast('Foto aufgenommen ✓');
+      return;
+    }
     if (window._mangelEditCamActive) {
       window._mangelEditCamActive=false;
       window._emFotos=window._emFotos||[];
@@ -9818,7 +10524,9 @@ async function openCam(){
     // Fallback: native Galerie/Kamera über File-Input
     closeCam();
     toast('Kamera nicht verfügbar – bitte Foto auswählen');
-    if(window._lagerCamActive){ document.getElementById('laFotoIn').click(); }
+    if(window._zsCamActive){ document.getElementById('zsFotoIn').click(); }
+    else if(window._mangelEditCamActive){ document.getElementById('em_fotoIn').click(); }
+    else if(window._lagerCamActive){ document.getElementById('laFotoIn').click(); }
     else { document.getElementById('photoIn').click(); }
   }
 }
@@ -9918,6 +10626,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     return;
   }
   try { await ensureDefaultUsers(); } catch(err) { console.warn('ensureDefaultUsers:', err); }
+  try { await ensureTaetigkeitKat(); } catch(err) { console.warn('ensureTaetigkeitKat:', err); }
   try {
     // Aktive Session wiederherstellen (nach OS-Reload, z. B. nach Kamera-Nutzung)
     let sessionUid = null;
