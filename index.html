@@ -644,7 +644,7 @@ button.chip.chip-active{background:var(--ink);color:#fff;border-color:var(--ink)
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=12;
-const APP_VERSION = '2026-06-09-v30';
+const APP_VERSION = '2026-06-09-v31';
 let idb=null;
 
 function openIDB(){
@@ -2376,26 +2376,44 @@ async function renderZeiterfassung(){
     h+=renderZeitleiste(s);
   }
 
-  // ── Stundenkonto (für den eingeloggten Mitarbeiter; bei Admin als Eigenübersicht) ──
-  const konto=await berechneStundenkonto(CU);
-  const wColor = konto.wochenSaldo>=0 ? 'var(--green)' : 'var(--red)';
-  const gColor = konto.gesamtSaldo>=0 ? 'var(--green)' : 'var(--red)';
-  h+=`<div class="card" style="margin-top:16px;margin-bottom:6px">
-    <div class="card-hdr"><i class="ti ti-clock-hour-4"></i> Stundenkonto</div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:4px">
-      <div><div style="font-size:11px;color:var(--ink-40)">Diese Woche</div>
-        <div style="font-size:17px;font-weight:700">${fmtStd(konto.wocheStd)}</div>
-        <div style="font-size:11px;color:var(--ink-40)">von ${fmtStd(konto.wochenSoll)} · <span style="color:${wColor};font-weight:600">${fmtSaldo(konto.wochenSaldo)}</span></div>
+  // ── Stundenkonto (für den eingeloggten Mitarbeiter) ──
+  if(CU?.role==='admin'){
+    // Admins: reine Ist-Dokumentation, kein Soll, kein Saldo
+    const ak=await berechneIstStunden(CU.id);
+    h+=`<div class="card" style="margin-top:16px;margin-bottom:6px">
+      <div class="card-hdr"><i class="ti ti-clock-hour-4"></i> Erfasste Zeiten</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-top:4px;text-align:center">
+        <div><div style="font-size:11px;color:var(--ink-40)">Heute</div>
+          <div style="font-size:17px;font-weight:700">${fmtStd(ak.heuteStd)}</div></div>
+        <div><div style="font-size:11px;color:var(--ink-40)">Diese Woche</div>
+          <div style="font-size:17px;font-weight:700">${fmtStd(ak.wocheStd)}</div></div>
+        <div><div style="font-size:11px;color:var(--ink-40)">Dieser Monat</div>
+          <div style="font-size:17px;font-weight:700">${fmtStd(ak.monatStd)}</div></div>
       </div>
-      <div><div style="font-size:11px;color:var(--ink-40)">Dieser Monat</div>
-        <div style="font-size:17px;font-weight:700">${fmtStd(konto.monatStd)}</div>
-        <div style="font-size:11px;color:var(--ink-40)">Saldo: <span style="color:${gColor};font-weight:600">${fmtSaldo(konto.gesamtSaldo)}</span></div>
+      <div style="font-size:11px;color:var(--ink-40);margin-top:8px">Dokumentation – ohne Sollstunden.</div>
+      ${ak.heuteStd > 10 ? `<div style="background:#FDECEA;border-radius:8px;padding:8px 10px;margin-top:8px;font-size:12px;color:var(--red)"><i class="ti ti-alert-circle"></i> Heute über 10 Std. erfasst – gesetzliche Höchstgrenze (§ 3 ArbZG) beachten.</div>`:''}
+    </div>`;
+  } else {
+    const konto=await berechneStundenkonto(CU);
+    const wColor = konto.wochenSaldo>=0 ? 'var(--green)' : 'var(--red)';
+    const gColor = konto.gesamtSaldo>=0 ? 'var(--green)' : 'var(--red)';
+    h+=`<div class="card" style="margin-top:16px;margin-bottom:6px">
+      <div class="card-hdr"><i class="ti ti-clock-hour-4"></i> Stundenkonto</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:4px">
+        <div><div style="font-size:11px;color:var(--ink-40)">Diese Woche</div>
+          <div style="font-size:17px;font-weight:700">${fmtStd(konto.wocheStd)}</div>
+          <div style="font-size:11px;color:var(--ink-40)">von ${fmtStd(konto.wochenSoll)} · <span style="color:${wColor};font-weight:600">${fmtSaldo(konto.wochenSaldo)}</span></div>
+        </div>
+        <div><div style="font-size:11px;color:var(--ink-40)">Dieser Monat</div>
+          <div style="font-size:17px;font-weight:700">${fmtStd(konto.monatStd)}</div>
+          <div style="font-size:11px;color:var(--ink-40)">Saldo: <span style="color:${gColor};font-weight:600">${fmtSaldo(konto.gesamtSaldo)}</span></div>
+        </div>
       </div>
-    </div>
-    ${konto.uebertrag?`<div style="font-size:11px;color:var(--ink-40);margin-top:8px">Übertrag aus Vormonat: <span style="color:${konto.uebertrag>=0?'var(--green)':'var(--red)'};font-weight:600">${fmtSaldo(konto.uebertrag)}</span></div>`:''}
-    ${konto.wochenSaldo < -2 ? `<div style="background:var(--amber-l);border-radius:8px;padding:8px 10px;margin-top:8px;font-size:12px;color:var(--amber)"><i class="ti ti-alert-triangle"></i> In dieser Woche fehlen noch ${fmtStd(Math.abs(konto.wochenSaldo))}.</div>`:''}
-    ${konto.heuteStd > 10 ? `<div style="background:#FDECEA;border-radius:8px;padding:8px 10px;margin-top:8px;font-size:12px;color:var(--red)"><i class="ti ti-alert-circle"></i> Heute über 10 Std. erfasst – gesetzliche Höchstgrenze (§ 3 ArbZG) beachten.</div>`:''}
-  </div>`;
+      ${konto.uebertrag?`<div style="font-size:11px;color:var(--ink-40);margin-top:8px">Übertrag aus Vormonat: <span style="color:${konto.uebertrag>=0?'var(--green)':'var(--red)'};font-weight:600">${fmtSaldo(konto.uebertrag)}</span></div>`:''}
+      ${konto.wochenSaldo < -2 ? `<div style="background:var(--amber-l);border-radius:8px;padding:8px 10px;margin-top:8px;font-size:12px;color:var(--amber)"><i class="ti ti-alert-triangle"></i> In dieser Woche fehlen noch ${fmtStd(Math.abs(konto.wochenSaldo))}.</div>`:''}
+      ${konto.heuteStd > 10 ? `<div style="background:#FDECEA;border-radius:8px;padding:8px 10px;margin-top:8px;font-size:12px;color:var(--red)"><i class="ti ti-alert-circle"></i> Heute über 10 Std. erfasst – gesetzliche Höchstgrenze (§ 3 ArbZG) beachten.</div>`:''}
+    </div>`;
+  }
 
   // Letzte abgeschlossene Sitzungen (nach Datum gruppiert, mit Datumsüberschrift)
   const alleBeendet=(await idbGetAll('arbeitszeit','userId',CU?.id).catch(()=>[]))
@@ -2450,19 +2468,27 @@ async function renderZeiterfassung(){
       h+=`<div class="card-hdr" style="margin:16px 0 6px"><i class="ti ti-user-shield"></i> Admins (Dokumentation)</div>
         <div style="font-size:11px;color:var(--ink-40);margin-bottom:6px">Erfasste Zeiten dienen der Dokumentation und Abrechnung – ohne Sollstunden.</div>`;
       for(const m of admins){
-        const ak=await berechneIstStunden(m.id);
-        const eigen = m.id===CU?.id ? ' · <span style="color:var(--copper-d)">Sie</span>' : '';
+        const eigen = m.id===CU?.id;
+        let zeile, rechts;
+        if(eigen){
+          const ak=await berechneIstStunden(m.id);
+          zeile=`Diese Woche: ${fmtStd(ak.wocheStd)} · Monat: ${fmtStd(ak.monatStd)}`;
+          rechts=`<div style="text-align:right;flex-shrink:0">
+              <div style="font-size:11px;color:var(--ink-40)">Monat</div>
+              <div style="font-size:14px;font-weight:700;color:var(--copper-d)">${fmtStd(ak.monatStd)}</div>
+            </div>`;
+        } else {
+          zeile=`Zur Ansicht antippen`;
+          rechts=`<div style="flex-shrink:0;color:var(--ink-40)"><i class="ti ti-chevron-right"></i></div>`;
+        }
         h+=`<div class="card" style="margin-bottom:6px;cursor:pointer" onclick="modalMitarbeiterZeit('${m.id}')">
           <div style="display:flex;align-items:center;gap:10px">
             <div class="det-av" style="width:34px;height:34px;font-size:12px;flex-shrink:0">${initials(m.name)}</div>
             <div style="flex:1;min-width:0">
-              <div style="font-size:14px;font-weight:600">${esc(m.name)}${eigen}</div>
-              <div style="font-size:11px;color:var(--ink-40)">Diese Woche: ${fmtStd(ak.wocheStd)} · Monat: ${fmtStd(ak.monatStd)}</div>
+              <div style="font-size:14px;font-weight:600">${esc(m.name)}${eigen?' · <span style="color:var(--copper-d)">Sie</span>':''}</div>
+              <div style="font-size:11px;color:var(--ink-40)">${zeile}</div>
             </div>
-            <div style="text-align:right;flex-shrink:0">
-              <div style="font-size:11px;color:var(--ink-40)">Monat</div>
-              <div style="font-size:14px;font-weight:700;color:var(--copper-d)">${fmtStd(ak.monatStd)}</div>
-            </div>
+            ${rechts}
           </div>
         </div>`;
       }
