@@ -647,7 +647,7 @@ button.chip.chip-active{background:var(--ink);color:#fff;border-color:var(--ink)
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=12;
-const APP_VERSION = '2026-06-09-v32';
+const APP_VERSION = '2026-06-09-v33';
 let idb=null;
 
 function openIDB(){
@@ -3116,57 +3116,64 @@ async function modalTaetigkeitQR(){
     <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>`);
 }
 
+// Welche Tätigkeiten dürfen als QR gedruckt werden (man weiß, wohin man sie klebt)
+const QR_OBJEKT_ERLAUBT  = ['reinigung','kontrolle'];        // objektbezogen
+const QR_ALLGEMEIN_ERLAUBT = ['muelltonne','muellrundgang']; // allgemein
+
 async function modalTaetigkeitQRListe(){
   const objekte=await getMyObjekte();
   const kats=await getTaetigkeitKat(true);
-  if(!kats.length){ toast('Keine Tätigkeiten angelegt'); return; }
   if(!objekte.length){ toast('Keine Objekte vorhanden'); return; }
-  window._qrModus='einzel'; // 'einzel' | 'objekt' | 'allgemein'
-  window._qrFilter={ standort:'all', objekt:'all' };
+  window._qrModus='einzel'; // 'einzel' | 'allgemein' | 'rundgang'
   window._qrObjekteCache=objekte;
   const gruppen=[...new Set(objekte.map(o=>o.gruppe))];
   const standortOpts=`<option value="all">Alle Standorte</option>`+gruppen.map(g=>`<option value="${g}">${GRUPPE_LABEL[g]||g}</option>`).join('');
   const lgs=await getMyLiegenschaften();
-  const lgOpts=`<option value="all">Alle Liegenschaften</option>`+lgs.map(l=>`<option value="${l.id}">${esc(l.name)}</option>`).join('');
+  const lgOpts=lgs.map(l=>`<option value="${l.id}">${esc(l.name)}</option>`).join('');
+
+  const objKats=kats.filter(k=>QR_OBJEKT_ERLAUBT.includes(k.id));
+  const allgKats=kats.filter(k=>QR_ALLGEMEIN_ERLAUBT.includes(k.id) && k.id!=='muellrundgang');
+
   showModal(`
-    <div class="m-title"><i class="ti ti-qrcode"></i> Tätigkeits-QR</div>
+    <div class="m-title"><i class="ti ti-qrcode"></i> Tätigkeits-QR drucken</div>
     <div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap">
-      <button class="filter-chip active" id="qrModusEinzel" onclick="qrModusWechseln('einzel')">Einzel-Etikett</button>
-      <button class="filter-chip" id="qrModusObjekt" onclick="qrModusWechseln('objekt')">Mehrere (Objekt)</button>
-      <button class="filter-chip" id="qrModusAllg" onclick="qrModusWechseln('allgemein')">Mehrere (Allgemein)</button>
+      <button class="filter-chip active" id="qrModusEinzel" onclick="qrModusWechseln('einzel')">Objekt</button>
+      <button class="filter-chip" id="qrModusAllg" onclick="qrModusWechseln('allgemein')">Allgemein</button>
+      <button class="filter-chip" id="qrModusRundgang" onclick="qrModusWechseln('rundgang')">Müllrundgang</button>
     </div>
 
-    <!-- Einzel-Etikett: eine Tätigkeit + ein Objekt → 30×50 mm Etikett -->
+    <!-- Objektbezogen: eine Tätigkeit + ein Objekt → 30×50 mm -->
     <div id="qrEinzelWrap">
       <div class="f"><label>Standort</label>
         <select id="qrEinzelStandort" onchange="qrEinzelStandortAendern()">${standortOpts}</select></div>
       <div class="f"><label>Objekt *</label>
         <select id="qrEinzelObjekt"><option value="">– Objekt wählen –</option></select></div>
       <div class="f"><label>Tätigkeit *</label>
-        <select id="qrEinzelKat">${kats.filter(k=>!k.allgemein).map(k=>`<option value="${k.id}">${esc(k.name)}</option>`).join('')}</select></div>
-      <div style="font-size:11px;color:var(--ink-40);margin-bottom:10px">Erzeugt genau ein Etikett (30×50 mm) – wie beim Lager.</div>
-      <button class="btn btn-copper btn-full" style="margin-bottom:6px" onclick="qrEinzelEtikett('speichern')"><i class="ti ti-download"></i> Etikett speichern (Download)</button>
+        <select id="qrEinzelKat">${objKats.map(k=>`<option value="${k.id}">${esc(k.name)}</option>`).join('')}</select></div>
+      <div style="font-size:11px;color:var(--ink-40);margin-bottom:10px">Ein Etikett (30×50 mm) – wie beim Lager.</div>
+      <button class="btn btn-copper btn-full" style="margin-bottom:6px" onclick="qrEinzelEtikett('speichern')"><i class="ti ti-download"></i> Etikett speichern</button>
       <button class="btn btn-full" style="margin-bottom:6px" onclick="qrEinzelEtikett('teilen')"><i class="ti ti-share"></i> Teilen / an Drucker</button>
     </div>
 
-    <!-- Mehrere objektbezogen -->
-    <div id="qrFilterObjektWrap" style="display:none">
-      <div class="f"><label>Standort</label>
-        <select id="qrFilterStandort" onchange="qrFilterAendern()">${standortOpts}</select></div>
-      <div class="f"><label>Objekt</label>
-        <select id="qrFilterObjekt" onchange="qrFilterObjektAendern()"><option value="all">Alle Objekte</option></select></div>
-      <div style="font-size:12px;color:var(--ink-40);margin-bottom:8px">QR-Codes für die gewählte Auswahl × passende Tätigkeiten (A4-Bogen).</div>
-      <div id="qrVorschau" style="max-height:32vh;overflow-y:auto;margin-bottom:10px"></div>
-      <button class="btn btn-copper btn-full" style="margin-bottom:6px" onclick="qrAuswahlDrucken()"><i class="ti ti-printer"></i> Auswahl drucken</button>
+    <!-- Allgemein (Mülltonnenservice): eine Tätigkeit + eine Liegenschaft -->
+    <div id="qrAllgWrap" style="display:none">
+      <div class="f"><label>Liegenschaft *</label>
+        <select id="qrAllgLg"><option value="">– Liegenschaft wählen –</option>${lgOpts}</select></div>
+      <div class="f"><label>Tätigkeit *</label>
+        <select id="qrAllgKat">${allgKats.map(k=>`<option value="${k.id}">${esc(k.name)}</option>`).join('')}</select></div>
+      <div style="font-size:11px;color:var(--ink-40);margin-bottom:10px">Ein Etikett (30×50 mm).</div>
+      <button class="btn btn-copper btn-full" style="margin-bottom:6px" onclick="qrAllgEtikett('speichern')"><i class="ti ti-download"></i> Etikett speichern</button>
+      <button class="btn btn-full" style="margin-bottom:6px" onclick="qrAllgEtikett('teilen')"><i class="ti ti-share"></i> Teilen / an Drucker</button>
     </div>
 
-    <!-- Mehrere allgemein -->
-    <div id="qrFilterAllgWrap" style="display:none">
-      <div class="f"><label>Liegenschaft</label>
-        <select id="qrFilterLg" onchange="qrVorschauAktualisieren()">${lgOpts}</select></div>
-      <div style="font-size:12px;color:var(--ink-40);margin-bottom:8px">QR-Codes für die Auswahl × allgemeine Tätigkeiten (A4-Bogen).</div>
-      <div id="qrVorschauAllg" style="max-height:32vh;overflow-y:auto;margin-bottom:10px"></div>
-      <button class="btn btn-copper btn-full" style="margin-bottom:6px" onclick="qrAuswahlDrucken()"><i class="ti ti-printer"></i> Auswahl drucken</button>
+    <!-- Müllrundgang: feste Strecke mit nummerierten Wegpunkten, jeder einzeln -->
+    <div id="qrRundgangWrap" style="display:none">
+      <div class="f"><label>Liegenschaft *</label>
+        <select id="qrRgLg"><option value="">– Liegenschaft wählen –</option>${lgOpts}</select></div>
+      <div class="f"><label>Anzahl Wegpunkte gesamt</label>
+        <input type="number" id="qrRgAnzahl" value="10" min="2" max="50" onchange="qrRgListe()"></div>
+      <div style="font-size:11px;color:var(--ink-40);margin-bottom:8px">Wegpunkt 1 startet den Rundgang. Es müssen alle Wegpunkte abgelaufen (gescannt) werden – der letzte fehlende beendet die Tätigkeit. Jeden QR einzeln ausdrucken und an die Station kleben.</div>
+      <div id="qrRgListe"></div>
     </div>
 
     <button class="btn btn-full" onclick="closeModal()">Schließen</button>
@@ -3174,7 +3181,7 @@ async function modalTaetigkeitQRListe(){
   qrEinzelStandortAendern();
 }
 
-// Einzel-Etikett: Objektliste nach Standort füllen
+// Objektliste nach Standort füllen
 function qrEinzelStandortAendern(){
   const g=document.getElementById('qrEinzelStandort')?.value||'all';
   const sel=document.getElementById('qrEinzelObjekt');
@@ -3184,7 +3191,7 @@ function qrEinzelStandortAendern(){
   sel.innerHTML='<option value="">– Objekt wählen –</option>'+liste.map(o=>`<option value="${o.id}">${esc(o.name)}</option>`).join('');
 }
 
-// Einzel-Etikett erzeugen (genau ein QR, 30×50 mm)
+// Objektbezogenes Einzel-Etikett (genau ein QR, 30×50 mm)
 async function qrEinzelEtikett(modus){
   const objId=document.getElementById('qrEinzelObjekt')?.value;
   const katId=document.getElementById('qrEinzelKat')?.value;
@@ -3193,23 +3200,72 @@ async function qrEinzelEtikett(modus){
   const kats=await getTaetigkeitKat();
   const kat=kats.find(k=>k.id===katId);
   const obj=getObj(objId);
-  const qrText='TAETIGKEIT:'+katId+':'+objId;
-  const dateiname='TAET_'+katId+'_'+objId;
   closeModal();
   const fn=(modus==='teilen')?etikettPdfTeilen:etikettPdfSpeichern;
-  await fn(qrText, dateiname, kat?.name||katId, obj?.name||objId, umlageLabel(kat?.umlage));
+  await fn('TAETIGKEIT:'+katId+':'+objId, 'TAET_'+katId+'_'+objId, kat?.name||katId, obj?.name||objId, umlageLabel(kat?.umlage));
 }
+
+// Allgemeines Einzel-Etikett (Mülltonnenservice), bezogen auf eine Liegenschaft
+async function qrAllgEtikett(modus){
+  const lgId=document.getElementById('qrAllgLg')?.value;
+  const katId=document.getElementById('qrAllgKat')?.value;
+  if(!lgId){ toast('Bitte Liegenschaft wählen'); return; }
+  if(!katId){ toast('Bitte Tätigkeit wählen'); return; }
+  const kats=await getTaetigkeitKat();
+  const kat=kats.find(k=>k.id===katId);
+  const lg=(typeof LIEGENSCHAFTEN!=='undefined'?LIEGENSCHAFTEN:[]).find(l=>l.id===lgId);
+  closeModal();
+  const fn=(modus==='teilen')?etikettPdfTeilen:etikettPdfSpeichern;
+  await fn('TAETIGKEIT:'+katId+':'+lgId, 'ALLG_'+katId+'_'+lgId, kat?.name||katId, lg?.name||lgId, umlageLabel(kat?.umlage));
+}
+
+// Müllrundgang: Liste der einzeln druckbaren Wegpunkte
+function qrRgListe(){
+  const el=document.getElementById('qrRgListe');
+  if(!el) return;
+  const lgId=document.getElementById('qrRgLg')?.value;
+  const anzahl=Math.max(2, Math.min(50, parseInt(document.getElementById('qrRgAnzahl')?.value)||10));
+  if(!lgId){ el.innerHTML='<div style="font-size:13px;color:var(--ink-40);text-align:center;padding:14px">Bitte zuerst eine Liegenschaft wählen</div>'; return; }
+  let h='';
+  for(let i=1;i<=anzahl;i++){
+    const istStart=i===1;
+    const rolle=istStart?' · Start':'';
+    h+=`<div style="display:flex;align-items:center;gap:8px;border:1px solid var(--ink-10);border-radius:8px;padding:8px 10px;margin-bottom:6px">
+      <div style="flex-shrink:0;width:30px;height:30px;border-radius:8px;background:var(--copper-bg);display:flex;align-items:center;justify-content:center;font-weight:700;color:var(--copper-d);font-size:13px">${i}</div>
+      <div style="flex:1;font-size:13px">Wegpunkt ${i}/${anzahl}${rolle}</div>
+      <button class="btn btn-sm" onclick="qrRgEtikett(${i},${anzahl},'speichern')"><i class="ti ti-download"></i></button>
+      <button class="btn btn-sm" onclick="qrRgEtikett(${i},${anzahl},'teilen')"><i class="ti ti-share"></i></button>
+    </div>`;
+  }
+  el.innerHTML=h;
+}
+
+// Ein einzelner Müllrundgang-Wegpunkt als Etikett (30×50 mm)
+async function qrRgEtikett(nr, gesamt, modus){
+  const lgId=document.getElementById('qrRgLg')?.value;
+  if(!lgId){ toast('Bitte Liegenschaft wählen'); return; }
+  const lg=(typeof LIEGENSCHAFTEN!=='undefined'?LIEGENSCHAFTEN:[]).find(l=>l.id===lgId);
+  const qrText='RUNDGANG:'+lgId+':'+nr+':'+gesamt;
+  const dateiname='RUNDGANG_'+lgId+'_'+nr+'von'+gesamt;
+  const titel='Müllrundgang '+nr+'/'+gesamt;
+  const fn=(modus==='teilen')?etikettPdfTeilen:etikettPdfSpeichern;
+  await fn(qrText, dateiname, titel, lg?.name||lgId, nr===1?'Start':'');
+}
+
 function qrModusWechseln(modus){
   window._qrModus=modus;
   document.getElementById('qrModusEinzel')?.classList.toggle('active', modus==='einzel');
-  document.getElementById('qrModusObjekt')?.classList.toggle('active', modus==='objekt');
   document.getElementById('qrModusAllg')?.classList.toggle('active', modus==='allgemein');
+  document.getElementById('qrModusRundgang')?.classList.toggle('active', modus==='rundgang');
   const show=(id,vis)=>{ const e=document.getElementById(id); if(e) e.style.display=vis?'block':'none'; };
-  show('qrEinzelWrap',      modus==='einzel');
-  show('qrFilterObjektWrap',modus==='objekt');
-  show('qrFilterAllgWrap',  modus==='allgemein');
-  if(modus==='objekt'){ qrFilterAendern(); }
-  else if(modus==='allgemein'){ qrVorschauAktualisieren(); }
+  show('qrEinzelWrap',   modus==='einzel');
+  show('qrAllgWrap',     modus==='allgemein');
+  show('qrRundgangWrap', modus==='rundgang');
+  if(modus==='rundgang'){
+    const sel=document.getElementById('qrRgLg');
+    if(sel && !sel._bound){ sel.addEventListener('change', qrRgListe); sel._bound=true; }
+    qrRgListe();
+  }
 }
 function qrFilterAendern(){
   const g=document.getElementById('qrFilterStandort')?.value||'all';
@@ -3769,6 +3825,117 @@ async function einstempelnUndStarten(katId, objId){
   await einstempeln();
   await taetigkeitStarten(katId, objId);
   nav('zeit');
+}
+
+// ── Müllrundgang: Wegpunkt gescannt ──────────────────────────
+// QR-Inhalt: RUNDGANG:<lgId>:<nr>:<gesamt>. Wegpunkt 1 startet (lockere Reihenfolge),
+// alle eindeutigen Wegpunkte müssen gescannt werden; der letzte fehlende beendet die Tätigkeit.
+async function rundgangWegpunktScan(lgId, nr, gesamt){
+  const lg=(typeof LIEGENSCHAFTEN!=='undefined'?LIEGENSCHAFTEN:[]).find(l=>l.id===lgId);
+  const lgName=lg?.name||lgId;
+  let s=await getOffeneSitzung();
+  if(!s){
+    showModal(`<div class="m-title"><i class="ti ti-clock"></i> Nicht eingestempelt</div>
+      <p style="font-size:13px;color:var(--ink-60);margin-bottom:12px">Du bist nicht eingestempelt. Jetzt einstempeln und den Müllrundgang in ${esc(lgName)} starten (Wegpunkt ${nr}/${gesamt})?</p>
+      <button class="btn btn-copper btn-full" style="margin-bottom:8px" onclick="closeModal();einstempelnUndRundgang('${lgId}',${nr},${gesamt})"><i class="ti ti-player-play"></i> Einstempeln & starten</button>
+      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>`);
+    return;
+  }
+  if(pauseAktiv(s)){ toast('Erst Pause beenden'); return; }
+  await rundgangPunktVerbuchen(s, lgId, lgName, nr, gesamt);
+}
+
+async function einstempelnUndRundgang(lgId, nr, gesamt){
+  await einstempeln();
+  const s=await getOffeneSitzung();
+  const lg=(typeof LIEGENSCHAFTEN!=='undefined'?LIEGENSCHAFTEN:[]).find(l=>l.id===lgId);
+  await rundgangPunktVerbuchen(s, lgId, lg?.name||lgId, nr, gesamt);
+  nav('zeit');
+}
+
+// Offenes Müllrundgang-Segment dieser Liegenschaft finden
+function offenesRundgangSegment(s, lgId){
+  const segs=s.segmente||[];
+  return segs.find(seg=>seg.katId==='muellrundgang' && seg.ende===null && seg.objId===lgId) || null;
+}
+
+async function rundgangPunktVerbuchen(s, lgId, lgName, nr, gesamt){
+  const kats=await getTaetigkeitKat();
+  const kat=kats.find(k=>k.id==='muellrundgang');
+  let seg=offenesRundgangSegment(s, lgId);
+
+  if(!seg){
+    // Neuer Rundgang. Hinweis, falls nicht bei Wegpunkt 1 begonnen.
+    // anderes offenes Segment beenden
+    const vorher=offenesSegment(s);
+    if(vorher) vorher.ende=nowIso();
+    seg={
+      id:uid(), katId:'muellrundgang', objId:lgId,
+      katName: kat?.name||'Müllrundgang', umlage: kat?.umlage||'ja',
+      start: nowIso(), ende:null, notiz:'', fotos:[], mangelId:null,
+      wpGesamt: gesamt, wegpunkte:[nr],
+    };
+    (s.segmente=s.segmente||[]).push(seg);
+    s.geaendert=nowIso();
+    await idbPut('arbeitszeit', s); syncSoon(); refreshZeit();
+    if(nr!==1){
+      toast('Rundgang gestartet bei Wegpunkt '+nr+' (Start ist eigentlich 1)');
+    } else {
+      toast('Müllrundgang gestartet · '+lgName);
+    }
+    rundgangStatusModal(seg, lgName);
+    return;
+  }
+
+  // Bestehender Rundgang: Wegpunkt hinzufügen (dedupliziert)
+  seg.wpGesamt = seg.wpGesamt || gesamt;
+  const schon = seg.wegpunkte.includes(nr);
+  if(!schon) seg.wegpunkte.push(nr);
+  s.geaendert=nowIso();
+
+  const fehlen = rundgangFehlende(seg);
+  if(fehlen.length===0){
+    // alle Punkte abgelaufen → beenden
+    seg.ende=nowIso();
+    await idbPut('arbeitszeit', s); syncSoon(); refreshZeit();
+    toast('Müllrundgang vollständig – beendet ✓');
+    rundgangStatusModal(seg, lgName, true);
+  } else {
+    await idbPut('arbeitszeit', s); syncSoon(); refreshZeit();
+    toast(schon ? ('Wegpunkt '+nr+' bereits erfasst') : ('Wegpunkt '+nr+' erfasst · noch '+fehlen.length));
+    rundgangStatusModal(seg, lgName);
+  }
+}
+
+// Welche Wegpunkte (1..gesamt) fehlen noch?
+function rundgangFehlende(seg){
+  const ges=seg.wpGesamt||0;
+  const da=new Set(seg.wegpunkte||[]);
+  const fehlen=[];
+  for(let i=1;i<=ges;i++){ if(!da.has(i)) fehlen.push(i); }
+  return fehlen;
+}
+
+// Statusübersicht des laufenden/beendeten Rundgangs
+function rundgangStatusModal(seg, lgName, fertig){
+  const ges=seg.wpGesamt||0;
+  const da=new Set(seg.wegpunkte||[]);
+  let punkte='';
+  for(let i=1;i<=ges;i++){
+    const ok=da.has(i);
+    punkte+=`<div style="width:30px;height:30px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;
+      background:${ok?'var(--green-l,#E8F5E9)':'var(--ink-05)'};color:${ok?'var(--green,#2E7D52)':'var(--ink-40)'};border:1px solid ${ok?'var(--green,#2E7D52)':'var(--ink-10)'}">${i}</div>`;
+  }
+  const fehlen=rundgangFehlende(seg);
+  showModal(`<div class="m-title"><i class="ti ti-trash"></i> Müllrundgang · ${esc(lgName)}</div>
+    <div style="font-size:13px;color:var(--ink-60);margin-bottom:10px">
+      ${fertig?'<span style="color:var(--green,#2E7D52);font-weight:600">Alle Wegpunkte abgelaufen – Tätigkeit beendet.</span>'
+              :`Erfasst: <strong>${da.size}/${ges}</strong>${fehlen.length?` · noch offen: ${fehlen.join(', ')}`:''}`}
+    </div>
+    <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px">${punkte}</div>
+    ${fertig?'':'<p style="font-size:12px;color:var(--ink-40);margin-bottom:12px">Den nächsten Wegpunkt anlaufen und dort den QR scannen.</p>'}
+    ${fertig?'':'<button class="btn btn-copper btn-full" style="margin-bottom:6px" onclick="closeModal();scanTaetigkeitQR()"><i class="ti ti-qrcode"></i> Nächsten Wegpunkt scannen</button>'}
+    <button class="btn btn-full" onclick="closeModal()">Schließen</button>`);
 }
 
 function syncSoon(){ clearTimeout(window._syncTimer); window._syncTimer=setTimeout(()=>syncToOneDrive(),3000); }
@@ -4587,6 +4754,14 @@ async function bcVerarbeite(wert){
       await renderLagerArtikelForm(state, window._bcFormEditId||null);
       toast('Kein Lagerort zu diesem QR gefunden');
     }
+    return;
+  }
+  // Müllrundgang-Wegpunkt erkannt: "RUNDGANG:<lgId>:<nr>:<gesamt>"
+  if(wert.indexOf('RUNDGANG:')===0){
+    closeModal();
+    const teile=wert.split(':');
+    const lgId=teile[1], nr=parseInt(teile[2])||1, gesamt=parseInt(teile[3])||1;
+    await rundgangWegpunktScan(lgId, nr, gesamt);
     return;
   }
   // Tätigkeits-QR erkannt: "TAETIGKEIT:<kat>:<obj>"
