@@ -543,6 +543,41 @@ button.chip.chip-active{background:var(--ink);color:#fff;border-color:var(--ink)
   </div>
 </div>
 
+<!-- ERSTSTART: Gerät kennt noch keine Benutzer → zuerst OneDrive verbinden -->
+<div id="setupScreen" class="screen">
+  <div class="login-box">
+    <div class="login-brand">
+      <div class="login-brand-icon" style="background:transparent;padding:0;width:64px;height:64px">
+        <svg width="64" height="64" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+          <rect width="512" height="512" rx="110" fill="#185FA5"/>
+          <g transform="translate(256,256) scale(4) translate(-77.5,-84)">
+            <line x1="50" y1="104" x2="50" y2="64" stroke="white" stroke-width="3.2" stroke-linecap="round" opacity="0.93"/>
+            <line x1="50" y1="64" x2="73" y2="104" stroke="white" stroke-width="3.2" stroke-linecap="round" opacity="0.93"/>
+            <line x1="73" y1="64" x2="73" y2="104" stroke="white" stroke-width="3.2" stroke-linecap="round" opacity="0.93"/>
+            <line x1="80" y1="64" x2="80" y2="104" stroke="white" stroke-width="3.2" stroke-linecap="round"/>
+            <path d="M 80,64 Q 105,64 105,74 Q 105,84 80,84" fill="none" stroke="white" stroke-width="3.2" stroke-linecap="round"/>
+            <ellipse cx="97" cy="74" rx="7" ry="8.5" fill="#85B7EB" opacity="0.9"/>
+            <ellipse cx="97" cy="74" rx="3.5" ry="4.2" fill="white" opacity="0.95"/>
+            <ellipse cx="97" cy="73.5" rx="1.6" ry="2" fill="#185FA5"/>
+          </g>
+        </svg>
+      </div>
+      <h1>Nadig Pfau Hausverwaltung</h1>
+      <p>Ersteinrichtung</p>
+    </div>
+    <div class="login-card">
+      <p style="font-size:14px;color:var(--ink-60);line-height:1.6;margin-bottom:16px;text-align:center">
+        Dieses Gerät ist noch nicht eingerichtet. Verbinde es mit OneDrive, um die Benutzer zu laden.
+      </p>
+      <button class="btn btn-copper btn-full" style="margin-bottom:10px" onclick="setupConnectOneDrive()">
+        <i class="ti ti-cloud"></i> Mit OneDrive verbinden
+      </button>
+      <div id="setupStatus" style="font-size:13px;color:var(--ink-40);text-align:center;min-height:20px"></div>
+      <div id="setupFirstAdmin" style="display:none;margin-top:14px"></div>
+    </div>
+  </div>
+</div>
+
 <!-- MAIN APP -->
 <div id="appScreen" class="screen">
   <div class="sync-bar" id="syncBar"><i class="ti ti-cloud-upload" style="font-size:12px"></i> Änderungen werden synchronisiert...</div>
@@ -647,7 +682,7 @@ button.chip.chip-active{background:var(--ink);color:#fff;border-color:var(--ink)
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=12;
-const APP_VERSION = '2026-06-09-v33';
+const APP_VERSION = '2026-06-09-v34';
 let idb=null;
 
 function openIDB(){
@@ -797,14 +832,9 @@ const GRUPPE_LABEL={duesseldorf:'Düsseldorf',mg:'Mönchengladbach',krefeld:'Kre
 let CU=null; // current user
 let pinBuf='';
 
-const DEFAULT_USERS=[
-  {id:'u_alexander', name:'Alexander Nadig', pin:'2204',role:'admin', objekte:[],aktiv:true},
-  {id:'u_pfau',      name:'Anna Pfau',       pin:'1603',role:'admin', objekte:[],aktiv:true},
-  {id:'u_roland',    name:'Roland Nadig',    pin:'2204',role:'admin',  objekte:[],aktiv:true},
-  {id:'u_dirk',      name:'Dirk Nicolay',    pin:'1111',role:'hm',    objekte:['krefeld'],aktiv:true},
-  {id:'u_dus',       name:'Hausmeister DUS', pin:'3333',role:'hm',    objekte:['duesseldorf'],aktiv:true},
-  {id:'u_mg',        name:'Hausmeister MG',  pin:'4444',role:'hm',    objekte:['mg'],aktiv:true},
-];
+// Keine echten Benutzer/PINs mehr im Quellcode. Benutzer kommen ausschließlich
+// aus der OneDrive-Datei (oder werden beim allerersten Start einmalig angelegt).
+const DEFAULT_USERS=[];
 
 async function ensureDefaultUsers(){
   const all=await idbGetAll('users');
@@ -821,6 +851,69 @@ async function ensureDefaultUsers(){
       }
     }
   }
+}
+
+// ── Ersteinrichtung: OneDrive verbinden, dann Benutzer laden ──
+async function setupConnectOneDrive(){
+  const st=document.getElementById('setupStatus');
+  if(st){ st.textContent='Weiterleitung zur Microsoft-Anmeldung …'; st.style.color='var(--ink-40)'; }
+  // Nach Login kommt die App per Redirect zurück; der Bootstrap erkennt dann die Tokens
+  // und ruft setupLadeBenutzerNachSync() auf.
+  if(typeof msalLogin==='function'){ await msalLogin(); }
+  else { if(st){ st.textContent='Anmeldung nicht verfügbar.'; st.style.color='var(--red)'; } }
+}
+
+// Nach erfolgreicher OneDrive-Verbindung: Daten holen und Benutzer prüfen
+async function setupLadeBenutzerNachSync(){
+  const st=document.getElementById('setupStatus');
+  if(st){ st.textContent='Daten werden aus OneDrive geladen …'; st.style.color='var(--ink-40)'; }
+  try {
+    if(typeof syncFromOneDrive==='function') await syncFromOneDrive();
+  } catch(e){ console.warn('Setup-Sync:', e); }
+  const users=(await idbGetAll('users').catch(()=>[])).filter(u=>u.aktiv!==false);
+  if(users.length){
+    // Benutzer vorhanden → zur normalen Anmeldung
+    showScreen('loginScreen');
+    await loadLoginUsers();
+    return;
+  }
+  // OneDrive ist leer (allererste Einrichtung überhaupt) → ersten Admin anlegen
+  setupZeigeErstAdmin();
+}
+
+// Formular zum Anlegen des allerersten Admins (nur wenn OneDrive leer ist)
+function setupZeigeErstAdmin(){
+  const st=document.getElementById('setupStatus');
+  if(st){ st.textContent='In OneDrive sind noch keine Benutzer hinterlegt.'; st.style.color='var(--ink-40)'; }
+  const box=document.getElementById('setupFirstAdmin');
+  if(!box) return;
+  box.style.display='block';
+  box.innerHTML=`
+    <div style="border-top:1px solid var(--ink-10);padding-top:14px">
+      <div style="font-size:14px;font-weight:600;margin-bottom:8px">Ersten Administrator anlegen</div>
+      <div class="lg" style="margin-bottom:10px">
+        <label>Name</label>
+        <input type="text" id="setupAdminName" placeholder="z. B. Alexander Nadig" style="width:100%;padding:10px;border:1px solid var(--ink-20);border-radius:8px;font-size:15px">
+      </div>
+      <div class="lg" style="margin-bottom:14px">
+        <label>PIN (4 Ziffern)</label>
+        <input type="tel" inputmode="numeric" maxlength="4" id="setupAdminPin" placeholder="••••" style="width:100%;padding:10px;border:1px solid var(--ink-20);border-radius:8px;font-size:15px;letter-spacing:4px">
+      </div>
+      <button class="btn btn-copper btn-full" onclick="setupErstAdminAnlegen()"><i class="ti ti-user-plus"></i> Anlegen & starten</button>
+    </div>`;
+}
+
+async function setupErstAdminAnlegen(){
+  const name=(document.getElementById('setupAdminName')?.value||'').trim();
+  const pin=(document.getElementById('setupAdminPin')?.value||'').trim();
+  if(!name){ toast('Bitte Name eingeben'); return; }
+  if(!/^\d{4}$/.test(pin)){ toast('PIN muss aus 4 Ziffern bestehen'); return; }
+  const user={ id:uid(), name, pin, role:'admin', objekte:[], aktiv:true, eintritt:today() };
+  await idbPut('users', user);
+  if(typeof syncToOneDrive==='function'){ try { await syncToOneDrive(); } catch(e){ console.warn(e); } }
+  toast('Administrator angelegt ✓');
+  showScreen('loginScreen');
+  await loadLoginUsers();
 }
 
 async function loadLoginUsers(){
@@ -8328,6 +8421,7 @@ ${istZustimmung
    EXCEL-EXPORT
 ═══════════════════════════════════════════════════════════ */
 async function exportExcel() {
+  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
   if (typeof XLSX === 'undefined') { toast('XLSX-Bibliothek nicht geladen'); return; }
   toast('Excel wird erstellt...');
   const myObj   = await getMyObjekte();
@@ -10515,6 +10609,7 @@ ${(d.aenderungen&&d.aenderungen.length)?`<div style="margin-top:12px;padding:8px
    EXCEL IMPORT
 ═══════════════════════════════════════════════════════════ */
 async function importExcel(input){
+  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
   const file=input.files[0]; if(!file) return;
   const el=document.getElementById('importStatus');
   el.innerHTML='<div style="color:var(--amber);font-size:13px"><i class="ti ti-loader" style="animation:spin 1s linear infinite"></i> Importiere...</div>';
@@ -10630,7 +10725,7 @@ async function renderSettings(){
       <button class="btn btn-primary btn-full" onclick="nav('wartung')"><i class="ti ti-calendar-stats"></i> Wartungsfristen öffnen</button>
     </div>
 
-    <div class="card">
+    ${isAdmin?`<div class="card">
       <div class="card-hdr"><i class="ti ti-file-spreadsheet"></i> Mieterdaten (Excel-Import)</div>
       <p style="font-size:13px;color:var(--ink-40);margin-bottom:12px;line-height:1.6">
         Excel-Datei (.xlsm) hochladen, um Mieter- und Objektdaten abzugleichen. Vorhandene Mieter werden über Objekt, WE-Nr. und Name erkannt und nur in geänderten Feldern aktualisiert – leere Excel-Zellen überschreiben nichts. In der App neu angelegte Mieter sowie alle Protokolle, Aufgaben, Mängel und Dokumente bleiben erhalten.
@@ -10642,7 +10737,7 @@ async function renderSettings(){
         <p>Mieterliste_Gesamt_v4.xlsm · Tippen zum Auswählen</p>
       </div>
       <div id="importStatus" style="margin-top:10px"></div>
-    </div>
+    </div>`:''}
 
     ${isAdmin?`<div class="card">
       <div class="card-hdr"><i class="ti ti-shield"></i> Benutzerverwaltung</div>
@@ -10656,12 +10751,12 @@ async function renderSettings(){
       <div class="card-hdr"><i class="ti ti-database"></i> Datenspeicher</div>
       <p style="font-size:13px;color:var(--ink-40);margin-bottom:12px">Alle Daten werden lokal in IndexedDB auf diesem Gerät gespeichert.</p>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <button class="btn" onclick="exportBackup()"><i class="ti ti-download"></i> Backup exportieren</button>
+        ${isAdmin?`<button class="btn" onclick="exportBackup()"><i class="ti ti-download"></i> Backup exportieren</button>
         <button class="btn" onclick="exportExcel()"><i class="ti ti-file-spreadsheet"></i> Excel exportieren</button>
-        <button class="btn" onclick="document.getElementById('importBackupIn').click()"><i class="ti ti-upload"></i> Backup importieren</button>
+        <button class="btn" onclick="document.getElementById('importBackupIn').click()"><i class="ti ti-upload"></i> Backup importieren</button>`:''}
         <button class="btn btn-danger" onclick="confirmReset()"><i class="ti ti-trash"></i> Zurücksetzen</button>
       </div>
-      <input type="file" id="importBackupIn" accept=".json" style="display:none" onchange="importBackup(this)">
+      ${isAdmin?`<input type="file" id="importBackupIn" accept=".json" style="display:none" onchange="importBackup(this)">`:''}
     </div>
 
     <div class="card">
@@ -10843,6 +10938,7 @@ async function delUser(id){
    BACKUP EXPORT / IMPORT
 ═══════════════════════════════════════════════════════════ */
 async function exportBackup(){
+  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
   const backup={};
   for(const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung']){
     backup[s]=await idbGetAll(s);
@@ -10856,6 +10952,7 @@ async function exportBackup(){
 }
 
 async function importBackup(input){
+  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
   const file=input.files[0]; if(!file) return;
   if(!confirm('Alle aktuellen Daten durch Backup ersetzen?')) return;
   const reader=new FileReader();
@@ -11037,8 +11134,15 @@ async function handleOAuthRedirect() {
     }
     setSyncStatus('ok');
     toast('✓ Mit OneDrive verbunden: ' + (odTokens.user_name||''));
-    await syncFromOneDrive();
-    renderSettings();
+    // Wenn die App noch nicht entsperrt ist (Erststart/Login), Benutzer laden statt Settings
+    const setupAktiv = document.getElementById('setupScreen')?.classList.contains('active')
+      || (typeof CU==='undefined' || !CU);
+    if (setupAktiv && typeof setupLadeBenutzerNachSync==='function') {
+      await setupLadeBenutzerNachSync();
+    } else {
+      await syncFromOneDrive();
+      if (typeof renderSettings==='function') renderSettings();
+    }
   } catch(e) {
     console.error('Token-Austausch:', e);
     setSyncStatus('offline');
@@ -12456,8 +12560,17 @@ window.addEventListener('DOMContentLoaded', async () => {
     await openIDB().catch(()=>{});
     await ensureDefaultUsers().catch(()=>{});
     await handleOAuthRedirect();
-    showScreen('loginScreen');
-    await loadLoginUsers().catch(()=>{});
+    // handleOAuthRedirect() leitet im Erststart selbst auf den passenden Screen
+    // (Setup/Login). Nur wenn danach Benutzer vorhanden sind und noch kein Screen
+    // aktiv gesetzt wurde, auf den Login-Screen gehen.
+    const u = (await idbGetAll('users').catch(()=>[])).filter(x=>x.aktiv!==false);
+    if (u.length && !document.getElementById('appScreen')?.classList.contains('active')) {
+      showScreen('loginScreen');
+      await loadLoginUsers().catch(()=>{});
+    } else if (!u.length && !document.getElementById('setupScreen')?.classList.contains('active')) {
+      // weiterhin keine Benutzer → Erststart-Screen
+      showScreen('setupScreen');
+    }
     return;
   }
 
@@ -12517,6 +12630,20 @@ window.addEventListener('DOMContentLoaded', async () => {
         } catch(e) { console.warn('Protokoll-Wiederherstellung:', e); }
         return;
       }
+    }
+    // Keine aktive Session: prüfen, ob überhaupt Benutzer vorhanden sind
+    const alleUser = await idbGetAll('users').catch(()=>[]);
+    const aktiveUser = alleUser.filter(u=>u.aktiv!==false);
+    if (!aktiveUser.length) {
+      // Gerät noch nicht eingerichtet → Erststart-Screen (zuerst OneDrive verbinden)
+      showScreen('setupScreen');
+      // Falls bereits gültige OneDrive-Tokens vorliegen (z. B. nach Redirect/Reload),
+      // direkt Benutzer aus OneDrive laden.
+      try { if (typeof odLoadTokens==='function') odLoadTokens(); } catch(e){}
+      if (typeof odTokens !== 'undefined' && odTokens) {
+        setupLadeBenutzerNachSync();
+      }
+      return;
     }
     showScreen('loginScreen');
     await loadLoginUsers();
