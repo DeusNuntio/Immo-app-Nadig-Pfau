@@ -570,6 +570,7 @@ button.chip.chip-active{background:var(--ink);color:#fff;border-color:var(--ink)
     <div id="page-wartung" class="page"></div>
     <div id="page-lager" class="page"></div>
     <div id="page-zeit" class="page"></div>
+    <div id="page-urlaub" class="page"></div>
     <div id="page-settings" class="page"></div>
   </div>
 
@@ -642,7 +643,7 @@ button.chip.chip-active{background:var(--ink);color:#fff;border-color:var(--ink)
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=11;
-const APP_VERSION = '2026-06-09-v25';
+const APP_VERSION = '2026-06-09-v28';
 let idb=null;
 
 function openIDB(){
@@ -883,7 +884,7 @@ function nav(id,title,sub,push=true){
   const TITLES={dash:'Dashboard',aufgaben:'Aufgaben & Mängel',settings:'Einstellungen',
                 objekt:'Objekt',mieter:'Mieter',protokoll:'Übergabeprotokoll',
                 'protokoll-archiv':'Protokoll-Archiv',
-                'kalender':'Kalender','wartung':'Wartungsfristen','lager':'Lager & Material'};
+                'kalender':'Kalender','wartung':'Wartungsfristen','lager':'Lager & Material','urlaub':'Urlaub'};
   document.getElementById('hdrTitle').textContent=title||TITLES[id]||id;
   document.getElementById('hdrSub').textContent=sub||'';
   document.getElementById('hdrBack').classList.toggle('vis',push&&id!=='dash');
@@ -1049,6 +1050,19 @@ async function renderDash() {
         <div style="flex:1"><div style="font-size:13px;font-weight:600;color:var(--amber)">Datensicherung empfohlen</div>
         <div style="font-size:12px;color:var(--amber)">${syncInfo} Daten werden nur lokal gespeichert.</div></div>
         <button class="btn btn-sm" onclick="syncToOneDrive()"><i class="ti ti-cloud-upload"></i></button>
+      </div>`;
+    }
+  }
+
+  // Admin: offene Urlaubsanträge
+  if (CU?.role==='admin') {
+    const offeneUrlaube=(await idbGetAll('abwesenheit')).filter(a=>a.typ==='urlaub'&&a.status==='beantragt');
+    if (offeneUrlaube.length) {
+      html += `<div style="background:var(--amber-l);border-radius:10px;padding:10px 14px;margin-bottom:12px;display:flex;align-items:center;gap:10px;cursor:pointer" onclick="nav('urlaub')">
+        <i class="ti ti-beach" style="color:var(--amber);font-size:18px;flex-shrink:0"></i>
+        <div style="flex:1"><div style="font-size:13px;font-weight:600;color:var(--amber)">${offeneUrlaube.length} offene${offeneUrlaube.length===1?'r':''} Urlaubsantrag${offeneUrlaube.length===1?'':'e'}</div>
+        <div style="font-size:12px;color:var(--amber)">Tippen zum Prüfen und Freigeben</div></div>
+        <i class="ti ti-chevron-right" style="color:var(--amber)"></i>
       </div>`;
     }
   }
@@ -2180,22 +2194,55 @@ const STANDORT_KUERZEL={duesseldorf:'DUS',mg:'MG',krefeld:'KR',monheim:'MON',hil
    Werden beim ersten Start in den Store 'taetigkeit_kat' geschrieben
    und sind danach in den Einstellungen pflegbar. */
 const TAETIGKEIT_STANDARD=[
-  {id:'reinigung',     name:'Treppenhausreinigung', umlage:'ja',     mangel:false, sichtbar:true, sort:1},
-  {id:'aussen',        name:'Außenanlagenpflege',   umlage:'ja',     mangel:false, sichtbar:true, sort:2},
-  {id:'winterdienst',  name:'Winterdienst',         umlage:'ja',     mangel:false, sichtbar:true, sort:3},
-  {id:'muelltonne',    name:'Mülltonnenservice',    umlage:'ja',     mangel:false, sichtbar:true, sort:4},
-  {id:'muellrundgang', name:'Müllrundgang',         umlage:'ja',     mangel:false, sichtbar:true, sort:5},
-  {id:'kontrolle',     name:'Objektkontrolle',      umlage:'ja',     mangel:false, sichtbar:true, sort:6},
-  {id:'reparatur',     name:'Kleinreparatur',       umlage:'nein',   mangel:true,  sichtbar:true, sort:7},
-  {id:'handwerker',    name:'Handwerkerbetreuung',  umlage:'nein',   mangel:true,  sichtbar:true, sort:8},
-  {id:'notdienst',     name:'Notdienst / Störung',  umlage:'neutral',mangel:true,  sichtbar:true, sort:9},
-  {id:'wegezeit',      name:'Wegezeit',             umlage:'neutral',mangel:false, sichtbar:true, sort:10},
-  {id:'sonstiges',     name:'Sonstiges',            umlage:'neutral',mangel:false, sichtbar:true, sort:11},
+  {id:'reinigung',     name:'Treppenhausreinigung', umlage:'ja',     mangel:false, allgemein:false, sichtbar:true, sort:1},
+  {id:'aussen',        name:'Außenanlagenpflege',   umlage:'ja',     mangel:false, allgemein:true,  sichtbar:true, sort:2},
+  {id:'winterdienst',  name:'Winterdienst',         umlage:'ja',     mangel:false, allgemein:true,  sichtbar:true, sort:3},
+  {id:'muelltonne',    name:'Mülltonnenservice',    umlage:'ja',     mangel:false, allgemein:true,  sichtbar:true, sort:4},
+  {id:'muellrundgang', name:'Müllrundgang',         umlage:'ja',     mangel:false, allgemein:true,  sichtbar:true, sort:5},
+  {id:'kontrolle',     name:'Objektkontrolle',      umlage:'ja',     mangel:false, allgemein:false, sichtbar:true, sort:6},
+  {id:'reparatur',     name:'Kleinreparatur',       umlage:'nein',   mangel:true,  allgemein:false, sichtbar:true, sort:7},
+  {id:'handwerker',    name:'Handwerkerbetreuung',  umlage:'nein',   mangel:true,  allgemein:false, sichtbar:true, sort:8},
+  {id:'notdienst',     name:'Notdienst / Störung',  umlage:'neutral',mangel:true,  allgemein:false, sichtbar:true, sort:9},
+  {id:'wegezeit',      name:'Wegezeit',             umlage:'neutral',mangel:false, allgemein:false, sichtbar:true, sort:10},
+  {id:'sonstiges',     name:'Sonstiges',            umlage:'neutral',mangel:false, allgemein:false, sichtbar:true, sort:11},
 ];
+
+// Liegenschaften für allgemeine (standortbezogene) Tätigkeiten.
+// Düsseldorf wird in Ruhrtalstr. und Mindener Str. getrennt; Krefeld/MG/Monheim je eine Liegenschaft.
+const LIEGENSCHAFTEN=[
+  {id:'lg_ruhrt',   name:'Ruhrtalstr. (Düsseldorf)', objektIds:['ruhrt41']},
+  {id:'lg_minden',  name:'Mindener Str. (Düsseldorf)', objektIds:['mind23','mind25']},
+  {id:'lg_mg',      name:'Mönchengladbach',          objektIds:['kyff28','kyff30','kyff32']},
+  {id:'lg_krefeld', name:'Krefeld',                  objektIds:['inr181','inr183','inr185','wilm7','wilm9','wilm11','wilm13']},
+  {id:'lg_monheim', name:'Monheim am Rhein',         objektIds:['marien22']},
+];
+// Liegenschaften, auf die der aktuelle User Zugriff hat (über seine Objekte)
+async function getMyLiegenschaften(){
+  const myObj=await getMyObjekte();
+  const myIds=myObj.map(o=>o.id);
+  return LIEGENSCHAFTEN.filter(lg=>lg.objektIds.some(oid=>myIds.includes(oid)));
+}
+// Namen eines Tätigkeitsbezugs auflösen (Objekt-ID oder Liegenschafts-ID)
+function zielName(id){
+  if(!id) return '';
+  if(String(id).startsWith('lg_')) return LIEGENSCHAFTEN.find(l=>l.id===id)?.name||id;
+  return getObj(id)?.name||id;
+}
 
 async function ensureTaetigkeitKat(){
   const vorhanden=await idbGetAll('taetigkeit_kat');
-  if(vorhanden.length) return vorhanden;
+  if(vorhanden.length){
+    // Migration: allgemein-Flag nachrüsten, falls noch nicht vorhanden
+    const allgemeinIds=['aussen','winterdienst','muelltonne','muellrundgang'];
+    let changed=false;
+    for(const k of vorhanden){
+      if(k.allgemein===undefined){
+        k.allgemein=allgemeinIds.includes(k.id);
+        await idbPut('taetigkeit_kat', k); changed=true;
+      }
+    }
+    return await idbGetAll('taetigkeit_kat');
+  }
   for(const k of TAETIGKEIT_STANDARD){ await idbPut('taetigkeit_kat', {...k, erstellt:now()}); }
   return await idbGetAll('taetigkeit_kat');
 }
@@ -2210,7 +2257,7 @@ function umlageLabel(u){ return u==='ja'?'umlagefähig':(u==='nein'?'nicht umlag
 // (Dashboard-Kärtchen oder Zeiterfassungsseite).
 function refreshZeit(){
   if(curPage==='dash') renderDash();
-  else refreshZeit();
+  else renderZeiterfassung();
 }
 
 // Wiederverwendbare Stempeluhr-Kernsteuerung (Dashboard + Zeiterfassungsseite).
@@ -2234,12 +2281,12 @@ function stempeluhrHtml(s){
       <div style="font-size:12px;color:var(--ink-40)">seit ${fmtUhr(s.start)} ${istPause?'· <span style="color:var(--amber)">Pause</span>':''}</div>
       <div style="font-size:12px;color:var(--ink-40)">${s.datum}</div>
     </div>
-    <div id="stempelDauer" style="font-size:30px;font-weight:700;text-align:center;margin:6px 0"
+    <div class="stempelDauer" style="font-size:30px;font-weight:700;text-align:center;margin:6px 0"
       data-start="${s.start}" data-pausen-ms="${pausenMs}" data-pause-von="${laufendePauseVon}">${fmtDauer(min)}</div>`;
   if(seg && !istPause){
     h+=`<div style="background:var(--copper-bg);border-radius:8px;padding:8px 12px;margin-bottom:8px;text-align:center">
       <div style="font-size:13px;font-weight:600;color:var(--copper-d)">${seg.katName} läuft</div>
-      <div style="font-size:11px;color:var(--ink-40)">${getObj(seg.objId)?.name||''} · <span id="stempelTaetDauer" data-start="${seg.start}">${fmtDauer(Math.max(0,Math.round((new Date()-new Date(seg.start))/60000)))}</span></div>
+      <div style="font-size:11px;color:var(--ink-40)">${zielName(seg.objId)} · <span class="stempelTaetDauer" data-start="${seg.start}">${fmtDauer(Math.max(0,Math.round((new Date()-new Date(seg.start))/60000)))}</span></div>
     </div>
     <button class="btn btn-full" style="margin-bottom:6px" onclick="taetigkeitBeenden()"><i class="ti ti-player-stop"></i> Tätigkeit beenden</button>
     <button class="btn btn-full" style="margin-bottom:6px" onclick="scanTaetigkeitQR()"><i class="ti ti-qrcode"></i> Andere Tätigkeit per QR scannen</button>`;
@@ -2266,21 +2313,21 @@ let _stempelTimer=null;
 function stempelTimerStart(){
   stempelTimerStop();
   _stempelTimer=setInterval(()=>{
-    const dEl=document.getElementById('stempelDauer');
-    if(!dEl){ stempelTimerStop(); return; }
-    const start=dEl.getAttribute('data-start');
-    const pauseVon=dEl.getAttribute('data-pause-von');
-    let pausenMs=Number(dEl.getAttribute('data-pausen-ms')||0);
-    // Wenn gerade eine Pause läuft, tickt die Anzeige nicht weiter
-    if(pauseVon){ return; }
-    const sek=Math.max(0, Math.floor((Date.now()-new Date(start).getTime()-pausenMs)/1000));
-    dEl.textContent=fmtDauerSek(sek);
-    const tEl=document.getElementById('stempelTaetDauer');
-    if(tEl){
+    const dEls=document.querySelectorAll('.stempelDauer');
+    if(!dEls.length){ stempelTimerStop(); return; }
+    dEls.forEach(dEl=>{
+      const start=dEl.getAttribute('data-start');
+      const pauseVon=dEl.getAttribute('data-pause-von');
+      let pausenMs=Number(dEl.getAttribute('data-pausen-ms')||0);
+      if(pauseVon) return; // läuft Pause: Anzeige hält
+      const sek=Math.max(0, Math.floor((Date.now()-new Date(start).getTime()-pausenMs)/1000));
+      dEl.textContent=fmtDauerSek(sek);
+    });
+    document.querySelectorAll('.stempelTaetDauer').forEach(tEl=>{
       const tstart=tEl.getAttribute('data-start');
       const tsek=Math.max(0, Math.floor((Date.now()-new Date(tstart).getTime())/1000));
       tEl.textContent=fmtDauerSek(tsek);
-    }
+    });
   },1000);
 }
 function stempelTimerStop(){ if(_stempelTimer){ clearInterval(_stempelTimer); _stempelTimer=null; } }
@@ -2290,7 +2337,7 @@ async function renderZeiterfassung(){
   if(!el) return;
   const istAdmin = CU?.role==='admin';
   let h=`<div class="s-hdr"><div class="s-title"><i class="ti ti-clock"></i> Zeiterfassung</div>
-    ${istAdmin?`<button class="btn btn-sm" onclick="modalTaetigkeitQR()"><i class="ti ti-qrcode"></i> QR</button>`:'<span></span>'}
+    <button class="btn btn-sm" onclick="nav('urlaub')"><i class="ti ti-beach"></i> Urlaub</button>
   </div>`;
 
   // ── Stempeluhr (alle Rollen, die erfassen) ──
@@ -2405,7 +2452,7 @@ function renderZeitleiste(s){
       <div style="display:flex;align-items:center;justify-content:space-between">
         <div>
           <div style="font-weight:600;font-size:13px">${seg.katName}${seg.ende?'':' <span style="color:var(--copper);font-size:11px">läuft</span>'}</div>
-          <div style="font-size:11px;color:var(--ink-40)">${fmtUhr(seg.start)}${seg.ende?'–'+fmtUhr(seg.ende):''} · ${getObj(seg.objId)?.name||'kein Objekt'}</div>
+          <div style="font-size:11px;color:var(--ink-40)">${fmtUhr(seg.start)}${seg.ende?'–'+fmtUhr(seg.ende):''} · ${zielName(seg.objId)||'kein Objekt'}</div>
           ${seg.notiz?`<div style="font-size:11px;color:var(--ink-60);margin-top:2px">${seg.notiz}</div>`:''}
         </div>
         <div style="text-align:right">
@@ -2585,6 +2632,11 @@ async function modalMitarbeiterZeit(userId){
   // Sitzungen mit Änderungsvermerk (nur für Admin sichtbar)
   const mitAenderung=sitzungen.filter(s=>(s.aenderungen||[]).length);
 
+  // Urlaubsstand
+  const jahrU=new Date().getFullYear();
+  const anspruch=(u.urlaubProJahr!=null?u.urlaubProJahr:30);
+  const verbrauchtU=await urlaubVerbraucht(u.id, jahrU);
+
   let body=`<div class="m-title"><i class="ti ti-user-clock"></i> ${esc(u.name)}</div>
     <div class="card" style="margin-bottom:10px">
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
@@ -2596,6 +2648,12 @@ async function modalMitarbeiterZeit(userId){
           <div style="font-size:11px;color:var(--ink-40)">Saldo: <span style="color:${gColor};font-weight:600">${fmtSaldo(k.gesamtSaldo)}</span></div></div>
       </div>
       ${k.uebertrag?`<div style="font-size:11px;color:var(--ink-40);margin-top:8px">Übertrag aus Vormonat: <span style="color:${k.uebertrag>=0?'var(--green)':'var(--red)'};font-weight:600">${fmtSaldo(k.uebertrag)}</span></div>`:''}
+    </div>
+    <div class="card" style="margin-bottom:10px">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div style="font-size:13px;color:var(--ink-60)"><i class="ti ti-beach"></i> Urlaub ${jahrU}</div>
+        <div style="font-size:13px;font-weight:600">${verbrauchtU} / ${anspruch} Tage · <span style="color:${(anspruch-verbrauchtU)>=0?'var(--green)':'var(--red)'}">${anspruch-verbrauchtU} übrig</span></div>
+      </div>
     </div>`;
 
   if(mitAenderung.length){
@@ -2634,6 +2692,194 @@ async function modalMitarbeiterZeit(userId){
   }
   body+=`<button class="btn btn-full" style="margin-top:10px" onclick="closeModal()">Schließen</button>`;
   showModal(body);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   URLAUBSSEITE
+═══════════════════════════════════════════════════════════ */
+async function renderUrlaub(){
+  const el=document.getElementById('page-urlaub');
+  if(!el) return;
+  const istAdmin = CU?.role==='admin';
+  const jahr=new Date().getFullYear();
+
+  let h=`<div class="s-hdr"><div class="s-title"><i class="ti ti-beach"></i> Urlaub</div></div>`;
+
+  if(!istAdmin){
+    // Eigener Urlaubsanspruch + Resttage
+    const anspruch=(CU.urlaubProJahr!=null?CU.urlaubProJahr:30);
+    const verbraucht=await urlaubVerbraucht(CU.id, jahr);
+    const rest=anspruch-verbraucht;
+    h+=`<div class="card" style="margin-bottom:14px">
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;text-align:center">
+        <div><div style="font-size:22px;font-weight:700">${anspruch}</div><div style="font-size:11px;color:var(--ink-40)">Anspruch ${jahr}</div></div>
+        <div><div style="font-size:22px;font-weight:700;color:var(--amber)">${verbraucht}</div><div style="font-size:11px;color:var(--ink-40)">verplant</div></div>
+        <div><div style="font-size:22px;font-weight:700;color:${rest>=0?'var(--green)':'var(--red)'}">${rest}</div><div style="font-size:11px;color:var(--ink-40)">übrig</div></div>
+      </div>
+    </div>
+    <button class="btn btn-copper btn-full" style="margin-bottom:14px" onclick="modalUrlaubAntrag()"><i class="ti ti-plus"></i> Urlaub beantragen</button>`;
+  }
+
+  // Urlaubsliste (Admin: alle; Hausmeister: nur eigene)
+  let urlaube;
+  if(istAdmin){
+    urlaube=(await idbGetAll('abwesenheit')).filter(a=>a.typ==='urlaub');
+  } else {
+    urlaube=await getUrlaube(CU.id);
+  }
+  urlaube.sort((a,b)=>(b.von||'').localeCompare(a.von||''));
+
+  // Admin: offene Anträge zuerst hervorheben
+  if(istAdmin){
+    const offen=urlaube.filter(u=>u.status==='beantragt');
+    if(offen.length){
+      h+=`<div class="card-hdr" style="margin:6px 0;color:var(--amber)"><i class="ti ti-clock"></i> Offene Anträge (${offen.length})</div>`;
+      for(const u of offen){ h+=urlaubKarte(u, true); }
+    }
+  }
+
+  h+=`<div class="card-hdr" style="margin:14px 0 6px"><i class="ti ti-list"></i> ${istAdmin?'Alle Urlaube':'Meine Urlaube'}</div>`;
+  const anzeige=istAdmin?urlaube.filter(u=>u.status!=='beantragt'):urlaube;
+  if(!anzeige.length){
+    h+=`<div style="font-size:13px;color:var(--ink-40);text-align:center;padding:16px">Keine Urlaube vorhanden</div>`;
+  } else {
+    for(const u of anzeige){ h+=urlaubKarte(u, istAdmin); }
+  }
+
+  el.innerHTML=h;
+}
+
+function urlaubStatusBadge(status){
+  const map={
+    beantragt:['var(--amber)','Beantragt'],
+    genehmigt:['var(--green)','Genehmigt'],
+    abgelehnt:['var(--red)','Abgelehnt'],
+    storniert:['var(--ink-40)','Storniert'],
+  };
+  const [c,l]=map[status]||['var(--ink-40)',status];
+  return `<span style="font-size:10px;font-weight:600;color:${c};background:${c}22;padding:2px 8px;border-radius:10px">${l}</span>`;
+}
+
+function urlaubKarte(u, adminAnsicht){
+  const tage=urlaubstageImZeitraum(u.von, u.bis);
+  const name=u.userName||'';
+  let aktionen='';
+  if(adminAnsicht && u.status==='beantragt'){
+    aktionen=`<div style="display:flex;gap:6px;margin-top:8px">
+      <button class="btn btn-sm btn-copper" style="flex:1" onclick="event.stopPropagation();urlaubFreigeben('${u.id}')"><i class="ti ti-check"></i> Freigeben</button>
+      <button class="btn btn-sm btn-danger" style="flex:1" onclick="event.stopPropagation();urlaubAblehnen('${u.id}')"><i class="ti ti-x"></i> Ablehnen</button>
+    </div>`;
+  } else if(!adminAnsicht && (u.status==='beantragt'||u.status==='genehmigt') && u.von>=today()){
+    aktionen=`<button class="btn btn-sm btn-full" style="margin-top:8px" onclick="event.stopPropagation();urlaubStornieren('${u.id}')"><i class="ti ti-trash"></i> Stornieren</button>`;
+  }
+  return `<div class="card" style="margin-bottom:6px">
+    <div style="display:flex;align-items:center;justify-content:space-between">
+      <div>
+        ${adminAnsicht&&name?`<div style="font-size:13px;font-weight:600">${esc(name)}</div>`:''}
+        <div style="font-size:13px;${adminAnsicht?'color:var(--ink-60)':'font-weight:600'}">${fmtDate(u.von)} – ${fmtDate(u.bis)}</div>
+        <div style="font-size:11px;color:var(--ink-40)">${tage} Urlaubstag${tage===1?'':'e'}${u.notiz?' · '+esc(u.notiz):''}</div>
+      </div>
+      ${urlaubStatusBadge(u.status)}
+    </div>
+    ${aktionen}
+  </div>`;
+}
+
+async function modalUrlaubAntrag(){
+  showModal(`
+    <div class="m-title"><i class="ti ti-beach"></i> Urlaub beantragen</div>
+    <div class="f-row">
+      <div class="f"><label>Von</label><input type="date" id="urVon" value="${today()}" onchange="urlaubVorschau()"></div>
+      <div class="f"><label>Bis</label><input type="date" id="urBis" value="${today()}" onchange="urlaubVorschau()"></div>
+    </div>
+    <div class="f"><label>Notiz (optional)</label><input type="text" id="urNotiz" placeholder="z. B. Familienurlaub"></div>
+    <div id="urVorschau" style="font-size:13px;color:var(--ink-60);background:var(--ink-05);border-radius:8px;padding:8px 12px;margin-bottom:12px"></div>
+    <div class="f-row">
+      <button class="btn btn-copper btn-full" onclick="urlaubBeantragen()"><i class="ti ti-send"></i> Antrag senden</button>
+      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+    </div>`);
+  urlaubVorschau();
+}
+function urlaubVorschau(){
+  const von=document.getElementById('urVon')?.value;
+  const bis=document.getElementById('urBis')?.value;
+  const el=document.getElementById('urVorschau');
+  if(!el) return;
+  if(!von||!bis||bis<von){ el.textContent='Bitte gültigen Zeitraum wählen.'; return; }
+  const tage=urlaubstageImZeitraum(von, bis);
+  // Feiertage im Zeitraum auflisten
+  let frei=[];
+  let d=new Date(von+'T00:00:00'); const b=new Date(bis+'T00:00:00');
+  while(d<=b){ const ds=ymd(d); if(!istWochenende(ds)&&istFreierTag(ds)) frei.push(freierTagName(ds)); d=plusTage(d,1); }
+  el.innerHTML=`<strong>${tage} Urlaubstag${tage===1?'':'e'}</strong> (Mo–Fr, ohne Feiertage)`
+    +(frei.length?`<br><span style="font-size:11px;color:var(--ink-40)">Nicht gezählt: ${frei.join(', ')}</span>`:'');
+}
+async function urlaubBeantragen(){
+  const von=document.getElementById('urVon')?.value;
+  const bis=document.getElementById('urBis')?.value;
+  const notiz=document.getElementById('urNotiz')?.value?.trim()||'';
+  if(!von||!bis){ toast('Bitte Zeitraum wählen'); return; }
+  if(bis<von){ toast('Enddatum vor Startdatum'); return; }
+  const tage=urlaubstageImZeitraum(von, bis);
+  if(tage<1){ toast('Keine anrechenbaren Urlaubstage im Zeitraum'); return; }
+  // Resturlaub prüfen
+  const jahr=new Date().getFullYear();
+  const anspruch=(CU.urlaubProJahr!=null?CU.urlaubProJahr:30);
+  const verbraucht=await urlaubVerbraucht(CU.id, jahr);
+  if(verbraucht+tage>anspruch && !confirm(`Damit werden ${verbraucht+tage} von ${anspruch} Tagen verplant – mehr als dein Anspruch. Trotzdem beantragen?`)) return;
+  const a={
+    id:uid(), typ:'urlaub', userId:CU.id, userName:CU.name,
+    von, bis, tage, notiz, status:'beantragt',
+    erstellt:nowIso(), geaendert:nowIso(),
+  };
+  await idbPut('abwesenheit', a);
+  bcSend('urlaub_changed',{id:a.id});
+  syncSoon(); closeModal(); renderUrlaub();
+  toast('Urlaubsantrag gesendet ✓');
+}
+async function urlaubFreigeben(id){
+  const a=await idbGet('abwesenheit', id); if(!a) return;
+  a.status='genehmigt'; a.geaendert=nowIso(); a.genehmigtVon=CU?.name||''; a.genehmigtAm=nowIso();
+  await idbPut('abwesenheit', a);
+  // In den Kalender als Termin (für alle sichtbar) eintragen
+  await urlaubInKalender(a);
+  bcSend('urlaub_changed',{id});
+  syncSoon(); renderUrlaub();
+  toast('Urlaub freigegeben ✓');
+}
+async function urlaubAblehnen(id){
+  const a=await idbGet('abwesenheit', id); if(!a) return;
+  if(!confirm('Antrag ablehnen?')) return;
+  a.status='abgelehnt'; a.geaendert=nowIso();
+  await idbPut('abwesenheit', a);
+  bcSend('urlaub_changed',{id});
+  syncSoon(); renderUrlaub();
+  toast('Antrag abgelehnt');
+}
+async function urlaubStornieren(id){
+  const a=await idbGet('abwesenheit', id); if(!a) return;
+  if(!confirm('Urlaub stornieren?')) return;
+  a.status='storniert'; a.geaendert=nowIso();
+  await idbPut('abwesenheit', a);
+  // ggf. Kalendereintrag entfernen
+  await idbDelete('termine', 'urlaub_'+id).catch(()=>{});
+  bcSend('urlaub_changed',{id});
+  syncSoon(); renderUrlaub();
+  toast('Urlaub storniert');
+}
+// Genehmigten Urlaub als Kalendertermin ablegen (für alle sichtbar)
+async function urlaubInKalender(a){
+  const termin={
+    id:'urlaub_'+a.id,
+    titel:'Urlaub: '+(a.userName||''),
+    typ:'urlaub',
+    datum:a.von, datumBis:a.bis,
+    ganztags:true, objektId:null,
+    status:'aktiv', notiz:a.notiz||'',
+    _urlaub:true, userId:a.userId,
+    erstellt:nowIso(), geaendert:nowIso(),
+  };
+  await idbPut('termine', termin);
 }
 
 async function modalSitzungDetail(sId){
@@ -2680,7 +2926,7 @@ async function saveSitzungNachtrag(sId){
 /* ── Tätigkeiten verwalten (Admin) ── */
 async function modalTaetigkeitenVerwalten(){
   const kats=await getTaetigkeitKat(false);
-  let rows=kats.map(k=>`
+  const kartenRow=k=>`
     <div class="card" style="margin-bottom:6px;padding:8px 10px">
       <div style="display:flex;align-items:center;gap:8px">
         <div style="flex:1;min-width:0">
@@ -2690,10 +2936,17 @@ async function modalTaetigkeitenVerwalten(){
         <button class="btn btn-sm" onclick="modalTaetigkeitKatEdit('${k.id}')"><i class="ti ti-pencil"></i></button>
         <button class="btn btn-sm" onclick="taetigkeitKatToggle('${k.id}')"><i class="ti ti-eye${k.sichtbar===false?'-off':''}"></i></button>
       </div>
-    </div>`).join('');
+    </div>`;
+  const objektKats=kats.filter(k=>!k.allgemein);
+  const allgKats=kats.filter(k=>k.allgemein);
   showModal(`
     <div class="m-title"><i class="ti ti-clock-cog"></i> Tätigkeiten</div>
-    <div style="max-height:55vh;overflow-y:auto">${rows}</div>
+    <div style="max-height:55vh;overflow-y:auto">
+      <div class="card-hdr" style="margin:4px 0 6px"><i class="ti ti-building"></i> Objektbezogen</div>
+      ${objektKats.map(kartenRow).join('')||'<div style="font-size:12px;color:var(--ink-40);margin-bottom:6px">Keine</div>'}
+      <div class="card-hdr" style="margin:12px 0 6px"><i class="ti ti-map-pin"></i> Allgemein (standortbezogen)</div>
+      ${allgKats.map(kartenRow).join('')||'<div style="font-size:12px;color:var(--ink-40);margin-bottom:6px">Keine</div>'}
+    </div>
     <button class="btn btn-copper btn-full" style="margin-top:10px" onclick="modalTaetigkeitKatEdit(null)"><i class="ti ti-plus"></i> Neue Tätigkeit</button>
     <button class="btn btn-full" style="margin-top:6px" onclick="closeModal()">Schließen</button>`);
 }
@@ -2714,6 +2967,9 @@ async function modalTaetigkeitKatEdit(katId){
     <label style="display:flex;align-items:center;gap:8px;font-size:13px;margin:6px 0;cursor:pointer">
       <input type="checkbox" id="tkMangel" ${k.mangel?'checked':''} style="width:auto"> Mangelbezogen (Mangel-Auswahl beim Start anzeigen)
     </label>
+    <label style="display:flex;align-items:center;gap:8px;font-size:13px;margin:6px 0;cursor:pointer">
+      <input type="checkbox" id="tkAllgemein" ${k.allgemein?'checked':''} style="width:auto"> Allgemein / standortbezogen (statt einzelnem Objekt)
+    </label>
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="saveTaetigkeitKat('${katId||''}')"><i class="ti ti-check"></i> Speichern</button>
       <button class="btn btn-full" onclick="modalTaetigkeitenVerwalten()">Zurück</button>
@@ -2731,6 +2987,7 @@ async function saveTaetigkeitKat(katId){
     name,
     umlage: document.getElementById('tkUmlage')?.value||'neutral',
     mangel: document.getElementById('tkMangel')?.checked||false,
+    allgemein: document.getElementById('tkAllgemein')?.checked||false,
     sichtbar: alt?alt.sichtbar!==false:true,
     sort: alt?.sort ?? (kats.length+1),
     erstellt: alt?.erstellt||nowIso(), geaendert:nowIso(),
@@ -2777,28 +3034,48 @@ async function modalTaetigkeitQRListe(){
   const kats=await getTaetigkeitKat(true);
   if(!kats.length){ toast('Keine Tätigkeiten angelegt'); return; }
   if(!objekte.length){ toast('Keine Objekte vorhanden'); return; }
-  // verfügbare Standorte (Gruppen) aus den Objekten ableiten
-  const gruppen=[...new Set(objekte.map(o=>o.gruppe))];
+  window._qrModus='objekt'; // 'objekt' | 'allgemein'
   window._qrFilter={ standort:'all', objekt:'all' };
+  window._qrObjekteCache=objekte;
+  const gruppen=[...new Set(objekte.map(o=>o.gruppe))];
   const standortOpts=`<option value="all">Alle Standorte</option>`+gruppen.map(g=>`<option value="${g}">${GRUPPE_LABEL[g]||g}</option>`).join('');
+  const lgs=await getMyLiegenschaften();
+  const lgOpts=`<option value="all">Alle Liegenschaften</option>`+lgs.map(l=>`<option value="${l.id}">${esc(l.name)}</option>`).join('');
   showModal(`
     <div class="m-title"><i class="ti ti-qrcode"></i> Tätigkeits-QR drucken</div>
-    <div class="f"><label>Standort</label>
-      <select id="qrFilterStandort" onchange="qrFilterAendern()">${standortOpts}</select></div>
-    <div class="f"><label>Objekt</label>
-      <select id="qrFilterObjekt" onchange="qrFilterObjektAendern()"><option value="all">Alle Objekte</option></select></div>
-    <div style="font-size:12px;color:var(--ink-40);margin-bottom:8px">Es werden QR-Codes für die gewählte Auswahl × alle Tätigkeiten erzeugt.</div>
-    <div id="qrVorschau" style="max-height:42vh;overflow-y:auto;margin-bottom:10px"></div>
+    <div style="display:flex;gap:6px;margin-bottom:12px">
+      <button class="filter-chip active" id="qrModusObjekt" onclick="qrModusWechseln('objekt')">Objektbezogen</button>
+      <button class="filter-chip" id="qrModusAllg" onclick="qrModusWechseln('allgemein')">Allgemein</button>
+    </div>
+    <div id="qrFilterObjektWrap">
+      <div class="f"><label>Standort</label>
+        <select id="qrFilterStandort" onchange="qrFilterAendern()">${standortOpts}</select></div>
+      <div class="f"><label>Objekt</label>
+        <select id="qrFilterObjekt" onchange="qrFilterObjektAendern()"><option value="all">Alle Objekte</option></select></div>
+    </div>
+    <div id="qrFilterAllgWrap" style="display:none">
+      <div class="f"><label>Liegenschaft</label>
+        <select id="qrFilterLg" onchange="qrVorschauAktualisieren()">${lgOpts}</select></div>
+    </div>
+    <div style="font-size:12px;color:var(--ink-40);margin-bottom:8px">QR-Codes für die gewählte Auswahl × passende Tätigkeiten.</div>
+    <div id="qrVorschau" style="max-height:38vh;overflow-y:auto;margin-bottom:10px"></div>
     <button class="btn btn-copper btn-full" style="margin-bottom:6px" onclick="qrAuswahlDrucken()"><i class="ti ti-printer"></i> Auswahl drucken</button>
     <button class="btn btn-full" onclick="closeModal()">Schließen</button>
   `);
   qrFilterAendern();
 }
+function qrModusWechseln(modus){
+  window._qrModus=modus;
+  document.getElementById('qrModusObjekt')?.classList.toggle('active', modus==='objekt');
+  document.getElementById('qrModusAllg')?.classList.toggle('active', modus==='allgemein');
+  document.getElementById('qrFilterObjektWrap').style.display = modus==='objekt'?'block':'none';
+  document.getElementById('qrFilterAllgWrap').style.display   = modus==='allgemein'?'block':'none';
+  qrVorschauAktualisieren();
+}
 function qrFilterAendern(){
   const g=document.getElementById('qrFilterStandort')?.value||'all';
   window._qrFilter.standort=g;
   window._qrFilter.objekt='all';
-  // Objektauswahl nach Standort befüllen
   const sel=document.getElementById('qrFilterObjekt');
   if(sel){
     const objekte=(window._qrObjekteCache||[]);
@@ -2820,13 +3097,32 @@ async function qrSelektierteObjekte(){
   if(f.objekt!=='all')   liste=liste.filter(o=>o.id===f.objekt);
   return liste;
 }
+async function qrSelektierteLiegenschaften(){
+  const lgs=await getMyLiegenschaften();
+  const sel=document.getElementById('qrFilterLg')?.value||'all';
+  return sel==='all'?lgs:lgs.filter(l=>l.id===sel);
+}
 async function qrVorschauAktualisieren(){
   const el=document.getElementById('qrVorschau');
   if(!el) return;
+  if(window._qrModus==='allgemein'){
+    const lgs=await qrSelektierteLiegenschaften();
+    const kats=(await getTaetigkeitKat(true)).filter(k=>k.allgemein);
+    if(!kats.length){ el.innerHTML='<div style="font-size:13px;color:var(--ink-40);text-align:center;padding:14px">Keine allgemeinen Tätigkeiten angelegt</div>'; return; }
+    if(!lgs.length){ el.innerHTML='<div style="font-size:13px;color:var(--ink-40);text-align:center;padding:14px">Keine Liegenschaft in dieser Auswahl</div>'; return; }
+    let h=`<div style="font-size:12px;color:var(--ink-60);margin-bottom:6px">${lgs.length} Liegenschaft(en) × ${kats.length} allgemeine Tätigkeit(en) = ${lgs.length*kats.length} QR-Codes</div>`;
+    h+=lgs.map(l=>`<div style="border:1px solid var(--ink-10);border-radius:8px;padding:8px 10px;margin-bottom:6px">
+      <div style="font-weight:600;font-size:13px">${esc(l.name)}</div>
+      <div style="font-size:11px;color:var(--ink-40)">${kats.map(k=>esc(k.name)).join(', ')}</div>
+    </div>`).join('');
+    el.innerHTML=h;
+    return;
+  }
+  // objektbezogen
   const objekte=await qrSelektierteObjekte();
-  const kats=await getTaetigkeitKat(true);
+  const kats=(await getTaetigkeitKat(true)).filter(k=>!k.allgemein);
   if(!objekte.length){ el.innerHTML='<div style="font-size:13px;color:var(--ink-40);text-align:center;padding:14px">Keine Objekte in dieser Auswahl</div>'; return; }
-  let h=`<div style="font-size:12px;color:var(--ink-60);margin-bottom:6px">${objekte.length} Objekt(e) × ${kats.length} Tätigkeit(en) = ${objekte.length*kats.length} QR-Codes</div>`;
+  let h=`<div style="font-size:12px;color:var(--ink-60);margin-bottom:6px">${objekte.length} Objekt(e) × ${kats.length} objektbezogene Tätigkeit(en) = ${objekte.length*kats.length} QR-Codes</div>`;
   h+=objekte.map(o=>`<div style="border:1px solid var(--ink-10);border-radius:8px;padding:8px 10px;margin-bottom:6px">
     <div style="font-weight:600;font-size:13px">${esc(o.name)}</div>
     <div style="font-size:11px;color:var(--ink-40)">${GRUPPE_LABEL[o.gruppe]||o.gruppe} · ${kats.length} QR-Codes</div>
@@ -2834,25 +3130,38 @@ async function qrVorschauAktualisieren(){
   el.innerHTML=h;
 }
 async function qrAuswahlDrucken(){
-  const objekte=await qrSelektierteObjekte();
-  const kats=await getTaetigkeitKat(true);
-  if(!objekte.length){ toast('Keine Objekte in der Auswahl'); return; }
   const cells=[];
-  for(const o of objekte){
-    for(const k of kats){
-      const qrText='TAETIGKEIT:'+k.id+':'+o.id;
-      const img=qrDataUrl(qrText, 220);
-      cells.push(`<div class="qrcell">
-        <img src="${img}" alt="QR">
-        <div class="qttl">${esc(k.name)}</div>
-        <div class="qobj">${esc(o.name)}</div>
-      </div>`);
+  let titel='';
+  if(window._qrModus==='allgemein'){
+    const lgs=await qrSelektierteLiegenschaften();
+    const kats=(await getTaetigkeitKat(true)).filter(k=>k.allgemein);
+    if(!lgs.length||!kats.length){ toast('Nichts zu drucken'); return; }
+    for(const l of lgs){
+      for(const k of kats){
+        const qrText='TAETIGKEIT:'+k.id+':'+l.id;
+        const img=qrDataUrl(qrText, 220);
+        cells.push(`<div class="qrcell"><img src="${img}" alt="QR"><div class="qttl">${esc(k.name)}</div><div class="qobj">${esc(l.name)}</div></div>`);
+      }
     }
+    const sel=document.getElementById('qrFilterLg')?.value||'all';
+    titel = sel==='all' ? 'Allgemeine Tätigkeiten – alle Liegenschaften' : ('Allgemein – '+(LIEGENSCHAFTEN.find(l=>l.id===sel)?.name||''));
+  } else {
+    const objekte=await qrSelektierteObjekte();
+    const kats=(await getTaetigkeitKat(true)).filter(k=>!k.allgemein);
+    if(!objekte.length){ toast('Keine Objekte in der Auswahl'); return; }
+    for(const o of objekte){
+      for(const k of kats){
+        const qrText='TAETIGKEIT:'+k.id+':'+o.id;
+        const img=qrDataUrl(qrText, 220);
+        cells.push(`<div class="qrcell"><img src="${img}" alt="QR"><div class="qttl">${esc(k.name)}</div><div class="qobj">${esc(o.name)}</div></div>`);
+      }
+    }
+    const f=window._qrFilter||{};
+    titel=f.objekt&&f.objekt!=='all'
+      ? (getObj(f.objekt)?.name||'')
+      : (f.standort&&f.standort!=='all' ? (GRUPPE_LABEL[f.standort]||f.standort) : 'Alle Objekte');
   }
-  const f=window._qrFilter||{};
-  const titel=f.objekt&&f.objekt!=='all'
-    ? (getObj(f.objekt)?.name||'')
-    : (f.standort&&f.standort!=='all' ? (GRUPPE_LABEL[f.standort]||f.standort) : 'Alle Standorte');
+  if(!cells.length){ toast('Nichts zu drucken'); return; }
   const html=`<!DOCTYPE html><html lang="de"><head><meta charset="utf-8">
     <title>Tätigkeits-QR-Codes · ${esc(titel)}</title>
     <style>
@@ -2946,29 +3255,47 @@ function summeMinuten(sitzungen, filterFn){
 // Stundenkonto für einen User: aktuelle Woche, aktueller Monat, Saldo inkl. Übertrag
 async function berechneStundenkonto(user){
   const sitzungen=await getSitzungenUser(user.id);
+  const urlaube=await getUrlaube(user.id);
   const wochenSoll=(user.wochenSoll!=null?user.wochenSoll:40);
+  const tagSoll=wochenSoll/5; // Soll je Arbeitstag (Mo–Fr)
   const heuteStr=today();
   const dieseWocheMontag=montagDerWoche(heuteStr);
   const dieserMonat=monatKey(heuteStr);
-  // Ist-Minuten dieser Woche / dieses Monats
+  // Ist-Minuten dieser Woche / dieses Monats (tatsächlich gearbeitete Zeit; zählt auch im Urlaub)
   const wocheMin=summeMinuten(sitzungen, s=>montagDerWoche(s.datum)===dieseWocheMontag);
   const monatMin=summeMinuten(sitzungen, s=>monatKey(s.datum)===dieserMonat);
-  // Heutige Minuten (für 10-Std-Warnung)
   const heuteMin=summeMinuten(sitzungen, s=>s.datum===heuteStr);
-  // Monatssoll = Anzahl voller Wochen-Anteile im Monat. Vereinfachung: Soll/Tag * Arbeitstage,
-  // aber da Mo–So frei einteilbar: Monatssoll = wochenSoll/7 * Tage-im-Monat-bis-heute.
-  const [jahr,mon]=dieserMonat.split('-').map(Number);
-  const tagImMonat=new Date(heuteStr+'T00:00:00').getDate();
-  const monatSollBisHeute=wochenSoll/7*tagImMonat;
-  const wochenSaldo=wocheMin/60 - wochenSoll;            // + = Überstunden
+
+  // Soll taggenau aufsummieren: jeder Mo–Fr zählt tagSoll, außer Feiertag/Sondertag oder genehmigter Urlaub.
+  const sollBis=(vonStr, bisStr)=>{
+    let soll=0;
+    let d=new Date(vonStr+'T00:00:00');
+    const bis=new Date(bisStr+'T00:00:00');
+    while(d<=bis){
+      const ds=ymd(d);
+      const wt=d.getDay();
+      if(wt!==0 && wt!==6 && !istFreierTag(ds) && !istUrlaubstag(urlaube, ds)){
+        soll+=tagSoll;
+      }
+      d=plusTage(d,1);
+    }
+    return soll;
+  };
+  // Wochensoll bis heute (Mo bis heute)
+  const wochenSollBisHeute=sollBis(dieseWocheMontag, heuteStr);
+  // Monatssoll bis heute (Monatserster bis heute)
+  const ersterImMonat=dieserMonat+'-01';
+  const monatSollBisHeute=sollBis(ersterImMonat, heuteStr);
+
+  const wochenSaldo=wocheMin/60 - wochenSollBisHeute;
   const monatSaldoBisHeute=monatMin/60 - monatSollBisHeute;
-  // Übertrag aus Vormonaten (gespeichert in settings)
   const uebertrag=await getStundenUebertrag(user.id, dieserMonat);
   return {
     wochenSoll,
     wocheStd: wocheMin/60,
     monatStd: monatMin/60,
     heuteStd: heuteMin/60,
+    wochenSollBisHeute,
     wochenSaldo,
     monatSaldoBisHeute,
     uebertrag,
@@ -2991,6 +3318,8 @@ async function pruefeMonatsuebertrag(){
       const sitzungen=await getSitzungenUser(u.id);
       if(!sitzungen.length) continue;
       const wochenSoll=(u.wochenSoll!=null?u.wochenSoll:40);
+      const tagSoll=wochenSoll/5;
+      const urlaube=await getUrlaube(u.id);
       const rec=await idbGet('settings','stdkonto_'+u.id).catch(()=>null)||{id:'stdkonto_'+u.id,uebertrag:0,verrechnet:[]};
       rec.verrechnet=rec.verrechnet||[];
       // alle Monate mit Sitzungen, die VOR dem aktuellen Monat liegen und noch nicht verrechnet sind
@@ -3002,7 +3331,12 @@ async function pruefeMonatsuebertrag(){
         const istMin=summeMinuten(sitzungen, s=>monatKey(s.datum)===m);
         const [jr,mo]=m.split('-').map(Number);
         const tageImMonat=new Date(jr,mo,0).getDate();
-        const monatSoll=wochenSoll/7*tageImMonat;
+        // Monatssoll taggenau: Mo–Fr, ohne Feiertage/Sondertage/genehmigten Urlaub
+        let monatSoll=0;
+        for(let t=1;t<=tageImMonat;t++){
+          const ds=`${jr}-${String(mo).padStart(2,'0')}-${String(t).padStart(2,'0')}`;
+          if(!istWochenende(ds) && !istFreierTag(ds) && !istUrlaubstag(urlaube, ds)) monatSoll+=tagSoll;
+        }
         const saldo=istMin/60 - monatSoll;   // + Über, - Unter
         rec.uebertrag=(Number(rec.uebertrag)||0)+saldo;
         rec.verrechnet.push(m);
@@ -3012,6 +3346,91 @@ async function pruefeMonatsuebertrag(){
     }
   }catch(e){ console.warn('Monatsübertrag:', e); }
 }
+/* ═══════════════════════════════════════════════════════════
+   FEIERTAGE NRW + Sondertage (24.12./31.12.) + URLAUB
+═══════════════════════════════════════════════════════════ */
+// Ostersonntag (Gauß) als Date
+function osterSonntag(jahr){
+  const a=jahr%19, b=Math.floor(jahr/100), c=jahr%100;
+  const d=Math.floor(b/4), e=b%4, f=Math.floor((b+8)/25);
+  const g=Math.floor((b-f+1)/3), h=(19*a+b-d-g+15)%30;
+  const i=Math.floor(c/4), k=c%4, l=(32+2*e+2*i-h-k)%7;
+  const m=Math.floor((a+11*h+22*l)/451);
+  const monat=Math.floor((h+l-7*m+114)/31), tag=((h+l-7*m+114)%31)+1;
+  return new Date(jahr, monat-1, tag);
+}
+function ymd(d){ return d.toISOString().split('T')[0]; }
+function plusTage(d, n){ const x=new Date(d); x.setDate(x.getDate()+n); return x; }
+// Gesetzliche Feiertage NRW für ein Jahr -> Map { 'YYYY-MM-DD': 'Name' }
+function feiertageNRW(jahr){
+  const o=osterSonntag(jahr);
+  const f={};
+  f[`${jahr}-01-01`]='Neujahr';
+  f[ymd(plusTage(o,-2))]='Karfreitag';
+  f[ymd(plusTage(o,1))]='Ostermontag';
+  f[`${jahr}-05-01`]='Tag der Arbeit';
+  f[ymd(plusTage(o,39))]='Christi Himmelfahrt';
+  f[ymd(plusTage(o,50))]='Pfingstmontag';
+  f[ymd(plusTage(o,60))]='Fronleichnam';
+  f[`${jahr}-10-03`]='Tag der Deutschen Einheit';
+  f[`${jahr}-11-01`]='Allerheiligen';
+  f[`${jahr}-12-25`]='1. Weihnachtstag';
+  f[`${jahr}-12-26`]='2. Weihnachtstag';
+  return f;
+}
+// Sondertage ohne Kontingentabzug, die das Soll wie ein Feiertag reduzieren
+function sondertage(jahr){
+  return { [`${jahr}-12-24`]:'Heiligabend', [`${jahr}-12-31`]:'Silvester' };
+}
+function istFreierTag(dateStr){
+  const jahr=Number(dateStr.slice(0,4));
+  return !!(feiertageNRW(jahr)[dateStr] || sondertage(jahr)[dateStr]);
+}
+function freierTagName(dateStr){
+  const jahr=Number(dateStr.slice(0,4));
+  return feiertageNRW(jahr)[dateStr] || sondertage(jahr)[dateStr] || '';
+}
+function istWochenende(dateStr){
+  const wt=new Date(dateStr+'T00:00:00').getDay();
+  return wt===0 || wt===6;
+}
+// Anrechenbare Urlaubstage zwischen zwei Daten (Mo–Fr, ohne Feiertage/Sondertage)
+function urlaubstageImZeitraum(vonStr, bisStr){
+  if(!vonStr||!bisStr) return 0;
+  let n=0;
+  let d=new Date(vonStr+'T00:00:00');
+  const bis=new Date(bisStr+'T00:00:00');
+  while(d<=bis){
+    const ds=ymd(d);
+    if(!istWochenende(ds) && !istFreierTag(ds)) n++;
+    d=plusTage(d,1);
+  }
+  return n;
+}
+function tagSollStunden(user){
+  const ws=(user?.wochenSoll!=null?user.wochenSoll:40);
+  return ws/5;
+}
+async function getUrlaube(userId){
+  return (await idbGetAll('abwesenheit','userId',userId).catch(()=>[]))
+    .filter(a=>a.typ==='urlaub');
+}
+// Verbrauchte/vorgemerkte Urlaubstage im Jahr (beantragt + genehmigt zählen, abgelehnt/storniert nicht)
+async function urlaubVerbraucht(userId, jahr){
+  const urlaube=await getUrlaube(userId);
+  let tage=0;
+  for(const u of urlaube){
+    if(u.status==='abgelehnt'||u.status==='storniert') continue;
+    if((u.von||'').slice(0,4)!=String(jahr) && (u.bis||'').slice(0,4)!=String(jahr)) continue;
+    tage+=urlaubstageImZeitraum(u.von, u.bis);
+  }
+  return tage;
+}
+function istUrlaubstag(urlaube, dateStr){
+  return urlaube.some(u=>u.status==='genehmigt' && dateStr>=u.von && dateStr<=u.bis
+    && !istWochenende(dateStr) && !istFreierTag(dateStr));
+}
+
 function fmtSaldo(std){
   const v=Math.round(std*10)/10;
   const vz=v>0?'+':'';
@@ -3970,18 +4389,18 @@ async function bcVerarbeite(wert){
   if(wert.indexOf('TAETIGKEIT:')===0){
     closeModal();
     const teile=wert.split(':');
-    const katId=teile[1], objId=teile[2];
+    const katId=teile[1], zielId=teile[2];
     const kats=await getTaetigkeitKat();
     const kat=kats.find(k=>k.id===katId);
-    const obj=getObj(objId);
+    const istLg=(zielId||'').startsWith('lg_');
+    const zielName=istLg ? (LIEGENSCHAFTEN.find(l=>l.id===zielId)?.name||zielId) : (getObj(zielId)?.name||zielId);
     if(typeof starteTaetigkeitVonQR==='function'){
-      await starteTaetigkeitVonQR(katId, objId);
+      await starteTaetigkeitVonQR(katId, zielId);
     } else {
-      // Stempeluhr noch nicht aktiv – Inhalt zur Kontrolle anzeigen
       showModal(`<div class="m-title"><i class="ti ti-clock"></i> Tätigkeits-QR erkannt</div>
         <p style="font-size:13px;color:var(--ink-60);margin-bottom:6px">Dieser QR ist gültig:</p>
         <div style="background:var(--ink-05);border-radius:8px;padding:10px 12px;font-size:13px;margin-bottom:12px">
-          <strong>${kat?kat.name:katId}</strong><br>${obj?obj.name:objId}
+          <strong>${kat?kat.name:katId}</strong><br>${zielName}
         </div>
         <p style="font-size:12px;color:var(--ink-40);margin-bottom:12px">Die Stempeluhr wird im nächsten Schritt aktiviert. Danach startet dieser Scan die Tätigkeit automatisch.</p>
         <button class="btn btn-full" onclick="closeModal()">Schließen</button>`);
@@ -7723,6 +8142,8 @@ const TERMIN_TYPEN = [
   {val:'mieterhoehung', label:'Mieterhöhung',           icon:'ti-trending-up',   color:'#8B008B'},
   {val:'versicherung',  label:'Versicherung / Behörde', icon:'ti-building-bank', color:'#555'},
   {val:'vertrag',       label:'Vertrag / Versorger',     icon:'ti-file-dollar',   color:'#0E7C7B'},
+  {val:'urlaub',        label:'Urlaub',                  icon:'ti-beach',         color:'#0EA5A5'},
+  {val:'feiertag',      label:'Feiertag',                icon:'ti-confetti',      color:'#C0392B'},
   {val:'sonstiges',     label:'Sonstiges',               icon:'ti-calendar',      color:'#888'},
 ];
 
@@ -7739,8 +8160,31 @@ async function renderKalender() {
 
   const myObj  = await getMyObjekte();
   const myIds  = myObj.map(o=>o.id);
-  const alle   = (await idbGetAll('termine'))
+  const istAdmin = CU?.role==='admin';
+  let alle   = (await idbGetAll('termine'))
     .filter(t=>!t.objektId||myIds.includes(t.objektId));
+
+  // Urlaubstermine: Sichtbarkeit (Hausmeister sieht nur eigenen) + auf Einzeltage expandieren
+  const urlaubTermine=alle.filter(t=>t.typ==='urlaub');
+  alle=alle.filter(t=>t.typ!=='urlaub');
+  for(const ut of urlaubTermine){
+    if(!istAdmin && ut.userId!==CU?.id) continue; // Hausmeister nur eigener Urlaub
+    let d=new Date((ut.datum)+'T00:00:00');
+    const bis=new Date((ut.datumBis||ut.datum)+'T00:00:00');
+    while(d<=bis){
+      const ds=ymd(d);
+      if(!istWochenende(ds) && !istFreierTag(ds)){
+        alle.push({...ut, datum:ds, _expanded:true});
+      }
+      d=plusTage(d,1);
+    }
+  }
+
+  // Feiertage NRW + Sondertage des angezeigten Jahres als virtuelle Termine
+  const ftJahr={...feiertageNRW(_kalYear), ...sondertage(_kalYear)};
+  for(const [ds,name] of Object.entries(ftJahr)){
+    alle.push({id:'ft_'+ds, titel:name, typ:'feiertag', datum:ds, status:'aktiv', ganztags:true, _feiertag:true});
+  }
 
   // Heute-Badge: Termine heute
   const todayStr = today();
@@ -9942,6 +10386,8 @@ async function modalAddUser(){
     <p style="font-size:11px;color:var(--ink-40);margin-bottom:12px">Admin hat automatisch Zugriff auf alle Objekte.</p>
     <div class="f"><label>Wochensoll (Stunden) – für Stundenkonto</label>
       <input type="number" id="nuWochenSoll" value="40" min="0" max="60" step="0.5" inputmode="decimal"></div>
+    <div class="f"><label>Urlaubsanspruch (Tage/Jahr)</label>
+      <input type="number" id="nuUrlaub" value="30" min="0" max="40" step="1" inputmode="numeric"></div>
     <p style="font-size:11px;color:var(--ink-40);margin-bottom:12px">Für Teilzeit anpassen (z. B. 20). Mo–So frei einteilbar.</p>
     <div class="f-row">
       <button class="btn btn-copper btn-full" onclick="saveNewUser()"><i class="ti ti-check"></i> Speichern</button>
@@ -9958,7 +10404,8 @@ async function saveNewUser(){
   const sel=document.getElementById('nuObjekte');
   const objekte=role==='admin'?[]:Array.from(sel.selectedOptions).map(o=>o.value);
   const wochenSoll=parseFloat(document.getElementById('nuWochenSoll')?.value)||40;
-  await idbPut('users',{id:uid(),name,pin,role,objekte,aktiv:true,wochenSoll,eintritt:today()});
+  const urlaubProJahr=parseInt(document.getElementById('nuUrlaub')?.value)||30;
+  await idbPut('users',{id:uid(),name,pin,role,objekte,aktiv:true,wochenSoll,urlaubProJahr,eintritt:today()});
   closeModal(); await renderUserList_(); toast('Benutzer gespeichert ✓');
 }
 
@@ -9980,6 +10427,8 @@ async function modalEditUser(id){
     </div>
     <div class="f"><label>Wochensoll (Stunden) – für Stundenkonto</label>
       <input type="number" id="euWochenSoll" value="${u.wochenSoll!=null?u.wochenSoll:40}" min="0" max="60" step="0.5" inputmode="decimal"></div>
+    <div class="f"><label>Urlaubsanspruch (Tage/Jahr)</label>
+      <input type="number" id="euUrlaub" value="${u.urlaubProJahr!=null?u.urlaubProJahr:30}" min="0" max="40" step="1" inputmode="numeric"></div>
     <div class="f-row">
       <button class="btn btn-copper btn-full" onclick="saveEditUser('${id}')"><i class="ti ti-check"></i> Speichern</button>
       <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
@@ -9998,6 +10447,8 @@ async function saveEditUser(id){
   u.objekte=role==='admin'?[]:Array.from(sel.selectedOptions).map(o=>o.value);
   const ws=parseFloat(document.getElementById('euWochenSoll')?.value);
   if(!isNaN(ws)) u.wochenSoll=ws;
+  const ul=parseInt(document.getElementById('euUrlaub')?.value);
+  if(!isNaN(ul)) u.urlaubProJahr=ul;
   await idbPut('users',u);
   closeModal(); await renderUserList_(); toast('Gespeichert ✓');
 }
@@ -10414,6 +10865,7 @@ window.nav=async function(id,title,sub,push=true){
   if(id==='kalender')          await renderKalender();
   if(id==='lager')             await renderLager();
   if(id==='zeit')              await renderZeiterfassung();
+  if(id==='urlaub')            await renderUrlaub();
 };
 
 
