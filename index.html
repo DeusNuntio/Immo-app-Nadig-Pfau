@@ -329,13 +329,16 @@ button.chip.chip-active{background:var(--ink);color:#fff;border-color:var(--ink)
   .det-grid{grid-template-columns:1fr}
 }
 @media(min-width:768px){
-  .app-body{max-width:760px;margin:0 auto}
+  .app-body{max-width:900px;margin:0 auto}
   .stats-row{grid-template-columns:repeat(4,1fr)}
   .quick-actions{flex-wrap:wrap;overflow-x:visible}
 }
 @media(min-width:1100px){
-  .app-body{max-width:1000px}
-  .app-header,.bottom-nav{padding-left:max(14px,calc((100% - 1000px)/2));padding-right:max(14px,calc((100% - 1000px)/2))}
+  .app-body{max-width:1180px}
+  .app-header,.bottom-nav{padding-left:max(14px,calc((100% - 1180px)/2));padding-right:max(14px,calc((100% - 1180px)/2))}
+  /* Lange Kartenlisten auf breiten Schirmen zweispaltig (nur wo aktiviert) */
+  .page.cols-2 .colwrap{column-count:2;column-gap:14px}
+  .page.cols-2 .colwrap > *{break-inside:avoid;-webkit-column-break-inside:avoid}
 }
 @media print{
   .bottom-nav,.app-header,.fab,.modal-bg{display:none!important}
@@ -644,7 +647,7 @@ button.chip.chip-active{background:var(--ink);color:#fff;border-color:var(--ink)
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=12;
-const APP_VERSION = '2026-06-09-v31';
+const APP_VERSION = '2026-06-09-v32';
 let idb=null;
 
 function openIDB(){
@@ -3118,7 +3121,7 @@ async function modalTaetigkeitQRListe(){
   const kats=await getTaetigkeitKat(true);
   if(!kats.length){ toast('Keine Tätigkeiten angelegt'); return; }
   if(!objekte.length){ toast('Keine Objekte vorhanden'); return; }
-  window._qrModus='objekt'; // 'objekt' | 'allgemein'
+  window._qrModus='einzel'; // 'einzel' | 'objekt' | 'allgemein'
   window._qrFilter={ standort:'all', objekt:'all' };
   window._qrObjekteCache=objekte;
   const gruppen=[...new Set(objekte.map(o=>o.gruppe))];
@@ -3126,35 +3129,87 @@ async function modalTaetigkeitQRListe(){
   const lgs=await getMyLiegenschaften();
   const lgOpts=`<option value="all">Alle Liegenschaften</option>`+lgs.map(l=>`<option value="${l.id}">${esc(l.name)}</option>`).join('');
   showModal(`
-    <div class="m-title"><i class="ti ti-qrcode"></i> Tätigkeits-QR drucken</div>
-    <div style="display:flex;gap:6px;margin-bottom:12px">
-      <button class="filter-chip active" id="qrModusObjekt" onclick="qrModusWechseln('objekt')">Objektbezogen</button>
-      <button class="filter-chip" id="qrModusAllg" onclick="qrModusWechseln('allgemein')">Allgemein</button>
+    <div class="m-title"><i class="ti ti-qrcode"></i> Tätigkeits-QR</div>
+    <div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap">
+      <button class="filter-chip active" id="qrModusEinzel" onclick="qrModusWechseln('einzel')">Einzel-Etikett</button>
+      <button class="filter-chip" id="qrModusObjekt" onclick="qrModusWechseln('objekt')">Mehrere (Objekt)</button>
+      <button class="filter-chip" id="qrModusAllg" onclick="qrModusWechseln('allgemein')">Mehrere (Allgemein)</button>
     </div>
-    <div id="qrFilterObjektWrap">
+
+    <!-- Einzel-Etikett: eine Tätigkeit + ein Objekt → 30×50 mm Etikett -->
+    <div id="qrEinzelWrap">
+      <div class="f"><label>Standort</label>
+        <select id="qrEinzelStandort" onchange="qrEinzelStandortAendern()">${standortOpts}</select></div>
+      <div class="f"><label>Objekt *</label>
+        <select id="qrEinzelObjekt"><option value="">– Objekt wählen –</option></select></div>
+      <div class="f"><label>Tätigkeit *</label>
+        <select id="qrEinzelKat">${kats.filter(k=>!k.allgemein).map(k=>`<option value="${k.id}">${esc(k.name)}</option>`).join('')}</select></div>
+      <div style="font-size:11px;color:var(--ink-40);margin-bottom:10px">Erzeugt genau ein Etikett (30×50 mm) – wie beim Lager.</div>
+      <button class="btn btn-copper btn-full" style="margin-bottom:6px" onclick="qrEinzelEtikett('speichern')"><i class="ti ti-download"></i> Etikett speichern (Download)</button>
+      <button class="btn btn-full" style="margin-bottom:6px" onclick="qrEinzelEtikett('teilen')"><i class="ti ti-share"></i> Teilen / an Drucker</button>
+    </div>
+
+    <!-- Mehrere objektbezogen -->
+    <div id="qrFilterObjektWrap" style="display:none">
       <div class="f"><label>Standort</label>
         <select id="qrFilterStandort" onchange="qrFilterAendern()">${standortOpts}</select></div>
       <div class="f"><label>Objekt</label>
         <select id="qrFilterObjekt" onchange="qrFilterObjektAendern()"><option value="all">Alle Objekte</option></select></div>
+      <div style="font-size:12px;color:var(--ink-40);margin-bottom:8px">QR-Codes für die gewählte Auswahl × passende Tätigkeiten (A4-Bogen).</div>
+      <div id="qrVorschau" style="max-height:32vh;overflow-y:auto;margin-bottom:10px"></div>
+      <button class="btn btn-copper btn-full" style="margin-bottom:6px" onclick="qrAuswahlDrucken()"><i class="ti ti-printer"></i> Auswahl drucken</button>
     </div>
+
+    <!-- Mehrere allgemein -->
     <div id="qrFilterAllgWrap" style="display:none">
       <div class="f"><label>Liegenschaft</label>
         <select id="qrFilterLg" onchange="qrVorschauAktualisieren()">${lgOpts}</select></div>
+      <div style="font-size:12px;color:var(--ink-40);margin-bottom:8px">QR-Codes für die Auswahl × allgemeine Tätigkeiten (A4-Bogen).</div>
+      <div id="qrVorschauAllg" style="max-height:32vh;overflow-y:auto;margin-bottom:10px"></div>
+      <button class="btn btn-copper btn-full" style="margin-bottom:6px" onclick="qrAuswahlDrucken()"><i class="ti ti-printer"></i> Auswahl drucken</button>
     </div>
-    <div style="font-size:12px;color:var(--ink-40);margin-bottom:8px">QR-Codes für die gewählte Auswahl × passende Tätigkeiten.</div>
-    <div id="qrVorschau" style="max-height:38vh;overflow-y:auto;margin-bottom:10px"></div>
-    <button class="btn btn-copper btn-full" style="margin-bottom:6px" onclick="qrAuswahlDrucken()"><i class="ti ti-printer"></i> Auswahl drucken</button>
+
     <button class="btn btn-full" onclick="closeModal()">Schließen</button>
   `);
-  qrFilterAendern();
+  qrEinzelStandortAendern();
+}
+
+// Einzel-Etikett: Objektliste nach Standort füllen
+function qrEinzelStandortAendern(){
+  const g=document.getElementById('qrEinzelStandort')?.value||'all';
+  const sel=document.getElementById('qrEinzelObjekt');
+  if(!sel) return;
+  const objekte=(window._qrObjekteCache||[]);
+  const liste=g==='all'?objekte:objekte.filter(o=>o.gruppe===g);
+  sel.innerHTML='<option value="">– Objekt wählen –</option>'+liste.map(o=>`<option value="${o.id}">${esc(o.name)}</option>`).join('');
+}
+
+// Einzel-Etikett erzeugen (genau ein QR, 30×50 mm)
+async function qrEinzelEtikett(modus){
+  const objId=document.getElementById('qrEinzelObjekt')?.value;
+  const katId=document.getElementById('qrEinzelKat')?.value;
+  if(!objId){ toast('Bitte Objekt wählen'); return; }
+  if(!katId){ toast('Bitte Tätigkeit wählen'); return; }
+  const kats=await getTaetigkeitKat();
+  const kat=kats.find(k=>k.id===katId);
+  const obj=getObj(objId);
+  const qrText='TAETIGKEIT:'+katId+':'+objId;
+  const dateiname='TAET_'+katId+'_'+objId;
+  closeModal();
+  const fn=(modus==='teilen')?etikettPdfTeilen:etikettPdfSpeichern;
+  await fn(qrText, dateiname, kat?.name||katId, obj?.name||objId, umlageLabel(kat?.umlage));
 }
 function qrModusWechseln(modus){
   window._qrModus=modus;
+  document.getElementById('qrModusEinzel')?.classList.toggle('active', modus==='einzel');
   document.getElementById('qrModusObjekt')?.classList.toggle('active', modus==='objekt');
   document.getElementById('qrModusAllg')?.classList.toggle('active', modus==='allgemein');
-  document.getElementById('qrFilterObjektWrap').style.display = modus==='objekt'?'block':'none';
-  document.getElementById('qrFilterAllgWrap').style.display   = modus==='allgemein'?'block':'none';
-  qrVorschauAktualisieren();
+  const show=(id,vis)=>{ const e=document.getElementById(id); if(e) e.style.display=vis?'block':'none'; };
+  show('qrEinzelWrap',      modus==='einzel');
+  show('qrFilterObjektWrap',modus==='objekt');
+  show('qrFilterAllgWrap',  modus==='allgemein');
+  if(modus==='objekt'){ qrFilterAendern(); }
+  else if(modus==='allgemein'){ qrVorschauAktualisieren(); }
 }
 function qrFilterAendern(){
   const g=document.getElementById('qrFilterStandort')?.value||'all';
@@ -3187,9 +3242,9 @@ async function qrSelektierteLiegenschaften(){
   return sel==='all'?lgs:lgs.filter(l=>l.id===sel);
 }
 async function qrVorschauAktualisieren(){
-  const el=document.getElementById('qrVorschau');
-  if(!el) return;
   if(window._qrModus==='allgemein'){
+    const el=document.getElementById('qrVorschauAllg');
+    if(!el) return;
     const lgs=await qrSelektierteLiegenschaften();
     const kats=(await getTaetigkeitKat(true)).filter(k=>k.allgemein);
     if(!kats.length){ el.innerHTML='<div style="font-size:13px;color:var(--ink-40);text-align:center;padding:14px">Keine allgemeinen Tätigkeiten angelegt</div>'; return; }
@@ -3203,6 +3258,8 @@ async function qrVorschauAktualisieren(){
     return;
   }
   // objektbezogen
+  const el=document.getElementById('qrVorschau');
+  if(!el) return;
   const objekte=await qrSelektierteObjekte();
   const kats=(await getTaetigkeitKat(true)).filter(k=>!k.allgemein);
   if(!objekte.length){ el.innerHTML='<div style="font-size:13px;color:var(--ink-40);text-align:center;padding:14px">Keine Objekte in dieser Auswahl</div>'; return; }
