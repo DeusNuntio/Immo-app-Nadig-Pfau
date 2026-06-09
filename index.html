@@ -571,6 +571,7 @@ button.chip.chip-active{background:var(--ink);color:#fff;border-color:var(--ink)
     <div id="page-lager" class="page"></div>
     <div id="page-zeit" class="page"></div>
     <div id="page-urlaub" class="page"></div>
+    <div id="page-rechnungen" class="page"></div>
     <div id="page-settings" class="page"></div>
   </div>
 
@@ -642,8 +643,8 @@ button.chip.chip-active{background:var(--ink);color:#fff;border-color:var(--ink)
 /* ═══════════════════════════════════════════════════════════
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
-const DB_NAME='immo_v2', DB_VER=11;
-const APP_VERSION = '2026-06-09-v28';
+const DB_NAME='immo_v2', DB_VER=12;
+const APP_VERSION = '2026-06-09-v30';
 let idb=null;
 
 function openIDB(){
@@ -656,7 +657,7 @@ function openIDB(){
     const req=indexedDB.open(DB_NAME,DB_VER);
     req.onupgradeneeded=e=>{
       const db=e.target.result;
-      ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','fotos','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit'].forEach(s=>{
+      ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','fotos','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen'].forEach(s=>{
         if(!db.objectStoreNames.contains(s)){
           const store=db.createObjectStore(s,{keyPath:'id'});
           if(s==='mieter'){store.createIndex('objektId','objektId');store.createIndex('weNr','weNr')}
@@ -677,6 +678,7 @@ function openIDB(){
           if(s==='lager_anforderung'){store.createIndex('status','status')}
           if(s==='arbeitszeit'){store.createIndex('userId','userId');store.createIndex('datum','datum')}
           if(s==='abwesenheit'){store.createIndex('userId','userId')}
+          if(s==='rechnungen'){store.createIndex('objektId','objektId');store.createIndex('mieterId','mieterId');store.createIndex('datum','datum')}
         }
       });
     };
@@ -884,7 +886,7 @@ function nav(id,title,sub,push=true){
   const TITLES={dash:'Dashboard',aufgaben:'Aufgaben & Mängel',settings:'Einstellungen',
                 objekt:'Objekt',mieter:'Mieter',protokoll:'Übergabeprotokoll',
                 'protokoll-archiv':'Protokoll-Archiv',
-                'kalender':'Kalender','wartung':'Wartungsfristen','lager':'Lager & Material','urlaub':'Urlaub'};
+                'kalender':'Kalender','wartung':'Wartungsfristen','lager':'Lager & Material','urlaub':'Urlaub','rechnungen':'Rechnungen'};
   document.getElementById('hdrTitle').textContent=title||TITLES[id]||id;
   document.getElementById('hdrSub').textContent=sub||'';
   document.getElementById('hdrBack').classList.toggle('vis',push&&id!=='dash');
@@ -1010,6 +1012,7 @@ async function renderDash() {
     <button class="qa-btn" onclick="newProtokoll()"><i class="ti ti-clipboard-check"></i> Neues Protokoll</button>
     <button class="qa-btn copper" onclick="nav('zeit')"><i class="ti ti-clock"></i> Zeiterfassung</button>
     <button class="qa-btn" onclick="nav('wartung')"><i class="ti ti-calendar-stats"></i> Wartung</button>
+    ${CU?.role==='admin'?`<button class="qa-btn" onclick="nav('rechnungen')"><i class="ti ti-file-invoice"></i> Rechnungen</button>`:''}
     ${CU?.role==='admin'?`<button class="qa-btn" onclick="nav('settings')"><i class="ti ti-upload"></i> Excel-Import</button>`:''}
   </div>`;
 
@@ -2205,7 +2208,14 @@ const TAETIGKEIT_STANDARD=[
   {id:'notdienst',     name:'Notdienst / Störung',  umlage:'neutral',mangel:true,  allgemein:false, sichtbar:true, sort:9},
   {id:'wegezeit',      name:'Wegezeit',             umlage:'neutral',mangel:false, allgemein:false, sichtbar:true, sort:10},
   {id:'sonstiges',     name:'Sonstiges',            umlage:'neutral',mangel:false, allgemein:false, sichtbar:true, sort:11},
+  // Verwaltungstätigkeiten (vorrangig für Admins; reine Dokumentation/Abrechnung)
+  {id:'buchhaltung',   name:'Kontoführung / Buchhaltung', umlage:'nein', mangel:false, allgemein:true,  sichtbar:true, sort:12},
+  {id:'buero',         name:'Büro / Verwaltung',          umlage:'nein', mangel:false, allgemein:true,  sichtbar:true, sort:13},
+  {id:'objektbetreuung',name:'Objektbetreuung',           umlage:'nein', mangel:false, allgemein:false, sichtbar:true, sort:14},
+  {id:'mietergespraech',name:'Mietergespräch',            umlage:'nein', mangel:false, allgemein:false, sichtbar:true, sort:15},
 ];
+// IDs der neuen Verwaltungstätigkeiten (für Migration bestehender Installationen)
+const TAETIGKEIT_NEU_ADMIN=['buchhaltung','buero','objektbetreuung','mietergespraech'];
 
 // Liegenschaften für allgemeine (standortbezogene) Tätigkeiten.
 // Düsseldorf wird in Ruhrtalstr. und Mindener Str. getrennt; Krefeld/MG/Monheim je eine Liegenschaft.
@@ -2239,6 +2249,13 @@ async function ensureTaetigkeitKat(){
       if(k.allgemein===undefined){
         k.allgemein=allgemeinIds.includes(k.id);
         await idbPut('taetigkeit_kat', k); changed=true;
+      }
+    }
+    // Migration: neue Verwaltungstätigkeiten für Admins nachrüsten, falls noch nicht vorhanden
+    const vorhandeneIds=vorhanden.map(k=>k.id);
+    for(const k of TAETIGKEIT_STANDARD){
+      if(TAETIGKEIT_NEU_ADMIN.includes(k.id) && !vorhandeneIds.includes(k.id)){
+        await idbPut('taetigkeit_kat', {...k, erstellt:now()}); changed=true;
       }
     }
     return await idbGetAll('taetigkeit_kat');
@@ -2400,7 +2417,8 @@ async function renderZeiterfassung(){
   }
 
   if(istAdmin){
-    h+=`<div class="card-hdr" style="margin:16px 0 6px"><i class="ti ti-users"></i> Mitarbeiter-Übersicht</div>`;
+    // ── Hausmeister: mit Soll/Saldo ──
+    h+=`<div class="card-hdr" style="margin:16px 0 6px"><i class="ti ti-users"></i> Hausmeister-Übersicht</div>`;
     const mitarbeiter=(await idbGetAll('users')).filter(u=>u.role!=='admin' && u.aktiv!==false);
     if(!mitarbeiter.length){
       h+=`<div style="font-size:12px;color:var(--ink-40)">Keine Hausmeister angelegt.</div>`;
@@ -2424,6 +2442,32 @@ async function renderZeiterfassung(){
         </div>`;
       }
     }
+
+    // ── Admins: reine Dokumentation, kein Soll/Saldo ──
+    const admins=(await idbGetAll('users')).filter(u=>u.role==='admin' && u.aktiv!==false)
+      .sort((a,b)=>(a.name||'').localeCompare(b.name||''));
+    if(admins.length){
+      h+=`<div class="card-hdr" style="margin:16px 0 6px"><i class="ti ti-user-shield"></i> Admins (Dokumentation)</div>
+        <div style="font-size:11px;color:var(--ink-40);margin-bottom:6px">Erfasste Zeiten dienen der Dokumentation und Abrechnung – ohne Sollstunden.</div>`;
+      for(const m of admins){
+        const ak=await berechneIstStunden(m.id);
+        const eigen = m.id===CU?.id ? ' · <span style="color:var(--copper-d)">Sie</span>' : '';
+        h+=`<div class="card" style="margin-bottom:6px;cursor:pointer" onclick="modalMitarbeiterZeit('${m.id}')">
+          <div style="display:flex;align-items:center;gap:10px">
+            <div class="det-av" style="width:34px;height:34px;font-size:12px;flex-shrink:0">${initials(m.name)}</div>
+            <div style="flex:1;min-width:0">
+              <div style="font-size:14px;font-weight:600">${esc(m.name)}${eigen}</div>
+              <div style="font-size:11px;color:var(--ink-40)">Diese Woche: ${fmtStd(ak.wocheStd)} · Monat: ${fmtStd(ak.monatStd)}</div>
+            </div>
+            <div style="text-align:right;flex-shrink:0">
+              <div style="font-size:11px;color:var(--ink-40)">Monat</div>
+              <div style="font-size:14px;font-weight:700;color:var(--copper-d)">${fmtStd(ak.monatStd)}</div>
+            </div>
+          </div>
+        </div>`;
+      }
+    }
+
     h+=`<div class="card-hdr" style="margin:16px 0 6px">Verwaltung</div>
       <button class="btn btn-full" style="margin-bottom:6px" onclick="modalTaetigkeitQRListe()"><i class="ti ti-qrcode"></i> Tätigkeits-QR drucken</button>`;
   }
@@ -2622,23 +2666,36 @@ function setTimeOnIso(baseIso, hhmm){
 // Admin: Detailansicht der Zeiterfassung eines Mitarbeiters (Stundenkonto, Verlauf, Änderungen)
 async function modalMitarbeiterZeit(userId){
   const u=await idbGet('users', userId); if(!u) return;
-  const k=await berechneStundenkonto(u);
+  const istAdminUser = u.role==='admin';
   const sitzungen=(await getSitzungenUser(userId))
     .sort((a,b)=>(b.datum||'').localeCompare(a.datum||'')||(b.start||'').localeCompare(a.start||''));
   const tage=[...new Set(sitzungen.map(s=>s.datum))].slice(0,14);
-  const wColor=k.wochenSaldo>=0?'var(--green)':'var(--red)';
-  const gColor=k.gesamtSaldo>=0?'var(--green)':'var(--red)';
 
   // Sitzungen mit Änderungsvermerk (nur für Admin sichtbar)
   const mitAenderung=sitzungen.filter(s=>(s.aenderungen||[]).length);
 
-  // Urlaubsstand
-  const jahrU=new Date().getFullYear();
-  const anspruch=(u.urlaubProJahr!=null?u.urlaubProJahr:30);
-  const verbrauchtU=await urlaubVerbraucht(u.id, jahrU);
+  let body=`<div class="m-title"><i class="ti ti-user-clock"></i> ${esc(u.name)}</div>`;
 
-  let body=`<div class="m-title"><i class="ti ti-user-clock"></i> ${esc(u.name)}</div>
-    <div class="card" style="margin-bottom:10px">
+  if(istAdminUser){
+    // Reine Dokumentation – kein Soll, kein Saldo, kein Urlaubssoll
+    const ak=await berechneIstStunden(userId);
+    body+=`<div class="card" style="margin-bottom:10px">
+      <div style="font-size:11px;color:var(--ink-40);margin-bottom:6px">Erfasste Zeiten (Dokumentation / Abrechnung)</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;text-align:center">
+        <div><div style="font-size:11px;color:var(--ink-40)">Heute</div><div style="font-size:17px;font-weight:700">${fmtStd(ak.heuteStd)}</div></div>
+        <div><div style="font-size:11px;color:var(--ink-40)">Diese Woche</div><div style="font-size:17px;font-weight:700">${fmtStd(ak.wocheStd)}</div></div>
+        <div><div style="font-size:11px;color:var(--ink-40)">Dieser Monat</div><div style="font-size:17px;font-weight:700">${fmtStd(ak.monatStd)}</div></div>
+      </div>
+    </div>`;
+  } else {
+    const k=await berechneStundenkonto(u);
+    const wColor=k.wochenSaldo>=0?'var(--green)':'var(--red)';
+    const gColor=k.gesamtSaldo>=0?'var(--green)':'var(--red)';
+    // Urlaubsstand
+    const jahrU=new Date().getFullYear();
+    const anspruch=(u.urlaubProJahr!=null?u.urlaubProJahr:30);
+    const verbrauchtU=await urlaubVerbraucht(u.id, jahrU);
+    body+=`<div class="card" style="margin-bottom:10px">
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
         <div><div style="font-size:11px;color:var(--ink-40)">Diese Woche</div>
           <div style="font-size:17px;font-weight:700">${fmtStd(k.wocheStd)}</div>
@@ -2655,6 +2712,7 @@ async function modalMitarbeiterZeit(userId){
         <div style="font-size:13px;font-weight:600">${verbrauchtU} / ${anspruch} Tage · <span style="color:${(anspruch-verbrauchtU)>=0?'var(--green)':'var(--red)'}">${anspruch-verbrauchtU} übrig</span></div>
       </div>
     </div>`;
+  }
 
   if(mitAenderung.length){
     body+=`<div class="card-hdr" style="margin:8px 0 6px;color:var(--amber)"><i class="ti ti-pencil"></i> Nachträgliche Änderungen</div>`;
@@ -3302,6 +3360,17 @@ async function berechneStundenkonto(user){
     gesamtSaldo: monatSaldoBisHeute + uebertrag,
   };
 }
+// Reine Ist-Stunden (Woche/Monat/heute) ohne Soll/Saldo – für Admin-Dokumentation
+async function berechneIstStunden(userId){
+  const sitzungen=await getSitzungenUser(userId);
+  const heuteStr=today();
+  const dieseWocheMontag=montagDerWoche(heuteStr);
+  const dieserMonat=monatKey(heuteStr);
+  const wocheMin=summeMinuten(sitzungen, s=>montagDerWoche(s.datum)===dieseWocheMontag);
+  const monatMin=summeMinuten(sitzungen, s=>monatKey(s.datum)===dieserMonat);
+  const heuteMin=summeMinuten(sitzungen, s=>s.datum===heuteStr);
+  return { wocheStd:wocheMin/60, monatStd:monatMin/60, heuteStd:heuteMin/60 };
+}
 // Übertrag aus settings lesen (Schlüssel: stdkonto_<userId>)
 async function getStundenUebertrag(userId, bisMonat){
   const rec=await idbGet('settings','stdkonto_'+userId).catch(()=>null);
@@ -3481,7 +3550,59 @@ async function pauseUmschalten(){
   refreshZeit();
 }
 
-// ── Ausstempeln ──
+// ── Tombstone-Helfer: Datensatz löschen UND als gelöscht markieren (geräteübergreifend) ──
+async function deleteMitTombstone(store, id){
+  await idbDelete(store, id).catch(()=>{});
+  const rec = await idbGet('settings','tombstones').catch(()=>null) || {id:'tombstones', value:{}};
+  rec.value = rec.value || {};
+  rec.value[store] = rec.value[store] || {};
+  rec.value[store][id] = nowIso();
+  await idbPut('settings', rec);
+}
+
+// ── Arbeitszeiten vor einem Stichdatum löschen (für Bereinigung der Testdaten) ──
+// loeschAb=false: alles VOR stichDatum löschen (Standard für Testbereinigung)
+async function arbeitszeitVorStichtagLoeschen(stichDatum){
+  const alle = await idbGetAll('arbeitszeit');
+  let anzahl = 0;
+  for(const s of alle){
+    // Sitzungen ohne Datum oder mit Datum < Stichtag löschen
+    if(!s.datum || s.datum < stichDatum){
+      await deleteMitTombstone('arbeitszeit', s.id);
+      anzahl++;
+    }
+  }
+  return anzahl;
+}
+
+// ── Modal: Testzeiten bis Stichtag löschen (Admin) ──
+async function modalZeitenBereinigen(){
+  if(CU?.role!=='admin'){ toast('Nur für Admins'); return; }
+  const heuteStr=today();
+  const alle=await idbGetAll('arbeitszeit');
+  const offen=alle.filter(s=>s.status==='offen').length;
+  showModal(`<div class="m-title"><i class="ti ti-trash"></i> Testzeiten bereinigen</div>
+    <p style="font-size:13px;color:var(--ink-60);margin-bottom:10px;line-height:1.6">
+      Löscht <strong>alle Arbeitszeit-Sitzungen vor dem Stichtag</strong> – auf diesem Gerät und über OneDrive auf allen anderen Geräten.
+      Sitzungen <em>am</em> Stichtag und danach bleiben erhalten.
+    </p>
+    <div style="background:#FDECEA;border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:12px;color:var(--red)">
+      <i class="ti ti-alert-triangle"></i> Diese Aktion kann nicht rückgängig gemacht werden. Aktuell ${alle.length} Sitzung(en) gespeichert${offen?`, davon ${offen} offen (laufend).`:'.'}
+    </div>
+    <label style="font-size:12px;color:var(--ink-60);display:block;margin-bottom:4px">Stichtag (alles davor wird gelöscht)</label>
+    <input type="date" id="bereinigStichtag" value="${heuteStr}" style="width:100%;padding:10px;border:1px solid var(--ink-20);border-radius:8px;margin-bottom:14px;font-size:15px">
+    <button class="btn btn-danger btn-full" style="margin-bottom:8px" onclick="bereinigeZeitenAusfuehren()"><i class="ti ti-trash"></i> Jetzt löschen</button>
+    <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>`);
+}
+async function bereinigeZeitenAusfuehren(){
+  const stichtag=document.getElementById('bereinigStichtag')?.value;
+  if(!stichtag){ toast('Bitte Stichtag wählen'); return; }
+  closeModal();
+  const anzahl=await arbeitszeitVorStichtagLoeschen(stichtag);
+  await syncToOneDrive();
+  toast(anzahl+' Sitzung(en) gelöscht ✓');
+  if(curPage==='zeit') renderZeiterfassung();
+}
 async function ausstempeln(){
   const s=await getOffeneSitzung();
   if(!s){ toast('Nicht eingestempelt'); return; }
@@ -10309,6 +10430,7 @@ async function renderSettings(){
       <div style="font-size:12px;color:var(--ink-40);margin-bottom:8px">Tätigkeiten für die Zeiterfassung verwalten: ein-/ausblenden, umbenennen, Umlagefähigkeit festlegen, neue anlegen.</div>
       <button class="btn btn-full" onclick="modalTaetigkeitenVerwalten()"><i class="ti ti-settings"></i> Tätigkeiten verwalten</button>
       <button class="btn btn-full" style="margin-top:8px" onclick="modalTaetigkeitQRListe()"><i class="ti ti-qrcode"></i> Alle Tätigkeits-QR-Codes drucken</button>
+      <button class="btn btn-full btn-danger" style="margin-top:8px" onclick="modalZeitenBereinigen()"><i class="ti ti-trash"></i> Testzeiten bereinigen (vor Stichtag)</button>
     </div>
 
     <div class="card">
@@ -10683,11 +10805,13 @@ async function syncToOneDrive() {
   setSyncStatus('pending');
   try {
     const backup = {};
-    for (const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit']) {
+    for (const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen']) {
       backup[s] = await idbGetAll(s);
     }
     backup.updatedAt = now();
     backup.updatedBy = odTokens?.user_name || 'Unbekannt';
+    // Tombstones (geräteübergreifend gelöschte Datensätze) mitführen, damit sie nicht zurückgemergt werden
+    try { const tomb=await idbGet('settings','tombstones'); backup.tombstones = tomb?.value || {}; } catch(e){ backup.tombstones={}; }
     const json = JSON.stringify(backup);
     const hash = json.length+'_'+json.slice(-30);
     if (hash === lastSyncHash) { setSyncStatus('ok'); syncInProgress=false; return; }
@@ -10722,14 +10846,46 @@ async function syncFromOneDrive() {
     const ls = await idbGet('settings','lastSync').catch(()=>null);
     const localTime  = ls?.value||'';
     if (remoteTime > localTime) {
+      // Tombstones zusammenführen (lokal + remote): {store: {id: loeschZeitpunkt}}
+      const localTombRec = await idbGet('settings','tombstones').catch(()=>null);
+      const localTomb = localTombRec?.value || {};
+      const remoteTomb = backup.tombstones || {};
+      const mergedTomb = {};
+      for (const src of [localTomb, remoteTomb]) {
+        for (const st in src) {
+          mergedTomb[st] = mergedTomb[st] || {};
+          for (const id in src[st]) {
+            // jüngsten Löschzeitpunkt behalten
+            if (!mergedTomb[st][id] || src[st][id] > mergedTomb[st][id]) mergedTomb[st][id] = src[st][id];
+          }
+        }
+      }
+      // Lokal noch vorhandene, aber getombstonete Datensätze entfernen
+      for (const st in mergedTomb) {
+        for (const id in mergedTomb[st]) {
+          const tombZeit = mergedTomb[st][id];
+          const loc = await idbGet(st, id).catch(()=>null);
+          if (loc) {
+            const locStamp = loc.geaendert||loc.updatedAt||loc.erstellt||'';
+            // nur löschen, wenn der Datensatz nicht NACH dem Tombstone neu bearbeitet wurde
+            if (!(locStamp && locStamp > tombZeit)) await idbDelete(st, id).catch(()=>{});
+          }
+        }
+      }
+      // bereinigte Tombstones lokal speichern
+      await idbPut('settings', { id:'tombstones', value: mergedTomb });
+
       // Merge: ID-basiert, nur übernehmen wenn remote neuer oder lokal fehlt
-      const mergeStores = ['protokolle','aufgaben','maengel','reparaturen','dokumente','nka_archiv','einkaufsliste','wartung','termine','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit'];
+      const mergeStores = ['protokolle','aufgaben','maengel','reparaturen','dokumente','nka_archiv','einkaufsliste','wartung','termine','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen'];
       for (const s of mergeStores) {
         if (!backup[s]) continue;
+        const tombS = mergedTomb[s] || {};
         for (const item of backup[s]) {
           if(!item || !item.id) continue;
-          const local = await idbGet(s, item.id).catch(()=>null);
+          // getombstonete Datensätze nicht wieder einspielen (außer nachträglich neuer bearbeitet)
           const remoteStamp = item.geaendert||item.updatedAt||item.erstellt||'';
+          if (tombS[item.id] && !(remoteStamp && remoteStamp > tombS[item.id])) continue;
+          const local = await idbGet(s, item.id).catch(()=>null);
           const localStamp  = local ? (local.geaendert||local.updatedAt||local.erstellt||'') : '';
           if (!local || remoteStamp >= localStamp) {
             await idbPut(s, item);
@@ -10853,6 +11009,440 @@ function toast(msg,dur=2400){
 }
 
 /* ═══════════════════════════════════════════════════════════
+   RECHNUNGSERFASSUNG – objektübergreifend, nur Admin
+   Manuelle Erfassung + Beleg (Foto via In-App-Kamera/Galerie oder PDF).
+   Zuordnung: Objekt+Kostenart (NK-Umlage) | Objekt+Mieter |
+              Reparatur/Mangel-Bezug | Allgemein/Verwaltung.
+═══════════════════════════════════════════════════════════ */
+
+// Zuordnungsarten
+const RECHN_ZUORDNUNG = [
+  {id:'nk',        name:'Objekt + Kostenart (NK-Umlage)', umlage:true},
+  {id:'mieter',    name:'Objekt + Mieter (direkt)',       umlage:false},
+  {id:'reparatur', name:'Reparatur / Mangel',             umlage:false},
+  {id:'allgemein', name:'Allgemein / Verwaltung',         umlage:false},
+];
+function rechnZuordnungName(id){ return RECHN_ZUORDNUNG.find(z=>z.id===id)?.name || id; }
+
+// Filter-State für die Rechnungsliste
+let rechnFilter = { objId:'all', zuordnung:'all', status:'all', jahr:'all', q:'' };
+// Beleg-Zwischenspeicher beim Erfassen (Data-URL + Metadaten)
+let _rechnBeleg = null; // { data, mimeType, name }
+
+async function renderRechnungen(){
+  const el=document.getElementById('page-rechnungen');
+  if(!el) return;
+  if(CU?.role!=='admin'){ el.innerHTML='<div class="empty"><i class="ti ti-lock"></i><p>Nur für Administratoren</p></div>'; return; }
+
+  const myObj=await getMyObjekte();
+  const myIds=myObj.map(o=>o.id);
+  let alle=(await idbGetAll('rechnungen')).filter(r=>!r.objektId || myIds.includes(r.objektId));
+
+  // Jahre für Filter
+  const jahre=[...new Set(alle.map(r=>(r.datum||'').slice(0,4)).filter(Boolean))].sort().reverse();
+
+  // Filter anwenden
+  let liste=alle.filter(r=>{
+    if(rechnFilter.objId!=='all' && r.objektId!==rechnFilter.objId) return false;
+    if(rechnFilter.zuordnung!=='all' && r.zuordnung!==rechnFilter.zuordnung) return false;
+    if(rechnFilter.status==='offen' && r.bezahlt) return false;
+    if(rechnFilter.status==='bezahlt' && !r.bezahlt) return false;
+    if(rechnFilter.jahr!=='all' && (r.datum||'').slice(0,4)!==rechnFilter.jahr) return false;
+    if(rechnFilter.q){
+      const q=rechnFilter.q.toLowerCase();
+      const hay=`${r.lieferant||''} ${r.rechnungsnr||''} ${r.notiz||''} ${zielName(r.objektId)||''}`.toLowerCase();
+      if(!hay.includes(q)) return false;
+    }
+    return true;
+  }).sort((a,b)=>(b.datum||'').localeCompare(a.datum||'')||(b.erstelltIso||'').localeCompare(a.erstelltIso||''));
+
+  // Summen
+  const summe=liste.reduce((s,r)=>s+(Number(r.betrag)||0),0);
+  const summeOffen=liste.filter(r=>!r.bezahlt).reduce((s,r)=>s+(Number(r.betrag)||0),0);
+
+  let h=`<div class="s-hdr"><div class="s-title"><i class="ti ti-file-invoice"></i> Rechnungen</div>
+    <button class="btn btn-sm btn-copper" onclick="modalRechnungErfassen()"><i class="ti ti-plus"></i> Erfassen</button>
+  </div>`;
+
+  // Summenkarte
+  h+=`<div class="card" style="margin-bottom:12px">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <div><div style="font-size:11px;color:var(--ink-40)">Gefiltert gesamt</div>
+        <div style="font-size:18px;font-weight:700">${fmtEur(summe)}</div>
+        <div style="font-size:11px;color:var(--ink-40)">${liste.length} Rechnung${liste.length===1?'':'en'}</div></div>
+      <div><div style="font-size:11px;color:var(--ink-40)">davon offen</div>
+        <div style="font-size:18px;font-weight:700;color:${summeOffen>0?'var(--red)':'var(--green)'}">${fmtEur(summeOffen)}</div></div>
+    </div>
+  </div>`;
+
+  // Filterleiste
+  h+=`<div style="display:flex;gap:6px;overflow-x:auto;margin-bottom:6px;padding-bottom:4px">
+    <select onchange="rechnFilter.objId=this.value;renderRechnungen()" style="flex-shrink:0;padding:7px;border:1px solid var(--ink-10);border-radius:8px;font-size:12px">
+      <option value="all"${rechnFilter.objId==='all'?' selected':''}>Alle Objekte</option>
+      ${myObj.map(o=>`<option value="${o.id}"${rechnFilter.objId===o.id?' selected':''}>${esc(o.name)}</option>`).join('')}
+    </select>
+    <select onchange="rechnFilter.zuordnung=this.value;renderRechnungen()" style="flex-shrink:0;padding:7px;border:1px solid var(--ink-10);border-radius:8px;font-size:12px">
+      <option value="all"${rechnFilter.zuordnung==='all'?' selected':''}>Alle Arten</option>
+      ${RECHN_ZUORDNUNG.map(z=>`<option value="${z.id}"${rechnFilter.zuordnung===z.id?' selected':''}>${z.name}</option>`).join('')}
+    </select>
+    <select onchange="rechnFilter.status=this.value;renderRechnungen()" style="flex-shrink:0;padding:7px;border:1px solid var(--ink-10);border-radius:8px;font-size:12px">
+      <option value="all"${rechnFilter.status==='all'?' selected':''}>Alle</option>
+      <option value="offen"${rechnFilter.status==='offen'?' selected':''}>Offen</option>
+      <option value="bezahlt"${rechnFilter.status==='bezahlt'?' selected':''}>Bezahlt</option>
+    </select>
+    <select onchange="rechnFilter.jahr=this.value;renderRechnungen()" style="flex-shrink:0;padding:7px;border:1px solid var(--ink-10);border-radius:8px;font-size:12px">
+      <option value="all"${rechnFilter.jahr==='all'?' selected':''}>Alle Jahre</option>
+      ${jahre.map(j=>`<option value="${j}"${rechnFilter.jahr===j?' selected':''}>${j}</option>`).join('')}
+    </select>
+  </div>
+  <input type="text" placeholder="Suche: Lieferant, Nr., Notiz…" value="${esc(rechnFilter.q)}"
+    oninput="rechnFilter.q=this.value;clearTimeout(window._rechnSuchT);window._rechnSuchT=setTimeout(renderRechnungen,300)"
+    style="width:100%;padding:9px;border:1px solid var(--ink-10);border-radius:8px;font-size:13px;margin-bottom:12px">`;
+
+  if(!liste.length){
+    h+=`<div class="empty"><i class="ti ti-file-invoice"></i><p>Keine Rechnungen${alle.length?' (Filter)':''}</p></div>`;
+  } else {
+    for(const r of liste){
+      h+=rechnCard(r);
+    }
+  }
+  el.innerHTML=h;
+}
+
+function rechnCard(r){
+  const z=RECHN_ZUORDNUNG.find(x=>x.id===r.zuordnung);
+  const objN=r.objektId?zielName(r.objektId):'';
+  const chipColor=r.bezahlt?'#E8F5E9':'#FDECEA';
+  const chipText=r.bezahlt?'#2E7D52':'#C0392B';
+  let bezug='';
+  if(r.zuordnung==='nk' && r.kostenartName) bezug=r.kostenartName;
+  else if(r.zuordnung==='mieter' && r.mieterName) bezug=r.mieterName;
+  else if(r.zuordnung==='reparatur' && r.reparaturTitel) bezug=r.reparaturTitel;
+  else if(r.zuordnung==='allgemein') bezug='Verwaltung';
+  return `<div class="card" style="margin-bottom:6px;cursor:pointer" onclick="modalRechnungDetail('${r.id}')">
+    <div style="display:flex;align-items:flex-start;gap:10px">
+      <div style="flex-shrink:0;width:36px;height:36px;border-radius:8px;background:var(--copper-bg);display:flex;align-items:center;justify-content:center">
+        <i class="ti ${r.belegMime?.includes('pdf')?'ti-file-type-pdf':(r.beleg?'ti-photo':'ti-file-invoice')}" style="color:var(--copper);font-size:18px"></i>
+      </div>
+      <div style="flex:1;min-width:0">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px">
+          <div style="font-weight:600;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.lieferant||'Ohne Lieferant')}</div>
+          <div style="font-weight:700;font-size:14px;flex-shrink:0">${fmtEur(r.betrag)}</div>
+        </div>
+        <div style="font-size:11px;color:var(--ink-40);margin-top:2px">
+          ${r.datum?fmtDatumKurz(r.datum):''}${objN?' · '+esc(objN):''}${bezug?' · '+esc(bezug):''}
+        </div>
+        <div style="margin-top:5px;display:flex;gap:5px;align-items:center;flex-wrap:wrap">
+          <span class="chip" style="font-size:9px;background:${chipColor};color:${chipText}">${r.bezahlt?'bezahlt':'offen'}</span>
+          <span class="chip" style="font-size:9px;background:#F0F0F0;color:#888">${z?.name||r.zuordnung}</span>
+          ${z?.umlage?'<span class="chip" style="font-size:9px;background:#E8F5E9;color:#2E7D52">umlagefähig</span>':''}
+          ${r.beleg?'<span class="chip" style="font-size:9px;background:var(--copper-bg);color:var(--copper-d)"><i class="ti ti-paperclip"></i> Beleg</span>':''}
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function fmtDatumKurz(ds){
+  if(!ds) return '';
+  const [y,m,d]=ds.split('-');
+  return `${d}.${m}.${y}`;
+}
+
+// ── Erfassungs-Modal ──
+async function modalRechnungErfassen(rechnung){
+  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  _rechnBeleg = rechnung?.beleg ? {data:rechnung.beleg, mimeType:rechnung.belegMime, name:rechnung.belegName||'Beleg'} : null;
+  const myObj=await getMyObjekte();
+  const isEdit=!!rechnung;
+  const r=rechnung||{};
+  const heute=today();
+
+  showModal(`<div class="m-title"><i class="ti ti-file-invoice"></i> Rechnung ${isEdit?'bearbeiten':'erfassen'}</div>
+    <div class="f"><label>Lieferant / Aussteller *</label>
+      <input type="text" id="rLieferant" value="${esc(r.lieferant||'')}" placeholder="z. B. Stadtwerke Krefeld"></div>
+    <div class="f-row">
+      <div class="f" style="flex:1"><label>Rechnungsnr.</label>
+        <input type="text" id="rNr" value="${esc(r.rechnungsnr||'')}" placeholder="optional"></div>
+      <div class="f" style="flex:1"><label>Rechnungsdatum *</label>
+        <input type="date" id="rDatum" value="${r.datum||heute}"></div>
+    </div>
+    <div class="f-row">
+      <div class="f" style="flex:1"><label>Betrag (brutto) € *</label>
+        <input type="number" inputmode="decimal" step="0.01" id="rBetrag" value="${r.betrag!=null?r.betrag:''}" placeholder="0,00"></div>
+      <div class="f" style="flex:1"><label>Fällig bis</label>
+        <input type="date" id="rFaellig" value="${r.faellig||''}"></div>
+    </div>
+
+    <div class="f"><label>Zuordnung *</label>
+      <select id="rZuordnung" onchange="rechnZuordnungWechsel()">
+        ${RECHN_ZUORDNUNG.map(z=>`<option value="${z.id}"${r.zuordnung===z.id?' selected':''}>${z.name}</option>`).join('')}
+      </select></div>
+
+    <div class="f" id="rObjWrap"><label>Objekt</label>
+      <select id="rObj" onchange="rechnObjWechsel()">
+        <option value="">– kein Objekt –</option>
+        ${myObj.map(o=>`<option value="${o.id}"${r.objektId===o.id?' selected':''}>${esc(o.name)}</option>`).join('')}
+      </select></div>
+
+    <div class="f" id="rKostenartWrap" style="display:none"><label>Kostenart (für NK-Umlage)</label>
+      <select id="rKostenart"></select></div>
+
+    <div class="f" id="rMieterWrap" style="display:none"><label>Mieter</label>
+      <select id="rMieter"><option value="">– Mieter wählen –</option></select></div>
+
+    <div class="f" id="rReparaturWrap" style="display:none"><label>Reparatur / Mangel</label>
+      <select id="rReparatur"><option value="">– wählen –</option></select></div>
+
+    <div class="f">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+        <input type="checkbox" id="rBezahlt" ${r.bezahlt?'checked':''} style="width:auto"> bereits bezahlt
+      </label>
+    </div>
+
+    <div class="f"><label>Beleg (Foto oder PDF)</label>
+      <div id="rBelegVorschau" style="margin-bottom:8px"></div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
+        <button type="button" class="btn btn-sm" onclick="rechnBelegKamera()"><i class="ti ti-camera"></i> Foto</button>
+        <button type="button" class="btn btn-sm" onclick="document.getElementById('rBelegGalerie').click()"><i class="ti ti-photo"></i> Galerie</button>
+        <button type="button" class="btn btn-sm" onclick="document.getElementById('rBelegPdf').click()"><i class="ti ti-file-type-pdf"></i> PDF</button>
+      </div>
+      <input type="file" id="rBelegGalerie" accept="image/*" style="display:none" onchange="rechnBelegGalerie(this)">
+      <input type="file" id="rBelegPdf" accept="application/pdf" style="display:none" onchange="rechnBelegPdf(this)">
+    </div>
+
+    <div class="f"><label>Notiz</label>
+      <textarea id="rNotiz" rows="2" placeholder="optional">${esc(r.notiz||'')}</textarea></div>
+
+    <div class="f-row" style="margin-top:12px">
+      <button class="btn btn-copper btn-full" onclick="rechnungSpeichern('${r.id||''}')"><i class="ti ti-check"></i> Speichern</button>
+      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+    </div>`);
+
+  rechnZuordnungWechsel();
+  await rechnObjWechsel();
+  // bei Bearbeiten vorhandene Bezüge vorbelegen
+  if(isEdit){
+    if(r.kostenartId){ const k=document.getElementById('rKostenart'); if(k) k.value=r.kostenartId; }
+    if(r.mieterId){ const m=document.getElementById('rMieter'); if(m) m.value=r.mieterId; }
+    if(r.reparaturId){ const rp=document.getElementById('rReparatur'); if(rp) rp.value=r.reparaturId; }
+  }
+  rechnBelegVorschau();
+}
+
+// Zuordnungsart gewechselt → passende Felder zeigen
+function rechnZuordnungWechsel(){
+  const z=document.getElementById('rZuordnung')?.value;
+  const show=(id,vis)=>{ const e=document.getElementById(id); if(e) e.style.display=vis?'block':'none'; };
+  // Objekt wird bei nk/mieter/reparatur gebraucht, bei allgemein optional
+  show('rObjWrap', true);
+  show('rKostenartWrap', z==='nk');
+  show('rMieterWrap', z==='mieter');
+  show('rReparaturWrap', z==='reparatur');
+}
+
+// Objektwechsel → Kostenarten, Mieter, Reparaturen neu laden
+async function rechnObjWechsel(){
+  const objId=document.getElementById('rObj')?.value;
+  // Kostenarten
+  const kSel=document.getElementById('rKostenart');
+  if(kSel){
+    const vorlage=objId?getNKAVorlage(objId):null;
+    kSel.innerHTML='<option value="">– Kostenart wählen –</option>'+
+      (vorlage?vorlage.kosten.map(k=>`<option value="${k.id}">${esc(k.name)}</option>`).join(''):'');
+  }
+  // Mieter
+  const mSel=document.getElementById('rMieter');
+  if(mSel){
+    const mieter=objId?(await idbGetAll('mieter','objektId',objId)).sort((a,b)=>Number(a.weNr)-Number(b.weNr)):[];
+    mSel.innerHTML='<option value="">– Mieter wählen –</option>'+
+      mieter.map(m=>`<option value="${m.id}">WE ${esc(m.weNr||'')} · ${esc(m.name||'')}</option>`).join('');
+  }
+  // Reparaturen (offene + des Objekts)
+  const rSel=document.getElementById('rReparatur');
+  if(rSel){
+    let reps=await idbGetAll('reparaturen');
+    if(objId) reps=reps.filter(x=>x.objektId===objId);
+    reps=reps.sort((a,b)=>(b.datum||'').localeCompare(a.datum||''));
+    rSel.innerHTML='<option value="">– wählen –</option>'+
+      reps.map(x=>`<option value="${x.id}">${esc(x.titel||'Reparatur')}${x.datum?' ('+fmtDatumKurz(x.datum)+')':''}</option>`).join('');
+  }
+}
+
+// ── Beleg-Handling ──
+function rechnBelegKamera(){
+  window._rechnCamActive=true;
+  if(typeof openCam==='function') openCam();
+  else document.getElementById('rBelegGalerie').click();
+}
+async function rechnBelegGalerie(input){
+  const f=input.files[0]; input.value='';
+  if(!f) return;
+  const data=await compressFoto(f, 1600, 0.7);
+  if(data){ _rechnBeleg={data, mimeType:'image/jpeg', name:f.name||'Foto'}; rechnBelegVorschau(); toast('Beleg hinzugefügt ✓'); }
+}
+function rechnBelegPdf(input){
+  const f=input.files[0]; input.value='';
+  if(!f) return;
+  if(f.size>10*1024*1024){ toast('PDF zu groß (max. 10 MB)'); return; }
+  const reader=new FileReader();
+  reader.onload=e=>{ _rechnBeleg={data:e.target.result, mimeType:'application/pdf', name:f.name||'Rechnung.pdf'}; rechnBelegVorschau(); toast('PDF hinzugefügt ✓'); };
+  reader.readAsDataURL(f);
+}
+function rechnBelegVorschau(){
+  const el=document.getElementById('rBelegVorschau');
+  if(!el) return;
+  if(!_rechnBeleg){ el.innerHTML='<div style="font-size:12px;color:var(--ink-40)">Kein Beleg angehängt</div>'; return; }
+  if(_rechnBeleg.mimeType?.includes('pdf')){
+    el.innerHTML=`<div style="display:flex;align-items:center;gap:8px;background:var(--ink-05);border-radius:8px;padding:8px 10px">
+      <i class="ti ti-file-type-pdf" style="color:var(--copper);font-size:20px"></i>
+      <div style="flex:1;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(_rechnBeleg.name||'PDF')}</div>
+      <button class="btn btn-sm btn-danger" onclick="_rechnBeleg=null;rechnBelegVorschau()"><i class="ti ti-x"></i></button>
+    </div>`;
+  } else {
+    el.innerHTML=`<div style="position:relative;display:inline-block">
+      <img src="${_rechnBeleg.data}" style="max-width:100%;max-height:160px;border-radius:8px;border:1px solid var(--ink-10)">
+      <button class="btn btn-sm btn-danger" style="position:absolute;top:6px;right:6px" onclick="_rechnBeleg=null;rechnBelegVorschau()"><i class="ti ti-x"></i></button>
+    </div>`;
+  }
+}
+
+// ── Speichern ──
+async function rechnungSpeichern(id){
+  const lieferant=document.getElementById('rLieferant').value.trim();
+  const datum=document.getElementById('rDatum').value;
+  const betragRaw=document.getElementById('rBetrag').value.replace(',','.');
+  const betrag=parseFloat(betragRaw);
+  if(!lieferant){ toast('Bitte Lieferant angeben'); return; }
+  if(!datum){ toast('Bitte Rechnungsdatum angeben'); return; }
+  if(isNaN(betrag)){ toast('Bitte gültigen Betrag angeben'); return; }
+
+  const zuordnung=document.getElementById('rZuordnung').value;
+  const objektId=document.getElementById('rObj').value||null;
+
+  // Bezugsdaten je Zuordnung
+  let kostenartId=null, kostenartName=null, mieterId=null, mieterName=null, reparaturId=null, reparaturTitel=null;
+  if(zuordnung==='nk'){
+    kostenartId=document.getElementById('rKostenart')?.value||null;
+    if(kostenartId){ const v=getNKAVorlage(objektId); kostenartName=v?.kosten.find(k=>k.id===kostenartId)?.name||null; }
+  } else if(zuordnung==='mieter'){
+    mieterId=document.getElementById('rMieter')?.value||null;
+    if(mieterId){ const m=await idbGet('mieter',mieterId).catch(()=>null); mieterName=m?(`WE ${m.weNr||''} · ${m.name||''}`):null; }
+  } else if(zuordnung==='reparatur'){
+    reparaturId=document.getElementById('rReparatur')?.value||null;
+    if(reparaturId){ const rp=await idbGet('reparaturen',reparaturId).catch(()=>null); reparaturTitel=rp?.titel||null; }
+  }
+
+  const bestehend = id ? await idbGet('rechnungen', id).catch(()=>null) : null;
+  const rec={
+    id: id||uid(),
+    lieferant,
+    rechnungsnr: document.getElementById('rNr').value.trim(),
+    datum,
+    faellig: document.getElementById('rFaellig').value||null,
+    betrag,
+    zuordnung,
+    objektId,
+    kostenartId, kostenartName,
+    mieterId, mieterName,
+    reparaturId, reparaturTitel,
+    bezahlt: document.getElementById('rBezahlt').checked,
+    notiz: document.getElementById('rNotiz').value.trim(),
+    beleg: _rechnBeleg?.data||null,
+    belegMime: _rechnBeleg?.mimeType||null,
+    belegName: _rechnBeleg?.name||null,
+    erstelltIso: bestehend?.erstelltIso || nowIso(),
+    ersteller: bestehend?.ersteller || CU?.name||'',
+    geaendert: nowIso(),
+  };
+  await idbPut('rechnungen', rec);
+  _rechnBeleg=null;
+  closeModal();
+  syncSoon();
+  toast('Rechnung gespeichert ✓');
+  if(curPage==='rechnungen') renderRechnungen();
+}
+
+// ── Detailansicht ──
+async function modalRechnungDetail(id){
+  const r=await idbGet('rechnungen', id); if(!r) return;
+  const z=RECHN_ZUORDNUNG.find(x=>x.id===r.zuordnung);
+  let bezug='';
+  if(r.zuordnung==='nk') bezug=r.kostenartName?('Kostenart: '+r.kostenartName):'Kostenart: –';
+  else if(r.zuordnung==='mieter') bezug=r.mieterName?('Mieter: '+r.mieterName):'Mieter: –';
+  else if(r.zuordnung==='reparatur') bezug=r.reparaturTitel?('Reparatur: '+r.reparaturTitel):'Reparatur: –';
+  else bezug='Allgemein / Verwaltung';
+
+  let belegHtml='';
+  if(r.beleg){
+    if(r.belegMime?.includes('pdf')){
+      belegHtml=`<button class="btn btn-full" style="margin-bottom:8px" onclick="rechnBelegOeffnen('${r.id}')"><i class="ti ti-file-type-pdf"></i> PDF-Beleg öffnen</button>`;
+    } else {
+      belegHtml=`<img src="${r.beleg}" style="width:100%;border-radius:8px;cursor:pointer;margin-bottom:8px" onclick="openFoto('${r.beleg}','Beleg ${esc(r.lieferant||'')}')">`;
+    }
+  }
+
+  showModal(`<div class="m-title"><i class="ti ti-file-invoice"></i> ${esc(r.lieferant||'Rechnung')}</div>
+    <div class="card" style="margin-bottom:10px">
+      <div style="display:flex;justify-content:space-between;align-items:baseline">
+        <div style="font-size:22px;font-weight:700">${fmtEur(r.betrag)}</div>
+        <span class="chip" style="background:${r.bezahlt?'#E8F5E9':'#FDECEA'};color:${r.bezahlt?'#2E7D52':'#C0392B'}">${r.bezahlt?'bezahlt':'offen'}</span>
+      </div>
+      <div style="font-size:12px;color:var(--ink-60);margin-top:8px;line-height:1.7">
+        ${r.rechnungsnr?`<div>Rechnungsnr.: ${esc(r.rechnungsnr)}</div>`:''}
+        <div>Datum: ${r.datum?fmtDatumKurz(r.datum):'–'}</div>
+        ${r.faellig?`<div>Fällig bis: ${fmtDatumKurz(r.faellig)}</div>`:''}
+        ${r.objektId?`<div>Objekt: ${esc(zielName(r.objektId))}</div>`:''}
+        <div>Art: ${z?.name||r.zuordnung}${z?.umlage?' (umlagefähig)':''}</div>
+        <div>${esc(bezug)}</div>
+        ${r.notiz?`<div style="margin-top:6px;padding-top:6px;border-top:1px solid var(--ink-10)">${esc(r.notiz)}</div>`:''}
+      </div>
+    </div>
+    ${belegHtml}
+    <button class="btn btn-full" style="margin-bottom:6px" onclick="rechnBezahltUmschalten('${r.id}')"><i class="ti ti-cash"></i> Als ${r.bezahlt?'offen':'bezahlt'} markieren</button>
+    <button class="btn btn-full" style="margin-bottom:6px" onclick="closeModal();modalRechnungBearbeiten('${r.id}')"><i class="ti ti-pencil"></i> Bearbeiten</button>
+    <button class="btn btn-full btn-danger" style="margin-bottom:6px" onclick="rechnungLoeschen('${r.id}')"><i class="ti ti-trash"></i> Löschen</button>
+    <button class="btn btn-full" onclick="closeModal()">Schließen</button>`);
+}
+
+// Rechnung per ID laden und Bearbeiten-Modal öffnen (vermeidet HTML-Attribut-Escaping)
+async function modalRechnungBearbeiten(id){
+  const r=await idbGet('rechnungen', id);
+  if(!r){ toast('Rechnung nicht gefunden'); return; }
+  modalRechnungErfassen(r);
+}
+
+async function rechnBezahltUmschalten(id){
+  const r=await idbGet('rechnungen', id); if(!r) return;
+  r.bezahlt=!r.bezahlt; r.geaendert=nowIso();
+  await idbPut('rechnungen', r);
+  syncSoon();
+  closeModal();
+  toast(r.bezahlt?'Als bezahlt markiert ✓':'Als offen markiert');
+  if(curPage==='rechnungen') renderRechnungen();
+}
+
+async function rechnBelegOeffnen(id){
+  const r=await idbGet('rechnungen', id); if(!r||!r.beleg) return;
+  // PDF in neuem Tab/Viewer öffnen
+  try{
+    const a=document.createElement('a');
+    a.href=r.beleg; a.target='_blank';
+    a.download=(r.belegName||'Rechnung')+(r.belegName?.toLowerCase().endsWith('.pdf')?'':'.pdf');
+    a.click();
+  }catch(e){ toast('Beleg konnte nicht geöffnet werden'); }
+}
+
+async function rechnungLoeschen(id){
+  if(!confirm('Diese Rechnung wirklich löschen?')) return;
+  await deleteMitTombstone('rechnungen', id);
+  closeModal();
+  await syncToOneDrive();
+  toast('Rechnung gelöscht ✓');
+  if(curPage==='rechnungen') renderRechnungen();
+}
+
+/* ═══════════════════════════════════════════════════════════
    NAV HOOK – Settings page laden
 ═══════════════════════════════════════════════════════════ */
 const _nav=nav;
@@ -10866,6 +11456,7 @@ window.nav=async function(id,title,sub,push=true){
   if(id==='lager')             await renderLager();
   if(id==='zeit')              await renderZeiterfassung();
   if(id==='urlaub')            await renderUrlaub();
+  if(id==='rechnungen')        await renderRechnungen();
 };
 
 
@@ -11432,6 +12023,14 @@ document.getElementById('galleryIn').addEventListener('change', async function()
 
 // Verarbeitet ein fertiges (komprimiertes) Foto je nach aktivem Kontext.
 async function processPhoto(data) {
+    if (window._rechnCamActive) {
+      window._rechnCamActive=false;
+      _rechnBeleg={data, mimeType:'image/jpeg', name:'Foto'};
+      if(typeof rechnBelegVorschau==='function') rechnBelegVorschau();
+      if(document.getElementById('camOverlay')?.style.display==='flex') closeCam();
+      toast('Beleg aufgenommen ✓');
+      return;
+    }
     if (window._zsCamActive) {
       window._zsCamActive=false;
       window._zsFoto=data;
@@ -11520,6 +12119,7 @@ async function openCam(){
     if(window._zsCamActive){ document.getElementById('zsFotoIn').click(); }
     else if(window._mangelEditCamActive){ document.getElementById('em_fotoIn').click(); }
     else if(window._lagerCamActive){ document.getElementById('laFotoIn').click(); }
+    else if(window._rechnCamActive){ window._rechnCamActive=false; document.getElementById('rBelegGalerie')?.click(); }
     else { document.getElementById('photoIn').click(); }
   }
 }
