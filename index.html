@@ -682,7 +682,7 @@ button.chip.chip-active{background:var(--ink);color:#fff;border-color:var(--ink)
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=12;
-const APP_VERSION = '2026-06-09-v34';
+const APP_VERSION = '2026-06-09-v35';
 let idb=null;
 
 function openIDB(){
@@ -2187,8 +2187,32 @@ async function renderEtikettCanvas(qrText, zeile1, zeile2, zeile3){
     if(!txt) return;
     ctx.fillStyle=color||'#0C447C';
     ctx.font=(bold?'bold ':'')+size+'px Arial, sans-serif';
-    const words=String(txt).split(' '); let cur=''; const lines=[];
-    for(const w of words){ const t=cur?cur+' '+w:w; if(ctx.measureText(t).width>tw && cur){ lines.push(cur); cur=w; } else cur=t; }
+    // Wort-Umbruch; zu lange Einzelwörter werden mit Bindestrich getrennt
+    const woerter=String(txt).split(' ');
+    const lines=[];
+    let cur='';
+    const passt=t=>ctx.measureText(t).width<=tw;
+    function wortEinfuegen(w){
+      // Wort passt komplett in die aktuelle/neue Zeile
+      if(passt(w)){
+        const t=cur?cur+' '+w:w;
+        if(passt(t)){ cur=t; } else { if(cur) lines.push(cur); cur=w; }
+        return;
+      }
+      // Wort allein ist zu breit → mit Bindestrich aufteilen
+      if(cur){ lines.push(cur); cur=''; }
+      let rest=w;
+      while(rest.length){
+        // größtes Stück finden, das mit nachgestelltem '-' noch passt
+        let i=rest.length;
+        while(i>1 && !passt(rest.slice(0,i)+(i<rest.length?'-':''))) i--;
+        if(i<=1) i=Math.max(1, rest.length); // Notfall: wenigstens 1 Zeichen
+        const stueck=rest.slice(0,i);
+        rest=rest.slice(i);
+        lines.push(stueck+(rest.length?'-':''));
+      }
+    }
+    for(const w of woerter) wortEinfuegen(w);
     if(cur) lines.push(cur);
     for(const ln of lines){ ctx.fillText(ln, cx, y); y+=Math.round(size*1.25); }
   }
@@ -2308,7 +2332,7 @@ const TAETIGKEIT_STANDARD=[
   {id:'buchhaltung',   name:'Kontoführung / Buchhaltung', umlage:'nein', mangel:false, allgemein:true,  sichtbar:true, sort:12},
   {id:'buero',         name:'Büro / Verwaltung',          umlage:'nein', mangel:false, allgemein:true,  sichtbar:true, sort:13},
   {id:'objektbetreuung',name:'Objektbetreuung',           umlage:'nein', mangel:false, allgemein:false, sichtbar:true, sort:14},
-  {id:'mietergespraech',name:'Mietergespräch',            umlage:'nein', mangel:false, allgemein:false, sichtbar:true, sort:15},
+  {id:'mietergespraech',name:'Mietergespräch / Besichtigung', umlage:'nein', mangel:false, allgemein:false, sichtbar:true, sort:15},
 ];
 // IDs der neuen Verwaltungstätigkeiten (für Migration bestehender Installationen)
 const TAETIGKEIT_NEU_ADMIN=['buchhaltung','buero','objektbetreuung','mietergespraech'];
@@ -2331,6 +2355,7 @@ async function getMyLiegenschaften(){
 // Namen eines Tätigkeitsbezugs auflösen (Objekt-ID oder Liegenschafts-ID)
 function zielName(id){
   if(!id) return '';
+  if(String(id).startsWith('st_')) return (typeof VERWALTUNG_STANDORTE!=='undefined'?VERWALTUNG_STANDORTE.find(s=>s.id===id)?.name:null)||id;
   if(String(id).startsWith('lg_')) return LIEGENSCHAFTEN.find(l=>l.id===id)?.name||id;
   return getObj(id)?.name||id;
 }
@@ -2354,14 +2379,42 @@ async function ensureTaetigkeitKat(){
         await idbPut('taetigkeit_kat', {...k, erstellt:now()}); changed=true;
       }
     }
+    // Migration: Mietergespräch in neuen Namen überführen (nur wenn noch alter Name)
+    const mg=vorhanden.find(k=>k.id==='mietergespraech');
+    if(mg && mg.name==='Mietergespräch'){
+      mg.name='Mietergespräch / Besichtigung'; mg.geaendert=nowIso();
+      await idbPut('taetigkeit_kat', mg);
+    }
     return await idbGetAll('taetigkeit_kat');
   }
   for(const k of TAETIGKEIT_STANDARD){ await idbPut('taetigkeit_kat', {...k, erstellt:now()}); }
   return await idbGetAll('taetigkeit_kat');
 }
 async function getTaetigkeitKat(nurSichtbar){
-  const alle=(await idbGetAll('taetigkeit_kat')).sort((a,b)=>(a.sort||99)-(b.sort||99));
-  return nurSichtbar ? alle.filter(k=>k.sichtbar!==false) : alle;
+  let alle=(await idbGetAll('taetigkeit_kat')).sort((a,b)=>(a.sort||99)-(b.sort||99));
+  if(nurSichtbar) alle=alle.filter(k=>k.sichtbar!==false);
+  // Persönliche Reihenfolge des aktuellen Benutzers anwenden (falls vorhanden)
+  try {
+    if(CU?.id){
+      const rec=await idbGet('settings','taetigkeit_sort_'+CU.id).catch(()=>null);
+      const order=rec?.value;
+      if(Array.isArray(order) && order.length){
+        const idx=id=>{ const i=order.indexOf(id); return i<0?9999:i; };
+        alle=alle.slice().sort((a,b)=>{
+          const ia=idx(a.id), ib=idx(b.id);
+          if(ia!==ib) return ia-ib;
+          return (a.sort||99)-(b.sort||99); // neue, noch nicht einsortierte ans Ende in Standardreihenfolge
+        });
+      }
+    }
+  } catch(e){ /* ignorieren – Fallback ist die globale Sortierung */ }
+  return alle;
+}
+// Persönliche Reihenfolge speichern
+async function setTaetigkeitSort(order){
+  if(!CU?.id) return;
+  await idbPut('settings', { id:'taetigkeit_sort_'+CU.id, value: order, geaendert:nowIso() });
+  syncSoon();
 }
 function umlageLabel(u){ return u==='ja'?'umlagefähig':(u==='nein'?'nicht umlagefähig':'neutral'); }
 
@@ -2533,19 +2586,21 @@ async function renderZeiterfassung(){
   if(istAdmin){
     // ── Hausmeister: mit Soll/Saldo ──
     h+=`<div class="card-hdr" style="margin:16px 0 6px"><i class="ti ti-users"></i> Hausmeister-Übersicht</div>`;
-    const mitarbeiter=(await idbGetAll('users')).filter(u=>u.role!=='admin' && u.aktiv!==false);
+    const mitarbeiter=(await idbGetAll('users')).filter(u=>u.role!=='admin')
+      .sort((a,b)=>{ const av=a.aktiv===false?1:0, bv=b.aktiv===false?1:0; return av-bv || (a.name||'').localeCompare(b.name||''); });
     if(!mitarbeiter.length){
       h+=`<div style="font-size:12px;color:var(--ink-40)">Keine Hausmeister angelegt.</div>`;
     } else {
       for(const m of mitarbeiter){
+        const inaktiv=m.aktiv===false;
         const k=await berechneStundenkonto(m);
         const wColor=k.wochenSaldo>=0?'var(--green)':'var(--red)';
         const gColor=k.gesamtSaldo>=0?'var(--green)':'var(--red)';
-        h+=`<div class="card" style="margin-bottom:6px;cursor:pointer" onclick="modalMitarbeiterZeit('${m.id}')">
+        h+=`<div class="card" style="margin-bottom:6px;cursor:pointer;${inaktiv?'opacity:0.6':''}" onclick="modalMitarbeiterZeit('${m.id}')">
           <div style="display:flex;align-items:center;gap:10px">
             <div class="det-av" style="width:34px;height:34px;font-size:12px;flex-shrink:0">${initials(m.name)}</div>
             <div style="flex:1;min-width:0">
-              <div style="font-size:14px;font-weight:600">${esc(m.name)}</div>
+              <div style="font-size:14px;font-weight:600">${esc(m.name)}${inaktiv?' · <span style="color:var(--red);font-size:11px">deaktiviert</span>':''}</div>
               <div style="font-size:11px;color:var(--ink-40)">Woche: ${fmtStd(k.wocheStd)} / ${fmtStd(k.wochenSoll)} · <span style="color:${wColor}">${fmtSaldo(k.wochenSaldo)}</span></div>
             </div>
             <div style="text-align:right;flex-shrink:0">
@@ -2649,16 +2704,39 @@ function zeitSitzungCard(x){
 }
 
 // Dialog: Tätigkeit starten
+// Standorte für Verwaltungs-/Allgemeintätigkeiten (Buchhaltung, Büro …)
+// DUS getrennt nach Ruhrtalstr. und Mindener; Monheim bewusst nicht enthalten.
+const VERWALTUNG_STANDORTE=[
+  {id:'st_dus_ruhrt', name:'Düsseldorf – Ruhrtalstr.'},
+  {id:'st_dus_minden',name:'Düsseldorf – Mindener Str.'},
+  {id:'st_mg',        name:'Mönchengladbach'},
+  {id:'st_krefeld',   name:'Krefeld'},
+];
+function verwaltungStandortName(id){ return VERWALTUNG_STANDORTE.find(s=>s.id===id)?.name || id; }
+
 async function modalTaetigkeitStart(){
   window._tsNeuerMangelId=null;
+  window._tsBezug = 'objekt'; // 'objekt' | 'standort'
   const kats=await getTaetigkeitKat(true);
   const objekte=await getMyObjekte();
+  const istAdmin=CU?.role==='admin';
   showModal(`
     <div class="m-title"><i class="ti ti-player-play"></i> Tätigkeit starten</div>
     <div class="f"><label>Tätigkeit *</label>
-      <select id="tsKat" onchange="tsKatWechsel()">${kats.map(k=>`<option value="${k.id}" data-mangel="${k.mangel?'1':'0'}">${k.name}</option>`).join('')}</select></div>
-    <div class="f"><label>Objekt</label>
-      <select id="tsObj">${objekte.map(o=>`<option value="${o.id}">${o.name}</option>`).join('')}</select></div>
+      <select id="tsKat" onchange="tsKatWechsel()">${kats.map(k=>`<option value="${k.id}" data-mangel="${k.mangel?'1':'0'}" data-allg="${k.allgemein?'1':'0'}">${k.name}</option>`).join('')}</select></div>
+
+    ${istAdmin?`<div class="f"><label>Bezug</label>
+      <div style="display:flex;gap:6px">
+        <button type="button" class="filter-chip active" id="tsBezugObjekt" onclick="tsBezugWechsel('objekt')">Objekt</button>
+        <button type="button" class="filter-chip" id="tsBezugStandort" onclick="tsBezugWechsel('standort')">Standort / Allgemein</button>
+      </div></div>`:''}
+
+    <div class="f" id="tsObjWrap"><label>Objekt</label>
+      <select id="tsObj" onchange="tsObjWechsel()">${objekte.map(o=>`<option value="${o.id}">${o.name}</option>`).join('')}</select></div>
+
+    <div class="f" id="tsStandortWrap" style="display:none"><label>Standort</label>
+      <select id="tsStandort">${VERWALTUNG_STANDORTE.map(s=>`<option value="${s.id}">${s.name}</option>`).join('')}</select></div>
+
     <div id="tsMangelWrap" style="display:none">
       <div class="f"><label>Mangelbezug (optional)</label>
         <select id="tsMangel"><option value="">– kein / neuer Mangel –</option></select></div>
@@ -2671,13 +2749,34 @@ async function modalTaetigkeitStart(){
     </div>`);
   tsKatWechsel();
 }
+
+// Umschalten zwischen Objekt- und Standortbezug
+function tsBezugWechsel(modus){
+  window._tsBezug=modus;
+  document.getElementById('tsBezugObjekt')?.classList.toggle('active', modus==='objekt');
+  document.getElementById('tsBezugStandort')?.classList.toggle('active', modus==='standort');
+  const o=document.getElementById('tsObjWrap'), s=document.getElementById('tsStandortWrap');
+  if(o) o.style.display = modus==='objekt'?'block':'none';
+  if(s) s.style.display = modus==='standort'?'block':'none';
+  // Bei Standortbezug ist kein Mangelbezug sinnvoll
+  if(modus==='standort'){ const w=document.getElementById('tsMangelWrap'); if(w) w.style.display='none'; }
+  else { tsKatWechsel(); }
+}
+function tsObjWechsel(){ if(window._tsBezug!=='standort') tsKatWechsel(); }
 async function tsKatWechsel(){
   const sel=document.getElementById('tsKat');
   const opt=sel?.options[sel.selectedIndex];
   const istMangel=opt?.getAttribute('data-mangel')==='1';
+  const istAllg=opt?.getAttribute('data-allg')==='1';
+  // Allgemeine Tätigkeit gewählt → für Admins automatisch auf Standortbezug umschalten
+  if(istAllg && CU?.role==='admin' && window._tsBezug!=='standort' && document.getElementById('tsBezugStandort')){
+    tsBezugWechsel('standort');
+    return;
+  }
   const wrap=document.getElementById('tsMangelWrap');
-  if(wrap) wrap.style.display=istMangel?'block':'none';
-  if(istMangel){ await tsLadeMaengel(); }
+  const zeigeMangel = istMangel && window._tsBezug!=='standort';
+  if(wrap) wrap.style.display=zeigeMangel?'block':'none';
+  if(zeigeMangel){ await tsLadeMaengel(); }
 }
 async function tsLadeMaengel(){
   const objId=document.getElementById('tsObj')?.value;
@@ -2714,9 +2813,14 @@ async function tsNeuerMangel(){
 }
 async function tsStart(){
   const katId=document.getElementById('tsKat')?.value;
-  const objId=document.getElementById('tsObj')?.value;
   const notiz=document.getElementById('tsNotiz')?.value?.trim()||'';
-  const mangelId=document.getElementById('tsMangel')?.value||null;
+  let objId, mangelId=null;
+  if(window._tsBezug==='standort'){
+    objId=document.getElementById('tsStandort')?.value;  // Standort-ID als Bezug
+  } else {
+    objId=document.getElementById('tsObj')?.value;
+    mangelId=document.getElementById('tsMangel')?.value||null;
+  }
   closeModal();
   await taetigkeitStarten(katId, objId, notiz, mangelId);
 }
@@ -3128,7 +3232,98 @@ async function modalTaetigkeitenVerwalten(){
       ${allgKats.map(kartenRow).join('')||'<div style="font-size:12px;color:var(--ink-40);margin-bottom:6px">Keine</div>'}
     </div>
     <button class="btn btn-copper btn-full" style="margin-top:10px" onclick="modalTaetigkeitKatEdit(null)"><i class="ti ti-plus"></i> Neue Tätigkeit</button>
+    <button class="btn btn-full" style="margin-top:6px" onclick="modalTaetigkeitSortieren()"><i class="ti ti-arrows-sort"></i> Meine Reihenfolge anpassen</button>
     <button class="btn btn-full" style="margin-top:6px" onclick="closeModal()">Schließen</button>`);
+}
+
+// Persönliche Reihenfolge per Drag & Drop (Touch + Maus)
+async function modalTaetigkeitSortieren(){
+  const kats=await getTaetigkeitKat(true); // bereits in persönlicher Reihenfolge
+  window._sortKats=kats.map(k=>({id:k.id, name:k.name, allgemein:!!k.allgemein}));
+  showModal(`
+    <div class="m-title"><i class="ti ti-arrows-sort"></i> Meine Reihenfolge</div>
+    <p style="font-size:12px;color:var(--ink-40);margin-bottom:10px">Ziehe die Einträge am Griff <i class="ti ti-grip-vertical"></i> in die gewünschte Reihenfolge. Diese Sortierung gilt nur für dich.</p>
+    <div id="sortListe" style="max-height:55vh;overflow-y:auto">${renderSortListe()}</div>
+    <button class="btn btn-copper btn-full" style="margin-top:10px" onclick="taetigkeitSortSpeichern()"><i class="ti ti-check"></i> Speichern</button>
+    <button class="btn btn-full" style="margin-top:6px" onclick="modalTaetigkeitenVerwalten()">Abbrechen</button>`);
+  initSortDnD();
+}
+function renderSortListe(){
+  return (window._sortKats||[]).map((k,i)=>`
+    <div class="sort-item" data-id="${k.id}" draggable="true"
+      style="display:flex;align-items:center;gap:10px;background:var(--card,#fff);border:1px solid var(--ink-10);border-radius:8px;padding:10px;margin-bottom:6px;touch-action:none">
+      <i class="ti ti-grip-vertical sort-handle" style="color:var(--ink-40);cursor:grab;font-size:18px"></i>
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:600;font-size:13px">${esc(k.name)}</div>
+        <div style="font-size:11px;color:var(--ink-40)">${k.allgemein?'Allgemein / standortbezogen':'Objektbezogen'}</div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:2px">
+        <button class="btn btn-sm" style="padding:2px 7px" onclick="sortMove('${k.id}',-1)"><i class="ti ti-chevron-up"></i></button>
+        <button class="btn btn-sm" style="padding:2px 7px" onclick="sortMove('${k.id}',1)"><i class="ti ti-chevron-down"></i></button>
+      </div>
+    </div>`).join('');
+}
+function sortMove(id, dir){
+  const arr=window._sortKats||[];
+  const i=arr.findIndex(k=>k.id===id);
+  const j=i+dir;
+  if(i<0||j<0||j>=arr.length) return;
+  [arr[i],arr[j]]=[arr[j],arr[i]];
+  const cont=document.getElementById('sortListe');
+  if(cont){ cont.innerHTML=renderSortListe(); initSortDnD(); }
+}
+function initSortDnD(){
+  const cont=document.getElementById('sortListe');
+  if(!cont) return;
+  let dragEl=null;
+  // ── Maus / Desktop: natives HTML5 DnD ──
+  cont.querySelectorAll('.sort-item').forEach(el=>{
+    el.addEventListener('dragstart', e=>{ dragEl=el; el.style.opacity='0.5'; try{e.dataTransfer.effectAllowed='move';}catch(_){} });
+    el.addEventListener('dragend', ()=>{ if(dragEl) dragEl.style.opacity=''; dragEl=null; syncSortFromDom(); });
+    el.addEventListener('dragover', e=>{ e.preventDefault();
+      const after=naechstesElement(cont, e.clientY);
+      if(!dragEl) return;
+      if(after==null) cont.appendChild(dragEl); else cont.insertBefore(dragEl, after);
+    });
+  });
+  // ── Touch: Pointer-basiert über den Griff ──
+  cont.querySelectorAll('.sort-handle').forEach(handle=>{
+    handle.addEventListener('touchstart', e=>{
+      const item=handle.closest('.sort-item'); if(!item) return;
+      dragEl=item; item.style.opacity='0.6';
+      const move=ev=>{
+        const y=ev.touches[0].clientY;
+        const after=naechstesElement(cont, y, item);
+        if(after==null) cont.appendChild(item); else cont.insertBefore(item, after);
+        ev.preventDefault();
+      };
+      const end=()=>{ item.style.opacity=''; document.removeEventListener('touchmove',move,{passive:false}); document.removeEventListener('touchend',end); dragEl=null; syncSortFromDom(); };
+      document.addEventListener('touchmove', move, {passive:false});
+      document.addEventListener('touchend', end);
+    }, {passive:true});
+  });
+}
+function naechstesElement(cont, y, ausser){
+  const items=[...cont.querySelectorAll('.sort-item')].filter(el=>el!==ausser);
+  for(const el of items){
+    const box=el.getBoundingClientRect();
+    if(y < box.top + box.height/2) return el;
+  }
+  return null;
+}
+function syncSortFromDom(){
+  const cont=document.getElementById('sortListe');
+  if(!cont) return;
+  const ids=[...cont.querySelectorAll('.sort-item')].map(el=>el.dataset.id);
+  const map=Object.fromEntries((window._sortKats||[]).map(k=>[k.id,k]));
+  window._sortKats=ids.map(id=>map[id]).filter(Boolean);
+}
+async function taetigkeitSortSpeichern(){
+  syncSortFromDom();
+  const order=(window._sortKats||[]).map(k=>k.id);
+  await setTaetigkeitSort(order);
+  toast('Reihenfolge gespeichert ✓');
+  modalTaetigkeitenVerwalten();
 }
 
 async function modalTaetigkeitKatEdit(katId){
@@ -3295,7 +3490,7 @@ async function qrEinzelEtikett(modus){
   const obj=getObj(objId);
   closeModal();
   const fn=(modus==='teilen')?etikettPdfTeilen:etikettPdfSpeichern;
-  await fn('TAETIGKEIT:'+katId+':'+objId, 'TAET_'+katId+'_'+objId, kat?.name||katId, obj?.name||objId, umlageLabel(kat?.umlage));
+  await fn('TAETIGKEIT:'+katId+':'+objId, 'TAET_'+katId+'_'+objId, kat?.name||katId, obj?.name||objId, '');
 }
 
 // Allgemeines Einzel-Etikett (Mülltonnenservice), bezogen auf eine Liegenschaft
@@ -3309,7 +3504,7 @@ async function qrAllgEtikett(modus){
   const lg=(typeof LIEGENSCHAFTEN!=='undefined'?LIEGENSCHAFTEN:[]).find(l=>l.id===lgId);
   closeModal();
   const fn=(modus==='teilen')?etikettPdfTeilen:etikettPdfSpeichern;
-  await fn('TAETIGKEIT:'+katId+':'+lgId, 'ALLG_'+katId+'_'+lgId, kat?.name||katId, lg?.name||lgId, umlageLabel(kat?.umlage));
+  await fn('TAETIGKEIT:'+katId+':'+lgId, 'ALLG_'+katId+'_'+lgId, kat?.name||katId, lg?.name||lgId, '');
 }
 
 // Müllrundgang: Liste der einzeln druckbaren Wegpunkte
@@ -3485,7 +3680,7 @@ async function taetigkeitQrErstellen(modus){
   const dateiname='TAET_'+katId+'_'+objId;
   closeModal();
   const fn = (modus==='teilen') ? etikettPdfTeilen : etikettPdfSpeichern;
-  await fn(qrText, dateiname, kat?.name||katId, obj?.name||objId, umlageLabel(kat?.umlage));
+  await fn(qrText, dateiname, kat?.name||katId, obj?.name||objId, '');
 }
 
 /* ══════════════════════════════════════════════════════════
@@ -10824,22 +11019,52 @@ async function renderSettings(){
   if(isAdmin) await renderUserList_();
 }
 
+// Nur Alexander Nadig darf Hausmeister deaktivieren/reaktivieren
+function istAlexander(){
+  return /alexander\s+nadig/i.test(CU?.name||'');
+}
+
 async function renderUserList_(){
   const el=document.getElementById('userListEl');
   if(!el) return;
   const users=await idbGetAll('users');
-  el.innerHTML=users.map(u=>`
-    <div class="user-item">
+  const darfDeaktivieren=istAlexander();
+  el.innerHTML=users.map(u=>{
+    const inaktiv=u.aktiv===false;
+    return `
+    <div class="user-item" style="${inaktiv?'opacity:0.55':''}">
       <div class="user-av ${u.role==='admin'?'admin':''}"><i class="ti ti-user"></i></div>
       <div class="user-body">
-        <div class="user-name">${u.name}</div>
+        <div class="user-name">${u.name}${inaktiv?' · <span style="color:var(--red)">deaktiviert</span>':''}</div>
         <div class="user-role">${u.role==='admin'?'Administrator':'Hausmeister'} · ${u.objekte?.length?u.objekte.map(g=>GRUPPE_LABEL[g]||g).join(', '):'alle Objekte'}</div>
       </div>
       <div style="display:flex;gap:5px">
         <button class="btn btn-sm" onclick="modalEditUser('${u.id}')"><i class="ti ti-pencil"></i></button>
-        ${u.id!=='u_admin'?`<button class="btn btn-sm btn-danger" onclick="delUser('${u.id}')"><i class="ti ti-trash"></i></button>`:''}
+        ${(darfDeaktivieren && u.role==='hm')?`<button class="btn btn-sm" title="${inaktiv?'Reaktivieren':'Deaktivieren'}" onclick="toggleUserAktiv('${u.id}')"><i class="ti ti-${inaktiv?'user-check':'user-off'}"></i></button>`:''}
       </div>
-    </div>`).join('');
+    </div>`;
+  }).join('');
+}
+
+// Hausmeister deaktivieren/reaktivieren (Daten bleiben erhalten)
+async function toggleUserAktiv(id){
+  if(!istAlexander()){ toast('Nur Alexander Nadig darf das'); return; }
+  const u=await idbGet('users', id);
+  if(!u) return;
+  if(u.role==='admin'){ toast('Administratoren können hier nicht deaktiviert werden'); return; }
+  const neuInaktiv = u.aktiv!==false; // aktuell aktiv → deaktivieren
+  const frage = neuInaktiv
+    ? `Hausmeister „${u.name}" deaktivieren?\n\nEr kann sich dann nicht mehr anmelden. Alle bisherigen Daten (Arbeitszeiten, Protokolle) bleiben zur Dokumentation erhalten.`
+    : `Hausmeister „${u.name}" wieder aktivieren?`;
+  if(!confirm(frage)) return;
+  u.aktiv = neuInaktiv ? false : true;
+  u.geaendert = nowIso();
+  if(neuInaktiv){ u.deaktiviertAm = today(); u.deaktiviertVon = CU?.name||''; }
+  else { delete u.deaktiviertAm; delete u.deaktiviertVon; }
+  await idbPut('users', u);
+  syncSoon();
+  await renderUserList_();
+  toast(neuInaktiv ? 'Hausmeister deaktiviert' : 'Hausmeister reaktiviert ✓');
 }
 
 async function modalAddUser(){
