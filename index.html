@@ -682,7 +682,7 @@ button.chip.chip-active{background:var(--ink);color:#fff;border-color:var(--ink)
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=12;
-const APP_VERSION = '2026-06-09-v35';
+const APP_VERSION = '2026-06-09-v37';
 let idb=null;
 
 function openIDB(){
@@ -2166,6 +2166,26 @@ function qrImage(text, px){
 }
 
 // Etikett auf Canvas zeichnen: hochkant, QR oben, Text darunter (30×50 mm)
+// Feste, sprachlich saubere Trennstellen für lange Wörter auf Etiketten.
+// '|' markiert die bevorzugte Bruchstelle (wird zu '-' am Zeilenende).
+const ETIKETT_TRENNUNG={
+  'treppenhausreinigung':'Treppenhaus|reinigung',
+  'objektkontrolle':'Objekt|kontrolle',
+  'mülltonnenservice':'Mülltonnen|service',
+  'objektbetreuung':'Objekt|betreuung',
+  'handwerkerbetreuung':'Handwerker|betreuung',
+  'kleinreparatur':'Klein|reparatur',
+  'außenanlagenpflege':'Außenanlagen|pflege',
+  'vorgartenpflege':'Vorgarten|pflege',
+  'straßenreinigung':'Straßen|reinigung',
+  'winterdienst':'Winter|dienst',
+  'legionellenprüfung':'Legionellen|prüfung',
+};
+function trennMuster(wort){
+  const t=ETIKETT_TRENNUNG[String(wort).toLowerCase()];
+  return t ? t.split('|') : null; // z.B. ['Treppenhaus','reinigung'] oder null
+}
+
 async function renderEtikettCanvas(qrText, zeile1, zeile2, zeile3){
   const dpi=300, mmPx=dpi/25.4;
   const wPx=Math.round(30*mmPx), hPx=Math.round(50*mmPx); // 354 x 591 hochkant
@@ -2187,30 +2207,45 @@ async function renderEtikettCanvas(qrText, zeile1, zeile2, zeile3){
     if(!txt) return;
     ctx.fillStyle=color||'#0C447C';
     ctx.font=(bold?'bold ':'')+size+'px Arial, sans-serif';
-    // Wort-Umbruch; zu lange Einzelwörter werden mit Bindestrich getrennt
     const woerter=String(txt).split(' ');
     const lines=[];
     let cur='';
     const passt=t=>ctx.measureText(t).width<=tw;
+    function pushStueck(s){ if(cur){ lines.push(cur); cur=''; } lines.push(s); }
+    function platzbasiertTrennen(w){
+      // zu langes Wort ohne festes Muster: nach Platz mit Bindestrich brechen
+      if(cur){ lines.push(cur); cur=''; }
+      let rest=w;
+      while(rest.length){
+        let i=rest.length;
+        while(i>1 && !passt(rest.slice(0,i)+(i<rest.length?'-':''))) i--;
+        if(i<=1) i=Math.max(1, rest.length);
+        const stueck=rest.slice(0,i);
+        rest=rest.slice(i);
+        lines.push(stueck+(rest.length?'-':''));
+      }
+    }
     function wortEinfuegen(w){
-      // Wort passt komplett in die aktuelle/neue Zeile
+      // passt komplett?
       if(passt(w)){
         const t=cur?cur+' '+w:w;
         if(passt(t)){ cur=t; } else { if(cur) lines.push(cur); cur=w; }
         return;
       }
-      // Wort allein ist zu breit → mit Bindestrich aufteilen
-      if(cur){ lines.push(cur); cur=''; }
-      let rest=w;
-      while(rest.length){
-        // größtes Stück finden, das mit nachgestelltem '-' noch passt
-        let i=rest.length;
-        while(i>1 && !passt(rest.slice(0,i)+(i<rest.length?'-':''))) i--;
-        if(i<=1) i=Math.max(1, rest.length); // Notfall: wenigstens 1 Zeichen
-        const stueck=rest.slice(0,i);
-        rest=rest.slice(i);
-        lines.push(stueck+(rest.length?'-':''));
+      // feste Trennstelle hinterlegt?
+      const muster=trennMuster(w);
+      if(muster){
+        if(cur){ lines.push(cur); cur=''; }
+        // an der vorgegebenen Stelle brechen; jedes Teilstück ggf. weiter platzbasiert trennen
+        for(let k=0;k<muster.length;k++){
+          const teil=muster[k];
+          const mitBindestrich = k<muster.length-1 ? teil+'-' : teil;
+          if(passt(mitBindestrich)) lines.push(mitBindestrich);
+          else platzbasiertTrennen(teil + (k<muster.length-1?'':'')); // Notfall
+        }
+        return;
       }
+      platzbasiertTrennen(w);
     }
     for(const w of woerter) wortEinfuegen(w);
     if(cur) lines.push(cur);
@@ -3766,11 +3801,14 @@ async function berechneStundenkonto(user){
     }
     return soll;
   };
-  // Wochensoll bis heute (Mo bis heute)
-  const wochenSollBisHeute=sollBis(dieseWocheMontag, heuteStr);
-  // Monatssoll bis heute (Monatserster bis heute)
+  // Wochensoll bis heute (Mo bis heute) – frühestens ab Eintrittsdatum
+  const eintritt = user.eintritt || null;
+  const wochenStart = (eintritt && eintritt>dieseWocheMontag) ? eintritt : dieseWocheMontag;
+  const wochenSollBisHeute = (eintritt && eintritt>heuteStr) ? 0 : sollBis(wochenStart, heuteStr);
+  // Monatssoll bis heute (Monatserster bis heute) – frühestens ab Eintrittsdatum
   const ersterImMonat=dieserMonat+'-01';
-  const monatSollBisHeute=sollBis(ersterImMonat, heuteStr);
+  const monatStart = (eintritt && eintritt>ersterImMonat) ? eintritt : ersterImMonat;
+  const monatSollBisHeute = (eintritt && eintritt>heuteStr) ? 0 : sollBis(monatStart, heuteStr);
 
   const wochenSaldo=wocheMin/60 - wochenSollBisHeute;
   const monatSaldoBisHeute=monatMin/60 - monatSollBisHeute;
@@ -3815,6 +3853,7 @@ async function pruefeMonatsuebertrag(){
       if(!sitzungen.length) continue;
       const wochenSoll=(u.wochenSoll!=null?u.wochenSoll:40);
       const tagSoll=wochenSoll/5;
+      const eintritt=u.eintritt||null;
       const urlaube=await getUrlaube(u.id);
       const rec=await idbGet('settings','stdkonto_'+u.id).catch(()=>null)||{id:'stdkonto_'+u.id,uebertrag:0,verrechnet:[]};
       rec.verrechnet=rec.verrechnet||[];
@@ -3831,6 +3870,7 @@ async function pruefeMonatsuebertrag(){
         let monatSoll=0;
         for(let t=1;t<=tageImMonat;t++){
           const ds=`${jr}-${String(mo).padStart(2,'0')}-${String(t).padStart(2,'0')}`;
+          if(eintritt && ds<eintritt) continue; // vor Eintritt kein Soll
           if(!istWochenende(ds) && !istFreierTag(ds) && !istUrlaubstag(urlaube, ds)) monatSoll+=tagSoll;
         }
         const saldo=istMin/60 - monatSoll;   // + Über, - Unter
@@ -11127,6 +11167,8 @@ async function modalEditUser(id){
     </div>
     <div class="f"><label>Wochensoll (Stunden) – für Stundenkonto</label>
       <input type="number" id="euWochenSoll" value="${u.wochenSoll!=null?u.wochenSoll:40}" min="0" max="60" step="0.5" inputmode="decimal"></div>
+    <div class="f"><label>Eintrittsdatum – Soll zählt erst ab hier</label>
+      <input type="date" id="euEintritt" value="${u.eintritt||''}"></div>
     <div class="f"><label>Urlaubsanspruch (Tage/Jahr)</label>
       <input type="number" id="euUrlaub" value="${u.urlaubProJahr!=null?u.urlaubProJahr:30}" min="0" max="40" step="1" inputmode="numeric"></div>
     <div class="f-row">
@@ -11147,6 +11189,8 @@ async function saveEditUser(id){
   u.objekte=role==='admin'?[]:Array.from(sel.selectedOptions).map(o=>o.value);
   const ws=parseFloat(document.getElementById('euWochenSoll')?.value);
   if(!isNaN(ws)) u.wochenSoll=ws;
+  const eintr=document.getElementById('euEintritt')?.value;
+  u.eintritt = eintr || u.eintritt || null;
   const ul=parseInt(document.getElementById('euUrlaub')?.value);
   if(!isNaN(ul)) u.urlaubProJahr=ul;
   await idbPut('users',u);
