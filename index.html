@@ -700,8 +700,8 @@ button.chip.chip-active{background:var(--ink);color:#fff;border-color:var(--ink)
 /* ═══════════════════════════════════════════════════════════
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
-const DB_NAME='immo_v2', DB_VER=12;
-const APP_VERSION = '2026-06-09-v38';
+const DB_NAME='immo_v2', DB_VER=13;
+const APP_VERSION = '2026-06-09-v39';
 let idb=null;
 
 function openIDB(){
@@ -714,7 +714,7 @@ function openIDB(){
     const req=indexedDB.open(DB_NAME,DB_VER);
     req.onupgradeneeded=e=>{
       const db=e.target.result;
-      ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','fotos','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen'].forEach(s=>{
+      ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','fotos','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste'].forEach(s=>{
         if(!db.objectStoreNames.contains(s)){
           const store=db.createObjectStore(s,{keyPath:'id'});
           if(s==='mieter'){store.createIndex('objektId','objektId');store.createIndex('weNr','weNr')}
@@ -736,6 +736,7 @@ function openIDB(){
           if(s==='arbeitszeit'){store.createIndex('userId','userId');store.createIndex('datum','datum')}
           if(s==='abwesenheit'){store.createIndex('userId','userId')}
           if(s==='rechnungen'){store.createIndex('objektId','objektId');store.createIndex('mieterId','mieterId');store.createIndex('datum','datum')}
+          if(s==='packliste'){store.createIndex('terminId','terminId')}
         }
       });
     };
@@ -9169,6 +9170,13 @@ async function showTerminDetail(id) {
   const done = t.status==='erledigt';
   const abs  = t.status==='abgesagt';
   const d    = new Date(t.datum+'T12:00:00').toLocaleDateString('de-DE',{weekday:'long',day:'numeric',month:'long',year:'numeric'});
+  // Packlisten-Status (nur Admin)
+  let packBtn='';
+  if(CU?.role==='admin'){
+    const pa=await packlisteAnzahl(id);
+    const badge = pa.gesamt ? ` (${pa.offen} offen / ${pa.gesamt})` : '';
+    packBtn=`<button class="btn btn-sm" onclick="closeModal();modalPackliste('${id}')"><i class="ti ti-clipboard-list"></i> Packliste${badge}</button>`;
+  }
 
   showModal(`
     <div class="m-title" style="color:${typ.color}"><i class="ti ${typ.icon}"></i> ${t.titel}</div>
@@ -9188,6 +9196,7 @@ async function showTerminDetail(id) {
     ${t.notiz?`<div style="background:var(--ink-05);border-radius:8px;padding:10px;font-size:13px;line-height:1.6;margin-bottom:12px;white-space:pre-wrap">${t.notiz}</div>`:''}
     <div style="display:flex;gap:7px;flex-wrap:wrap">
       ${!done&&!abs?`<button class="btn btn-success" onclick="setTerminStatus('${id}','erledigt')"><i class="ti ti-check"></i> Erledigt</button>`:''}
+      ${packBtn}
       ${!abs?`<button class="btn btn-sm" onclick="setTerminStatus('${id}','abgesagt')"><i class="ti ti-x"></i> Absagen</button>`:''}
       ${done||abs?`<button class="btn btn-sm" onclick="setTerminStatus('${id}','offen')"><i class="ti ti-rotate-ccw"></i> Öffnen</button>`:''}
       <button class="btn btn-sm" onclick="closeModal();modalEditTermin('${id}')"><i class="ti ti-pencil"></i> Bearbeiten</button>
@@ -11456,7 +11465,7 @@ async function syncToOneDrive() {
   setSyncStatus('pending');
   try {
     const backup = {};
-    for (const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen']) {
+    for (const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste']) {
       backup[s] = await idbGetAll(s);
     }
     backup.updatedAt = now();
@@ -11527,7 +11536,7 @@ async function syncFromOneDrive() {
       await idbPut('settings', { id:'tombstones', value: mergedTomb });
 
       // Merge: ID-basiert, nur übernehmen wenn remote neuer oder lokal fehlt
-      const mergeStores = ['protokolle','aufgaben','maengel','reparaturen','dokumente','nka_archiv','einkaufsliste','wartung','termine','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen'];
+      const mergeStores = ['protokolle','aufgaben','maengel','reparaturen','dokumente','nka_archiv','einkaufsliste','wartung','termine','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste'];
       for (const s of mergeStores) {
         if (!backup[s]) continue;
         const tombS = mergedTomb[s] || {};
@@ -12091,6 +12100,259 @@ async function rechnungLoeschen(id){
   await syncToOneDrive();
   toast('Rechnung gelöscht ✓');
   if(curPage==='rechnungen') renderRechnungen();
+}
+
+/* ═══════════════════════════════════════════════════════════
+   PACKLISTE – pro Kalendertermin, nur Admin
+   Einträge per '+' (frei) oder aus dem Lager. Abhaken eines
+   Lager-Eintrags = echte Materialentnahme (Bestand sinkt,
+   Lager-Historie). Haken entfernen = Rückbuchung.
+═══════════════════════════════════════════════════════════ */
+
+async function packlisteAnzahl(terminId){
+  const items=await idbGetAll('packliste','terminId',terminId).catch(()=>[]);
+  const offen=items.filter(i=>!i.erledigt).length;
+  return { gesamt:items.length, offen };
+}
+
+async function modalPackliste(terminId){
+  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  const termin=await idbGet('termine', terminId);
+  if(!termin){ toast('Termin nicht gefunden'); return; }
+  const items=(await idbGetAll('packliste','terminId',terminId).catch(()=>[]))
+    .sort((a,b)=>(a.erledigt?1:0)-(b.erledigt?1:0) || (a.erstelltIso||'').localeCompare(b.erstelltIso||''));
+  const offen=items.filter(i=>!i.erledigt).length;
+  const datum=termin.datum ? new Date(termin.datum+'T12:00:00').toLocaleDateString('de-DE',{weekday:'short',day:'numeric',month:'long'}) : '';
+
+  let liste='';
+  if(!items.length){
+    liste=`<div class="empty"><i class="ti ti-clipboard-list"></i><p>Noch nichts auf der Packliste</p></div>`;
+  } else {
+    liste=items.map(i=>packlisteRow(i)).join('');
+  }
+
+  showModal(`
+    <div class="m-title"><i class="ti ti-clipboard-list"></i> Packliste</div>
+    <div style="font-size:12px;color:var(--ink-40);margin-bottom:4px">${esc(termin.titel||'Termin')}${datum?' · '+datum:''}</div>
+    <div style="font-size:12px;color:var(--ink-60);margin-bottom:12px">${items.length} Einträge · ${offen} offen</div>
+
+    <div style="display:flex;gap:6px;margin-bottom:12px">
+      <button class="btn btn-copper" style="flex:1" onclick="packAddFrei('${terminId}')"><i class="ti ti-plus"></i> Frei eintragen</button>
+      <button class="btn" style="flex:1" onclick="packAddAusLager('${terminId}')"><i class="ti ti-package"></i> Aus Lager</button>
+    </div>
+
+    <div id="packListe" style="max-height:50vh;overflow-y:auto">${liste}</div>
+    <button class="btn btn-full" style="margin-top:10px" onclick="closeModal()">Schließen</button>
+  `);
+}
+
+function packlisteRow(i){
+  const erl=!!i.erledigt;
+  const ausLager=!!i.lagerId;
+  const mengeTxt = i.menge!=null ? `${i.menge} ${esc(i.einheit||'Stk.')}` : '';
+  return `<div style="display:flex;align-items:center;gap:10px;border:1px solid var(--ink-10);border-radius:8px;padding:9px 10px;margin-bottom:6px;${erl?'background:var(--ink-05)':''}">
+    <button onclick="packToggle('${i.id}')" style="flex-shrink:0;width:26px;height:26px;border-radius:7px;border:2px solid ${erl?'var(--green,#2E7D52)':'var(--ink-20)'};background:${erl?'var(--green,#2E7D52)':'#fff'};display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0">
+      ${erl?'<i class="ti ti-check" style="color:#fff;font-size:15px"></i>':''}
+    </button>
+    <div style="flex:1;min-width:0">
+      <div style="font-size:14px;font-weight:600;${erl?'text-decoration:line-through;color:var(--ink-40)':''}">${esc(i.artikel)}</div>
+      <div style="font-size:11px;color:var(--ink-40)">${mengeTxt}${ausLager?` · <i class="ti ti-package" style="font-size:10px"></i> ${esc(i.lagerName||'Lager')}`:' · frei'}${erl&&ausLager?' · entnommen':''}</div>
+    </div>
+    <button class="btn btn-sm btn-danger" onclick="packDelete('${i.id}')"><i class="ti ti-x"></i></button>
+  </div>`;
+}
+
+async function packRefresh(terminId){
+  const el=document.getElementById('packListe');
+  if(!el) return;
+  const items=(await idbGetAll('packliste','terminId',terminId).catch(()=>[]))
+    .sort((a,b)=>(a.erledigt?1:0)-(b.erledigt?1:0) || (a.erstelltIso||'').localeCompare(b.erstelltIso||''));
+  el.innerHTML = items.length ? items.map(i=>packlisteRow(i)).join('') : `<div class="empty"><i class="ti ti-clipboard-list"></i><p>Noch nichts auf der Packliste</p></div>`;
+}
+
+// ── Freien Eintrag hinzufügen ──
+function packAddFrei(terminId){
+  showModal(`
+    <div class="m-title"><i class="ti ti-plus"></i> Eintrag hinzufügen</div>
+    <div class="f"><label>Was *</label><input type="text" id="pfArtikel" placeholder="z. B. Leiter, Schlüsselbund"></div>
+    <div class="f-row">
+      <div class="f" style="flex:1"><label>Menge</label><input type="number" id="pfMenge" step="1" value="1" inputmode="numeric"></div>
+      <div class="f" style="flex:1"><label>Einheit</label><input type="text" id="pfEinheit" value="Stk."></div>
+    </div>
+    <div class="f-row" style="margin-top:12px">
+      <button class="btn btn-copper btn-full" onclick="packSaveFrei('${terminId}')"><i class="ti ti-check"></i> Hinzufügen</button>
+      <button class="btn btn-full" onclick="modalPackliste('${terminId}')">Zurück</button>
+    </div>`);
+}
+async function packSaveFrei(terminId){
+  const artikel=document.getElementById('pfArtikel')?.value?.trim();
+  if(!artikel){ toast('Bitte etwas eingeben'); return; }
+  const menge=parseFloat(document.getElementById('pfMenge')?.value);
+  await idbPut('packliste', {
+    id:uid(), terminId, artikel,
+    menge: isNaN(menge)?null:menge,
+    einheit: document.getElementById('pfEinheit')?.value||'Stk.',
+    lagerId:null, lagerName:null, entnahmeRef:null,
+    erledigt:false, erstelltIso:nowIso(), ersteller:CU?.name||'', geaendert:nowIso(),
+  });
+  syncSoon();
+  modalPackliste(terminId);
+  toast('Hinzugefügt ✓');
+}
+
+// ── Aus dem Lager hinzufügen (mit Suche) ──
+async function packAddAusLager(terminId){
+  window._packTerminId=terminId;
+  const artikel=(await idbGetAll('lager')).sort((a,b)=>(a.bezeichnung||'').localeCompare(b.bezeichnung||''));
+  window._packLagerCache=artikel;
+  showModal(`
+    <div class="m-title"><i class="ti ti-package"></i> Aus Lager wählen</div>
+    <input type="search" id="packLagerSuche" placeholder="Artikel, Inventar- oder Lagerort-Nr. suchen…"
+      oninput="packLagerFilter()" style="width:100%;padding:10px;border:1px solid var(--ink-20);border-radius:8px;font-size:14px;margin-bottom:10px">
+    <div id="packLagerResult" style="max-height:55vh;overflow-y:auto">${packLagerRows(artikel)}</div>
+    <button class="btn btn-full" style="margin-top:10px" onclick="modalPackliste('${terminId}')">Zurück</button>
+  `);
+}
+function packLagerRows(liste){
+  if(!liste.length) return `<div class="empty"><i class="ti ti-package-off"></i><p>Keine Artikel</p></div>`;
+  return liste.map(a=>{
+    const best = a.mengenstufe ? (typeof mengenstufeLabel==='function'?mengenstufeLabel(a.mengenstufe):a.mengenstufe) : (a.bestand??'–');
+    return `<div style="display:flex;align-items:center;gap:10px;border:1px solid var(--ink-10);border-radius:8px;padding:9px 10px;margin-bottom:6px;cursor:pointer" onclick="packWaehleLager('${a.id}')">
+      <div style="flex-shrink:0;width:34px;height:34px;border-radius:8px;background:var(--copper-bg);display:flex;align-items:center;justify-content:center;color:var(--copper)"><i class="ti ti-package"></i></div>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:14px;font-weight:600">${esc(a.bezeichnung||'Artikel')}</div>
+        <div style="font-size:11px;color:var(--ink-40)">${a.inventarNr?esc(a.inventarNr)+' · ':''}Bestand: ${best}${a.lagerortNr?' · '+esc(a.lagerortNr):''}</div>
+      </div>
+      <i class="ti ti-chevron-right" style="color:var(--ink-40)"></i>
+    </div>`;
+  }).join('');
+}
+function packLagerFilter(){
+  const q=(document.getElementById('packLagerSuche')?.value||'').toLowerCase().trim();
+  const all=window._packLagerCache||[];
+  const liste=!q?all:all.filter(a=>`${a.bezeichnung||''} ${a.inventarNr||''} ${a.barcode||''} ${a.lagerortNr||''}`.toLowerCase().includes(q));
+  const el=document.getElementById('packLagerResult');
+  if(el) el.innerHTML=packLagerRows(liste);
+}
+async function packWaehleLager(lagerId){
+  const a=await idbGet('lager', lagerId); if(!a) return;
+  const terminId=window._packTerminId;
+  const stufig=!!a.mengenstufe;
+  showModal(`
+    <div class="m-title"><i class="ti ti-package"></i> ${esc(a.bezeichnung||'Artikel')}</div>
+    <div style="font-size:12px;color:var(--ink-40);margin-bottom:10px">Bestand: ${stufig?(typeof mengenstufeLabel==='function'?mengenstufeLabel(a.mengenstufe):a.mengenstufe):(a.bestand??'–')}</div>
+    ${stufig?`<p style="font-size:12px;color:var(--ink-60);margin-bottom:10px">Dieser Artikel wird in Stufen geführt – beim Abhaken wird die Stufe als Entnahme vermerkt.</p>`
+            :`<div class="f"><label>Menge für die Packliste</label><input type="number" id="plMenge" step="1" value="1" min="1" inputmode="numeric"></div>`}
+    <div class="f-row" style="margin-top:12px">
+      <button class="btn btn-copper btn-full" onclick="packSaveLager('${lagerId}')"><i class="ti ti-check"></i> Auf Packliste</button>
+      <button class="btn btn-full" onclick="packAddAusLager('${terminId}')">Zurück</button>
+    </div>`);
+}
+async function packSaveLager(lagerId){
+  const a=await idbGet('lager', lagerId); if(!a) return;
+  const terminId=window._packTerminId;
+  let menge=null;
+  if(!a.mengenstufe){
+    menge=parseFloat(document.getElementById('plMenge')?.value);
+    if(isNaN(menge)||menge<=0){ toast('Bitte gültige Menge'); return; }
+  }
+  await idbPut('packliste', {
+    id:uid(), terminId,
+    artikel: a.bezeichnung||'Artikel',
+    menge: menge,
+    einheit: a.einheit||'Stk.',
+    lagerId: lagerId,
+    lagerName: a.lagerortNr || a.standort || 'Lager',
+    mengenstufe: a.mengenstufe||null,
+    entnahmeRef:null,
+    erledigt:false, erstelltIso:nowIso(), ersteller:CU?.name||'', geaendert:nowIso(),
+  });
+  syncSoon();
+  modalPackliste(terminId);
+  toast('Auf Packliste ✓');
+}
+
+// ── Abhaken / Zurücknehmen (mit echter Lagerbuchung) ──
+async function packToggle(id){
+  const i=await idbGet('packliste', id); if(!i) return;
+  if(!i.erledigt){
+    // Abhaken → bei Lagerbezug echte Entnahme buchen
+    if(i.lagerId){
+      const ok=await packBucheEntnahme(i);
+      if(!ok) return; // Buchung abgebrochen
+    }
+    i.erledigt=true; i.erledigtIso=nowIso();
+  } else {
+    // Zurücknehmen → bei Lagerbezug Rückbuchung
+    if(i.lagerId && i.entnahmeRef){
+      await packRueckbuchung(i);
+    }
+    i.erledigt=false; delete i.erledigtIso;
+  }
+  i.geaendert=nowIso();
+  await idbPut('packliste', i);
+  syncSoon();
+  await packRefresh(i.terminId);
+}
+
+// Echte Materialentnahme buchen (analog saveLagerEntnahme), Referenz merken
+async function packBucheEntnahme(i){
+  const a=await idbGet('lager', i.lagerId);
+  if(!a){ toast('Lagerartikel nicht mehr vorhanden'); return true; } // trotzdem abhaken erlauben
+  const ref='pack_'+i.id;
+  let mengeBucht=i.menge;
+  if(a.mengenstufe){
+    // Stufiger Artikel: Stufe als Text vermerken, kein Zahlbestand
+    mengeBucht = '→ '+a.mengenstufe;
+  } else {
+    const best=parseFloat(a.bestand)||0;
+    const m=parseFloat(i.menge)||0;
+    if(m>best){
+      if(!confirm(`Entnahme (${m}) übersteigt den Bestand (${best}). Trotzdem abhaken und Bestand auf 0 setzen?`)) return false;
+      a.bestand=0;
+    } else {
+      a.bestand=best-m;
+    }
+    mengeBucht=m;
+  }
+  a.entnahmen=a.entnahmen||[];
+  a.entnahmen.unshift({datum:new Date().toLocaleDateString('de-DE'), menge:mengeBucht, zweck:'Packliste', von:CU?.name||'', ref});
+  if(a.entnahmen.length>50) a.entnahmen=a.entnahmen.slice(0,50);
+  a.geaendert=now();
+  await idbPut('lager', a);
+  i.entnahmeRef=ref;
+  return true;
+}
+
+// Rückbuchung: Entnahme stornieren, Bestand wieder erhöhen
+async function packRueckbuchung(i){
+  const a=await idbGet('lager', i.lagerId);
+  if(!a){ return; }
+  // passenden Entnahme-Eintrag finden und entfernen
+  const idx=(a.entnahmen||[]).findIndex(e=>e.ref===i.entnahmeRef);
+  if(idx>=0){
+    const e=a.entnahmen[idx];
+    if(!a.mengenstufe && typeof e.menge==='number'){
+      a.bestand=(parseFloat(a.bestand)||0)+e.menge;
+    }
+    a.entnahmen.splice(idx,1);
+    a.geaendert=now();
+    await idbPut('lager', a);
+  }
+  i.entnahmeRef=null;
+}
+
+// ── Eintrag löschen (bei erledigtem Lager-Eintrag zurückbuchen) ──
+async function packDelete(id){
+  const i=await idbGet('packliste', id); if(!i) return;
+  if(i.erledigt && i.lagerId && i.entnahmeRef){
+    if(!confirm('Dieser Eintrag wurde abgehakt und vom Lager entnommen. Beim Löschen wird die Entnahme zurückgebucht. Fortfahren?')) return;
+    await packRueckbuchung(i);
+  }
+  await deleteMitTombstone('packliste', id);
+  syncSoon();
+  await packRefresh(i.terminId);
+  toast('Entfernt');
 }
 
 /* ═══════════════════════════════════════════════════════════
