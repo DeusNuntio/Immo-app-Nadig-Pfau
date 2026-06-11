@@ -144,6 +144,9 @@ button.chip.chip-active{background:var(--ink);color:#fff;border-color:var(--ink)
 
 /* ── MIETER LIST ── */
 .mieter-row{background:var(--white);border-radius:var(--radius);border:1px solid var(--ink-10);padding:11px 13px;margin-bottom:7px;cursor:pointer;display:flex;gap:11px;align-items:center;transition:border-color .15s}
+.mieter-verstorben{opacity:.55;filter:grayscale(1)}
+.mieter-verstorben .m-avatar{background:var(--ink-20)!important}
+.person-verstorben{opacity:.5;filter:grayscale(1);text-decoration:line-through}
 .mieter-row:active{border-color:var(--copper)}
 .m-avatar{width:40px;height:40px;border-radius:10px;background:var(--ink-05);display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:600;color:var(--ink-60);flex-shrink:0;font-family:var(--mono)}
 .m-body{flex:1;min-width:0}
@@ -701,7 +704,7 @@ button.chip.chip-active{background:var(--ink);color:#fff;border-color:var(--ink)
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=14;
-const APP_VERSION = '2026-06-11-v41';
+const APP_VERSION = '2026-06-11-v43';
 let idb=null;
 
 function openIDB(){
@@ -5697,6 +5700,96 @@ async function saveGebaeudeStamm(objektId){
   toast('Gebäudedaten gespeichert ✓');
 }
 
+/* ── Personen-Helfer (personen_liste mit verstorben-Status) ── */
+// Liefert die Personenliste eines Mieters; fällt auf den Hauptnamen zurück.
+function personenVon(m){
+  const liste=(m.personen_liste||[]).filter(p=>p&&p.name);
+  if(liste.length) return liste;
+  return [{name:m.mieter||'', anrede:m.anrede||'', telefon:m.telefon||'', email:m.email||'', geburtsdatum:m.geburtsdatum||'', verstorben:false}];
+}
+// Nur lebende Personen
+function lebendePersonen(m){ return personenVon(m).filter(p=>!p.verstorben); }
+// Anzahl lebender Personen (für Personenzahl-Anzeige & NKA)
+function personenAnzahl(m){
+  if(m.leerstand) return 0;
+  const leb=lebendePersonen(m).length;
+  return leb || (parseInt(m.personen)||1);
+}
+// Namen der ersten beiden Personen (lebende zuerst), z. B. für die Übersicht
+function ersteZweiNamen(m){
+  const leb=lebendePersonen(m);
+  const quelle = leb.length?leb:personenVon(m);
+  return quelle.slice(0,2).map(p=>p.name);
+}
+// Personen-Block in der Mieter-Detailansicht (untereinander, mit Kontakt + Geburtsdatum)
+function personenBlockHTML(m){
+  const personen=personenVon(m);
+  if(personen.length<=1 && !(m.personen_liste&&m.personen_liste.length)){
+    // Keine aufgeteilte Personenliste: nur anbieten, falls es Sinn ergibt
+    return '';
+  }
+  const lebend=personen.filter(p=>!p.verstorben).length;
+  let h=`<div class="card" style="margin-bottom:12px">
+    <div class="card-hdr" style="display:flex;align-items:center;justify-content:space-between">
+      <span><i class="ti ti-users"></i> Bewohner (${lebend}${personen.length!==lebend?' von '+personen.length:''})</span>
+      <button class="btn btn-sm" onclick="modalMieterSplit('${m.id}')"><i class="ti ti-pencil"></i> Bearbeiten</button>
+    </div>`;
+  personen.forEach((p,i)=>{
+    const v=p.verstorben;
+    h+=`<div style="display:flex;align-items:flex-start;gap:10px;padding:9px 0;${i<personen.length-1?'border-bottom:1px solid var(--ink-10)':''}" class="${v?'person-verstorben':''}">
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:600;font-size:14px">${esc(p.name)}${v?' <span style="font-size:10px;color:var(--ink-40);font-weight:400">(verstorben)</span>':''}</div>
+        <div style="display:flex;flex-direction:column;gap:2px;margin-top:3px">
+          ${p.geburtsdatum?`<span style="font-size:12px;color:var(--ink-60)"><i class="ti ti-cake" style="font-size:12px"></i> ${fmtDate(p.geburtsdatum)}${alterAus(p.geburtsdatum)?` (${alterAus(p.geburtsdatum)} J.)`:''}</span>`:''}
+          ${p.telefon?`<span style="font-size:12px;color:var(--ink-60)"><i class="ti ti-phone" style="font-size:12px"></i> <a href="tel:${p.telefon}">${esc(p.telefon)}</a></span>`:''}
+          ${p.email?`<span style="font-size:12px;color:var(--ink-60)"><i class="ti ti-mail" style="font-size:12px"></i> <a href="mailto:${p.email}">${esc(p.email)}</a></span>`:''}
+        </div>
+      </div>
+      <button class="btn btn-sm" title="${v?'Als lebend markieren':'Als verstorben markieren'}" onclick="togglePersonVerstorben('${m.id}',${i})">
+        <i class="ti ti-${v?'rotate':'grave'}" style="font-size:14px"></i>
+      </button>
+    </div>`;
+  });
+  h+=`</div>`;
+  return h;
+}
+// Alter aus Geburtsdatum (ISO) berechnen
+function alterAus(iso){
+  if(!iso) return '';
+  const g=new Date(iso); if(isNaN(g)) return '';
+  const h=new Date(); let a=h.getFullYear()-g.getFullYear();
+  const mDiff=h.getMonth()-g.getMonth();
+  if(mDiff<0||(mDiff===0&&h.getDate()<g.getDate())) a--;
+  return a>=0&&a<130?a:'';
+}
+// Person als verstorben / wieder lebend markieren
+async function togglePersonVerstorben(mieterId, idx){
+  const m=await idbGet('mieter',mieterId); if(!m) return;
+  // Sicherstellen, dass eine personen_liste existiert
+  if(!m.personen_liste||!m.personen_liste.length){
+    m.personen_liste=personenVon(m).map(p=>({...p}));
+  }
+  const p=m.personen_liste[idx]; if(!p) return;
+  const wirdVerstorben=!p.verstorben;
+  if(wirdVerstorben){
+    if(!confirm(`„${p.name}" als verstorben markieren? Die Personenzahl wird angepasst und in Abrechnungen/Briefen wird diese Person nicht mehr genannt.`)) return;
+  }
+  p.verstorben=wirdVerstorben;
+  // Personenzahl = Anzahl lebender Personen
+  const lebend=m.personen_liste.filter(x=>!x.verstorben);
+  m.personen=lebend.length;
+  // Hauptmietername ggf. auf erste lebende Person setzen, falls Hauptmieter verstorben
+  if(wirdVerstorben && lebend.length){
+    const hauptNochLebend=lebend.some(x=>x.name===m.mieter);
+    if(!hauptNochLebend){ m.mieter=lebend[0].name; if(lebend[0].anrede) m.anrede=lebend[0].anrede; }
+  }
+  m.geaendert=now();
+  await idbPut('mieter',m);
+  clearTimeout(window._syncTimer); window._syncTimer=setTimeout(()=>syncToOneDrive(),3000);
+  await showMieter(mieterId);
+  toast(wirdVerstorben?'Als verstorben markiert':'Wieder als lebend markiert');
+}
+
 async function renderObjMieter(el){
   await aktiviereFaelligeMieterwechsel();
   const all=(await idbGetAll('mieter','objektId',currentObjId));
@@ -5755,11 +5848,18 @@ async function renderObjMieter(el){
   </div>`;
   mieter.forEach(m=>{
     const ini=initials(m.mieter);
-    const pers=parseInt(m.personen)||(m.leerstand?0:1);
-    h+=`<div class="mieter-row" onclick="showMieter('${m.id}')">
+    const pers=personenAnzahl(m);
+    const namen=ersteZweiNamen(m);
+    const personen=personenVon(m);
+    const alleVerstorben=!m.leerstand && personen.length>0 && personen.every(p=>p.verstorben);
+    // Anzeigename: erste zwei Personen nebeneinander, sonst Hauptname
+    const anzeigeName = namen.length>1
+      ? namen.join(' · ')
+      : (namen[0]||m.mieter);
+    h+=`<div class="mieter-row${alleVerstorben?' mieter-verstorben':''}" onclick="showMieter('${m.id}')">
       <div class="m-avatar">${ini}</div>
       <div class="m-body">
-        <div class="m-name">${m.leerstand?'<span class="chip chip-warn" style="font-size:10px;margin-right:4px"><i class="ti ti-home-off" style="font-size:9px"></i> Leerstand</span>':''} ${m.mieter}</div>
+        <div class="m-name">${m.leerstand?'<span class="chip chip-warn" style="font-size:10px;margin-right:4px"><i class="ti ti-home-off" style="font-size:9px"></i> Leerstand</span>':''}${alleVerstorben?'<span class="chip" style="font-size:10px;margin-right:4px;background:var(--ink-10);color:var(--ink-40)"><i class="ti ti-grave" style="font-size:9px"></i> verstorben</span>':''} ${esc(anzeigeName)}</div>
         <div class="m-sub">${m.etage||''} · Einzug: ${m.einzug||'–'}${m.leerstand?'':` · <i class="ti ti-users" style="font-size:11px"></i> ${pers} ${pers===1?'Person':'Personen'}`}</div>
         <div class="m-sub" style="display:flex;gap:8px;flex-wrap:wrap">
           ${m.telefon?`<span><i class="ti ti-phone" style="font-size:11px"></i> ${m.telefon}</span>`:''}
@@ -5940,6 +6040,17 @@ async function showMieter(id){
       ${CU?.role==='admin'&&m.krKlausel==='Ja'?`<div class="det-field"><label>KR-Klausel</label><span>${fmtEur(m.krHoehe)} · ${m.krProzent||'–'}% p.a.</span></div>`:''}
     </div>
   </div>
+  ${personenBlockHTML(m)}
+  ${m.zusatzkontakt&&m.zusatzkontakt.name?`<div class="card" style="margin-bottom:12px">
+    <div class="card-hdr"><i class="ti ti-heart-handshake"></i> ${esc(m.zusatzkontakt.rolle||'Zusatzkontakt')}</div>
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
+      <div><div style="font-weight:600;font-size:14px">${esc(m.zusatzkontakt.name)}</div>
+        ${m.zusatzkontakt.telefon?`<div style="font-size:12px;color:var(--ink-60);margin-top:2px"><i class="ti ti-phone" style="font-size:12px"></i> <a href="tel:${m.zusatzkontakt.telefon}">${esc(m.zusatzkontakt.telefon)}</a></div>`:''}
+        ${m.zusatzkontakt.email?`<div style="font-size:12px;color:var(--ink-60)"><i class="ti ti-mail" style="font-size:12px"></i> <a href="mailto:${m.zusatzkontakt.email}">${esc(m.zusatzkontakt.email)}</a></div>`:''}
+      </div>
+      ${m.zusatzkontakt.telefon?`<a href="tel:${m.zusatzkontakt.telefon}" class="btn btn-sm btn-success"><i class="ti ti-phone"></i></a>`:''}
+    </div>
+  </div>`:''}
   <div style="display:flex;gap:7px;flex-wrap:wrap;margin-bottom:14px">
     <button class="btn btn-copper" onclick="newProtokollForMieter('${m.id}')"><i class="ti ti-clipboard-check"></i> Protokoll</button>
     <button class="btn" onclick="modalAddAufgabe('${m.id}','${m.objektId}')"><i class="ti ti-plus"></i> ToDo</button>
@@ -7169,12 +7280,7 @@ async function erstelleNKA(objektId) {
 
       <h2 style="margin:14px 0 2px">${obj?.name||''} · WE ${m.weNr}${m.etage?' · '+m.etage:''}</h2>
       <h1 style="margin-bottom:8px">Mietnebenkosten – Einzelabrechnung</h1>
-      <p style="font-size:11px;margin-bottom:6px">${
-        (m.personen_liste?.length>1)?'Sehr geehrte Damen und Herren,'
-        : m.anrede==='Frau' ? 'Sehr geehrte Frau '+m.mieter+','
-        : m.anrede==='Divers' ? 'Guten Tag, '+m.mieter+','
-        : 'Sehr geehrter Herr '+m.mieter+','
-      }</p>
+      <p style="font-size:11px;margin-bottom:6px">${getAnrede(m)},</p>
       <p style="font-size:11px;margin-bottom:10px;line-height:1.6">anbei erhalten Sie Ihre Nebenkostenabrechnung gemäß folgender Aufstellung:</p>
       <table class="info-table" style="margin:10px 0 8px">
         <tr><td></td><td>von</td><td>bis</td><td>Monate</td></tr>
@@ -7767,36 +7873,38 @@ async function deleteNKA(id) {
    ANREDE & KOMMUNIKATION
 ═══════════════════════════════════════════════════════════ */
 function getAnrede(m) {
-  const persListe = m.personen_liste?.filter(p=>p.name) || [];
-  // Einzelperson
-  if (persListe.length <= 1) {
+  const persListe = (m.personen_liste?.filter(p=>p.name && !p.verstorben)) || [];
+  const pfx = a => a === 'Frau' ? 'Sehr geehrte Frau' : a === 'Divers' ? 'Guten Tag,' : 'Sehr geehrter Herr';
+  const namePfx = a => a === 'Frau' ? 'Frau' : a === 'Divers' ? '' : 'Herr';
+  // Einzelperson (keine aufgeteilte Liste): Hauptmieter verwenden
+  if (persListe.length === 0) {
     const anrede = m.anrede || 'Herr';
     if (anrede === 'Frau')   return 'Sehr geehrte Frau ' + m.mieter;
     if (anrede === 'Divers') return 'Guten Tag, ' + m.mieter;
     return 'Sehr geehrter Herr ' + m.mieter;
   }
-  // Mehrere Personen: "Sehr geehrter Herr X und Frau Y" / "Sehr geehrte Frau X und Herr Y"
-  // Nutze Anrede des Hauptmieters + "und [Anrede] [Name2]"
-  const hauptAnrede = m.anrede || 'Herr';
-  const hauptName   = m.mieter;
-  const hauptPfx    = hauptAnrede === 'Frau' ? 'Sehr geehrte Frau' : hauptAnrede === 'Divers' ? 'Guten Tag,' : 'Sehr geehrter Herr';
-  // Weitere Personen
-  const weitere = persListe.slice(1).map(p => {
-    // Versuche Anrede aus personen_liste (anrede-Feld)
-    const pa = p.anrede || '';
-    if (pa === 'Frau') return 'Frau ' + p.name;
-    if (pa === 'Divers') return p.name;
-    return 'Herr ' + p.name;
-  });
-  if (weitere.length === 0) return hauptPfx + ' ' + hauptName;
-  if (weitere.length === 1) return hauptPfx + ' ' + hauptName + ' und ' + weitere[0];
-  return hauptPfx + ' ' + hauptName + ', ' + weitere.slice(0,-1).join(', ') + ' und ' + weitere[weitere.length-1];
+  if (persListe.length === 1) {
+    const p = persListe[0];
+    return pfx(p.anrede) + ' ' + p.name;
+  }
+  // Mehrere lebende Personen: erste mit voller Anrede, weitere mit Namens-Präfix
+  const erste = persListe[0];
+  const teile = persListe.slice(1).map(p => (namePfx(p.anrede) ? namePfx(p.anrede) + ' ' : '') + p.name);
+  const kopf = pfx(erste.anrede) + ' ' + erste.name;
+  if (teile.length === 1) return kopf + ' und ' + teile[0];
+  return kopf + ', ' + teile.slice(0,-1).join(', ') + ' und ' + teile[teile.length-1];
 }
 
 function getAnredeKurz(m) {
+  const lebend = (m.personen_liste?.filter(p=>p.name && !p.verstorben)) || [];
+  if (lebend.length > 1) return 'die Bewohner';
+  if (lebend.length === 1) {
+    const p = lebend[0];
+    if (p.anrede === 'Frau')   return 'Frau ' + p.name;
+    if (p.anrede === 'Divers') return p.name;
+    return 'Herr ' + p.name;
+  }
   const anrede = m.anrede || 'Herr';
-  const persListe = m.personen_liste || [{name:m.mieter}];
-  if (persListe.length > 1) return 'die Bewohner';
   if (anrede === 'Frau')   return 'Frau ' + m.mieter;
   if (anrede === 'Divers') return m.mieter;
   return 'Herr ' + m.mieter;
@@ -8994,8 +9102,28 @@ async function exportExcel() {
   ]);
   XLSX.utils.book_append_sheet(wb, wsApp, '_APP_DATEN');
 
-  XLSX.writeFile(wb, 'NadigPfau_Export_' + today() + '.xlsx');
-  toast('Excel exportiert ✓');
+  const dateiname = 'NadigPfau_Export_' + today() + '.xlsx';
+  // Robuste Ausgabe: erst Web Share (Handy/Teilen-Menü), sonst klassischer Download.
+  try{
+    const wbout = XLSX.write(wb, {bookType:'xlsx', type:'array'});
+    const blob = new Blob([wbout], {type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+    const file = new File([blob], dateiname, {type:blob.type});
+    if (navigator.canShare && navigator.canShare({files:[file]})) {
+      await navigator.share({files:[file], title:dateiname, text:'Mieterdaten-Export'});
+      toast('Excel zum Teilen bereit ✓');
+    } else {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = dateiname;
+      document.body.appendChild(a); a.click();
+      setTimeout(()=>{ document.body.removeChild(a); URL.revokeObjectURL(url); }, 1500);
+      toast('Excel heruntergeladen (Ordner „Download") ✓');
+    }
+  }catch(e){
+    // Letzter Fallback: klassischer writeFile
+    try{ XLSX.writeFile(wb, dateiname); toast('Excel exportiert ✓'); }
+    catch(e2){ toast('Export fehlgeschlagen: '+(e2.message||e.message)); }
+  }
 }
 
 
@@ -9105,6 +9233,7 @@ const TERMIN_TYPEN = [
   {val:'vertrag',       label:'Vertrag / Versorger',     icon:'ti-file-dollar',   color:'#0E7C7B'},
   {val:'urlaub',        label:'Urlaub',                  icon:'ti-beach',         color:'#0EA5A5'},
   {val:'feiertag',      label:'Feiertag',                icon:'ti-confetti',      color:'#C0392B'},
+  {val:'geburtstag',    label:'Geburtstag',              icon:'ti-cake',          color:'#D81B7A'},
   {val:'sonstiges',     label:'Sonstiges',               icon:'ti-calendar',      color:'#888'},
 ];
 
@@ -9146,6 +9275,25 @@ async function renderKalender() {
   for(const [ds,name] of Object.entries(ftJahr)){
     alle.push({id:'ft_'+ds, titel:name, typ:'feiertag', datum:ds, status:'aktiv', ganztags:true, _feiertag:true});
   }
+
+  // Geburtstage der Bewohner (lebende Personen mit Geburtsdatum) als virtuelle Termine im angezeigten Jahr
+  try{
+    const mieterAlle=(await idbGetAll('mieter')).filter(m=>!m._vormieter && myIds.includes(m.objektId));
+    for(const m of mieterAlle){
+      const personen=(m.personen_liste||[]).filter(p=>p&&p.name&&p.geburtsdatum&&!p.verstorben);
+      for(const p of personen){
+        const g=new Date(p.geburtsdatum); if(isNaN(g)) continue;
+        const mm=String(g.getMonth()+1).padStart(2,'0');
+        const dd=String(g.getDate()).padStart(2,'0');
+        const ds=`${_kalYear}-${mm}-${dd}`;
+        const alter=_kalYear - g.getFullYear();
+        const obj=getObj(m.objektId);
+        alle.push({id:'bday_'+m.id+'_'+p.name.replace(/\W/g,''), titel:'🎂 '+p.name+(alter>0&&alter<130?' ('+alter+')':''),
+          typ:'geburtstag', datum:ds, status:'aktiv', ganztags:true, _geburtstag:true,
+          notiz:(obj?.name||'')+' · WE '+(m.weNr||'')});
+      }
+    }
+  }catch(e){ console.warn('Geburtstage:',e); }
 
   // Heute-Badge: Termine heute
   const todayStr = today();
@@ -10006,11 +10154,11 @@ async function modalMieterSplit(id){
   if(!m) return;
   // Vorhandene Personenliste hat Vorrang; sonst aus Namen parsen
   let personen = (m.personen_liste && m.personen_liste.length)
-    ? m.personen_liste.map(p=>({name:p.name||'',geburtsdatum:p.geburtsdatum||'',anrede:p.anrede||'Herr'}))
-    : parseMieterNamen(m.mieter);
+    ? m.personen_liste.map(p=>({name:p.name||'',geburtsdatum:p.geburtsdatum||'',anrede:p.anrede||'Herr',telefon:p.telefon||'',email:p.email||'',verstorben:!!p.verstorben}))
+    : parseMieterNamen(m.mieter).map((p,i)=>({...p,telefon:i===0?(m.telefon||''):'',email:i===0?(m.email||''):'',verstorben:false}));
   // Falls Personenzahl höher als erkannte Namen → Platzhalter ergänzen
   const ziel = Math.max(parseInt(m.personen)||0, personen.length, 1);
-  while(personen.length<ziel) personen.push({name:'Kind '+(personen.length), geburtsdatum:'', anrede:''});
+  while(personen.length<ziel) personen.push({name:'Kind '+(personen.length), geburtsdatum:'', anrede:'',telefon:'',email:'',verstorben:false});
   window._splitPersonen = personen;
 
   showModal(`
@@ -10027,6 +10175,21 @@ async function modalMieterSplit(id){
         Haupt-Mietername auf erste Person setzen
       </label>
     </div>
+    <div style="border-top:1px solid var(--ink-10);margin:12px 0 8px;padding-top:10px">
+      <div style="font-size:12px;font-weight:600;color:var(--ink-60);margin-bottom:6px"><i class="ti ti-heart-handshake"></i> Pflege-/Zusatzkontakt (optional)</div>
+      <div class="f-row" style="margin-bottom:6px">
+        <div class="f"><label style="font-size:10px">Name</label>
+          <input type="text" id="zkName" value="${esc(m.zusatzkontakt?.name||'')}" spellcheck="true" lang="de" style="font-size:12px" placeholder="z. B. Tochter, Betreuer"></div>
+        <div class="f" style="max-width:120px"><label style="font-size:10px">Rolle</label>
+          <input type="text" id="zkRolle" value="${esc(m.zusatzkontakt?.rolle||'')}" style="font-size:12px" placeholder="Pflegekontakt"></div>
+      </div>
+      <div class="f-row">
+        <div class="f"><label style="font-size:10px">Telefon</label>
+          <input type="tel" id="zkTel" value="${esc(m.zusatzkontakt?.telefon||'')}" style="font-size:12px"></div>
+        <div class="f"><label style="font-size:10px">E-Mail</label>
+          <input type="email" id="zkMail" value="${esc(m.zusatzkontakt?.email||'')}" style="font-size:12px"></div>
+      </div>
+    </div>
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="saveMieterSplit('${id}')"><i class="ti ti-check"></i> Speichern</button>
       <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
@@ -10039,38 +10202,52 @@ function renderSplitListe(){
   if(!wrap) return;
   const ps=window._splitPersonen||[];
   wrap.innerHTML=ps.map((p,i)=>`
-    <div class="f-row" style="margin-bottom:6px;align-items:flex-end" id="splitRow_${i}">
-      <div class="f" style="max-width:78px"><label style="font-size:10px">Anrede</label>
-        <select id="splitAnr_${i}" style="font-size:12px;padding:8px 4px">
-          <option value="" ${!p.anrede?'selected':''}>–</option>
-          <option value="Herr" ${p.anrede==='Herr'?'selected':''}>Herr</option>
-          <option value="Frau" ${p.anrede==='Frau'?'selected':''}>Frau</option>
-        </select></div>
-      <div class="f"><label style="font-size:10px">Name</label>
-        <input type="text" id="splitName_${i}" value="${esc(p.name||'')}" spellcheck="true" lang="de" style="font-size:13px"></div>
-      <div class="f" style="max-width:130px"><label style="font-size:10px">Geburtsdatum</label>
-        <input type="date" id="splitGeb_${i}" value="${p.geburtsdatum||''}" style="font-size:12px"></div>
-      ${i>0?`<button class="btn btn-sm btn-danger" onclick="splitRemoveRow(${i})" style="flex-shrink:0"><i class="ti ti-trash"></i></button>`:'<div style="width:0"></div>'}
+    <div style="border:1px solid var(--ink-10);border-radius:8px;padding:10px;margin-bottom:8px;${p.verstorben?'opacity:.6':''}" id="splitRow_${i}">
+      <div class="f-row" style="align-items:flex-end;margin-bottom:6px">
+        <div class="f" style="max-width:78px"><label style="font-size:10px">Anrede</label>
+          <select id="splitAnr_${i}" style="font-size:12px;padding:8px 4px">
+            <option value="" ${!p.anrede?'selected':''}>–</option>
+            <option value="Herr" ${p.anrede==='Herr'?'selected':''}>Herr</option>
+            <option value="Frau" ${p.anrede==='Frau'?'selected':''}>Frau</option>
+          </select></div>
+        <div class="f"><label style="font-size:10px">Name</label>
+          <input type="text" id="splitName_${i}" value="${esc(p.name||'')}" spellcheck="true" lang="de" style="font-size:13px"></div>
+        ${i>0?`<button class="btn btn-sm btn-danger" onclick="splitRemoveRow(${i})" style="flex-shrink:0"><i class="ti ti-trash"></i></button>`:'<div style="width:0"></div>'}
+      </div>
+      <div class="f-row" style="margin-bottom:6px">
+        <div class="f"><label style="font-size:10px">Geburtsdatum</label>
+          <input type="date" id="splitGeb_${i}" value="${p.geburtsdatum||''}" style="font-size:12px"></div>
+        <div class="f"><label style="font-size:10px">Telefon</label>
+          <input type="tel" id="splitTel_${i}" value="${esc(p.telefon||'')}" style="font-size:12px" placeholder="optional"></div>
+      </div>
+      <div class="f" style="margin-bottom:6px"><label style="font-size:10px">E-Mail</label>
+        <input type="email" id="splitMail_${i}" value="${esc(p.email||'')}" style="font-size:12px" placeholder="optional"></div>
+      <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-size:12px;color:${p.verstorben?'var(--ink)':'var(--ink-40)'}">
+        <input type="checkbox" id="splitTot_${i}" ${p.verstorben?'checked':''} onchange="splitToggleTot(${i})" style="width:15px;height:15px"> verstorben
+      </label>
     </div>`).join('');
 }
+function splitToggleTot(i){ window._splitPersonen=splitCollect(); renderSplitListe(); }
 function splitCollect(){
   const ps=window._splitPersonen||[];
   const out=[];
   for(let i=0;i<ps.length;i++){
     const nameEl=document.getElementById('splitName_'+i);
     if(!nameEl) continue;
-    const name=nameEl.value.trim();
     out.push({
-      name,
+      name:nameEl.value.trim(),
       geburtsdatum:document.getElementById('splitGeb_'+i)?.value||'',
       anrede:document.getElementById('splitAnr_'+i)?.value||'',
+      telefon:document.getElementById('splitTel_'+i)?.value.trim()||'',
+      email:document.getElementById('splitMail_'+i)?.value.trim()||'',
+      verstorben:document.getElementById('splitTot_'+i)?.checked||false,
     });
   }
   return out;
 }
 function splitAddRow(){
   window._splitPersonen=splitCollect();
-  window._splitPersonen.push({name:'',geburtsdatum:'',anrede:''});
+  window._splitPersonen.push({name:'',geburtsdatum:'',anrede:'',telefon:'',email:'',verstorben:false});
   renderSplitListe();
 }
 function splitRemoveRow(idx){
@@ -10083,10 +10260,29 @@ async function saveMieterSplit(id){
   const personen=splitCollect().filter(p=>p.name);
   if(!personen.length){ toast('Mindestens eine Person mit Namen erforderlich'); return; }
   m.personen_liste=personen;
-  m.personen=personen.length;
+  // Personenzahl = lebende Personen
+  const lebend=personen.filter(p=>!p.verstorben);
+  m.personen=lebend.length||personen.length;
   if(document.getElementById('splitNameUebernehmen')?.checked){
-    m.mieter=personen[0].name;
-    if(personen[0].anrede) m.anrede=personen[0].anrede;
+    const erster=(lebend[0]||personen[0]);
+    m.mieter=erster.name;
+    if(erster.anrede) m.anrede=erster.anrede;
+  }
+  // Kontaktdaten des Mieters auf erste lebende Person spiegeln (für Listen/Altfunktionen)
+  const haupt=lebend[0]||personen[0];
+  if(haupt.telefon) m.telefon=haupt.telefon;
+  if(haupt.email) m.email=haupt.email;
+  // Pflege-/Zusatzkontakt
+  const zkName=document.getElementById('zkName')?.value.trim()||'';
+  if(zkName){
+    m.zusatzkontakt={
+      name:zkName,
+      rolle:document.getElementById('zkRolle')?.value.trim()||'Zusatzkontakt',
+      telefon:document.getElementById('zkTel')?.value.trim()||'',
+      email:document.getElementById('zkMail')?.value.trim()||'',
+    };
+  } else {
+    delete m.zusatzkontakt;
   }
   m.geaendert=now();
   await idbPut('mieter',m);
@@ -11218,7 +11414,7 @@ h2{font-size:10px;background:#1F4E79;color:#fff;padding:4px 8px;margin:10px 0 4p
 table{width:100%;border-collapse:collapse;margin-bottom:4px}
 .sigs{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:8px}
 .sig-box{border:1px solid #ccd;border-radius:4px;padding:7px;text-align:center}
-.sig-box img{width:100%;height:100px;object-fit:contain}.sig-box p{font-size:9px;color:#666;margin-top:3px;line-height:1.5}
+.sig-box img{max-width:100%;max-height:90px;width:auto;height:auto;object-fit:contain;display:block;margin:0 auto}.sig-box p{font-size:9px;color:#666;margin-top:3px;line-height:1.5}
 .footer{font-size:8px;color:#aaa;text-align:center;margin-top:12px;padding-top:8px;border-top:1px solid #eee}
 @page{margin:1.2cm;size:A4}@media print{body{padding:0;-webkit-print-color-adjust:exact;print-color-adjust:exact}}</style><meta name="apple-mobile-web-app-title" content="Nadig Pfau Hausverwaltung">
 <link rel="apple-touch-icon" href="data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNTEyIiBoZWlnaHQ9IjUxMiIgdmlld0JveD0iMCAwIDUxMiA1MTIiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CiAgCiAgPCEtLSBIaW50ZXJncnVuZCAtLT4KICA8cmVjdCB3aWR0aD0iNTEyIiBoZWlnaHQ9IjUxMiIgcng9IjExMCIgZmlsbD0iIzE4NUZBNSIvPgogIAogIDwhLS0KICAgIE5QLU1vbm9ncmFtbTogRVhBS1QgZGllc2VsYmVuIEtvb3JkaW5hdGVuIHdpZSBpbSBCcmllZmtvcGYsCiAgICBza2FsaWVydCBtaXQgc2NhbGUoNCkgdW5kIHplbnRyaWVydCBhdWYgKDI1NiwyNTYpLgogICAgTWl0dGVscHVua3QgZGVzIE1vbm9ncmFtbXMgaW0gQnJpZWZrb3BmOiBjeD03Ny41LCBjeT04NAogICAgVHJhbnNmb3JtOiB0cmFuc2xhdGUoMjU2LDI1Nikgc2NhbGUoNCkgdHJhbnNsYXRlKC03Ny41LC04NCkKICAtLT4KICA8ZyB0cmFuc2Zvcm09InRyYW5zbGF0ZSgyNTYsMjU2KSBzY2FsZSg0KSB0cmFuc2xhdGUoLTc3LjUsLTg0KSI+CiAgICAKICAgIDwhLS0gU2VjaHNlY2sgZGV6ZW50IC0tPgogICAgPHBvbHlnb24gcG9pbnRzPSI3NSw1MiAxMDIsNjggMTAyLDEwMCA3NSwxMTYgNDgsMTAwIDQ4LDY4IiBmaWxsPSJub25lIiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjAuOCIgb3BhY2l0eT0iMC4xNSIvPgogICAgCiAgICA8IS0tIE46IHp3ZWkgVmVydGlrYWxlbiArIERpYWdvbmFsZSAtLT4KICAgIDxsaW5lIHgxPSI1MCIgeTE9IjEwNCIgeDI9IjUwIiB5Mj0iNjQiIHN0cm9rZT0id2hpdGUiIHN0cm9rZS13aWR0aD0iMy4yIiBzdHJva2UtbGluZWNhcD0icm91bmQiIG9wYWNpdHk9IjAuOTMiLz4KICAgIDxsaW5lIHgxPSI1MCIgeTE9IjY0IiB4Mj0iNzMiIHkyPSIxMDQiIHN0cm9rZT0id2hpdGUiIHN0cm9rZS13aWR0aD0iMy4yIiBzdHJva2UtbGluZWNhcD0icm91bmQiIG9wYWNpdHk9IjAuOTMiLz4KICAgIDxsaW5lIHgxPSI3MyIgeTE9IjY0IiB4Mj0iNzMiIHkyPSIxMDQiIHN0cm9rZT0id2hpdGUiIHN0cm9rZS13aWR0aD0iMy4yIiBzdHJva2UtbGluZWNhcD0icm91bmQiIG9wYWNpdHk9IjAuOTMiLz4KICAgIAogICAgPCEtLSBQOiBWZXJ0aWthbGUgKyBIYWxiYm9nZW4gb2JlbiAoRVhBS1Qgd2llIEJyaWVma29wZikgLS0+CiAgICA8bGluZSB4MT0iODAiIHkxPSI2NCIgeDI9IjgwIiB5Mj0iMTA0IiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjMuMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+CiAgICA8cGF0aCBkPSJNIDgwLDY0IFEgMTA1LDY0IDEwNSw3NCBRIDEwNSw4NCA4MCw4NCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIzLjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPgogICAgCiAgICA8IS0tIFBmYXVlbmF1Z2UgKEVYQUtUIHdpZSBCcmllZmtvcGYpIC0tPgogICAgPGVsbGlwc2UgY3g9Ijk3IiBjeT0iNzQiIHJ4PSI3IiByeT0iOC41IiBmaWxsPSIjODVCN0VCIiBvcGFjaXR5PSIwLjkiLz4KICAgIDxlbGxpcHNlIGN4PSI5NyIgY3k9Ijc0IiByeD0iMy41IiByeT0iNC4yIiBmaWxsPSJ3aGl0ZSIgb3BhY2l0eT0iMC45NSIvPgogICAgPGVsbGlwc2UgY3g9Ijk3IiBjeT0iNzMuNSIgcng9IjEuNiIgcnk9IjIiIGZpbGw9IiMxODVGQTUiLz4KICAgIDxlbGxpcHNlIGN4PSI5Ni41IiBjeT0iNzMiIHJ4PSIwLjciIHJ5PSIxIiBmaWxsPSJ3aGl0ZSIgb3BhY2l0eT0iMC41Ii8+CiAgICAKICA8L2c+CiAgCjwvc3ZnPgo=">
@@ -11536,7 +11732,10 @@ function signaturBildBereinigen(dataUrl){
     const img=new Image();
     img.onload=()=>{
       let w=img.width,h=img.height;
-      const maxW=500; if(w>maxW){ h=Math.round(h*maxW/w); w=maxW; }
+      // Proportional verkleinern: erst Breite, dann Höhe begrenzen (Seitenverhältnis bleibt erhalten)
+      const maxW=500, maxH=250;
+      if(w>maxW){ h=Math.round(h*maxW/w); w=maxW; }
+      if(h>maxH){ w=Math.round(w*maxH/h); h=maxH; }
       const c=document.createElement('canvas'); c.width=w; c.height=h;
       const ctx=c.getContext('2d'); ctx.drawImage(img,0,0,w,h);
       let im; try{ im=ctx.getImageData(0,0,w,h); }catch(e){ resolve(dataUrl); return; }
