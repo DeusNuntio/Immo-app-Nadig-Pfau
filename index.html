@@ -689,6 +689,7 @@ button.chip.chip-active{background:var(--ink);color:#fff;border-color:var(--ink)
   <div style="position:relative;flex:1;overflow:hidden;display:flex;align-items:center;justify-content:center">
     <video id="camVideo" playsinline autoplay muted style="width:100%;height:100%;object-fit:cover"></video>
     <div id="camShotCount" style="position:absolute;top:14px;left:14px;background:rgba(0,0,0,.6);color:#fff;font-size:13px;padding:5px 12px;border-radius:20px;display:none"></div>
+    <button id="camTorchBtn" onclick="camTorch()" title="Blitz" style="display:none;position:absolute;top:12px;left:12px;width:42px;height:42px;border-radius:50%;border:none;background:rgba(0,0,0,.5);color:#fff;font-size:20px;cursor:pointer"><i class="ti ti-bolt"></i></button>
     <button onclick="closeCam()" style="position:absolute;top:12px;right:12px;width:42px;height:42px;border-radius:50%;border:none;background:rgba(0,0,0,.5);color:#fff;font-size:22px;cursor:pointer">✕</button>
   </div>
   <div style="padding:18px 20px calc(18px + env(safe-area-inset-bottom));background:#000;display:flex;align-items:center;justify-content:space-between;gap:16px">
@@ -703,8 +704,8 @@ button.chip.chip-active{background:var(--ink);color:#fff;border-color:var(--ink)
 /* ═══════════════════════════════════════════════════════════
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
-const DB_NAME='immo_v2', DB_VER=14;
-const APP_VERSION = '2026-06-11-v43';
+const DB_NAME='immo_v2', DB_VER=17;
+const APP_VERSION = '2026-06-11-v47';
 let idb=null;
 
 function openIDB(){
@@ -717,7 +718,7 @@ function openIDB(){
     const req=indexedDB.open(DB_NAME,DB_VER);
     req.onupgradeneeded=e=>{
       const db=e.target.result;
-      ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','fotos','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm'].forEach(s=>{
+      ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','fotos','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log'].forEach(s=>{
         if(!db.objectStoreNames.contains(s)){
           const store=db.createObjectStore(s,{keyPath:'id'});
           if(s==='mieter'){store.createIndex('objektId','objektId');store.createIndex('weNr','weNr')}
@@ -740,6 +741,10 @@ function openIDB(){
           if(s==='abwesenheit'){store.createIndex('userId','userId')}
           if(s==='rechnungen'){store.createIndex('objektId','objektId');store.createIndex('mieterId','mieterId');store.createIndex('datum','datum')}
           if(s==='packliste'){store.createIndex('terminId','terminId')}
+          if(s==='meine_packliste'){store.createIndex('userId','userId')}
+          if(s==='ventile'){store.createIndex('objektId','objektId')}
+          if(s==='ventilpruefung'){store.createIndex('ventilId','ventilId')}
+          if(s==='taetigkeit_log'){store.createIndex('userId','userId');store.createIndex('datum','datum')}
         }
       });
     };
@@ -970,7 +975,7 @@ async function tryLogin(){
   localStorage.setItem('lastLoginUser', uid);
   // Session-Marker: erlaubt Auto-Wiederanmeldung nach OS-Reload (z. B. nach Kamera-Nutzung)
   try { sessionStorage.setItem('activeSession', uid); } catch(e) {}
-  try { localStorage.setItem('activeSession', JSON.stringify({uid, ts: Date.now()})); } catch(e) {}
+  try { localStorage.setItem('activeSession', JSON.stringify({uid, ts: Date.now(), tag: today()})); } catch(e) {}
   CU=user;pinBuf='';
   showScreen('appScreen');
   await initApp();
@@ -1064,6 +1069,8 @@ async function initApp(){
   initNotifications();
   updateKalBadge();
   pruefeMonatsuebertrag();
+  // Vergessene Zeiterfassung: spätestens 00:00 auto-beendet → Korrektur erzwingen
+  pruefeVergesseneSitzungen().then(s=>{ if(s) modalSitzungNachtragen(s.id); });
   // PWA-Shortcut-Ziel auswerten (?go=zeit|protokoll|aufgaben)
   try {
     const go = new URLSearchParams(location.search).get('go');
@@ -1112,7 +1119,13 @@ async function renderDash() {
 
   // Stempeluhr-Kärtchen direkt unter den Kacheln (nur Hausmeister) – schneller Zugriff.
   // Verlauf und Tätigkeits-QR-Liste bleiben hinter dem Button „Zeiterfassung".
-  if (CU?.role !== 'admin') {
+  if (CU?.role !== 'admin' && (CU?.erfassungsModus||'zeit')==='taetigkeit') {
+    // Reine Tätigkeitserfassung: kein Uhrwerk, direkter Scan-Zugriff
+    html += `<div class="card" style="margin-bottom:12px;text-align:center">
+      <div style="font-size:12px;color:var(--ink-60);margin-bottom:8px"><i class="ti ti-clipboard-check"></i> Tätigkeitserfassung – QR scannen, Zeitstempel wird gespeichert</div>
+      <button class="btn btn-copper btn-full" onclick="scanTaetigkeitQR()"><i class="ti ti-qrcode"></i> Tätigkeit scannen</button>
+    </div>`;
+  } else if (CU?.role !== 'admin') {
     const zSitzung = await getOffeneSitzung().catch(()=>null);
     if (zSitzung && zSitzung.datum!==today()) {
       html += `<div class="card" style="border-left:3px solid var(--amber);background:var(--amber-l);margin-bottom:12px">
@@ -1131,6 +1144,7 @@ async function renderDash() {
     <button class="qa-btn" onclick="newProtokoll()"><i class="ti ti-clipboard-check"></i> Neues Protokoll</button>
     <button class="qa-btn copper" onclick="nav('zeit')"><i class="ti ti-clock"></i> Zeiterfassung</button>
     <button class="qa-btn" onclick="nav('wartung')"><i class="ti ti-calendar-stats"></i> Wartung</button>
+    <button class="qa-btn" onclick="modalMeinePackliste()"><i class="ti ti-backpack"></i> Meine Packliste</button>
     ${CU?.role==='admin'?`<button class="qa-btn" onclick="nav('rechnungen')"><i class="ti ti-file-invoice"></i> Rechnungen</button>`:''}
     ${CU?.role==='admin'?`<button class="qa-btn" onclick="nav('settings')"><i class="ti ti-upload"></i> Excel-Import</button>`:''}
   </div>`;
@@ -2145,6 +2159,179 @@ async function deleteLagerort(ortId){
   toast('Lagerort gelöscht');
 }
 
+/* ═══════════════════════════════════════════════════════════
+   NIIMBOT B1 – Direktdruck über Web Bluetooth (nur Android-Chrome)
+   Implementiert das Niimbot-Paketprotokoll (Referenz: Community-
+   Reverse-Engineering, MultiMote/NiimBlue). Eigenständig, keine
+   externen Libraries.
+═══════════════════════════════════════════════════════════ */
+var NIIMBOT = (function(){
+  // Bekannte Service/Characteristic-UUIDs der Niimbot-Drucker (B-Serie)
+  const SERVICE_UUIDS = [
+    '0000ff00-0000-1000-8000-00805f9b34fb', // gängig bei B1/B21
+    'e7810a71-73ae-499d-8c15-faa9aef0c3f2', // alternativ
+    '49535343-fe7d-4ae5-8fa9-9fafd205e455', // Microchip transparent UART (manche Modelle)
+  ];
+  const CHAR_WRITE = [
+    '0000ff02-0000-1000-8000-00805f9b34fb',
+    'bef8d6c9-9c21-4c9e-b632-bd58c1009f9f',
+    '49535343-8841-43f4-a8d4-ecbe34729bb3',
+  ];
+  const CHAR_NOTIFY = [
+    '0000ff01-0000-1000-8000-00805f9b34fb',
+    '49535343-1e4d-4bd9-ba61-23c647249616',
+  ];
+
+  let device=null, server=null, writeChar=null, notifyChar=null;
+  let notifyBuffer=[];
+  const RX = {};
+
+  function isSupported(){ return typeof navigator!=='undefined' && !!navigator.bluetooth; }
+  function isConnected(){ return !!(device && device.gatt && device.gatt.connected && writeChar); }
+
+  // ── Paketaufbau ───────────────────────────────────────────
+  // Format: 0x55 0x55 <type> <len> <data...> <checksum> 0xAA 0xAA
+  // checksum = type XOR len XOR alle data-bytes
+  function buildPacket(type, data){
+    data = data || [];
+    let checksum = type ^ data.length;
+    for(const b of data) checksum ^= b;
+    return new Uint8Array([0x55,0x55, type, data.length, ...data, checksum, 0xAA,0xAA]);
+  }
+
+  async function writePacket(type, data){
+    const pkt = buildPacket(type, data);
+    // Manche Stacks brauchen writeWithoutResponse in kleinen Chunks
+    if(writeChar.writeValueWithoutResponse){
+      await writeChar.writeValueWithoutResponse(pkt);
+    } else {
+      await writeChar.writeValue(pkt);
+    }
+  }
+
+  function onNotify(ev){
+    const v = ev.target.value;
+    const arr = [];
+    for(let i=0;i<v.byteLength;i++) arr.push(v.getUint8(i));
+    notifyBuffer.push(...arr);
+    // einfache Antwort-Erkennung: type-byte an Position 2
+    if(notifyBuffer.length>=6 && notifyBuffer[0]===0x55 && notifyBuffer[1]===0x55){
+      const type=notifyBuffer[2];
+      RX[type]=notifyBuffer.slice();
+      notifyBuffer=[];
+    } else if(notifyBuffer.length>64){
+      notifyBuffer=[];
+    }
+  }
+
+  // ── Verbindung ────────────────────────────────────────────
+  async function connect(){
+    if(!isSupported()) throw new Error('Web Bluetooth wird hier nicht unterstützt (nur Android-Chrome).');
+    device = await navigator.bluetooth.requestDevice({
+      filters: [{namePrefix:'B1'},{namePrefix:'B21'},{namePrefix:'B3'},{namePrefix:'D'},{namePrefix:'Niimbot'},{namePrefix:'NIIMBOT'}],
+      optionalServices: SERVICE_UUIDS,
+    });
+    device.addEventListener('gattserverdisconnected', ()=>{ writeChar=null; notifyChar=null; });
+    server = await device.gatt.connect();
+
+    // passenden Service + Characteristics finden
+    let svc=null;
+    const services = await server.getPrimaryServices();
+    for(const s of services){
+      const chars = await s.getCharacteristics();
+      const w = chars.find(c=>c.properties.write || c.properties.writeWithoutResponse);
+      const n = chars.find(c=>c.properties.notify);
+      if(w){ svc=s; writeChar=w; notifyChar=n||null; break; }
+    }
+    if(!writeChar) throw new Error('Keine beschreibbare Charakteristik gefunden.');
+    if(notifyChar){
+      try { await notifyChar.startNotifications(); notifyChar.addEventListener('characteristicvaluechanged', onNotify); } catch(e){}
+    }
+    return device.name||'Niimbot';
+  }
+
+  async function disconnect(){
+    try { if(device && device.gatt && device.gatt.connected) device.gatt.disconnect(); } catch(e){}
+    writeChar=null; notifyChar=null;
+  }
+
+  // ── Bildaufbereitung ──────────────────────────────────────
+  // Canvas → 1-bit-Zeilen. Niimbot erwartet pro Zeile width/8 Bytes,
+  // 1 = schwarz. printWidth in Pixel (Vielfaches von 8).
+  function canvasToBitRows(canvas, printWidth, printHeight){
+    const tmp=document.createElement('canvas');
+    tmp.width=printWidth; tmp.height=printHeight;
+    const tctx=tmp.getContext('2d');
+    tctx.fillStyle='#fff'; tctx.fillRect(0,0,printWidth,printHeight);
+    // Quelle einpassen (contain)
+    const sr=canvas.width/canvas.height, dr=printWidth/printHeight;
+    let dw,dh,dx,dy;
+    if(sr>dr){ dw=printWidth; dh=Math.round(printWidth/sr); dx=0; dy=Math.round((printHeight-dh)/2); }
+    else { dh=printHeight; dw=Math.round(printHeight*sr); dy=0; dx=Math.round((printWidth-dw)/2); }
+    tctx.imageSmoothingEnabled=false;
+    tctx.drawImage(canvas,0,0,canvas.width,canvas.height,dx,dy,dw,dh);
+    const img=tctx.getImageData(0,0,printWidth,printHeight).data;
+    const bytesPerRow=printWidth/8;
+    const rows=[];
+    for(let y=0;y<printHeight;y++){
+      const row=new Uint8Array(bytesPerRow);
+      for(let x=0;x<printWidth;x++){
+        const idx=(y*printWidth+x)*4;
+        const lum=(img[idx]*0.299+img[idx+1]*0.587+img[idx+2]*0.114);
+        const a=img[idx+3];
+        const schwarz = a>40 && lum<128;
+        if(schwarz) row[x>>3] |= (0x80 >> (x&7));
+      }
+      rows.push(row);
+    }
+    return {rows, bytesPerRow, width:printWidth, height:printHeight};
+  }
+
+  function delay(ms){ return new Promise(r=>setTimeout(r,ms)); }
+
+  // ── Druck-Sequenz ─────────────────────────────────────────
+  // Vereinfachte, gängige B1-Sequenz. density 1..5, label-Typ 1 (Lücke).
+  async function printCanvas(canvas, opts){
+    opts=opts||{};
+    const density=opts.density||3;
+    const printWidth=opts.width||384;   // B1: ~384px (~48mm) – wir nutzen 30mm? siehe Aufrufer
+    const data=canvasToBitRows(canvas, printWidth, opts.height||Math.round(printWidth*(canvas.height/canvas.width)));
+
+    // Setup-Kommandos
+    await writePacket(0x21, [density]);          // Dichte setzen
+    await delay(10);
+    await writePacket(0x23, [1]);                // Label-Typ (1 = mit Lücke)
+    await delay(10);
+    await writePacket(0x01, [0x01]);             // Druckstart
+    await delay(10);
+    // Seitenbeginn + Dimensionen (height, width als 16-bit big-endian)
+    const h=data.height, w=data.width;
+    await writePacket(0x03, [ (h>>8)&0xff, h&0xff, 0x00,0x01 ]); // Page start, Anzahl=1
+    await delay(10);
+    await writePacket(0x13, [ (h>>8)&0xff, h&0xff, (w>>8)&0xff, w&0xff, 0,1 ]); // Bildmaße
+
+    // Bildzeilen senden (Type 0x85 = bitmap row, mit Zeilennummer)
+    for(let y=0;y<data.rows.length;y++){
+      const row=data.rows[y];
+      // header: y (16bit), 3x repeat-counter (0,0,0), payload
+      const head=[ (y>>8)&0xff, y&0xff, 0,0,1 ];
+      // Niimbot erwartet die Bytes invertiert? Wir senden 1=schwarz wie oben.
+      const payload=Array.from(row);
+      await writePacket(0x85, [...head, ...payload]);
+      if(y%30===0) await delay(2);
+    }
+    await delay(20);
+    await writePacket(0xE3, [0x01]);   // Seitenende
+    await delay(10);
+    await writePacket(0xF3, [0x01]);   // Druckende
+    await delay(50);
+    return true;
+  }
+
+  return { isSupported, isConnected, connect, disconnect, printCanvas, canvasToBitRows, buildPacket };
+})();
+
+
 /* ── Eigenständiger QR-Encoder (Byte-Modus, EC-Level L, V1–10) ──
    Vollständig lokal, kein externer Abruf. Verifiziert gegen OpenCV und zbar. */
 var QRENC=(function(){
@@ -2318,6 +2505,63 @@ async function etikettPdfSpeichern(qrText, dateiname, zeile1, zeile2, zeile3){
   document.body.appendChild(a); a.click();
   setTimeout(()=>{ document.body.removeChild(a); URL.revokeObjectURL(url); }, 1500);
   toast('PDF gespeichert: '+dateiname+'.pdf');
+}
+
+// ═══ NIIMBOT B1 – App-Anbindung ═══
+let _niimbotName='';
+function niimbotIstVerbunden(){ return typeof NIIMBOT!=='undefined' && NIIMBOT.isConnected(); }
+async function niimbotVerbinden(){
+  if(typeof NIIMBOT==='undefined' || !NIIMBOT.isSupported()){
+    toast('Direktdruck nur in Chrome für Android verfügbar');
+    return false;
+  }
+  try{
+    toast('Suche Niimbot-Drucker …');
+    _niimbotName = await NIIMBOT.connect();
+    toast('Verbunden: '+_niimbotName+' ✓');
+    if(typeof renderSettings==='function' && document.getElementById('page-settings')?.classList.contains('active')) renderSettings();
+    return true;
+  }catch(e){
+    toast('Verbindung fehlgeschlagen: '+(e.message||e));
+    return false;
+  }
+}
+async function niimbotTrennen(){
+  if(typeof NIIMBOT!=='undefined') await NIIMBOT.disconnect();
+  _niimbotName='';
+  toast('Drucker getrennt');
+  if(document.getElementById('page-settings')?.classList.contains('active')) renderSettings();
+}
+// Etikett (QR + 3 Zeilen) direkt auf Niimbot drucken
+async function niimbotDruckeEtikett(qrText, zeile1, zeile2, zeile3){
+  try{
+    if(!niimbotIstVerbunden()){
+      const ok=await niimbotVerbinden();
+      if(!ok) return;
+    }
+    toast('Drucke …');
+    const lab=await renderEtikettCanvas(qrText, zeile1, zeile2, zeile3);
+    // renderEtikettCanvas liefert dataUrl; wir brauchen das Canvas-Element → neu zeichnen
+    const img=new Image();
+    await new Promise((res,rej)=>{ img.onload=res; img.onerror=rej; img.src=lab.dataUrl; });
+    const cv=document.createElement('canvas'); cv.width=lab.w; cv.height=lab.h;
+    cv.getContext('2d').drawImage(img,0,0);
+    // B1: 30mm Druckbreite bei 203dpi ≈ 240px (Vielfaches von 8); hochkant gedruckt
+    const dichte=(await idbGet('settings','niimbotDichte').catch(()=>null))?.value || 3;
+    const breitePx=240; // 30 mm
+    const hoehePx=Math.round(breitePx*(lab.h/lab.w));
+    await NIIMBOT.printCanvas(cv, {density:dichte, width:breitePx, height:hoehePx});
+    toast('Gedruckt ✓');
+  }catch(e){
+    console.warn('Niimbot Druck:', e);
+    toast('Druckfehler – ggf. PDF nutzen');
+  }
+}
+async function niimbotTestdruck(){
+  await niimbotDruckeEtikett('TEST:NIIMBOT', 'Testdruck', 'Nadig Pfau', new Date().toLocaleDateString('de-DE'));
+}
+async function saveNiimbotDichte(v){
+  await idbPut('settings', {id:'niimbotDichte', value:parseInt(v)||3});
 }
 
 // Alternativ: Etikett über Teilen-Dialog (für Cloud/Drucker-Apps)
@@ -2560,6 +2804,12 @@ async function renderZeiterfassung(){
   const el=document.getElementById('page-zeit');
   if(!el) return;
   const istAdmin = CU?.role==='admin';
+  // Erfassungsmodus des aktuellen Users (Admins immer Zeiterfassung)
+  const modus = istAdmin ? 'zeit' : (CU?.erfassungsModus || 'zeit');
+  if(modus==='taetigkeit'){
+    await renderTaetigkeitserfassung(el);
+    return;
+  }
   let h=`<div class="s-hdr"><div class="s-title"><i class="ti ti-clock"></i> Zeiterfassung</div>
     <button class="btn btn-sm" onclick="nav('urlaub')"><i class="ti ti-beach"></i> Urlaub</button>
   </div>`;
@@ -2709,6 +2959,104 @@ async function renderZeiterfassung(){
 
   el.innerHTML=h;
   stempelTimerStart();
+}
+
+/* ── Reine Tätigkeitserfassung (kein Uhrwerk, nur Zeitstempel beim Scan) ── */
+async function renderTaetigkeitserfassung(el){
+  const heute=today();
+  const alle=(await idbGetAll('taetigkeit_log','userId',CU?.id).catch(()=>[]))
+    .sort((a,b)=>(b.zeit||'').localeCompare(a.zeit||''));
+  const heuteLog=alle.filter(x=>x.datum===heute);
+  // Wochengrenze (Montag)
+  const jetzt=new Date(); const wd=(jetzt.getDay()+6)%7;
+  const montag=new Date(jetzt); montag.setDate(jetzt.getDate()-wd); montag.setHours(0,0,0,0);
+  const wocheLog=alle.filter(x=>new Date(x.zeit)>=montag);
+
+  let h=`<div class="s-hdr"><div class="s-title"><i class="ti ti-clipboard-check"></i> Tätigkeitserfassung</div>
+    <button class="btn btn-sm" onclick="nav('urlaub')"><i class="ti ti-beach"></i> Urlaub</button>
+  </div>
+  <div class="card" style="text-align:center;margin-bottom:14px">
+    <p style="font-size:13px;color:var(--ink-60);margin-bottom:12px">QR-Code der Tätigkeit oder des Rundgang-Wegpunkts scannen. Es werden Datum und Uhrzeit gespeichert – es läuft keine Uhr.</p>
+    <button class="btn btn-copper btn-full" onclick="scanTaetigkeitQR()"><i class="ti ti-qrcode"></i> Tätigkeit scannen</button>
+    <button class="btn btn-full" style="margin-top:8px" onclick="modalTaetigkeitManuell()"><i class="ti ti-plus"></i> Manuell erfassen</button>
+  </div>`;
+
+  // Heute
+  h+=`<div class="card-hdr" style="margin:4px 0 6px"><i class="ti ti-calendar"></i> Heute (${heuteLog.length})</div>`;
+  if(!heuteLog.length){
+    h+=`<div class="empty" style="padding:18px"><i class="ti ti-clipboard-off"></i><p>Heute noch keine Tätigkeit erfasst</p></div>`;
+  } else {
+    h+=heuteLog.map(x=>taetigkeitLogRow(x)).join('');
+  }
+
+  // Diese Woche (gruppiert nach Tag, ohne heute)
+  const wocheOhneHeute=wocheLog.filter(x=>x.datum!==heute);
+  const tage=[...new Set(wocheOhneHeute.map(x=>x.datum))];
+  if(tage.length){
+    h+=`<div class="card-hdr" style="margin:16px 0 6px"><i class="ti ti-history"></i> Diese Woche</div>`;
+    for(const tag of tage){
+      const eintraege=wocheOhneHeute.filter(x=>x.datum===tag);
+      h+=`<div style="font-size:12px;font-weight:600;color:var(--ink-40);margin:8px 0 4px">${fmtDate(tag)} · ${eintraege.length}</div>`;
+      h+=eintraege.map(x=>taetigkeitLogRow(x)).join('');
+    }
+  }
+  el.innerHTML=h;
+}
+function taetigkeitLogRow(x){
+  return `<div style="display:flex;align-items:center;gap:10px;border:1px solid var(--ink-10);border-radius:8px;padding:9px 11px;margin-bottom:6px">
+    <i class="ti ti-circle-check" style="color:var(--green,#2E7D52);font-size:18px"></i>
+    <div style="flex:1;min-width:0">
+      <div style="font-size:14px;font-weight:600">${esc(x.taetigkeit||'Tätigkeit')}</div>
+      <div style="font-size:11px;color:var(--ink-40)">${esc(x.ziel||'')}${x.wegpunkt?' · Wegpunkt '+x.wegpunkt:''}</div>
+    </div>
+    <div style="font-size:13px;font-weight:600;color:var(--ink-60)">${fmtUhr(x.zeit)}</div>
+    <button class="btn btn-sm btn-danger" onclick="taetigkeitLogLoeschen('${x.id}')"><i class="ti ti-x"></i></button>
+  </div>`;
+}
+// Einen Tätigkeits-Zeitstempel speichern
+async function speichereTaetigkeit(taetigkeit, ziel, extra){
+  const rec={
+    id:uid(), userId:CU?.id, userName:CU?.name||'',
+    taetigkeit: taetigkeit||'Tätigkeit', ziel: ziel||'',
+    datum: today(), zeit: nowIso(),
+    ...(extra||{}),
+    erstellt: nowIso(), geaendert: nowIso(),
+  };
+  await idbPut('taetigkeit_log', rec);
+  syncSoon();
+  return rec;
+}
+async function taetigkeitLogLoeschen(id){
+  await deleteMitTombstone('taetigkeit_log', id);
+  syncSoon();
+  if(document.getElementById('page-zeit')?.classList.contains('active')) renderZeiterfassung();
+}
+// Manuelle Tätigkeitserfassung (ohne QR)
+async function modalTaetigkeitManuell(){
+  const kats=await getTaetigkeitKat();
+  showModal(`
+    <div class="m-title"><i class="ti ti-plus"></i> Tätigkeit erfassen</div>
+    <div class="f"><label>Tätigkeit</label>
+      <select id="tmKat">${(kats||[]).map(k=>`<option value="${esc(k.name)}">${esc(k.name)}</option>`).join('')}<option value="__sonst">Sonstige …</option></select></div>
+    <div class="f" id="tmSonstWrap" style="display:none"><label>Bezeichnung</label>
+      <input type="text" id="tmSonst" spellcheck="true" lang="de" placeholder="z. B. Sonderreinigung"></div>
+    <div class="f"><label>Objekt / Standort (optional)</label>
+      <input type="text" id="tmZiel" spellcheck="true" lang="de" placeholder="z. B. Wilmendyk 7"></div>
+    <div class="f-row" style="margin-top:12px">
+      <button class="btn btn-copper btn-full" onclick="saveTaetigkeitManuell()"><i class="ti ti-check"></i> Speichern</button>
+      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+    </div>`);
+  const sel=document.getElementById('tmKat');
+  if(sel) sel.onchange=()=>{ const w=document.getElementById('tmSonstWrap'); if(w) w.style.display=sel.value==='__sonst'?'':'none'; };
+}
+async function saveTaetigkeitManuell(){
+  const sel=document.getElementById('tmKat')?.value;
+  const taetigkeit = sel==='__sonst' ? (document.getElementById('tmSonst')?.value?.trim()||'Tätigkeit') : sel;
+  const ziel=document.getElementById('tmZiel')?.value?.trim()||'';
+  await speichereTaetigkeit(taetigkeit, ziel);
+  closeModal();
+  toast('Tätigkeit erfasst ✓');
+  if(document.getElementById('page-zeit')?.classList.contains('active')) renderZeiterfassung();
 }
 
 function fmtUhr(iso){ if(!iso)return''; const d=new Date(iso); return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0'); }
@@ -2948,8 +3296,41 @@ function setTimeOnIso(baseIso, hhmm){
   d.setHours(parseInt(h),parseInt(m),0,0); return d.toISOString();
 }
 // Admin: Detailansicht der Zeiterfassung eines Mitarbeiters (Stundenkonto, Verlauf, Änderungen)
+// Admin: Tätigkeitsprotokoll eines Hausmeisters im reinen Tätigkeitsmodus
+async function modalMitarbeiterTaetigkeiten(userId){
+  const u=await idbGet('users', userId); if(!u) return;
+  const log=(await idbGetAll('taetigkeit_log','userId',userId).catch(()=>[]))
+    .sort((a,b)=>(b.zeit||'').localeCompare(a.zeit||''));
+  const tage=[...new Set(log.map(x=>x.datum))].slice(0,21);
+  let body=`<div class="m-title"><i class="ti ti-clipboard-check"></i> ${esc(u.name)}</div>
+    <div style="font-size:12px;color:var(--ink-60);margin-bottom:12px">Reine Tätigkeitserfassung · ${log.length} Einträge gesamt</div>`;
+  if(!tage.length){
+    body+=`<div class="empty"><i class="ti ti-clipboard-off"></i><p>Noch keine Tätigkeiten erfasst</p></div>`;
+  } else {
+    for(const tag of tage){
+      const eintraege=log.filter(x=>x.datum===tag).sort((a,b)=>(a.zeit||'').localeCompare(b.zeit||''));
+      body+=`<div style="font-size:13px;font-weight:600;color:var(--ink);margin:12px 0 4px">${fmtDate(tag)} · ${eintraege.length}</div>`;
+      body+=eintraege.map(x=>`<div style="display:flex;align-items:center;gap:10px;border:1px solid var(--ink-10);border-radius:8px;padding:8px 11px;margin-bottom:5px">
+        <i class="ti ti-circle-check" style="color:var(--green,#2E7D52)"></i>
+        <div style="flex:1;min-width:0">
+          <div style="font-size:14px;font-weight:600">${esc(x.taetigkeit||'Tätigkeit')}</div>
+          <div style="font-size:11px;color:var(--ink-40)">${esc(x.ziel||'')}${x.wegpunkt?' · Wegpunkt '+x.wegpunkt:''}</div>
+        </div>
+        <div style="font-size:13px;font-weight:600;color:var(--ink-60)">${fmtUhr(x.zeit)}</div>
+      </div>`).join('');
+    }
+  }
+  body+=`<button class="btn btn-full" style="margin-top:12px" onclick="closeModal()">Schließen</button>`;
+  showModal(body);
+}
+
 async function modalMitarbeiterZeit(userId){
   const u=await idbGet('users', userId); if(!u) return;
+  // Hausmeister im reinen Tätigkeitsmodus: Tätigkeitsprotokoll statt Stundenkonto
+  if(u.role!=='admin' && u.erfassungsModus==='taetigkeit'){
+    await modalMitarbeiterTaetigkeiten(userId);
+    return;
+  }
   const istAdminUser = u.role==='admin';
   const sitzungen=(await getSitzungenUser(userId))
     .sort((a,b)=>(b.datum||'').localeCompare(a.datum||'')||(b.start||'').localeCompare(a.start||''));
@@ -3235,16 +3616,23 @@ async function modalSitzungDetail(sId){
 // Vergessene Sitzung: Endzeit nachtragen und beenden
 async function modalSitzungNachtragen(sId){
   const s=await idbGet('arbeitszeit', sId); if(!s) return;
+  const auto=!!s._autoBeendet;
+  // Bei Auto-Ende: vorgeschlagene Endzeit = gesetztes Ende (00:00); Enddatum = dessen Tag
+  const endeDt = s.ende ? new Date(s.ende) : null;
+  const vorDatum = endeDt ? endeDt.toISOString().slice(0,10) : s.datum;
+  const vorZeit  = endeDt ? ('0'+endeDt.getHours()).slice(-2)+':'+('0'+endeDt.getMinutes()).slice(-2) : '17:00';
   showModal(`
-    <div class="m-title"><i class="ti ti-clock-pause"></i> Sitzung nachtragen</div>
-    <p style="font-size:13px;color:var(--ink-60);margin-bottom:10px">Sitzung vom ${s.datum}, begonnen um ${fmtUhr(s.start)}. Bitte tatsächliches Arbeitsende eintragen.</p>
+    <div class="m-title"><i class="ti ti-clock-pause"></i> ${auto?'Arbeitsende korrigieren':'Sitzung nachtragen'}</div>
+    ${auto?`<div style="background:var(--amber-l,#FFF4E0);border-radius:8px;padding:10px 12px;margin-bottom:10px;font-size:13px;color:var(--amber,#9A6A00)">
+      <i class="ti ti-alert-triangle"></i> Am ${fmtDate(s.datum)} wurde das Ausstempeln vergessen. Die Sitzung wurde automatisch um 00:00 Uhr beendet. Bitte trage dein <strong>tatsächliches Arbeitsende</strong> ein.
+    </div>`:`<p style="font-size:13px;color:var(--ink-60);margin-bottom:10px">Sitzung vom ${fmtDate(s.datum)}, begonnen um ${fmtUhr(s.start)}. Bitte tatsächliches Arbeitsende eintragen.</p>`}
     <div class="f-row">
-      <div class="f"><label>Enddatum</label><input type="date" id="snDatum" value="${s.datum}"></div>
-      <div class="f"><label>Endzeit</label><input type="time" id="snZeit" value="17:00"></div>
+      <div class="f"><label>Enddatum</label><input type="date" id="snDatum" value="${vorDatum}"></div>
+      <div class="f"><label>Endzeit</label><input type="time" id="snZeit" value="${vorZeit}"></div>
     </div>
     <div class="f-row" style="margin-top:12px">
-      <button class="btn btn-copper btn-full" onclick="saveSitzungNachtrag('${sId}')"><i class="ti ti-check"></i> Beenden</button>
-      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-copper btn-full" onclick="saveSitzungNachtrag('${sId}')"><i class="ti ti-check"></i> ${auto?'Speichern':'Beenden'}</button>
+      ${auto?'':`<button class="btn btn-full" onclick="closeModal()">Abbrechen</button>`}
     </div>`);
 }
 async function saveSitzungNachtrag(sId){
@@ -3257,7 +3645,7 @@ async function saveSitzungNachtrag(sId){
   // offene Segmente/Pausen schließen
   const seg=offenesSegment(s); if(seg) seg.ende=endeIso;
   const p=(s.pausen||[]).find(x=>!x.bis); if(p) p.bis=endeIso;
-  s.ende=endeIso; s.status='beendet';
+  s.ende=endeIso; s.status='beendet'; delete s._autoBeendet;
   protokolliereZeitAenderung(s, `Endzeit nachgetragen: ${fmtUhr(endeIso)}`);
   s.geaendert=nowIso();
   await idbPut('arbeitszeit', s);
@@ -3598,6 +3986,19 @@ async function qrRgEtikett(nr, gesamt, modus){
   await fn(qrText, dateiname, titel, lg?.name||lgId, nr===1?'Start':'');
 }
 
+// Ersatz-Etikett für einen Wegpunkt direkt drucken (ohne Formular, z. B. bei Defekt)
+async function druckeRundgangWegpunkt(lgId, nr, gesamt){
+  const lg=(typeof LIEGENSCHAFTEN!=='undefined'?LIEGENSCHAFTEN:[]).find(l=>l.id===lgId);
+  const qrText='RUNDGANG:'+lgId+':'+nr+':'+gesamt;
+  const dateiname='RUNDGANG_'+lgId+'_'+nr+'von'+gesamt;
+  const titel='Müllrundgang '+nr+'/'+gesamt;
+  // Wenn Niimbot verbunden, direkt drucken anbieten, sonst PDF teilen
+  const fn = (typeof niimbotIstVerbunden==='function' && niimbotIstVerbunden())
+    ? ()=>niimbotDruckeEtikett(qrText, titel, lg?.name||lgId, nr===1?'Start':'')
+    : ()=>etikettPdfTeilen(qrText, dateiname, titel, lg?.name||lgId, nr===1?'Start':'');
+  await fn();
+}
+
 function qrModusWechseln(modus){
   window._qrModus=modus;
   document.getElementById('qrModusEinzel')?.classList.toggle('active', modus==='einzel');
@@ -3751,6 +4152,34 @@ async function taetigkeitQrErstellen(modus){
 async function getOffeneSitzung(){
   const alle=await idbGetAll('arbeitszeit','userId',CU?.id).catch(()=>[]);
   return (alle||[]).find(s=>s.status==='offen')||null;
+}
+
+// Vergessene Sitzungen: spätestens um 0:00 des Folgetags automatisch (vorläufig) beenden
+// und den Nutzer zur Korrektur der tatsächlichen Endzeit auffordern.
+async function pruefeVergesseneSitzungen(){
+  try{
+    const alle=await idbGetAll('arbeitszeit','userId',CU?.id).catch(()=>[]);
+    const offen=(alle||[]).filter(s=>s.status==='offen');
+    let korrektur=null;
+    for(const s of offen){
+      const start=new Date(s.start);
+      // Mitternacht NACH dem Starttag
+      const mitternacht=new Date(start.getFullYear(),start.getMonth(),start.getDate()+1,0,0,0,0);
+      if(new Date() >= mitternacht){
+        // Vorläufiges Ende auf 0:00 setzen, Segmente/Pausen schließen
+        const endeIso=mitternacht.toISOString();
+        const seg=offenesSegment(s); if(seg) seg.ende=endeIso;
+        const p=(s.pausen||[]).find(x=>!x.bis); if(p) p.bis=endeIso;
+        s.ende=endeIso; s.status='beendet'; s._autoBeendet=true;
+        protokolliereZeitAenderung(s, 'Automatisch um 00:00 Uhr beendet (Ausstempeln vergessen) – Endzeit bitte korrigieren');
+        s.geaendert=nowIso();
+        await idbPut('arbeitszeit', s);
+        if(!korrektur) korrektur=s;
+      }
+    }
+    if(korrektur){ syncSoon(); return korrektur; }
+  }catch(e){ console.warn('pruefeVergesseneSitzungen:', e); }
+  return null;
 }
 // laufendes (offenes) Segment in einer Sitzung
 function offenesSegment(s){ return (s?.segmente||[]).find(seg=>!seg.ende)||null; }
@@ -4159,6 +4588,16 @@ async function taetigkeitBeenden(){
 
 // QR-Start: vom Scanner aufgerufen
 async function starteTaetigkeitVonQR(katId, objId){
+  // Reine Tätigkeitserfassung: nur Zeitstempel speichern, keine Uhr
+  if((CU?.erfassungsModus||'zeit')==='taetigkeit' && CU?.role!=='admin'){
+    const kats=await getTaetigkeitKat(); const kat=kats.find(k=>k.id===katId);
+    const istLg=(objId||'').startsWith('lg_');
+    const zielName=istLg ? ((typeof LIEGENSCHAFTEN!=='undefined'?LIEGENSCHAFTEN:[]).find(l=>l.id===objId)?.name||objId) : (getObj(objId)?.name||objId);
+    await speichereTaetigkeit(kat?.name||'Tätigkeit', zielName);
+    toast('Tätigkeit erfasst: '+(kat?.name||'')+' ✓');
+    nav('zeit');
+    return;
+  }
   let s=await getOffeneSitzung();
   if(!s){
     // nicht eingestempelt → anbieten
@@ -4184,6 +4623,13 @@ async function einstempelnUndStarten(katId, objId){
 async function rundgangWegpunktScan(lgId, nr, gesamt){
   const lg=(typeof LIEGENSCHAFTEN!=='undefined'?LIEGENSCHAFTEN:[]).find(l=>l.id===lgId);
   const lgName=lg?.name||lgId;
+  // Reine Tätigkeitserfassung: jeden Wegpunkt nur als Zeitstempel speichern
+  if((CU?.erfassungsModus||'zeit')==='taetigkeit' && CU?.role!=='admin'){
+    await speichereTaetigkeit('Müllrundgang', lgName, {wegpunkt:nr, wpGesamt:gesamt});
+    toast('Wegpunkt '+nr+'/'+gesamt+' erfasst · '+lgName+' ✓');
+    nav('zeit');
+    return;
+  }
   let s=await getOffeneSitzung();
   if(!s){
     showModal(`<div class="m-title"><i class="ti ti-clock"></i> Nicht eingestempelt</div>
@@ -4286,10 +4732,286 @@ function rundgangStatusModal(seg, lgName, fertig){
     <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px">${punkte}</div>
     ${fertig?'':'<p style="font-size:12px;color:var(--ink-40);margin-bottom:12px">Den nächsten Wegpunkt anlaufen und dort den QR scannen.</p>'}
     ${fertig?'':'<button class="btn btn-copper btn-full" style="margin-bottom:6px" onclick="closeModal();scanTaetigkeitQR()"><i class="ti ti-qrcode"></i> Nächsten Wegpunkt scannen</button>'}
+    ${fertig?'':`<button class="btn btn-full" style="margin-bottom:6px;border-color:var(--red,#C0392B);color:var(--red,#C0392B)" onclick="rundgangQrDefektDialog('${seg.id}','${esc(lgName)}')"><i class="ti ti-qrcode-off"></i> QR-Code defekt / Vandalismus</button>`}
+    <button class="btn btn-full" onclick="closeModal()">Schließen</button>`);
+}
+
+// QR-Code an einer Station ist defekt/zerstört → Defekt-Wegpunkt wählen
+function rundgangQrDefektDialog(segId, lgName){
+  getOffeneSitzung().then(s=>{
+    const seg=(s?.segmente||[]).find(x=>x.id===segId);
+    if(!seg){ toast('Rundgang nicht gefunden'); return; }
+    const fehlen=rundgangFehlende(seg);
+    if(!fehlen.length){ toast('Alle Wegpunkte bereits erfasst'); return; }
+    const optionen=fehlen.map(n=>`<button class="btn btn-full" style="margin-bottom:6px" onclick="rundgangWegpunktDefekt('${segId}','${esc(lgName)}',${n})">Wegpunkt ${n}</button>`).join('');
+    showModal(`<div class="m-title"><i class="ti ti-qrcode-off"></i> Defekter QR-Code</div>
+      <p style="font-size:13px;color:var(--ink-60);margin-bottom:12px">Welcher QR-Code ist defekt oder fehlt? Es wird ein Mangel (Vandalismus) angelegt und ein Ersatz-Etikett zum Neudruck vorbereitet. Der Wegpunkt zählt anschließend als erledigt, damit du den Rundgang abschließen kannst.</p>
+      ${optionen}
+      <button class="btn btn-full" style="margin-top:6px" onclick="rundgangStatusModalById('${segId}','${esc(lgName)}')">Zurück</button>`);
+  });
+}
+async function rundgangStatusModalById(segId, lgName){
+  const s=await getOffeneSitzung();
+  const seg=(s?.segmente||[]).find(x=>x.id===segId);
+  if(seg) rundgangStatusModal(seg, lgName);
+}
+async function rundgangWegpunktDefekt(segId, lgName, nr){
+  const s=await getOffeneSitzung();
+  if(!s){ toast('Nicht eingestempelt'); return; }
+  const seg=(s.segmente||[]).find(x=>x.id===segId);
+  if(!seg){ toast('Rundgang nicht gefunden'); return; }
+  const lgId=seg.objId;
+  // 1) Mangel (Vandalismus) anlegen – einem Objekt der Liegenschaft zuordnen
+  const lg=(typeof LIEGENSCHAFTEN!=='undefined'?LIEGENSCHAFTEN:[]).find(l=>l.id===lgId);
+  const objId=(lg?.objektIds&&lg.objektIds[0])||lgId;
+  const mangel={
+    id:uid(), objektId:objId, weNr:'', mieterId:null,
+    titel:`Defekter/zerstörter QR-Code – Müllrundgang Wegpunkt ${nr}`,
+    beschreibung:`Der QR-Code an Wegpunkt ${nr}/${seg.wpGesamt||'?'} des Müllrundgangs (${lgName}) ist defekt oder wurde durch Vandalismus zerstört. Ersatz-Etikett ausdrucken und neu anbringen.`,
+    kategorie:'Vandalismus', schwere:'mittel', status:'offen',
+    datum: today(), erstellt: nowIso(), ersteller: CU?.name||'',
+    fotos:[], _rundgangDefekt:true, _wegpunkt:nr, _lgId:lgId,
+  };
+  await idbPut('maengel', mangel);
+  // 2) Wegpunkt als (defekt-)erledigt markieren, damit Rundgang abgeschlossen werden kann
+  if(!seg.wegpunkte.includes(nr)) seg.wegpunkte.push(nr);
+  seg.defekteWegpunkte=seg.defekteWegpunkte||[];
+  if(!seg.defekteWegpunkte.includes(nr)) seg.defekteWegpunkte.push(nr);
+  s.geaendert=nowIso();
+  const fehlen=rundgangFehlende(seg);
+  const fertig=fehlen.length===0;
+  if(fertig) seg.ende=nowIso();
+  await idbPut('arbeitszeit', s);
+  syncSoon(); refreshZeit();
+  // 3) Ersatz-Etikett anbieten + Status
+  showModal(`<div class="m-title"><i class="ti ti-qrcode-off"></i> Defekt gemeldet</div>
+    <div style="background:var(--green-l,#E8F5E9);border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:13px;color:var(--green,#2E7D52)">
+      <i class="ti ti-check"></i> Mangel „Vandalismus" für Wegpunkt ${nr} wurde angelegt.${fertig?' Der Müllrundgang ist damit abgeschlossen.':''}
+    </div>
+    <p style="font-size:13px;color:var(--ink-60);margin-bottom:12px">Du kannst jetzt direkt ein Ersatz-Etikett für Wegpunkt ${nr} drucken und neu anbringen.</p>
+    <button class="btn btn-copper btn-full" style="margin-bottom:6px" onclick="closeModal();druckeRundgangWegpunkt('${lgId}',${nr},${seg.wpGesamt||0})"><i class="ti ti-printer"></i> Ersatz-Etikett drucken</button>
+    ${fertig?'':`<button class="btn btn-full" style="margin-bottom:6px" onclick="rundgangStatusModalById('${segId}','${esc(lgName)}')">Rundgang fortsetzen</button>`}
     <button class="btn btn-full" onclick="closeModal()">Schließen</button>`);
 }
 
 function syncSoon(){ clearTimeout(window._syncTimer); window._syncTimer=setTimeout(()=>syncToOneDrive(),3000); }
+
+/* ═══════════════════════════════════════════════════════════
+   ABSPERRVENTILE KELLER – QR-Prüfung pro Strang
+   Typen: Kaltwasser, Warmwasser, Heizung, Zirkulation
+   Scan → „Funktioniert das Ventil?" Ja/Nein (+Foto). Nein → Mangel.
+   Liste aller Ventile pro Objekt.
+═══════════════════════════════════════════════════════════ */
+const VENTIL_TYPEN=[
+  {val:'kalt',   label:'Kaltwasser',  icon:'ti-droplet',       color:'#185FA5'},
+  {val:'warm',   label:'Warmwasser',  icon:'ti-droplet-filled',color:'#C0392B'},
+  {val:'heizung',label:'Heizung',     icon:'ti-flame',         color:'#E67E22'},
+  {val:'zirku',  label:'Zirkulation', icon:'ti-rotate-clockwise',color:'#16A085'},
+];
+function ventilTyp(v){ return VENTIL_TYPEN.find(t=>t.val===v)||{label:v||'–',icon:'ti-circle',color:'#888'}; }
+
+async function getVentile(objektId){
+  return (await idbGetAll('ventile','objektId',objektId).catch(()=>[]))
+    .sort((a,b)=>(a.strang||'').localeCompare(b.strang||'',undefined,{numeric:true}) || (a.typ||'').localeCompare(b.typ||''));
+}
+
+// Ventilliste eines Objekts (als Modal)
+async function modalVentilliste(objektId){
+  const obj=getObj(objektId);
+  const ventile=await getVentile(objektId);
+  let liste='';
+  if(!ventile.length){
+    liste=`<div class="empty"><i class="ti ti-pipe"></i><p>Noch keine Ventile erfasst</p></div>`;
+  } else {
+    // letzte Prüfung je Ventil laden
+    for(const v of ventile){
+      const pruef=(await idbGetAll('ventilpruefung','ventilId',v.id).catch(()=>[]))
+        .sort((a,b)=>(b.datum||'').localeCompare(a.datum||''));
+      const letzte=pruef[0];
+      const t=ventilTyp(v.typ);
+      const okFarbe = !letzte ? 'var(--ink-40)' : (letzte.funktioniert?'var(--green,#2E7D52)':'var(--red,#C0392B)');
+      const okText  = !letzte ? 'noch nicht geprüft' : (letzte.funktioniert?('OK · '+fmtDate(letzte.datum)):('Mangel · '+fmtDate(letzte.datum)));
+      liste+=`<div style="display:flex;align-items:center;gap:10px;border:1px solid var(--ink-10);border-radius:8px;padding:9px 10px;margin-bottom:6px">
+        <i class="ti ${t.icon}" style="font-size:20px;color:${t.color};flex-shrink:0"></i>
+        <div style="flex:1;min-width:0" onclick="ventilDetail('${v.id}')">
+          <div style="font-size:14px;font-weight:600">${esc(v.strang||'Strang')} · ${t.label}</div>
+          <div style="font-size:11px;color:${okFarbe}">${okText}${v.lage?' · '+esc(v.lage):''}</div>
+        </div>
+        <button class="btn btn-sm" title="Etikett" onclick="druckeVentilEtikett('${v.id}')"><i class="ti ti-qrcode"></i></button>
+        <button class="btn btn-sm btn-copper" title="Prüfen" onclick="ventilPruefungStart('${v.id}')"><i class="ti ti-checkup-list"></i></button>
+      </div>`;
+    }
+  }
+  showModal(`
+    <div class="m-title"><i class="ti ti-pipe"></i> Absperrventile · ${esc(obj?.name||'')}</div>
+    <div style="font-size:12px;color:var(--ink-60);margin-bottom:12px">${ventile.length} Ventil${ventile.length!==1?'e':''}</div>
+    <button class="btn btn-copper btn-full" style="margin-bottom:12px" onclick="modalVentilNeu('${objektId}')"><i class="ti ti-plus"></i> Neues Ventil</button>
+    <div id="ventilListe" style="max-height:55vh;overflow-y:auto">${liste}</div>
+    <button class="btn btn-full" style="margin-top:8px" onclick="closeModal()">Schließen</button>
+  `);
+}
+
+// Neues Ventil anlegen
+function modalVentilNeu(objektId){
+  showModal(`
+    <div class="m-title"><i class="ti ti-plus"></i> Neues Absperrventil</div>
+    <div class="f"><label>Strang-Bezeichnung *</label>
+      <input type="text" id="vStrang" placeholder="z. B. Strang 1, Steigleitung Nord" spellcheck="true" lang="de"></div>
+    <div class="f"><label>Medium / Typ *</label>
+      <select id="vTyp">${VENTIL_TYPEN.map(t=>`<option value="${t.val}">${t.label}</option>`).join('')}</select></div>
+    <div class="f"><label>Lage / Standort (optional)</label>
+      <input type="text" id="vLage" placeholder="z. B. Heizungskeller, neben Zähler" spellcheck="true" lang="de"></div>
+    <div class="f-row" style="margin-top:12px">
+      <button class="btn btn-copper btn-full" onclick="saveVentilNeu('${objektId}')"><i class="ti ti-check"></i> Anlegen</button>
+      <button class="btn btn-full" onclick="modalVentilliste('${objektId}')">Zurück</button>
+    </div>`);
+}
+async function saveVentilNeu(objektId){
+  const strang=document.getElementById('vStrang')?.value?.trim();
+  if(!strang){ toast('Bitte Strang-Bezeichnung angeben'); return; }
+  const v={
+    id:uid(), objektId, strang,
+    typ:document.getElementById('vTyp')?.value||'kalt',
+    lage:document.getElementById('vLage')?.value?.trim()||'',
+    erstellt:nowIso(), ersteller:CU?.name||'', geaendert:nowIso(),
+  };
+  await idbPut('ventile', v);
+  syncSoon();
+  toast('Ventil angelegt ✓');
+  modalVentilliste(objektId);
+}
+
+// Ventil-Detailansicht mit Prüfhistorie
+async function ventilDetail(ventilId){
+  const v=await idbGet('ventile', ventilId); if(!v) return;
+  const obj=getObj(v.objektId);
+  const t=ventilTyp(v.typ);
+  const pruef=(await idbGetAll('ventilpruefung','ventilId',ventilId).catch(()=>[]))
+    .sort((a,b)=>(b.datum||'').localeCompare(a.datum||''));
+  let hist='';
+  if(!pruef.length){ hist='<div style="font-size:12px;color:var(--ink-40)">Noch keine Prüfungen</div>'; }
+  else hist=pruef.slice(0,10).map(p=>`<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--ink-10)">
+    <i class="ti ti-${p.funktioniert?'circle-check':'alert-triangle'}" style="color:${p.funktioniert?'var(--green,#2E7D52)':'var(--red,#C0392B)'}"></i>
+    <div style="flex:1"><div style="font-size:13px">${p.funktioniert?'Funktioniert':'Defekt – Mangel'}</div>
+      <div style="font-size:11px;color:var(--ink-40)">${fmtDate(p.datum)} · ${esc(p.pruefer||'')}</div></div>
+    ${p.foto?`<img src="${p.foto}" style="width:34px;height:34px;border-radius:6px;object-fit:cover" onclick="openFoto('${p.foto}','Ventilprüfung')">`:''}
+  </div>`).join('');
+  showModal(`
+    <div class="m-title"><i class="ti ${t.icon}" style="color:${t.color}"></i> ${esc(v.strang)} · ${t.label}</div>
+    <div style="font-size:12px;color:var(--ink-60);margin-bottom:4px">${esc(obj?.name||'')}${v.lage?' · '+esc(v.lage):''}</div>
+    <button class="btn btn-copper btn-full" style="margin:10px 0" onclick="ventilPruefungStart('${ventilId}')"><i class="ti ti-checkup-list"></i> Jetzt prüfen</button>
+    <div style="display:flex;gap:6px;margin-bottom:12px">
+      <button class="btn" style="flex:1" onclick="druckeVentilEtikett('${ventilId}')"><i class="ti ti-qrcode"></i> Etikett</button>
+      <button class="btn btn-danger btn-sm" onclick="ventilLoeschen('${ventilId}')"><i class="ti ti-trash"></i></button>
+    </div>
+    <div style="font-size:12px;font-weight:600;color:var(--ink-60);margin-bottom:4px">Prüfhistorie</div>
+    ${hist}
+    <button class="btn btn-full" style="margin-top:10px" onclick="modalVentilliste('${v.objektId}')">Zurück zur Liste</button>
+  `);
+}
+async function ventilLoeschen(ventilId){
+  const v=await idbGet('ventile', ventilId); if(!v) return;
+  if(!confirm('Dieses Ventil und seine Prüfhistorie löschen?')) return;
+  const pruef=await idbGetAll('ventilpruefung','ventilId',ventilId).catch(()=>[]);
+  for(const p of pruef) await deleteMitTombstone('ventilpruefung', p.id);
+  await deleteMitTombstone('ventile', ventilId);
+  syncSoon();
+  toast('Ventil gelöscht');
+  modalVentilliste(v.objektId);
+}
+
+// QR-Etikett für ein Ventil
+async function druckeVentilEtikett(ventilId){
+  const v=await idbGet('ventile', ventilId); if(!v) return;
+  const obj=getObj(v.objektId);
+  const t=ventilTyp(v.typ);
+  const qrText='VENTIL:'+ventilId;
+  const dateiname='VENTIL_'+(v.strang||'').replace(/\W/g,'')+'_'+v.typ;
+  if(typeof niimbotIstVerbunden==='function' && niimbotIstVerbunden()){
+    await niimbotDruckeEtikett(qrText, v.strang||'Ventil', t.label, obj?.name||'');
+  } else {
+    await etikettPdfTeilen(qrText, dateiname, v.strang||'Ventil', t.label, obj?.name||'');
+  }
+}
+
+// Prüfung starten (vom Scan oder aus der Liste): Ja/Nein + Foto
+let _ventilFoto=null;
+async function ventilPruefungStart(ventilId){
+  const v=await idbGet('ventile', ventilId);
+  if(!v){ toast('Ventil nicht gefunden'); return; }
+  const obj=getObj(v.objektId);
+  const t=ventilTyp(v.typ);
+  _ventilFoto=null;
+  showModal(`
+    <div class="m-title"><i class="ti ${t.icon}" style="color:${t.color}"></i> Ventilprüfung</div>
+    <div style="background:var(--ink-05);border-radius:8px;padding:10px 12px;margin-bottom:14px">
+      <div style="font-size:15px;font-weight:600">${esc(v.strang||'Strang')} · ${t.label}</div>
+      <div style="font-size:12px;color:var(--ink-60)">${esc(obj?.name||'')}${v.lage?' · '+esc(v.lage):''}</div>
+    </div>
+    <p style="font-size:14px;text-align:center;margin-bottom:14px">Funktioniert das Ventil einwandfrei?</p>
+    <div style="display:flex;gap:10px;margin-bottom:12px">
+      <button class="btn btn-full" style="background:var(--green,#2E7D52);color:#fff" onclick="ventilPruefungSpeichern('${ventilId}',true)"><i class="ti ti-check"></i> Ja</button>
+      <button class="btn btn-full btn-danger" onclick="ventilPruefungSpeichern('${ventilId}',false)"><i class="ti ti-x"></i> Nein</button>
+    </div>
+    <input type="file" id="ventilFotoIn" accept="image/*" style="display:none" onchange="ventilFotoGewaehlt(this)">
+    <button class="btn btn-full" onclick="ventilFotoKamera()"><i class="ti ti-camera"></i> Foto aufnehmen (optional)</button>
+    <button class="btn btn-full" style="margin-top:6px" onclick="document.getElementById('ventilFotoIn').click()"><i class="ti ti-photo"></i> Aus Galerie</button>
+    <div id="ventilFotoVorschau" style="margin-top:8px"></div>
+    <button class="btn btn-full" style="margin-top:8px" onclick="closeModal()">Abbrechen</button>
+  `);
+}
+function ventilFotoGewaehlt(input){
+  const file=input.files?.[0]; if(!file) return;
+  const reader=new FileReader();
+  reader.onload=e=>{
+    _ventilFoto=e.target.result;
+    const vp=document.getElementById('ventilFotoVorschau');
+    if(vp) vp.innerHTML=`<img src="${_ventilFoto}" style="width:100%;max-height:140px;object-fit:contain;border-radius:8px;border:1px solid var(--ink-10)">`;
+  };
+  reader.readAsDataURL(file);
+}
+function ventilFotoKamera(){
+  window._ventilCamActive=true;
+  openCam();
+}
+async function ventilPruefungSpeichern(ventilId, funktioniert){
+  const v=await idbGet('ventile', ventilId); if(!v) return;
+  const obj=getObj(v.objektId);
+  const t=ventilTyp(v.typ);
+  let mangelId=null;
+  if(!funktioniert){
+    // Mangel anlegen
+    const mangel={
+      id:uid(), objektId:v.objektId, weNr:'', mieterId:null,
+      titel:`Defektes Absperrventil – ${v.strang||'Strang'} (${t.label})`,
+      beschreibung:`Bei der Prüfung wurde festgestellt, dass das Absperrventil „${v.strang||'Strang'}" (${t.label})${v.lage?' im Bereich '+v.lage:''} nicht einwandfrei funktioniert. Instandsetzung erforderlich.`,
+      kategorie:'Sanitär/Heizung', schwere:'hoch', status:'offen',
+      datum: today(), erstellt: nowIso(), ersteller: CU?.name||'',
+      fotos: _ventilFoto?[_ventilFoto]:[], _ventilId:ventilId,
+    };
+    await idbPut('maengel', mangel);
+    mangelId=mangel.id;
+  }
+  // Prüfung protokollieren
+  const pruef={
+    id:uid(), ventilId, objektId:v.objektId,
+    funktioniert, datum: today(), zeit: nowIso(),
+    pruefer: CU?.name||'', foto: _ventilFoto||null, mangelId,
+    erstellt: nowIso(), geaendert: nowIso(),
+  };
+  await idbPut('ventilpruefung', pruef);
+  v.geaendert=nowIso(); await idbPut('ventile', v);
+  _ventilFoto=null;
+  syncSoon();
+  if(funktioniert){
+    toast('Ventil als funktionsfähig dokumentiert ✓');
+    closeModal();
+  } else {
+    showModal(`<div class="m-title"><i class="ti ti-alert-triangle" style="color:var(--red,#C0392B)"></i> Mangel angelegt</div>
+      <p style="font-size:13px;color:var(--ink-60);margin-bottom:14px">Für „${esc(v.strang||'Strang')}" (${t.label}) wurde ein Mangel erfasst und in der Mängelliste hinterlegt.</p>
+      <button class="btn btn-full" onclick="closeModal()">Schließen</button>`);
+  }
+}
 
 async function naechsteInventarnummer(standort){
   const kuerzel=STANDORT_KUERZEL[standort]||standort.slice(0,3).toUpperCase();
@@ -5107,6 +5829,13 @@ async function bcVerarbeite(wert){
     }
     return;
   }
+  // Absperrventil erkannt: "VENTIL:<ventilId>"
+  if(wert.indexOf('VENTIL:')===0){
+    closeModal();
+    const ventilId=wert.slice('VENTIL:'.length);
+    await ventilPruefungStart(ventilId);
+    return;
+  }
   // Müllrundgang-Wegpunkt erkannt: "RUNDGANG:<lgId>:<nr>:<gesamt>"
   if(wert.indexOf('RUNDGANG:')===0){
     closeModal();
@@ -5840,6 +6569,7 @@ async function renderObjMieter(el){
     <div style="display:flex;gap:6px;flex-wrap:wrap">
       <button class="btn btn-sm btn-copper" onclick="modalAddMieter('${currentObjId}')"><i class="ti ti-user-plus"></i> Neu</button>
       <button class="btn btn-sm" onclick="modalGrundriss('${currentObjId}')"><i class="ti ti-map"></i> Grundriss${grundrisse.length>0?` (${grundrisse.length})`:''}</button>
+      <button class="btn btn-sm" onclick="modalVentilliste('${currentObjId}')"><i class="ti ti-pipe"></i> Ventile</button>
       <button class="btn btn-sm" onclick="newProtokollForObj('${currentObjId}')"><i class="ti ti-clipboard-check"></i> Protokoll</button>
       <button class="btn btn-sm" onclick="modalBrief('','${currentObjId}')"><i class="ti ti-mail"></i> Brief</button>
       <button class="btn btn-sm" onclick="modalAushang('${currentObjId}')"><i class="ti ti-news"></i> Aushang</button>
@@ -5909,6 +6639,7 @@ async function renderObjProtokolle(el){
 }
 
 async function renderObjAufgaben(el){
+  await ladeMieterWeCache();
   const aufgaben=await idbGetAll('aufgaben','objektId',currentObjId);
   let h=`<button class="btn btn-copper btn-full" style="margin-bottom:12px" onclick="modalAddAufgabe(null,'${currentObjId}')">
     <i class="ti ti-plus"></i> Neue Aufgabe
@@ -5927,6 +6658,7 @@ async function renderObjAufgaben(el){
 }
 
 async function renderObjMaengel(el){
+  await ladeMieterWeCache();
   const maengel=await idbGetAll('maengel','objektId',currentObjId);
   const reps=(await idbGetAll('reparaturen','objektId',currentObjId)).map(r=>({...r,istReparatur:true,_altStore:true}));
   let h=`<div class="s-hdr">
@@ -5999,6 +6731,7 @@ async function showMieter(id){
   currentMieterId=id;
   const m=await idbGet('mieter',id);
   if(!m) return;
+  await ladeMieterWeCache();
   const obj=getObj(m.objektId);
   const aufgaben=(await idbGetAll('aufgaben')).filter(a=>a.mieterId===id&&a.status!=='erledigt');
   const maengel=(await idbGetAll('maengel')).filter(x=>x.mieterId===id&&x.status!=='behoben');
@@ -6300,6 +7033,7 @@ async function renderAufgaben(){
   const myObj=await getMyObjekte();
   const myIds=myObj.map(o=>o.id);
   const myLg=await getMyLiegenschaften();
+  await ladeMieterWeCache();
   // Filterzustand (persistent in window)
   const flt = window._aufFilter || (window._aufFilter={lg:'',obj:'',hideDone:true});
   // Objekt-Auswahl auf Liegenschaft einschränken
@@ -6415,6 +7149,31 @@ async function updateBadge(){
 /* ═══════════════════════════════════════════════════════════
    TASK & MANGEL HTML TEMPLATES
 ═══════════════════════════════════════════════════════════ */
+// Cache: "objektId|weNr" → aktueller Mietername (für Listen-Anzeige neben WE)
+let _mieterWeCache={};
+async function ladeMieterWeCache(){
+  _mieterWeCache={};
+  try{
+    const alle=await idbGetAll('mieter');
+    for(const m of (alle||[])){
+      if(m._vormieter||m._zukuenftig||m.leerstand) continue;
+      if(m.weNr==null||m.weNr==='') continue;
+      const key=m.objektId+'|'+String(m.weNr);
+      // erste lebende Person bevorzugen, sonst Hauptname
+      let name=m.mieter;
+      if(m.personen_liste&&m.personen_liste.length){
+        const leb=m.personen_liste.filter(p=>p.name&&!p.verstorben);
+        if(leb.length) name=leb.map(p=>p.name.split(' ').slice(-1)[0]).slice(0,2).join(' / ');
+      }
+      _mieterWeCache[key]=name;
+    }
+  }catch(e){ console.warn('MieterWeCache:', e); }
+}
+function mieterFuerWe(objektId, weNr){
+  if(weNr==null||weNr==='') return '';
+  return _mieterWeCache[objektId+'|'+String(weNr)]||'';
+}
+
 function taskHTML(t) {
   const obj  = getObj(t.objektId);
   const done = t.status==='erledigt';
@@ -6428,7 +7187,7 @@ function taskHTML(t) {
       <div class="t-title ${done?'done':''}">${t.titel}</div>
       <div class="t-meta">
         <span>${obj?.name||''}</span>
-        ${t.weNr?`<span>WE ${t.weNr}</span>`:''}
+        ${t.weNr?`<span>WE ${t.weNr}${mieterFuerWe(t.objektId,t.weNr)?' · '+esc(mieterFuerWe(t.objektId,t.weNr)):''}</span>`:''}
         ${t.datum?`<span>${fmtDate(t.datum)}</span>`:''}
         <span class="chip chip-${t.prio==='hoch'?'err':t.prio==='mittel'?'warn':'ok'}" style="font-size:10px;padding:1px 6px">${t.prio||'–'}</span>
       </div>
@@ -6457,7 +7216,7 @@ function mangelHTML(m){
       <div class="t-meta">
         ${istRep?`<span class="chip chip-copper" style="font-size:10px;padding:1px 6px"><i class="ti ti-tools" style="font-size:10px"></i> Reparatur</span>`:''}
         <span>${esc(obj?.name||'')}</span>
-        ${m.weNr?`<span>WE ${esc(m.weNr)}</span>`:''}
+        ${m.weNr?`<span>WE ${esc(m.weNr)}${mieterFuerWe(m.objektId,m.weNr)?' · '+esc(mieterFuerWe(m.objektId,m.weNr)):''}</span>`:''}
         <span>${esc(m.datum||'')}</span>
         <span class="chip chip-${done?'ok':'err'}" style="font-size:10px;padding:1px 6px">${done?'Behoben':'Offen'}</span>
         ${m.kosten?`<span class="chip chip-copper" style="font-size:10px;padding:1px 6px">${fmtEur(m.kosten)}</span>`:''}
@@ -6527,10 +7286,68 @@ async function toggleMangel(id){
   if(!m){ m=await idbGet('reparaturen',id).catch(()=>null); if(m) store='reparaturen'; }
   if(!m) return;
   const done=m.status==='behoben'||m.status==='erledigt';
-  m.status=done?'offen':(store==='reparaturen'?'erledigt':'behoben');
+  if(!done){
+    // Wird gerade erledigt → Dialog mit optionalem Erledigt-Foto
+    modalMangelErledigen(id, store);
+    return;
+  }
+  // Wieder öffnen
+  m.status='offen';
+  delete m.erledigtFoto; delete m.erledigtAm; delete m.erledigtVon;
   await idbPut(store,m); bcSend('mangel_changed',{id});
   await refreshAufgaben(); if(curPage==='objekt') await renderObjTab('maengel');
-  await renderDash(); toast('Status aktualisiert');
+  await renderDash(); toast('Wieder geöffnet');
+}
+
+// Mangel erledigen mit optionalem Foto-Nachweis
+let _erledigtFoto=null;
+function modalMangelErledigen(id, store){
+  _erledigtFoto=null;
+  showModal(`
+    <div class="m-title"><i class="ti ti-circle-check" style="color:var(--green,#2E7D52)"></i> Mangel erledigen</div>
+    <p style="font-size:13px;color:var(--ink-60);margin-bottom:14px">Du kannst optional ein Foto als Nachweis der erledigten Arbeit anhängen.</p>
+    <input type="file" id="erledigtFotoIn" accept="image/*" style="display:none" onchange="erledigtFotoGewaehlt(this)">
+    <button class="btn btn-full" onclick="erledigtFotoKamera()"><i class="ti ti-camera"></i> Foto aufnehmen</button>
+    <button class="btn btn-full" style="margin-top:6px" onclick="document.getElementById('erledigtFotoIn').click()"><i class="ti ti-photo"></i> Aus Galerie</button>
+    <div id="erledigtFotoVorschau" style="margin-top:10px"></div>
+    <div class="f-row" style="margin-top:14px">
+      <button class="btn btn-full" style="background:var(--green,#2E7D52);color:#fff" onclick="mangelErledigenSpeichern('${id}','${store}')"><i class="ti ti-check"></i> Erledigt</button>
+      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+    </div>`);
+}
+function erledigtFotoGewaehlt(input){
+  const file=input.files?.[0]; if(!file) return;
+  const reader=new FileReader();
+  reader.onload=e=>{ erledigtFotoVorschauZeigen(e.target.result); };
+  reader.readAsDataURL(file);
+}
+function erledigtFotoVorschauZeigen(data){
+  _erledigtFoto=data;
+  const vp=document.getElementById('erledigtFotoVorschau');
+  if(vp) vp.innerHTML=`<img src="${data}" style="width:100%;max-height:160px;object-fit:contain;border-radius:8px;border:1px solid var(--ink-10)">`;
+}
+// Erledigt-Foto über die In-App-Kamera (mit Blitz/Drehen)
+function erledigtFotoKamera(){
+  window._erledigtCamActive=true;
+  openCam();
+}
+async function mangelErledigenSpeichern(id, store){
+  const m=await idbGet(store,id); if(!m) return;
+  m.status = (store==='reparaturen'?'erledigt':'behoben');
+  m.erledigtAm = today();
+  m.erledigtVon = CU?.name||'';
+  if(_erledigtFoto){
+    m.erledigtFoto=_erledigtFoto;
+    m.fotos=m.fotos||[];
+  }
+  if(!m.kommentare) m.kommentare=[];
+  m.kommentare.push({ autor:CU?.name||'–', datum:now(), text:'Als erledigt markiert'+(_erledigtFoto?' (mit Foto-Nachweis)':'') });
+  _erledigtFoto=null;
+  await idbPut(store,m); bcSend('mangel_changed',{id});
+  closeModal();
+  // Falls die Detailansicht offen war, neu zeichnen, sonst Listen aktualisieren
+  await refreshAufgaben(); if(curPage==='objekt') await renderObjTab('maengel');
+  await renderDash(); toast('Mangel erledigt ✓');
 }
 async function deleteMangel(id){
   let store='maengel';
@@ -11629,6 +12446,24 @@ async function renderSettings(){
     </div>
 
     <div class="card">
+      <div class="card-hdr"><i class="ti ti-printer"></i> Niimbot B1 Etikettendrucker</div>
+      <p style="font-size:13px;color:var(--ink-40);margin-bottom:12px;line-height:1.6">
+        Direktdruck von QR-Etiketten ohne Umweg über die Niimbot-App. ${niimbotIstVerbunden()?'<span style="color:var(--green,#2E7D52)">Verbunden'+(_niimbotName?' ('+esc(_niimbotName)+')':'')+'</span>':'Funktioniert nur in <strong>Chrome für Android</strong> mit eingeschaltetem Bluetooth.'}
+      </p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        ${niimbotIstVerbunden()
+          ? `<button class="btn btn-copper" onclick="niimbotTestdruck()"><i class="ti ti-test-pipe"></i> Testdruck</button>
+             <button class="btn btn-danger btn-sm" onclick="niimbotTrennen()"><i class="ti ti-plug-off"></i> Trennen</button>`
+          : `<button class="btn btn-copper" onclick="niimbotVerbinden()"><i class="ti ti-bluetooth"></i> Drucker verbinden</button>`}
+      </div>
+      <div class="f" style="margin-top:10px"><label style="font-size:11px">Druckdichte (1 = hell, 5 = dunkel)</label>
+        <select id="niimbotDichte" onchange="saveNiimbotDichte(this.value)" style="font-size:13px">
+          ${[1,2,3,4,5].map(d=>`<option value="${d}">${d}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+
+    <div class="card">
       <div class="card-hdr"><i class="ti ti-database"></i> Datenspeicher</div>
       <p style="font-size:13px;color:var(--ink-40);margin-bottom:12px">Alle Daten werden lokal in IndexedDB auf diesem Gerät gespeichert.</p>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
@@ -11704,6 +12539,12 @@ async function renderSettings(){
 
   if(isAdmin) await renderUserList_();
   await renderMeineSignatur();
+  // Niimbot-Druckdichte vorselektieren
+  try{
+    const nd=await idbGet('settings','niimbotDichte').catch(()=>null);
+    const sel=document.getElementById('niimbotDichte');
+    if(sel) sel.value=String(nd?.value||3);
+  }catch(e){}
 }
 
 /* ── Benutzer-Unterschrift (für Protokolle / NKA) ── */
@@ -11939,10 +12780,18 @@ async function modalEditUser(id){
     <div class="m-title"><i class="ti ti-pencil"></i> Benutzer bearbeiten</div>
     <div class="f"><label>Name</label><input type="text" id="euName" value="${u.name}" spellcheck="true" lang="de"></div>
     <div class="f"><label>Neuer PIN (leer lassen = unverändert)</label><input type="password" id="euPin" placeholder="••••" inputmode="numeric" maxlength="6"></div>
-    <div class="f"><label>Rolle</label><select id="euRole">
+    <div class="f"><label>Rolle</label><select id="euRole" onchange="euRoleWechsel()">
       <option value="hm" ${u.role==='hm'?'selected':''}>Hausmeister</option>
       <option value="admin" ${u.role==='admin'?'selected':''}>Administrator</option>
     </select></div>
+    <div class="f" id="euModusWrap" style="${u.role==='admin'?'display:none':''}">
+      <label>Zeit-/Tätigkeitserfassung</label>
+      <select id="euModus">
+        <option value="zeit" ${(u.erfassungsModus||'zeit')==='zeit'?'selected':''}>Zeiterfassung (Stempeluhr läuft)</option>
+        <option value="taetigkeit" ${u.erfassungsModus==='taetigkeit'?'selected':''}>Nur Tätigkeitserfassung (Zeitstempel beim Scan)</option>
+      </select>
+      <div style="font-size:11px;color:var(--ink-40);margin-top:4px">Bei reiner Tätigkeitserfassung läuft keine Uhr – beim Scannen werden nur Datum und Uhrzeit der Tätigkeit gespeichert.</div>
+    </div>
     <div class="f"><label>Objekt-Zugriff</label>
       <select id="euObjekte" multiple style="height:110px">
         ${['duesseldorf','mg','krefeld'].map(g=>`<option value="${g}" ${u.objekte?.includes(g)?'selected':''}>${GRUPPE_LABEL[g]||g}</option>`).join('')}
@@ -11960,6 +12809,12 @@ async function modalEditUser(id){
     </div>`);
 }
 
+function euRoleWechsel(){
+  const role=document.getElementById('euRole')?.value;
+  const wrap=document.getElementById('euModusWrap');
+  if(wrap) wrap.style.display = role==='admin' ? 'none' : '';
+}
+
 async function saveEditUser(id){
   const u=await idbGet('users',id);
   if(!u) return;
@@ -11970,6 +12825,8 @@ async function saveEditUser(id){
   if(newPin.length>=4) u.pin=newPin;
   u.role=role;
   u.objekte=role==='admin'?[]:Array.from(sel.selectedOptions).map(o=>o.value);
+  // Erfassungsmodus nur für Hausmeister relevant
+  u.erfassungsModus = role==='admin' ? 'zeit' : (document.getElementById('euModus')?.value || 'zeit');
   const ws=parseFloat(document.getElementById('euWochenSoll')?.value);
   if(!isNaN(ws)) u.wochenSoll=ws;
   const eintr=document.getElementById('euEintritt')?.value;
@@ -11992,7 +12849,7 @@ async function delUser(id){
 async function exportBackup(){
   if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
   const backup={};
-  for(const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm']){
+  for(const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log']){
     backup[s]=await idbGetAll(s);
   }
   backup.exportedAt=now();backup.version=2;
@@ -12011,7 +12868,7 @@ async function importBackup(input){
   reader.onload=async function(e){
     try{
       const backup=JSON.parse(e.target.result);
-      for(const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm']){
+      for(const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log']){
         if(backup[s]){
           await idbClear(s);
           for(const item of backup[s]) await idbPut(s,item);
@@ -12219,7 +13076,7 @@ async function syncToOneDrive() {
   setSyncStatus('pending');
   try {
     const backup = {};
-    for (const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm']) {
+    for (const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log']) {
       backup[s] = await idbGetAll(s);
     }
     backup.updatedAt = now();
@@ -12290,7 +13147,7 @@ async function syncFromOneDrive() {
       await idbPut('settings', { id:'tombstones', value: mergedTomb });
 
       // Merge: ID-basiert, nur übernehmen wenn remote neuer oder lokal fehlt
-      const mergeStores = ['protokolle','aufgaben','maengel','reparaturen','dokumente','nka_archiv','einkaufsliste','wartung','termine','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm'];
+      const mergeStores = ['protokolle','aufgaben','maengel','reparaturen','dokumente','nka_archiv','einkaufsliste','wartung','termine','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log'];
       for (const s of mergeStores) {
         if (!backup[s]) continue;
         const tombS = mergedTomb[s] || {};
@@ -12869,6 +13726,80 @@ async function packlisteAnzahl(terminId){
   return { gesamt:items.length, offen };
 }
 
+/* ═══════════════════════════════════════════════════════════
+   MEINE PACKLISTE – persönlich & privat (nur eigener Benutzer)
+═══════════════════════════════════════════════════════════ */
+async function modalMeinePackliste(){
+  const items=(await idbGetAll('meine_packliste','userId',CU?.id).catch(()=>[]))
+    .sort((a,b)=>(a.erledigt?1:0)-(b.erledigt?1:0) || (a.erstelltIso||'').localeCompare(b.erstelltIso||''));
+  const offen=items.filter(i=>!i.erledigt).length;
+  let liste = items.length
+    ? items.map(i=>meinePackRow(i)).join('')
+    : `<div class="empty"><i class="ti ti-backpack"></i><p>Deine Packliste ist leer</p></div>`;
+  showModal(`
+    <div class="m-title"><i class="ti ti-backpack"></i> Meine Packliste</div>
+    <div style="font-size:12px;color:var(--ink-60);margin-bottom:12px">Nur für dich sichtbar · ${items.length} Einträge · ${offen} offen</div>
+    <div class="f" style="margin-bottom:10px">
+      <div style="display:flex;gap:6px">
+        <input type="text" id="mpNeu" placeholder="z. B. Leiter, Akkuschrauber, Schlüssel 181" spellcheck="true" lang="de" style="flex:1"
+          onkeydown="if(event.key==='Enter')meinePackAdd()">
+        <button class="btn btn-copper" onclick="meinePackAdd()"><i class="ti ti-plus"></i></button>
+      </div>
+    </div>
+    <div id="meinePackListe" style="max-height:55vh;overflow-y:auto">${liste}</div>
+    ${items.some(i=>i.erledigt)?`<button class="btn btn-sm" style="margin-top:8px;width:100%" onclick="meinePackClearDone()"><i class="ti ti-eraser"></i> Erledigte entfernen</button>`:''}
+    <button class="btn btn-full" style="margin-top:8px" onclick="closeModal()">Schließen</button>
+  `);
+}
+function meinePackRow(i){
+  const erl=!!i.erledigt;
+  return `<div style="display:flex;align-items:center;gap:10px;border:1px solid var(--ink-10);border-radius:8px;padding:9px 10px;margin-bottom:6px;${erl?'background:var(--ink-05)':''}">
+    <button onclick="meinePackToggle('${i.id}')" style="flex-shrink:0;width:26px;height:26px;border-radius:7px;border:2px solid ${erl?'var(--green,#2E7D52)':'var(--ink-20)'};background:${erl?'var(--green,#2E7D52)':'#fff'};display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0">
+      ${erl?'<i class="ti ti-check" style="color:#fff;font-size:15px"></i>':''}
+    </button>
+    <div style="flex:1;min-width:0;font-size:14px;font-weight:600;${erl?'text-decoration:line-through;color:var(--ink-40)':''}">${esc(i.artikel)}</div>
+    <button class="btn btn-sm btn-danger" onclick="meinePackDelete('${i.id}')"><i class="ti ti-x"></i></button>
+  </div>`;
+}
+async function meinePackRefresh(){
+  const el=document.getElementById('meinePackListe');
+  if(!el) return;
+  const items=(await idbGetAll('meine_packliste','userId',CU?.id).catch(()=>[]))
+    .sort((a,b)=>(a.erledigt?1:0)-(b.erledigt?1:0) || (a.erstelltIso||'').localeCompare(b.erstelltIso||''));
+  el.innerHTML = items.length ? items.map(i=>meinePackRow(i)).join('') : `<div class="empty"><i class="ti ti-backpack"></i><p>Deine Packliste ist leer</p></div>`;
+}
+async function meinePackAdd(){
+  const inp=document.getElementById('mpNeu');
+  const artikel=inp?.value?.trim();
+  if(!artikel){ return; }
+  await idbPut('meine_packliste', {
+    id:uid(), userId:CU?.id, artikel,
+    erledigt:false, erstelltIso:nowIso(), geaendert:nowIso(),
+  });
+  if(inp) inp.value='';
+  syncSoon();
+  await meinePackRefresh();
+  if(inp) inp.focus();
+}
+async function meinePackToggle(id){
+  const i=await idbGet('meine_packliste', id); if(!i) return;
+  i.erledigt=!i.erledigt; i.geaendert=nowIso();
+  await idbPut('meine_packliste', i);
+  syncSoon();
+  await meinePackRefresh();
+}
+async function meinePackDelete(id){
+  await deleteMitTombstone('meine_packliste', id);
+  syncSoon();
+  await meinePackRefresh();
+}
+async function meinePackClearDone(){
+  const items=(await idbGetAll('meine_packliste','userId',CU?.id).catch(()=>[])).filter(i=>i.erledigt);
+  for(const i of items) await deleteMitTombstone('meine_packliste', i.id);
+  syncSoon();
+  await modalMeinePackliste();
+}
+
 async function modalPackliste(terminId){
   if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
   const termin=await idbGet('termine', terminId);
@@ -13336,6 +14267,12 @@ async function showMangelDetail(id, store='maengel') {
       </div>`).join('')}
     </div>` : ''}
 
+    ${m.erledigtFoto ? `
+    <div class="card-hdr" style="margin-bottom:8px"><i class="ti ti-circle-check" style="color:var(--green,#2E7D52)"></i> Erledigt-Nachweis${m.erledigtAm?' · '+fmtDate(m.erledigtAm):''}${m.erledigtVon?' · '+esc(m.erledigtVon):''}</div>
+    <div class="foto-gallery" style="margin-bottom:12px">
+      <div class="foto-item" onclick="openFoto('${m.erledigtFoto}','Erledigt-Nachweis – ${esc(m.titel)}')"><img src="${m.erledigtFoto}" loading="lazy"></div>
+    </div>` : ''}
+
     ${materialHTML}
     <div class="card-hdr" style="margin-bottom:8px"><i class="ti ti-message"></i> Kommentare (${kommentare.length})</div>
     ${kommentare.length ? `<div class="comment-box" style="margin-bottom:10px">
@@ -13378,14 +14315,22 @@ async function toggleMangelFromDetail(id, store) {
   const m = await idbGet(store, id);
   if (!m) return;
   const doneVal = store==='reparaturen' ? 'erledigt' : 'behoben';
-  m.status = m.status===doneVal ? 'offen' : doneVal;
+  const istErledigt = m.status===doneVal;
+  if (!istErledigt) {
+    // Wird erledigt → Foto-Dialog (danach Detail neu zeichnen)
+    modalMangelErledigen(id, store);
+    return;
+  }
+  // Wieder öffnen
+  m.status='offen';
+  delete m.erledigtFoto; delete m.erledigtAm; delete m.erledigtVon;
   if (!m.kommentare) m.kommentare = [];
-  m.kommentare.push({ autor:CU?.name||'–', datum:now(), text:`Status geändert zu: ${m.status}` });
+  m.kommentare.push({ autor:CU?.name||'–', datum:now(), text:'Status geändert zu: offen' });
   await idbPut(store, m);
   bcSend('mangel_changed', {id});
   await showMangelDetail(id, store);
   await refreshAufgaben(); await renderDash();
-  toast('Status geändert ✓');
+  toast('Wieder geöffnet ✓');
 }
 
 async function editMangel(id, store) {
@@ -13705,6 +14650,22 @@ document.getElementById('galleryIn').addEventListener('change', async function()
 
 // Verarbeitet ein fertiges (komprimiertes) Foto je nach aktivem Kontext.
 async function processPhoto(data) {
+    if (window._erledigtCamActive) {
+      window._erledigtCamActive=false;
+      erledigtFotoVorschauZeigen(data);
+      if(document.getElementById('camOverlay')?.style.display==='flex') closeCam();
+      toast('Foto aufgenommen ✓');
+      return;
+    }
+    if (window._ventilCamActive) {
+      window._ventilCamActive=false;
+      _ventilFoto=data;
+      const vp=document.getElementById('ventilFotoVorschau');
+      if(vp) vp.innerHTML='<img src="'+data+'" style="width:100%;max-height:140px;object-fit:contain;border-radius:8px;border:1px solid var(--ink-10)">';
+      if(document.getElementById('camOverlay')?.style.display==='flex') closeCam();
+      toast('Foto aufgenommen ✓');
+      return;
+    }
     if (window._rechnCamActive) {
       window._rechnCamActive=false;
       _rechnBeleg={data, mimeType:'image/jpeg', name:'Foto'};
@@ -13784,10 +14745,10 @@ async function processPhoto(data) {
 /* ═══════════════════════════════════════════════════════════
    IN-APP KAMERA
 ═══════════════════════════════════════════════════════════ */
-let camStream=null, camFacing='environment', camShots=0;
+let camStream=null, camFacing='environment', camShots=0, camTorchAn=false;
 
 async function openCam(){
-  camShots=0;
+  camShots=0; camTorchAn=false;
   const ov=document.getElementById('camOverlay');
   ov.style.display='flex';
   document.getElementById('camShotCount').style.display='none';
@@ -13815,6 +14776,34 @@ async function startCamStream(){
   const v=document.getElementById('camVideo');
   v.srcObject=camStream;
   await v.play().catch(()=>{});
+  // Blitz/Torch nur anbieten, wenn das Gerät es bei dieser Kamera unterstützt
+  camTorchAn=false;
+  const btn=document.getElementById('camTorchBtn');
+  if(btn){
+    let kann=false;
+    try{
+      const track=camStream.getVideoTracks()[0];
+      const caps=track.getCapabilities ? track.getCapabilities() : {};
+      kann = !!caps.torch;
+    }catch(e){}
+    btn.style.display = kann ? 'flex' : 'none';
+    btn.style.background='rgba(0,0,0,.5)';
+    btn.innerHTML='<i class="ti ti-bolt"></i>';
+  }
+}
+
+async function camTorch(){
+  if(!camStream) return;
+  try{
+    const track=camStream.getVideoTracks()[0];
+    camTorchAn=!camTorchAn;
+    await track.applyConstraints({ advanced:[{ torch: camTorchAn }] });
+    const btn=document.getElementById('camTorchBtn');
+    if(btn){
+      btn.style.background = camTorchAn ? 'rgba(255,200,0,.85)' : 'rgba(0,0,0,.5)';
+      btn.innerHTML = camTorchAn ? '<i class="ti ti-bolt"></i>' : '<i class="ti ti-bolt-off"></i>';
+    }
+  }catch(e){ toast('Blitz nicht verfügbar'); }
 }
 
 async function camFlip(){
@@ -13837,12 +14826,80 @@ async function camCapture(){
     data=await compressFoto(blob);
   } catch(e){ console.warn('Aufnahme:', e); toast('Foto konnte nicht verarbeitet werden'); return; }
   if(data){
-    await processPhoto(data);
-    camShots++;
-    const c=document.getElementById('camShotCount');
-    c.style.display='block'; c.textContent=camShots+(camShots===1?' Foto':' Fotos');
-    toast('Foto aufgenommen ✓');
+    // Vorschau mit Drehmöglichkeit anzeigen, bevor das Foto übernommen wird
+    camZeigeVorschau(data);
   }
+}
+
+// Foto-Vorschau im Kamera-Overlay: drehen, übernehmen oder verwerfen
+let _camVorschauData=null, _camVorschauRot=0;
+function camZeigeVorschau(data){
+  _camVorschauData=data; _camVorschauRot=0;
+  let ov=document.getElementById('camVorschauOverlay');
+  if(!ov){
+    ov=document.createElement('div');
+    ov.id='camVorschauOverlay';
+    ov.style.cssText='position:fixed;inset:0;z-index:10000;background:#000;display:flex;flex-direction:column';
+    ov.innerHTML=`
+      <div style="position:relative;flex:1;overflow:hidden;display:flex;align-items:center;justify-content:center;padding:12px">
+        <img id="camVorschauImg" style="max-width:100%;max-height:100%;transition:transform .2s;object-fit:contain">
+      </div>
+      <div style="padding:16px 20px calc(16px + env(safe-area-inset-bottom));background:#000;display:flex;align-items:center;justify-content:space-between;gap:12px">
+        <button onclick="camVorschauVerwerfen()" style="flex:1;height:50px;border-radius:12px;border:1.5px solid rgba(255,255,255,.3);background:rgba(255,255,255,.08);color:#fff;font-size:15px;cursor:pointer"><i class="ti ti-trash"></i> Verwerfen</button>
+        <button onclick="camVorschauDrehen()" style="width:64px;height:50px;border-radius:12px;border:1.5px solid rgba(255,255,255,.3);background:rgba(255,255,255,.08);color:#fff;font-size:22px;cursor:pointer"><i class="ti ti-rotate-clockwise"></i></button>
+        <button onclick="camVorschauUebernehmen()" style="flex:1;height:50px;border-radius:12px;border:none;background:var(--copper,#B87333);color:#fff;font-size:15px;font-weight:600;cursor:pointer"><i class="ti ti-check"></i> Übernehmen</button>
+      </div>`;
+    document.body.appendChild(ov);
+  }
+  ov.style.display='flex';
+  const img=document.getElementById('camVorschauImg');
+  img.src=data; img.style.transform='rotate(0deg)';
+}
+function camVorschauDrehen(){
+  _camVorschauRot=(_camVorschauRot+90)%360;
+  const img=document.getElementById('camVorschauImg');
+  if(img) img.style.transform='rotate('+_camVorschauRot+'deg)';
+}
+function camVorschauVerwerfen(){
+  _camVorschauData=null; _camVorschauRot=0;
+  const ov=document.getElementById('camVorschauOverlay');
+  if(ov) ov.style.display='none';
+}
+async function camVorschauUebernehmen(){
+  let data=_camVorschauData;
+  if(!data){ camVorschauVerwerfen(); return; }
+  // Falls gedreht: Bild tatsächlich rotieren
+  if(_camVorschauRot){
+    try{ data=await bildDrehen(data, _camVorschauRot); }catch(e){ console.warn('Drehen:', e); }
+  }
+  const ov=document.getElementById('camVorschauOverlay');
+  if(ov) ov.style.display='none';
+  _camVorschauData=null; const rot=_camVorschauRot; _camVorschauRot=0;
+  await processPhoto(data);
+  camShots++;
+  const c=document.getElementById('camShotCount');
+  if(c){ c.style.display='block'; c.textContent=camShots+(camShots===1?' Foto':' Fotos'); }
+  toast('Foto aufgenommen ✓');
+}
+
+// Bild um Winkel (90/180/270) drehen, gibt neue dataURL zurück
+function bildDrehen(dataUrl, grad){
+  return new Promise((resolve,reject)=>{
+    const img=new Image();
+    img.onload=()=>{
+      const rad=grad*Math.PI/180;
+      const c=document.createElement('canvas');
+      if(grad===90||grad===270){ c.width=img.height; c.height=img.width; }
+      else { c.width=img.width; c.height=img.height; }
+      const ctx=c.getContext('2d');
+      ctx.translate(c.width/2, c.height/2);
+      ctx.rotate(rad);
+      ctx.drawImage(img, -img.width/2, -img.height/2);
+      resolve(c.toDataURL('image/jpeg', 0.85));
+    };
+    img.onerror=reject;
+    img.src=dataUrl;
+  });
 }
 
 function camPickGallery(){
@@ -13852,8 +14909,12 @@ function camPickGallery(){
 
 function closeCam(){
   if(camStream){ camStream.getTracks().forEach(t=>t.stop()); camStream=null; }
+  camTorchAn=false;
   const ov=document.getElementById('camOverlay');
   if(ov) ov.style.display='none';
+  const vo=document.getElementById('camVorschauOverlay');
+  if(vo) vo.style.display='none';
+  _camVorschauData=null; _camVorschauRot=0;
   const v=document.getElementById('camVideo');
   if(v) v.srcObject=null;
 }
@@ -13914,6 +14975,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   try {
     // Aktive Session wiederherstellen (nach OS-Reload, z. B. nach Kamera-Nutzung)
     let sessionUid = null;
+    let sessionTag = null;
     try { sessionUid = sessionStorage.getItem('activeSession'); } catch(e) {}
     if (!sessionUid) {
       try {
@@ -13921,16 +14983,25 @@ window.addEventListener('DOMContentLoaded', async () => {
         if (raw) {
           const s = JSON.parse(raw);
           // nur innerhalb von 12 Stunden automatisch wieder anmelden
-          if (s && s.uid && s.ts && (Date.now() - s.ts) < 12*60*60*1000) sessionUid = s.uid;
+          if (s && s.uid && s.ts && (Date.now() - s.ts) < 12*60*60*1000) { sessionUid = s.uid; sessionTag = s.tag||null; }
         }
       } catch(e) {}
+    } else {
+      // sessionStorage aktiv: Login-Tag aus localStorage nachladen für Mitternachts-Prüfung
+      try { const raw = localStorage.getItem('activeSession'); if (raw) sessionTag = (JSON.parse(raw)||{}).tag||null; } catch(e) {}
+    }
+    // Auto-Logout nach Mitternacht: wurde an einem früheren Kalendertag angemeldet, Session verwerfen
+    if (sessionUid && sessionTag && sessionTag !== today()) {
+      try { sessionStorage.removeItem('activeSession'); } catch(e) {}
+      try { localStorage.removeItem('activeSession'); } catch(e) {}
+      sessionUid = null;
     }
     if (sessionUid) {
       const user = await idbGet('users', sessionUid).catch(()=>null);
       if (user && user.aktiv !== false) {
         CU = user;
         try { sessionStorage.setItem('activeSession', sessionUid); } catch(e) {}
-        try { localStorage.setItem('activeSession', JSON.stringify({uid: sessionUid, ts: Date.now()})); } catch(e) {}
+        try { localStorage.setItem('activeSession', JSON.stringify({uid: sessionUid, ts: Date.now(), tag: sessionTag||today()})); } catch(e) {}
         showScreen('appScreen');
         await initApp();
         try {
