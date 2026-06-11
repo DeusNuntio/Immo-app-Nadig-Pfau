@@ -1089,13 +1089,14 @@ async function initApp(){
 ═══════════════════════════════════════════════════════════ */
 async function renderDash() {
   const myObj = await getMyObjekte();
+  await syncIntervallTodos().catch(()=>{});
   await aktiviereFaelligeMieterwechsel();
   const allMieter = await idbGetAll('mieter');
   const myMieter  = allMieter.filter(m => myObj.some(o => o.id === m.objektId) && !m._vormieter && !m._zukuenftig);
   const aufgaben  = await idbGetAll('aufgaben');
   const maengel   = await idbGetAll('maengel');
   const prots     = await idbGetAll('protokolle');
-  const myAuf     = aufgaben.filter(a => myObj.some(o=>o.id===a.objektId) && a.status!=='erledigt');
+  const myAuf     = aufgaben.filter(a => myObj.some(o=>o.id===a.objektId) && a.status!=='erledigt').filter(aufgabeSichtbarFuerUser);
   const myMng     = maengel.filter(m => myObj.some(o=>o.id===m.objektId) && m.status!=='behoben');
   const el = document.getElementById('page-dash');
 
@@ -1121,9 +1122,20 @@ async function renderDash() {
   // Verlauf und Tätigkeits-QR-Liste bleiben hinter dem Button „Zeiterfassung".
   if (CU?.role !== 'admin' && (CU?.erfassungsModus||'zeit')==='taetigkeit') {
     // Reine Tätigkeitserfassung: kein Uhrwerk, direkter Scan-Zugriff
+    const tSitzung = await getOffeneSitzung().catch(()=>null);
+    const segOffen = tSitzung ? offenesSegment(tSitzung) : null;
     html += `<div class="card" style="margin-bottom:12px;text-align:center">
-      <div style="font-size:12px;color:var(--ink-60);margin-bottom:8px"><i class="ti ti-clipboard-check"></i> Tätigkeitserfassung – QR scannen, Zeitstempel wird gespeichert</div>
-      <button class="btn btn-copper btn-full" onclick="scanTaetigkeitQR()"><i class="ti ti-qrcode"></i> Tätigkeit scannen</button>
+      <div style="font-size:12px;color:var(--ink-60);margin-bottom:8px"><i class="ti ti-clipboard-check"></i> Tätigkeitserfassung – Zeitstempel wird gespeichert</div>`;
+    if(segOffen){
+      html += `<div style="background:var(--copper-bg);border-radius:8px;padding:8px 12px;margin-bottom:8px">
+        <div style="font-size:13px;font-weight:600;color:var(--copper-d)">${esc(segOffen.katName||'Tätigkeit')} läuft</div>
+        <div style="font-size:11px;color:var(--ink-40)">${esc(zielName(segOffen.objId))} · <span class="stempelTaetDauer" data-start="${segOffen.start}">${fmtDauer(Math.max(0,Math.round((new Date()-new Date(segOffen.start))/60000)))}</span></div>
+      </div>
+      <button class="btn btn-full" style="margin-bottom:6px" onclick="taetigkeitBeenden()"><i class="ti ti-player-stop"></i> Tätigkeit beenden</button>`;
+    } else {
+      html += `<button class="btn btn-copper btn-full" style="margin-bottom:6px" onclick="modalTaetigkeitStart()"><i class="ti ti-player-play"></i> Tätigkeit starten</button>`;
+    }
+    html += `<button class="btn btn-full" onclick="scanTaetigkeitQR()"><i class="ti ti-qrcode"></i> Tätigkeit per QR scannen</button>
     </div>`;
   } else if (CU?.role !== 'admin') {
     const zSitzung = await getOffeneSitzung().catch(()=>null);
@@ -2625,6 +2637,8 @@ const TAETIGKEIT_STANDARD=[
   {id:'muelltonne',    name:'Mülltonnenservice',    umlage:'ja',     mangel:false, allgemein:true,  sichtbar:true, sort:4},
   {id:'muellrundgang', name:'Müllrundgang',         umlage:'ja',     mangel:false, allgemein:true,  sichtbar:true, sort:5},
   {id:'kontrolle',     name:'Objektkontrolle',      umlage:'ja',     mangel:false, allgemein:false, sichtbar:true, sort:6},
+  {id:'kellerreinigung',name:'Kellerreinigung',      umlage:'ja',     mangel:false, allgemein:false, sichtbar:true, sort:6.4},
+  {id:'fensterputzen', name:'Fensterputzen',         umlage:'ja',     mangel:false, allgemein:false, sichtbar:true, sort:6.6},
   {id:'reparatur',     name:'Kleinreparatur',       umlage:'nein',   mangel:true,  allgemein:false, sichtbar:true, sort:7},
   {id:'handwerker',    name:'Handwerkerbetreuung',  umlage:'nein',   mangel:true,  allgemein:false, sichtbar:true, sort:8},
   {id:'notdienst',     name:'Notdienst / Störung',  umlage:'neutral',mangel:true,  allgemein:false, sichtbar:true, sort:9},
@@ -2678,6 +2692,12 @@ async function ensureTaetigkeitKat(){
     const vorhandeneIds=vorhanden.map(k=>k.id);
     for(const k of TAETIGKEIT_STANDARD){
       if(TAETIGKEIT_NEU_ADMIN.includes(k.id) && !vorhandeneIds.includes(k.id)){
+        await idbPut('taetigkeit_kat', {...k, erstellt:now()}); changed=true;
+      }
+    }
+    // Migration: neue HM-Tätigkeiten (Keller/Fenster) nachrüsten
+    for(const k of TAETIGKEIT_STANDARD){
+      if(['kellerreinigung','fensterputzen'].includes(k.id) && !vorhandeneIds.includes(k.id)){
         await idbPut('taetigkeit_kat', {...k, erstellt:now()}); changed=true;
       }
     }
@@ -4538,7 +4558,12 @@ async function ausstempeln(){
 // ── Tätigkeit starten ──
 // Schließt automatisch ein laufendes Segment und fügt davor ggf. eine Lücke (Wegezeit/Sonstiges) ein.
 async function taetigkeitStarten(katId, objId, notiz, mangelId){
-  const s=await getOffeneSitzung();
+  let s=await getOffeneSitzung();
+  // Reiner Tätigkeitsmodus: ohne klassisches Einstempeln automatisch eine Sitzung anlegen
+  if(!s && (CU?.erfassungsModus||'zeit')==='taetigkeit'){
+    await einstempeln();
+    s=await getOffeneSitzung();
+  }
   if(!s){ toast('Bitte zuerst einstempeln'); return; }
   if(pauseAktiv(s)){ toast('Erst Pause beenden'); return; }
   const kats=await getTaetigkeitKat();
@@ -6474,9 +6499,9 @@ function personenBlockHTML(m){
           ${p.email?`<span style="font-size:12px;color:var(--ink-60)"><i class="ti ti-mail" style="font-size:12px"></i> <a href="mailto:${p.email}">${esc(p.email)}</a></span>`:''}
         </div>
       </div>
-      <button class="btn btn-sm" title="${v?'Als lebend markieren':'Als verstorben markieren'}" onclick="togglePersonVerstorben('${m.id}',${i})">
+      ${CU?.role==='admin'?`<button class="btn btn-sm" title="${v?'Als lebend markieren':'Als verstorben markieren'}" onclick="togglePersonVerstorben('${m.id}',${i})">
         <i class="ti ti-${v?'rotate':'grave'}" style="font-size:14px"></i>
-      </button>
+      </button>`:''}
     </div>`;
   });
   h+=`</div>`;
@@ -6493,6 +6518,7 @@ function alterAus(iso){
 }
 // Person als verstorben / wieder lebend markieren
 async function togglePersonVerstorben(mieterId, idx){
+  if(CU?.role!=='admin'){ toast('Nur Administratoren können den Verstorben-Status ändern'); return; }
   const m=await idbGet('mieter',mieterId); if(!m) return;
   // Sicherstellen, dass eine personen_liste existiert
   if(!m.personen_liste||!m.personen_liste.length){
@@ -7029,7 +7055,20 @@ async function deleteWartung(id){
 /* ═══════════════════════════════════════════════════════════
    AUFGABEN PAGE
 ═══════════════════════════════════════════════════════════ */
+// Punkt 4: HM sieht eine Aufgabe nur, wenn er sie selbst angelegt hat
+// oder sie ihm explizit zugewiesen wurde. Admins sehen alles.
+function aufgabeSichtbarFuerUser(a){
+  if(CU?.role==='admin') return true;
+  if(a.erstellerId && a.erstellerId===CU?.id) return true;
+  if(a.ersteller && CU?.name && a.ersteller===CU.name) return true;
+  if(a.zugewiesen && CU?.id && a.zugewiesen===CU.id) return true;
+  if(a.zugewiesen && CU?.name && a.zugewiesen===CU.name) return true;
+  // Auto-Intervall-Tätigkeiten sind immer für den HM bestimmt
+  if(a.istIntervall) return true;
+  return false;
+}
 async function renderAufgaben(){
+  await syncIntervallTodos().catch(()=>{});
   const myObj=await getMyObjekte();
   const myIds=myObj.map(o=>o.id);
   const myLg=await getMyLiegenschaften();
@@ -7045,7 +7084,7 @@ async function renderAufgaben(){
     return myIds.includes(x.objektId);
   }
 
-  const aufgaben=(await idbGetAll('aufgaben')).filter(a=>myIds.includes(a.objektId)).filter(passFilter);
+  const aufgaben=(await idbGetAll('aufgaben')).filter(a=>myIds.includes(a.objektId)).filter(aufgabeSichtbarFuerUser).filter(passFilter);
   const maengelRaw=(await idbGetAll('maengel')).filter(m=>myIds.includes(m.objektId)).filter(passFilter);
   const altReps=(await idbGetAll('reparaturen')).filter(r=>myIds.includes(r.objektId)).filter(passFilter).map(r=>({...r,istReparatur:true,_altStore:true}));
   const maengel=[...maengelRaw,...altReps];
@@ -7264,6 +7303,148 @@ function reparaturHTML(r){
   </div>`;
 }
 
+
+/* ═══════════════════════════════════════════════════════════
+   INTERVALL-PFLICHTTÄTIGKEITEN (Punkt 3)
+   Wiederkehrende Reinigungs-/Pflichtaufgaben pro Objekt.
+   - Definition der Standardtätigkeiten + Intervall (Tage)
+   - Konfiguration je Objekt (aktiv/inaktiv) in den Einstellungen
+   - Auto-Generierung fälliger To-Dos in den Aufgaben-Store
+   - Dynamische Priorität: niedrig → ab Hälfte mittel → 7 Tage vorher hoch
+   - Erledigen plant automatisch das nächste Intervall
+═══════════════════════════════════════════════════════════ */
+const INTERVALL_TAETIGKEITEN=[
+  {id:'thfenster', name:'Reinigung der Treppenhausfenster',                 tage:91, hinweis:'vierteljährlich'},
+  {id:'keller',    name:'Kellereingänge und Gemeinschaftsräume kehren und feucht wischen', tage:30, hinweis:'monatlich'},
+  {id:'gtueren',   name:'Reinigung der Gemeinschaftstüren',                 tage:30, hinweis:'monatlich'},
+];
+function intervallDefById(id){ return INTERVALL_TAETIGKEITEN.find(t=>t.id===id); }
+
+// Konfiguration laden: settings-Eintrag 'intervall_config' = { "<objektId>:<taetId>": {aktiv:true, naechstFaellig:'YYYY-MM-DD'} }
+async function getIntervallConfig(){
+  const c=await idbGet('settings','intervall_config').catch(()=>null);
+  return (c&&c.value)?c.value:{};
+}
+async function saveIntervallConfig(cfg){
+  await idbPut('settings',{id:'intervall_config',value:cfg,geaendert:nowIso()});
+  syncSoon();
+}
+function intervallKey(objId,taetId){ return objId+'::'+taetId; }
+
+// Dynamische Priorität anhand verbleibender Tage bis Fälligkeit und Intervalllänge
+function intervallPrio(faelligISO, intervallTage){
+  const heute=new Date(); heute.setHours(0,0,0,0);
+  const f=new Date(faelligISO); f.setHours(0,0,0,0);
+  const restTage=Math.round((f-heute)/86400000);
+  if(restTage<=7) return 'hoch';
+  if(restTage<=Math.floor(intervallTage/2)) return 'mittel';
+  return 'niedrig';
+}
+
+// Erzeugt/aktualisiert für jede aktive Intervall-Tätigkeit ein Auto-To-Do, sobald
+// das Fälligkeitsdatum in Sichtweite kommt (ab Hälfte des Intervalls sichtbar).
+// Wird beim Laden der Aufgaben/des Dashboards aufgerufen.
+async function syncIntervallTodos(){
+  const cfg=await getIntervallConfig();
+  const heute=new Date(); heute.setHours(0,0,0,0);
+  const bestehende=await idbGetAll('aufgaben');
+  let changed=false;
+  for(const [key,conf] of Object.entries(cfg)){
+    if(!conf||!conf.aktiv) continue;
+    const [objId,taetId]=key.split('::');
+    const def=intervallDefById(taetId); if(!def) continue;
+    if(!getObj(objId)) continue;
+    let faellig=conf.naechstFaellig;
+    if(!faellig){
+      // Erststart: ab heute eine Intervalllänge
+      const d=new Date(); d.setDate(d.getDate()+def.tage);
+      faellig=d.toISOString().split('T')[0];
+      conf.naechstFaellig=faellig; changed=true;
+    }
+    const f=new Date(faellig); f.setHours(0,0,0,0);
+    const restTage=Math.round((f-heute)/86400000);
+    // Sichtbar ab Hälfte des Intervalls
+    if(restTage>Math.floor(def.tage/2)) {
+      // noch nicht sichtbar – evtl. vorhandenes offenes Auto-To-Do dieser Runde belassen
+      continue;
+    }
+    const todoId='iv_'+objId+'_'+taetId+'_'+faellig;
+    const vorhanden=bestehende.find(a=>a.id===todoId);
+    const prio=intervallPrio(faellig,def.tage);
+    if(vorhanden){
+      if(vorhanden.status!=='erledigt' && vorhanden.prio!==prio){
+        vorhanden.prio=prio; vorhanden.geaendert=nowIso();
+        await idbPut('aufgaben',vorhanden); changed=true;
+      }
+    } else {
+      await idbPut('aufgaben',{
+        id:todoId, objektId:objId, mieterId:null, weNr:'',
+        titel:def.name, prio,
+        datum:faellig,
+        beschreibung:`Wiederkehrende Pflichttätigkeit (${def.hinweis}). Fällig bis ${new Date(faellig).toLocaleDateString('de-DE')}.`,
+        status:'offen', erstellt:now(), ersteller:'System (Intervall)', erstellerId:'system',
+        istIntervall:true, intervallTaetId:taetId, intervallObjId:objId, intervallFaellig:faellig,
+      });
+      changed=true;
+    }
+  }
+  if(changed){ await saveIntervallConfig(cfg); }
+}
+
+// Beim Erledigen einer Intervall-Aufgabe: nächstes Fälligkeitsdatum setzen
+async function intervallErledigt(a){
+  if(!a.istIntervall) return;
+  const def=intervallDefById(a.intervallTaetId); if(!def) return;
+  const cfg=await getIntervallConfig();
+  const key=intervallKey(a.intervallObjId,a.intervallTaetId);
+  // Nächstes Intervall ab heute (Erledigungszeitpunkt)
+  const d=new Date(); d.setDate(d.getDate()+def.tage);
+  const naechst=d.toISOString().split('T')[0];
+  cfg[key]=cfg[key]||{aktiv:true};
+  cfg[key].naechstFaellig=naechst;
+  cfg[key].letztErledigt=today();
+  await saveIntervallConfig(cfg);
+}
+
+// Einstellungs-Karte: Intervall-Tätigkeiten je Objekt (nur Admin)
+async function renderIntervallConfig(){
+  const cfg=await getIntervallConfig();
+  let h='';
+  for(const o of OBJEKTE){
+    if(o.privat) continue;
+    const zeilen=INTERVALL_TAETIGKEITEN.map(t=>{
+      const key=intervallKey(o.id,t.id);
+      const conf=cfg[key]||{};
+      const aktiv=!!conf.aktiv;
+      const naechst=conf.naechstFaellig?new Date(conf.naechstFaellig).toLocaleDateString('de-DE'):'–';
+      return `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--ink-10)">
+        <label style="display:flex;align-items:center;gap:8px;flex:1;cursor:pointer;font-size:13px">
+          <input type="checkbox" ${aktiv?'checked':''} onchange="toggleIntervall('${o.id}','${t.id}',this.checked)">
+          <span>${t.name} <span style="color:var(--ink-40);font-size:11px">(${t.hinweis})</span></span>
+        </label>
+        <span style="font-size:11px;color:var(--ink-40);white-space:nowrap">${aktiv?'fällig: '+naechst:''}</span>
+      </div>`;
+    }).join('');
+    h+=`<details style="margin-bottom:6px"><summary style="cursor:pointer;font-weight:600;font-size:13px;padding:4px 0">${esc(o.name)}</summary>${zeilen}</details>`;
+  }
+  return h;
+}
+async function toggleIntervall(objId,taetId,aktiv){
+  const cfg=await getIntervallConfig();
+  const key=intervallKey(objId,taetId);
+  const def=intervallDefById(taetId);
+  cfg[key]=cfg[key]||{};
+  cfg[key].aktiv=aktiv;
+  if(aktiv && !cfg[key].naechstFaellig){
+    const d=new Date(); d.setDate(d.getDate()+(def?.tage||30));
+    cfg[key].naechstFaellig=d.toISOString().split('T')[0];
+  }
+  await saveIntervallConfig(cfg);
+  await syncIntervallTodos();
+  if(curPage==='settings') renderSettings();
+  toast(aktiv?'Intervall-Tätigkeit aktiviert':'Intervall-Tätigkeit deaktiviert');
+}
+
 /* ═══════════════════════════════════════════════════════════
    CRUD – AUFGABEN / MÄNGEL
 ═══════════════════════════════════════════════════════════ */
@@ -7271,7 +7452,10 @@ async function toggleAufgabe(id){
   const a=await idbGet('aufgaben',id); if(!a) return;
   a.status=a.status==='erledigt'?'offen':'erledigt';
   a.erledigtAm=a.status==='erledigt'?new Date().toLocaleDateString('de-DE'):'';
-  await idbPut('aufgaben',a); bcSend('aufgabe_changed',{id});
+  a.erledigtVon=a.status==='erledigt'?(CU?.name||''):'';
+  await idbPut('aufgaben',a);
+  if(a.status==='erledigt' && a.istIntervall){ await intervallErledigt(a); }
+  bcSend('aufgabe_changed',{id});
   await refreshAufgaben(); if(curPage==='objekt') await renderObjTab('aufgaben');
   toast('Status aktualisiert');
 }
@@ -10526,7 +10710,7 @@ async function saveAufgabe(){
     titel,prio:document.getElementById('aPrio').value,
     datum:document.getElementById('aDatum').value,
     beschreibung:document.getElementById('aBeschr').value,
-    status:'offen',erstellt:now(),ersteller:CU?.name||'',
+    status:'offen',erstellt:now(),ersteller:CU?.name||'',erstellerId:CU?.id||'',
   });
   closeModal(); bcSend('aufgabe_changed',{});
   await refreshAufgaben(); await renderDash(); toast('Aufgabe gespeichert ✓');
@@ -12410,6 +12594,14 @@ async function renderSettings(){
     </div>
 
     ${isAdmin?`<div class="card">
+      <div class="card-hdr"><i class="ti ti-repeat"></i> Wiederkehrende Pflichttätigkeiten</div>
+      <p style="font-size:13px;color:var(--ink-40);margin-bottom:12px;line-height:1.6">
+        Pro Objekt festlegen, welche Reinigungs-/Pflichttätigkeiten in welchem Intervall fällig werden. Aktivierte Tätigkeiten erscheinen automatisch als To-Do beim zuständigen Hausmeister – mit steigender Priorität, je näher die Frist rückt.
+      </p>
+      <div id="intervallConfigEl"></div>
+    </div>`:''}
+
+    ${isAdmin?`<div class="card">
       <div class="card-hdr"><i class="ti ti-file-spreadsheet"></i> Mieterdaten (Excel-Import)</div>
       <p style="font-size:13px;color:var(--ink-40);margin-bottom:12px;line-height:1.6">
         Excel-Datei (.xlsm) hochladen, um Mieter- und Objektdaten abzugleichen. Vorhandene Mieter werden über Objekt, WE-Nr. und Name erkannt und nur in geänderten Feldern aktualisiert – leere Excel-Zellen überschreiben nichts. In der App neu angelegte Mieter sowie alle Protokolle, Aufgaben, Mängel und Dokumente bleiben erhalten.
@@ -12538,6 +12730,7 @@ async function renderSettings(){
   }
 
   if(isAdmin) await renderUserList_();
+  if(isAdmin){ const ivEl=document.getElementById('intervallConfigEl'); if(ivEl) ivEl.innerHTML=await renderIntervallConfig(); }
   await renderMeineSignatur();
   // Niimbot-Druckdichte vorselektieren
   try{
