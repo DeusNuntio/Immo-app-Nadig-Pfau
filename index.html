@@ -700,8 +700,8 @@ button.chip.chip-active{background:var(--ink);color:#fff;border-color:var(--ink)
 /* ═══════════════════════════════════════════════════════════
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
-const DB_NAME='immo_v2', DB_VER=13;
-const APP_VERSION = '2026-06-09-v39';
+const DB_NAME='immo_v2', DB_VER=14;
+const APP_VERSION = '2026-06-11-v40';
 let idb=null;
 
 function openIDB(){
@@ -714,7 +714,7 @@ function openIDB(){
     const req=indexedDB.open(DB_NAME,DB_VER);
     req.onupgradeneeded=e=>{
       const db=e.target.result;
-      ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','fotos','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste'].forEach(s=>{
+      ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','fotos','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm'].forEach(s=>{
         if(!db.objectStoreNames.contains(s)){
           const store=db.createObjectStore(s,{keyPath:'id'});
           if(s==='mieter'){store.createIndex('objektId','objektId');store.createIndex('weNr','weNr')}
@@ -1411,7 +1411,7 @@ async function modalZaehlerstand(zaehlerId){
       <div id="zsFotoPreview" style="margin-top:8px"></div>
     </div>
     <div class="f"><label>Bemerkung (optional)</label>
-      <textarea id="zsBemerkung" style="min-height:50px" placeholder="z. B. Zähler schwer ablesbar"></textarea></div>
+      <textarea spellcheck="true" lang="de" id="zsBemerkung" style="min-height:50px" placeholder="z. B. Zähler schwer ablesbar"></textarea></div>
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="saveZaehlerstand('${zaehlerId}')"><i class="ti ti-check"></i> Speichern</button>
       <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
@@ -1816,7 +1816,7 @@ async function modalVersorger(objektId, versorgerId){
       <div class="f"><label>Benutzername / Kundennr.</label><input type="text" id="vLogin" value="${v.login||''}"></div>
       <div class="f"><label>Passwort</label>${pwHinweis}<input type="text" id="vPasswort" value="${pwWert.replace(/"/g,'&quot;')}" placeholder="${v.passwortEnc&&!cryptoIstEntsperrt()?'•••••• (verschlüsselt)':''}"></div>
     </div>
-    <div class="f"><label>Notizen</label><textarea id="vNotiz" style="min-height:50px">${v.notiz||''}</textarea></div>
+    <div class="f"><label>Notizen</label><textarea spellcheck="true" lang="de" id="vNotiz" style="min-height:50px">${v.notiz||''}</textarea></div>
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="saveVersorger('${objektId}','${versorgerId||''}')"><i class="ti ti-check"></i> Speichern</button>
       <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
@@ -4636,7 +4636,7 @@ async function renderLagerArtikelForm(a, artikelId){
       </div>
       <div id="laFotoPreview" style="margin-top:8px">${a.foto?`<img src="${a.foto}" style="max-width:100%;border-radius:8px;border:1px solid var(--ink-10)">`:''}</div>
     </div>
-    <div class="f"><label>Notiz</label><textarea id="laNotiz" style="min-height:50px">${a.notiz||''}</textarea></div>
+    <div class="f"><label>Notiz</label><textarea spellcheck="true" lang="de" id="laNotiz" style="min-height:50px">${a.notiz||''}</textarea></div>
 
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="saveLagerArtikel('${artikelId||''}')"><i class="ti ti-check"></i> Speichern</button>
@@ -5429,7 +5429,7 @@ async function modalLagerAnforderung(artikelId, mangelId){
         <option value="normal">Normal</option>
         <option value="hoch">Hoch / dringend</option>
       </select></div>
-    <div class="f"><label>Notiz (optional)</label><textarea id="anfNotiz" style="min-height:44px"></textarea></div>
+    <div class="f"><label>Notiz (optional)</label><textarea spellcheck="true" lang="de" id="anfNotiz" style="min-height:44px"></textarea></div>
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="saveLagerAnforderung('${artikelId}','${mangelId||''}')"><i class="ti ti-check"></i> Anfordern</button>
       <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
@@ -5617,6 +5617,86 @@ async function aktiviereFaelligeMieterwechsel() {
   } catch(e) { console.warn('Mieterwechsel-Prüfung:', e); return false; }
 }
 
+/* ═══════════════════════════════════════════════════════════
+   GEBÄUDE-STAMMDATEN (qm, Baujahr, Modernisierung, Heizung)
+═══════════════════════════════════════════════════════════ */
+const HEIZUNG_ARTEN=['Gas-Zentralheizung','Öl-Zentralheizung','Fernwärme','Wärmepumpe','Gasetagenheizung','Nachtspeicher (Strom)','Pellet/Holz','Sonstige'];
+
+function gebaeudeStatsHTML(stamm, personenGesamt, mieterAnzahl, istAdmin){
+  const s=stamm||{};
+  const feld=(icon,label,wert)=>`<div style="flex:1;min-width:120px;background:var(--ink-05);border-radius:8px;padding:8px 10px">
+    <div style="font-size:10px;color:var(--ink-40);text-transform:uppercase;letter-spacing:.3px;margin-bottom:2px"><i class="ti ${icon}" style="font-size:11px"></i> ${label}</div>
+    <div style="font-size:14px;font-weight:600;color:var(--ink)">${wert||'<span style="color:var(--ink-40);font-weight:400">–</span>'}</div>
+  </div>`;
+  return `<div class="card" style="margin-bottom:12px">
+    <div class="card-hdr" style="display:flex;align-items:center;justify-content:space-between">
+      <span><i class="ti ti-building"></i> Gebäudedaten</span>
+      ${istAdmin?`<button class="btn btn-sm" onclick="modalGebaeudeStamm('${currentObjId}')"><i class="ti ti-pencil"></i> Bearbeiten</button>`:''}
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      ${feld('ti-ruler-2','Wohnfläche', s.wohnflaeche?esc(String(s.wohnflaeche))+' m²':'')}
+      ${feld('ti-calendar','Baujahr', s.baujahr?esc(String(s.baujahr)):'')}
+      ${feld('ti-tools','Modernisiert', s.modernisiert?esc(String(s.modernisiert)):'')}
+      ${feld('ti-users','Bewohner', String(personenGesamt))}
+      ${feld('ti-flame','Heizung', s.heizung?esc(String(s.heizung)):'')}
+      ${s.wohneinheiten?feld('ti-home','Wohneinheiten', esc(String(s.wohneinheiten))):''}
+    </div>
+    ${s.notiz?`<div style="font-size:12px;color:var(--ink-60);margin-top:8px;font-style:italic">${esc(s.notiz)}</div>`:''}
+  </div>`;
+}
+
+async function modalGebaeudeStamm(objektId){
+  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  const obj=getObj(objektId);
+  const s=(await idbGet('objekt_stamm',objektId).catch(()=>null))||{};
+  showModal(`
+    <div class="m-title"><i class="ti ti-building"></i> Gebäudedaten – ${obj?.name||''}</div>
+    <div class="f-row">
+      <div class="f"><label>Wohnfläche gesamt (m²)</label>
+        <input type="number" id="gsFlaeche" step="0.01" value="${s.wohnflaeche||''}" placeholder="z. B. 540"></div>
+      <div class="f"><label>Wohneinheiten</label>
+        <input type="number" id="gsWE" step="1" value="${s.wohneinheiten||''}" placeholder="z. B. 8"></div>
+    </div>
+    <div class="f-row">
+      <div class="f"><label>Baujahr</label>
+        <input type="number" id="gsBaujahr" step="1" value="${s.baujahr||''}" placeholder="z. B. 1965"></div>
+      <div class="f"><label>Letzte Modernisierung</label>
+        <input type="text" id="gsModern" value="${s.modernisiert||''}" placeholder="z. B. 2019"></div>
+    </div>
+    <div class="f"><label>Heizungsart</label>
+      <select id="gsHeizung">
+        <option value="">– bitte wählen –</option>
+        ${HEIZUNG_ARTEN.map(h=>`<option value="${h}" ${s.heizung===h?'selected':''}>${h}</option>`).join('')}
+      </select></div>
+    <div class="f"><label>Notiz (optional)</label>
+      <textarea id="gsNotiz" spellcheck="true" lang="de" style="min-height:50px" placeholder="z. B. Dachsanierung 2021, neue Fenster ...">${esc(s.notiz||'')}</textarea></div>
+    <div class="f-row" style="margin-top:12px">
+      <button class="btn btn-copper btn-full" onclick="saveGebaeudeStamm('${objektId}')"><i class="ti ti-check"></i> Speichern</button>
+      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+    </div>`);
+}
+
+async function saveGebaeudeStamm(objektId){
+  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  const rec={
+    id:objektId,
+    wohnflaeche:document.getElementById('gsFlaeche')?.value?.trim()||'',
+    wohneinheiten:document.getElementById('gsWE')?.value?.trim()||'',
+    baujahr:document.getElementById('gsBaujahr')?.value?.trim()||'',
+    modernisiert:document.getElementById('gsModern')?.value?.trim()||'',
+    heizung:document.getElementById('gsHeizung')?.value||'',
+    notiz:document.getElementById('gsNotiz')?.value?.trim()||'',
+    geaendert:now(),
+  };
+  await idbPut('objekt_stamm',rec);
+  closeModal();
+  clearTimeout(window._syncTimer);
+  window._syncTimer=setTimeout(()=>syncToOneDrive(),3000);
+  const tabEl=document.getElementById('objTabContent');
+  if(tabEl) await renderObjMieter(tabEl);
+  toast('Gebäudedaten gespeichert ✓');
+}
+
 async function renderObjMieter(el){
   await aktiviereFaelligeMieterwechsel();
   const all=(await idbGetAll('mieter','objektId',currentObjId));
@@ -5626,15 +5706,44 @@ async function renderObjMieter(el){
   // Zukünftige Mieter separat
   const zukuenftig = all.filter(m=>m._zukuenftig)
     .sort((a,b)=>new Date(a.einzugISO||0)-new Date(b.einzugISO||0));
+
+  // Offene Aufgaben & Mängel je Mieter/WE zählen (für Badges)
+  const objAufgaben=(await idbGetAll('aufgaben','objektId',currentObjId)).filter(a=>a.status!=='erledigt');
+  const objMaengel =(await idbGetAll('maengel','objektId',currentObjId)).filter(m=>m.status!=='behoben'&&m.status!=='erledigt');
+  const objReps    =(await idbGetAll('reparaturen','objektId',currentObjId)).filter(r=>r.status!=='erledigt');
+  function offenFuer(m){
+    const idMatch=x=>x.mieterId===m.id;
+    const weMatch =x=>!x.mieterId && x.weNr!=null && x.weNr!=='' && String(x.weNr)===String(m.weNr);
+    const todos = objAufgaben.filter(a=>idMatch(a)||weMatch(a)).length;
+    const mng   = [...objMaengel,...objReps].filter(x=>idMatch(x)||weMatch(x)).length;
+    return {todos,mng};
+  }
+  function badgeHTML(m){
+    const {todos,mng}=offenFuer(m);
+    if(!todos&&!mng) return '';
+    let b='<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:3px">';
+    if(mng)   b+=`<span class="chip chip-err"  style="font-size:10px;padding:1px 7px"><i class="ti ti-alert-triangle" style="font-size:10px"></i> ${mng} Mangel${mng>1?'/Reparaturen':''}</span>`;
+    if(todos) b+=`<span class="chip chip-warn" style="font-size:10px;padding:1px 7px"><i class="ti ti-checklist" style="font-size:10px"></i> ${todos} ToDo${todos>1?'s':''}</span>`;
+    b+='</div>';
+    return b;
+  }
+
+  // Gebäude-Stammdaten + Bewohnerzahl
+  const stamm = await idbGet('objekt_stamm', currentObjId).catch(()=>null);
+  const personenGesamt = mieter.reduce((s,m)=>s+(parseInt(m.personen)||(m.leerstand?0:1)),0);
+  const istAdmin = CU?.role==='admin';
+
   if(!mieter.length && !zukuenftig.length){
-    el.innerHTML=`<div class="empty"><i class="ti ti-user-off"></i><p>Keine Mieterdaten vorhanden.<br>Bitte Excel importieren oder neuen Mieter anlegen.</p></div>
+    el.innerHTML=`${gebaeudeStatsHTML(stamm,personenGesamt,mieter.length,istAdmin)}
+      <div class="empty"><i class="ti ti-user-off"></i><p>Keine Mieterdaten vorhanden.<br>Bitte Excel importieren oder neuen Mieter anlegen.</p></div>
       <button class="btn btn-copper btn-full" style="margin-top:12px" onclick="modalAddMieter('${currentObjId}')"><i class="ti ti-user-plus"></i> Neuer Mieter</button>
       <button class="btn btn-primary btn-full" style="margin-top:8px" onclick="nav('settings')"><i class="ti ti-upload"></i> Excel importieren</button>`;
     return;
   }
   // Grundrisse laden
   const grundrisse = (await idbGetAll('dokumente')).filter(d=>d.objektId===currentObjId&&d.typ==='plan'&&!d.mieterId);
-  let h=`<div class="s-hdr"><div class="s-title">${mieter.length} Mieter</div>
+  let h=gebaeudeStatsHTML(stamm,personenGesamt,mieter.length,istAdmin);
+  h+=`<div class="s-hdr"><div class="s-title">${mieter.length} Mieter · ${personenGesamt} ${personenGesamt===1?'Person':'Personen'}</div>
     <div style="display:flex;gap:6px;flex-wrap:wrap">
       <button class="btn btn-sm btn-copper" onclick="modalAddMieter('${currentObjId}')"><i class="ti ti-user-plus"></i> Neu</button>
       <button class="btn btn-sm" onclick="modalGrundriss('${currentObjId}')"><i class="ti ti-map"></i> Grundriss${grundrisse.length>0?` (${grundrisse.length})`:''}</button>
@@ -5646,15 +5755,17 @@ async function renderObjMieter(el){
   </div>`;
   mieter.forEach(m=>{
     const ini=initials(m.mieter);
+    const pers=parseInt(m.personen)||(m.leerstand?0:1);
     h+=`<div class="mieter-row" onclick="showMieter('${m.id}')">
       <div class="m-avatar">${ini}</div>
       <div class="m-body">
         <div class="m-name">${m.leerstand?'<span class="chip chip-warn" style="font-size:10px;margin-right:4px"><i class="ti ti-home-off" style="font-size:9px"></i> Leerstand</span>':''} ${m.mieter}</div>
-        <div class="m-sub">${m.etage||''} · Einzug: ${m.einzug||'–'}</div>
+        <div class="m-sub">${m.etage||''} · Einzug: ${m.einzug||'–'}${m.leerstand?'':` · <i class="ti ti-users" style="font-size:11px"></i> ${pers} ${pers===1?'Person':'Personen'}`}</div>
         <div class="m-sub" style="display:flex;gap:8px;flex-wrap:wrap">
           ${m.telefon?`<span><i class="ti ti-phone" style="font-size:11px"></i> ${m.telefon}</span>`:''}
           ${m.email?`<span><i class="ti ti-mail" style="font-size:11px"></i> ${m.email}</span>`:''}
         </div>
+        ${badgeHTML(m)}
       </div>
       <div class="m-we">WE ${m.weNr}</div>
     </div>`;
@@ -5703,7 +5814,15 @@ async function renderObjAufgaben(el){
     <i class="ti ti-plus"></i> Neue Aufgabe
   </button>`;
   if(!aufgaben.length){h+='<div class="empty"><i class="ti ti-check"></i><p>Keine Aufgaben</p></div>';}
-  else aufgaben.sort((a,b)=>prioPrio(a.prio)-prioPrio(b.prio)).forEach(a=>h+=taskHTML(a));
+  else {
+    const offen=aufgaben.filter(a=>a.status!=='erledigt').sort((a,b)=>prioPrio(a.prio)-prioPrio(b.prio));
+    const erl=aufgaben.filter(a=>a.status==='erledigt').sort((a,b)=>new Date(b.erledigtAm||b.erstellt||0)-new Date(a.erledigtAm||a.erstellt||0));
+    offen.forEach(a=>h+=taskHTML(a));
+    if(erl.length){
+      h+=`<div class="s-hdr" style="margin-top:14px"><div class="s-title" style="font-size:13px;color:var(--ink-40)">Erledigt (${erl.length})</div></div>`;
+      erl.forEach(a=>h+=taskHTML(a));
+    }
+  }
   el.innerHTML=h;
 }
 
@@ -5715,7 +5834,15 @@ async function renderObjMaengel(el){
   </div>`;
   if(!maengel.length&&!reps.length){h+='<div class="empty"><i class="ti ti-mood-smile"></i><p>Keine Mängel oder Reparaturen</p></div>';}
   else{
-    [...maengel,...reps].sort((a,b)=>new Date(b.erstellt)-new Date(a.erstellt)).forEach(m=>h+=mangelHTML(m));
+    const alle=[...maengel,...reps];
+    const istErl=x=>x.status==='behoben'||x.status==='erledigt';
+    const offen=alle.filter(x=>!istErl(x)).sort((a,b)=>new Date(b.erstellt)-new Date(a.erstellt));
+    const erl  =alle.filter(istErl).sort((a,b)=>new Date(b.erstellt)-new Date(a.erstellt));
+    offen.forEach(m=>h+=mangelHTML(m));
+    if(erl.length){
+      h+=`<div class="s-hdr" style="margin-top:14px"><div class="s-title" style="font-size:13px;color:var(--ink-40)">Behoben / Erledigt (${erl.length})</div></div>`;
+      erl.forEach(m=>h+=mangelHTML(m));
+    }
   }
   el.innerHTML=h;
 }
@@ -5819,8 +5946,10 @@ async function showMieter(id){
     <button class="btn" onclick="modalAddMangel('${m.id}','${m.objektId}','mangel')"><i class="ti ti-alert-triangle"></i> Mangel</button>
     <button class="btn btn-sm" onclick="modalAddReparatur('${m.id}','${m.objektId}')"><i class="ti ti-tools"></i> Reparatur</button>
     <button class="btn btn-sm" onclick="modalEditMieter('${m.id}')"><i class="ti ti-pencil"></i> Bearbeiten</button>
+    <button class="btn btn-sm" onclick="modalMieterSplit('${m.id}')"><i class="ti ti-users-group"></i> Personen aufteilen</button>
     ${CU?.role==='admin'?`<button class="btn btn-sm btn-copper" onclick="modalMieterhoehung('${m.id}')"><i class="ti ti-trending-up"></i> Mieterhöhung</button>`:''}
     <button class="btn btn-sm" onclick="showMieterDokumente('${m.id}')"><i class="ti ti-paperclip"></i> Archiv & Dokumente</button>
+    <button class="btn btn-sm" onclick="modalWohnungGrundriss('${m.objektId}','${esc(String(m.weNr||''))}')"><i class="ti ti-map"></i> Grundriss</button>
     <button class="btn btn-sm" onclick="druckeWohnungsgeberBescheinigung('${m.id}')"><i class="ti ti-file-certificate"></i> WGB</button>
     <button class="btn btn-sm" onclick="modalBrief('${m.id}','${m.objektId}')"><i class="ti ti-mail"></i> Brief</button>
     ${m._vormieterId?`<button class="btn btn-sm" onclick="zeigeVormieter('${m._vormieterId}')"><i class="ti ti-history"></i> Vormieter</button>`:''}
@@ -5982,7 +6111,7 @@ async function modalAddWartung(id){
     <div class="f"><label>Nächste Fälligkeit</label>
       <input type="date" id="wFaellig" value="${w?.faellig||''}"></div>
     <div class="f"><label>Notiz (optional)</label>
-      <textarea id="wNotiz" style="min-height:60px" placeholder="z. B. Firma, Vertragsnummer, Ansprechpartner">${w?esc(w.notiz||''):''}</textarea></div>
+      <textarea spellcheck="true" lang="de" id="wNotiz" style="min-height:60px" placeholder="z. B. Firma, Vertragsnummer, Ansprechpartner">${w?esc(w.notiz||''):''}</textarea></div>
     <div id="wHinweis" style="font-size:11px;color:var(--ink-40);line-height:1.5;margin-bottom:12px"></div>
     <button class="btn btn-copper btn-full" onclick="saveWartung('${id||''}')">
       <i class="ti ti-device-floppy"></i> Speichern
@@ -6059,40 +6188,92 @@ async function deleteWartung(id){
 async function renderAufgaben(){
   const myObj=await getMyObjekte();
   const myIds=myObj.map(o=>o.id);
-  const aufgaben=(await idbGetAll('aufgaben')).filter(a=>myIds.includes(a.objektId));
-  const maengelRaw=(await idbGetAll('maengel')).filter(m=>myIds.includes(m.objektId));
-  const altReps=(await idbGetAll('reparaturen')).filter(r=>myIds.includes(r.objektId)).map(r=>({...r,istReparatur:true,_altStore:true}));
+  const myLg=await getMyLiegenschaften();
+  // Filterzustand (persistent in window)
+  const flt = window._aufFilter || (window._aufFilter={lg:'',obj:'',hideDone:true});
+  // Objekt-Auswahl auf Liegenschaft einschränken
+  const lgObjIds = flt.lg ? (LIEGENSCHAFTEN.find(l=>l.id===flt.lg)?.objektIds||[]) : null;
+  const sichtbareObj = lgObjIds ? myObj.filter(o=>lgObjIds.includes(o.id)) : myObj;
+  function passFilter(x){
+    if(flt.obj) return x.objektId===flt.obj;
+    if(lgObjIds) return lgObjIds.includes(x.objektId);
+    return myIds.includes(x.objektId);
+  }
+
+  const aufgaben=(await idbGetAll('aufgaben')).filter(a=>myIds.includes(a.objektId)).filter(passFilter);
+  const maengelRaw=(await idbGetAll('maengel')).filter(m=>myIds.includes(m.objektId)).filter(passFilter);
+  const altReps=(await idbGetAll('reparaturen')).filter(r=>myIds.includes(r.objektId)).filter(passFilter).map(r=>({...r,istReparatur:true,_altStore:true}));
   const maengel=[...maengelRaw,...altReps];
   const el=document.getElementById('page-aufgaben');
 
   const offen=aufgaben.filter(a=>a.status!=='erledigt');
   const erledigt=aufgaben.filter(a=>a.status==='erledigt');
   const offMng=maengel.filter(m=>m.status!=='behoben'&&m.status!=='erledigt');
+  const erlMng=maengel.filter(m=>m.status==='behoben'||m.status==='erledigt');
+
+  // Filterleiste
+  const filterBar=`<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;align-items:center">
+    <select onchange="aufFilterLg(this.value)" style="flex:1;min-width:130px;padding:7px 8px;border:1.5px solid var(--ink-10);border-radius:8px;font-size:13px">
+      <option value="">Alle Standorte</option>
+      ${myLg.map(l=>`<option value="${l.id}" ${flt.lg===l.id?'selected':''}>${esc(l.name)}</option>`).join('')}
+    </select>
+    <select onchange="aufFilterObj(this.value)" style="flex:1;min-width:130px;padding:7px 8px;border:1.5px solid var(--ink-10);border-radius:8px;font-size:13px">
+      <option value="">Alle Objekte</option>
+      ${sichtbareObj.map(o=>`<option value="${o.id}" ${flt.obj===o.id?'selected':''}>${esc(o.name)}</option>`).join('')}
+    </select>
+    <button class="btn btn-sm" onclick="aufToggleDone()" title="Erledigte ein-/ausblenden">
+      <i class="ti ti-${flt.hideDone?'eye-off':'eye'}"></i> ${flt.hideDone?'Erledigte aus':'Erledigte an'}
+    </button>
+  </div>`;
 
   let h=`<div class="tab-bar">
     <button class="tab-btn active" onclick="aufgabenTab('todos',this)">ToDos (${offen.length})</button>
     <button class="tab-btn" onclick="aufgabenTab('maengel',this)">Mängel & Reparaturen (${offMng.length})</button>
     <button class="tab-btn" onclick="aufgabenTab('einkauf',this)"><i class="ti ti-shopping-cart"></i> Einkauf</button>
   </div>
+  ${filterBar}
   <div id="auf-todos">`;
 
   if(!offen.length&&!erledigt.length){
     h+=`<div class="empty"><i class="ti ti-check"></i><p>Keine offenen Aufgaben</p></div>`;
   } else {
     offen.sort((a,b)=>prioPrio(a.prio)-prioPrio(b.prio)).forEach(a=>h+=taskHTML(a));
-    if(erledigt.length){
+    if(erledigt.length && !flt.hideDone){
       h+=`<div class="s-hdr" style="margin-top:16px"><div class="s-title" style="font-size:14px;color:var(--ink-40)">Erledigt (${erledigt.length})</div></div>`;
-      erledigt.slice(0,8).forEach(a=>h+=taskHTML(a));
+      erledigt.sort((a,b)=>new Date(b.erledigtAm||b.erstellt||0)-new Date(a.erledigtAm||a.erstellt||0)).forEach(a=>h+=taskHTML(a));
+    } else if(erledigt.length){
+      h+=`<button class="btn btn-sm" style="margin-top:14px;width:100%" onclick="aufToggleDone()"><i class="ti ti-eye"></i> ${erledigt.length} erledigte Aufgabe${erledigt.length>1?'n':''} anzeigen</button>`;
     }
   }
   h+=`</div>
   <div id="auf-maengel" style="display:none">`;
   if(!maengel.length){h+=`<div class="empty"><i class="ti ti-mood-smile"></i><p>Keine Mängel erfasst</p></div>`;}
-  else maengel.sort((a,b)=>new Date(b.erstellt)-new Date(a.erstellt)).forEach(m=>h+=mangelHTML(m));
+  else {
+    offMng.sort((a,b)=>new Date(b.erstellt)-new Date(a.erstellt)).forEach(m=>h+=mangelHTML(m));
+    if(erlMng.length && !flt.hideDone){
+      h+=`<div class="s-hdr" style="margin-top:16px"><div class="s-title" style="font-size:14px;color:var(--ink-40)">Behoben (${erlMng.length})</div></div>`;
+      erlMng.sort((a,b)=>new Date(b.erstellt)-new Date(a.erstellt)).forEach(m=>h+=mangelHTML(m));
+    } else if(erlMng.length){
+      h+=`<button class="btn btn-sm" style="margin-top:14px;width:100%" onclick="aufToggleDone()"><i class="ti ti-eye"></i> ${erlMng.length} behobene${erlMng.length>1?'':''} anzeigen</button>`;
+    }
+  }
   h+=`</div><div id="auf-einkauf" style="display:none"><div id="einkaufListeContent"></div></div>`;
   el.innerHTML=h;
+  // aktiven Tab nach Re-Render wiederherstellen
+  if(window._aufTab && window._aufTab!=='todos'){
+    ['todos','maengel','einkauf'].forEach(x=>{const e=document.getElementById('auf-'+x);if(e)e.style.display=x===window._aufTab?'block':'none';});
+    document.querySelectorAll('#page-aufgaben .tab-btn').forEach(b=>b.classList.remove('active'));
+    const idx=window._aufTab==='maengel'?2:window._aufTab==='einkauf'?3:1;
+    const btn=document.querySelector(`#page-aufgaben .tab-btn:nth-child(${idx})`);
+    if(btn)btn.classList.add('active');
+    if(window._aufTab==='einkauf') renderEinkaufsliste();
+  }
   updateBadge();
 }
+
+function aufFilterLg(v){ window._aufFilter=window._aufFilter||{}; window._aufFilter.lg=v; window._aufFilter.obj=''; renderAufgaben(); }
+function aufFilterObj(v){ window._aufFilter=window._aufFilter||{}; window._aufFilter.obj=v; renderAufgaben(); }
+function aufToggleDone(){ window._aufFilter=window._aufFilter||{hideDone:true}; window._aufFilter.hideDone=!window._aufFilter.hideDone; renderAufgaben(); }
 
 function aufgabenTab(t,btn){
   document.querySelectorAll('#page-aufgaben .tab-btn').forEach(b=>b.classList.remove('active'));
@@ -6496,14 +6677,14 @@ function modalUploadDok(objektId, mieterId) {
   showModal(`
     <div class="m-title"><i class="ti ti-upload"></i> Dokument hochladen</div>
     <div class="f"><label>Bezeichnung *</label>
-      <input type="text" id="dokName" placeholder="z. B. Grundriss EG, Ausweis Mustermann..."></div>
+      <input type="text" id="dokName" placeholder="z. B. Grundriss EG, Ausweis Mustermann..." spellcheck="true" lang="de"></div>
     <div class="f"><label>Typ</label>
       <select id="dokTyp">
         ${DOK_TYPEN.map(t=>`<option value="${t.val}">${t.label}</option>`).join('')}
       </select>
     </div>
     <div class="f"><label>Notiz (optional)</label>
-      <input type="text" id="dokNotiz" placeholder="z. B. Kopie, Stand 2024..."></div>
+      <input type="text" id="dokNotiz" placeholder="z. B. Kopie, Stand 2024..." spellcheck="true" lang="de"></div>
     <div class="f"><label>Datei *</label>
       <input type="file" id="dokFile" accept="image/*,.pdf,.doc,.docx,.xls,.xlsx"
         style="padding:8px;border:1.5px solid var(--ink-10);border-radius:var(--radius);width:100%;font-size:13px">
@@ -6721,7 +6902,7 @@ async function modalNKA(objektId) {
               <input type="number" id="nka_so_${m.id}" placeholder="0,00" step="0.01"></div>
           </div>
           <div class="f" style="margin-top:4px">
-            <textarea id="nka_bem_${m.id}" placeholder="Bemerkung für diesen Mieter (erscheint im Brief)..."
+            <textarea spellcheck="true" lang="de" id="nka_bem_${m.id}" placeholder="Bemerkung für diesen Mieter (erscheint im Brief)..."
               style="width:100%;padding:6px 8px;border:1.5px solid var(--ink-10);border-radius:6px;font-size:12px;font-family:var(--font);resize:vertical;min-height:44px"></textarea>
           </div>
         </div>`).join('')}`;
@@ -7644,7 +7825,7 @@ async function modalBrief(mieterId, objektId) {
       </select>
     </div>
     <div class="f"><label>Betreff *</label>
-      <input type="text" id="briefBetreff" placeholder="z. B. Information zur Hauswartung"></div>
+      <input type="text" id="briefBetreff" placeholder="z. B. Information zur Hauswartung" spellcheck="true" lang="de"></div>
     <div class="f"><label>Absender</label>
       <select id="briefAbsender">
         <option value="hausverwaltung">Hausverwaltung Nadig Pfau</option>
@@ -7658,7 +7839,7 @@ async function modalBrief(mieterId, objektId) {
     <div class="f"><label>Anrede</label>
       <input type="text" id="briefAnrede" value="${mieterId&&mieter[0]?getAnrede(mieter[0]):'Sehr geehrte Damen und Herren'}"></div>
     <div class="f"><label>Inhalt *</label>
-      <textarea id="briefText" style="min-height:140px" placeholder="Text des Schreibens..."></textarea></div>
+      <textarea spellcheck="true" lang="de" id="briefText" style="min-height:140px" placeholder="Text des Schreibens..."></textarea></div>
     <div class="f"><label>Grußformel</label>
       <input type="text" id="briefGruss" value="Mit freundlichen Grüßen"></div>
     <div class="f-row" style="margin-top:12px">
@@ -7822,7 +8003,7 @@ async function modalAushang(objektId) {
     <div class="f"><label>Überschrift *</label>
       <input type="text" id="aushTitel" placeholder="z. B. Wichtige Mitteilung · Hausordnung"></div>
     <div class="f"><label>Text *</label>
-      <textarea id="aushText" style="min-height:160px" placeholder="Text des Aushangs..."></textarea></div>
+      <textarea spellcheck="true" lang="de" id="aushText" style="min-height:160px" placeholder="Text des Aushangs..."></textarea></div>
     <div class="f"><label>Hinweis-Stil</label>
       <select id="aushStil">
         <option value="info">Information (Blau)</option>
@@ -7936,7 +8117,7 @@ async function modalAddReparatur(mieterId, objektId) {
       </select>
     </div>
     <div class="f"><label>Bezeichnung *</label>
-      <input type="text" id="repTitel" placeholder="z. B. Wasserhahn defekt, Türschloss ausgetauscht"></div>
+      <input type="text" id="repTitel" placeholder="z. B. Wasserhahn defekt, Türschloss ausgetauscht" spellcheck="true" lang="de"></div>
     <div class="f-row">
       <div class="f"><label>Datum</label>
         <input type="date" id="repDatum" value="${today()}"></div>
@@ -7948,7 +8129,7 @@ async function modalAddReparatur(mieterId, objektId) {
       </div>
     </div>
     <div class="f"><label>Beschreibung</label>
-      <textarea id="repBeschr" placeholder="Detaillierte Beschreibung der Reparatur..."></textarea></div>
+      <textarea spellcheck="true" lang="de" id="repBeschr" placeholder="Detaillierte Beschreibung der Reparatur..."></textarea></div>
 
     <div class="f-section-title"><i class="ti ti-clock"></i> Arbeitsstunden</div>
     <div id="repArbeitRows">
@@ -8149,9 +8330,61 @@ async function modalGrundriss(objektId) {
 }
 
 
-/* ═══════════════════════════════════════════════════════════
-   NAVIGATION ZU MÄNGELN
-═══════════════════════════════════════════════════════════ */
+/* Grundriss pro Wohnung – genau ein Plan je WE, wird beim erneuten Hochladen überschrieben.
+   Schlüssel deterministisch aus Objekt + WE-Nr., damit er bei Mieterwechsel erhalten bleibt. */
+function wohnungGrundrissId(objektId, weNr){
+  return 'plan_'+objektId+'_we'+String(weNr).replace(/\W/g,'');
+}
+async function modalWohnungGrundriss(objektId, weNr){
+  const planId=wohnungGrundrissId(objektId,weNr);
+  const plan=await idbGet('dokumente',planId).catch(()=>null);
+  const obj=getObj(objektId);
+  showModal(`
+    <div class="m-title"><i class="ti ti-map"></i> Grundriss – ${obj?.name||''} · WE ${esc(String(weNr||''))}</div>
+    <div id="wgrView">${plan
+      ? (plan.mimeType?.startsWith('image/')
+          ? `<img src="${plan.data}" style="width:100%;border-radius:8px;cursor:pointer" onclick="openFoto('${plan.data}','Grundriss WE ${esc(String(weNr||''))}')">`
+          : `<button class="btn btn-full" onclick="downloadDok('${planId}')"><i class="ti ti-download"></i> ${esc(plan.name||'Grundriss')} herunterladen</button>`)
+      : `<div class="empty" style="padding:20px"><i class="ti ti-map-off"></i><p>Noch kein Grundriss für diese Wohnung.</p></div>`}
+    </div>
+    <input type="file" id="wgrFile" accept="image/*,.pdf" style="display:none" onchange="onWohnungGrundrissFile('${objektId}','${esc(String(weNr||''))}')">
+    <button class="btn btn-copper btn-full" style="margin-top:10px" onclick="document.getElementById('wgrFile').click()">
+      <i class="ti ti-upload"></i> Grundriss ${plan?'ersetzen':'hochladen'}
+    </button>
+    ${plan?`<button class="btn btn-full btn-danger" style="margin-top:6px" onclick="deleteWohnungGrundriss('${objektId}','${esc(String(weNr||''))}')"><i class="ti ti-trash"></i> Löschen</button>`:''}
+    <button class="btn btn-full" style="margin-top:6px" onclick="closeModal()">Schließen</button>`);
+}
+async function onWohnungGrundrissFile(objektId, weNr){
+  const file=document.getElementById('wgrFile')?.files?.[0];
+  if(!file) return;
+  if(file.size>10*1024*1024){ toast('Datei zu groß (max. 10 MB)'); return; }
+  const reader=new FileReader();
+  reader.onload=async e=>{
+    const dok={
+      id:wohnungGrundrissId(objektId,weNr),
+      name:'Grundriss WE '+weNr,
+      typ:'plan', objektId, weNr, mieterId:null,
+      data:e.target.result, mimeType:file.type, size:file.size,
+      erstellt:now(), geaendert:now(), ersteller:CU?.name||'',
+    };
+    await idbPut('dokumente',dok);
+    clearTimeout(window._syncTimer);
+    window._syncTimer=setTimeout(()=>syncToOneDrive(),3000);
+    toast('Grundriss gespeichert ✓');
+    modalWohnungGrundriss(objektId,weNr);
+  };
+  reader.readAsDataURL(file);
+}
+async function deleteWohnungGrundriss(objektId, weNr){
+  if(!confirm('Grundriss dieser Wohnung löschen?')) return;
+  await deleteMitTombstone('dokumente', wohnungGrundrissId(objektId,weNr));
+  clearTimeout(window._syncTimer);
+  window._syncTimer=setTimeout(()=>syncToOneDrive(),3000);
+  toast('Grundriss gelöscht');
+  modalWohnungGrundriss(objektId,weNr);
+}
+
+
 async function navToMaengel() {
   await nav('aufgaben');
   // Kurz warten bis Seite gerendert, dann Mängel-Tab aktivieren
@@ -8375,7 +8608,7 @@ async function modalAddEinkauf(refId, refTyp, prefillArtikel, opts) {
       <input type="text" id="ekReferenz" value="${esc(bezugText)}"
         placeholder="z. B. Reparatur Bad WE 3..."></div>
     <div class="f"><label>Notiz</label>
-      <textarea id="ekNotiz" placeholder="Artikelnummer, Lieferant, Hinweis..." style="min-height:60px"></textarea></div>
+      <textarea spellcheck="true" lang="de" id="ekNotiz" placeholder="Artikelnummer, Lieferant, Hinweis..." style="min-height:60px"></textarea></div>
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="saveEinkauf()">
         <i class="ti ti-check"></i> Speichern
@@ -8428,7 +8661,7 @@ async function modalEditEinkauf(id) {
     ${e.status==='gekauft'?`<div class="f"><label>Preis (€)</label>
       <input type="number" id="ekPreis" value="${e.preis||''}" step="0.01" placeholder="Tatsächlicher Kaufpreis"></div>`:''}
     <div class="f"><label>Notiz</label>
-      <textarea id="ekNotiz" style="min-height:60px">${e.notiz||''}</textarea></div>
+      <textarea spellcheck="true" lang="de" id="ekNotiz" style="min-height:60px">${e.notiz||''}</textarea></div>
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="updateEinkauf('${id}')">
         <i class="ti ti-check"></i> Speichern
@@ -8509,7 +8742,7 @@ async function modalMieterhoehung(mieterId) {
       </div>
     </div>
     <div class="f"><label>Begründung (erscheint im Schreiben)</label>
-      <textarea id="mhBegruendung" style="min-height:80px"
+      <textarea spellcheck="true" lang="de" id="mhBegruendung" style="min-height:80px"
         placeholder="z. B. Anpassung an die ortsübliche Vergleichsmiete gem. Mietspiegel ${new Date().getFullYear()}..."></textarea>
       <div style="font-size:11px;color:var(--ink-40);margin-top:4px;line-height:1.5">
         Hinweis: Bei § 558 BGB ist eine Begründung mit Begründungsmittel (Mietspiegel, drei Vergleichswohnungen oder Sachverständigengutachten) zwingend – sonst ist das Verlangen formal unwirksam (§ 558a BGB). Sperrfrist 15 Monate und Kappungsgrenze 20 % (in angespannten Märkten 15 %) selbst prüfen.
@@ -9069,7 +9302,7 @@ async function modalAddTermin(prefillDate) {
   showModal(`
     <div class="m-title"><i class="ti ti-calendar-plus"></i> Termin eintragen</div>
     <div class="f"><label>Bezeichnung *</label>
-      <input type="text" id="tTitel" placeholder="z. B. Heizungswartung WE 3, Besichtigung..."></div>
+      <input type="text" id="tTitel" placeholder="z. B. Heizungswartung WE 3, Besichtigung..." spellcheck="true" lang="de"></div>
     <div class="f"><label>Typ</label>
       <select id="tTyp">
         ${TERMIN_TYPEN.map(t=>`<option value="${t.val}">${t.label}</option>`).join('')}
@@ -9106,7 +9339,7 @@ async function modalAddTermin(prefillDate) {
       </select>
     </div>
     <div class="f"><label>Notiz / Details</label>
-      <textarea id="tNotiz" style="min-height:60px" placeholder="Weitere Infos, Ansprechpartner, Zugangscode..."></textarea></div>
+      <textarea spellcheck="true" lang="de" id="tNotiz" style="min-height:60px" placeholder="Weitere Infos, Ansprechpartner, Zugangscode..."></textarea></div>
     <div class="f-row">
       <div class="f"><label>Erstellt von</label>
         <input type="text" id="tErsteller" value="${CU?.name||''}" readonly style="background:var(--ink-05)"></div>
@@ -9223,7 +9456,7 @@ async function modalEditTermin(id) {
   showModal(`
     <div class="m-title"><i class="ti ti-pencil"></i> Termin bearbeiten</div>
     <div class="f"><label>Bezeichnung</label>
-      <input type="text" id="tTitel" value="${t.titel}"></div>
+      <input type="text" id="tTitel" value="${t.titel}" spellcheck="true" lang="de"></div>
     <div class="f"><label>Typ</label>
       <select id="tTyp">${TERMIN_TYPEN.map(tp=>`<option value="${tp.val}" ${tp.val===t.typ?'selected':''}>${tp.label}</option>`).join('')}</select>
     </div>
@@ -9238,7 +9471,7 @@ async function modalEditTermin(id) {
         ${myObj.map(o=>`<option value="${o.id}" ${o.id===t.objektId?'selected':''}>${o.name}</option>`).join('')}
       </select>
     </div>
-    <div class="f"><label>Notiz</label><textarea id="tNotiz" style="min-height:60px">${t.notiz||''}</textarea></div>
+    <div class="f"><label>Notiz</label><textarea spellcheck="true" lang="de" id="tNotiz" style="min-height:60px">${t.notiz||''}</textarea></div>
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="updateTermin('${id}')"><i class="ti ti-check"></i> Speichern</button>
       <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
@@ -9301,7 +9534,7 @@ async function modalAddAufgabe(mieterId,objektId){
       <option value="">– keinem Mieter zugeordnet –</option>
       ${myMieter.map(m=>`<option value="${m.id}" ${m.id===mieterId?'selected':''}>${m.mieter} (WE ${m.weNr})</option>`).join('')}
     </select></div>
-    <div class="f"><label>Titel *</label><input type="text" id="aTitel" placeholder="z. B. Heizung prüfen lassen"></div>
+    <div class="f"><label>Titel *</label><input type="text" id="aTitel" placeholder="z. B. Heizung prüfen lassen" spellcheck="true" lang="de"></div>
     <div class="f-row">
       <div class="f"><label>Priorität</label><select id="aPrio">
         <option value="niedrig">Niedrig</option>
@@ -9310,7 +9543,7 @@ async function modalAddAufgabe(mieterId,objektId){
       </select></div>
       <div class="f"><label>Fällig am</label><input type="date" id="aDatum" value="${today()}"></div>
     </div>
-    <div class="f"><label>Beschreibung</label><textarea id="aBeschr" placeholder="Details zur Aufgabe..."></textarea></div>
+    <div class="f"><label>Beschreibung</label><textarea spellcheck="true" lang="de" id="aBeschr" placeholder="Details zur Aufgabe..."></textarea></div>
     <div class="f-row">
       <button class="btn btn-copper btn-full" onclick="saveAufgabe()"><i class="ti ti-check"></i> Speichern</button>
       <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
@@ -9721,6 +9954,149 @@ async function zeigeVormieter(vormieterId) {
 }
 
 // Neue Anschrift eines (Vor-)Mieters erfassen/ändern – z. B. für Nachsendung von NKA
+/* ═══════════════════════════════════════════════════════════
+   MIETER – PERSONEN AUFTEILEN (Split)
+   Erkennt Sammelnamen wie „Presch, Burkhard & Irene" oder
+   „Mühlenkamp / Becker" und schlägt getrennte Personen vor.
+═══════════════════════════════════════════════════════════ */
+function parseMieterNamen(roh){
+  const s=(roh||'').trim();
+  if(!s) return [];
+  // Trenner für mehrere Haushalte / Parteien
+  const teile = s.split(/\s*(?:\/|;|\bu\.\b|\bund\b|&|\+)\s*/i).map(t=>t.trim()).filter(Boolean);
+
+  // Fall A: „Nachname, Vorname1 & Vorname2" – ein gemeinsamer Nachname
+  // Erkennung: genau ein Komma, links ein Wort (Nachname), rechts Vornamen
+  const kommaMatch = s.match(/^([^,]+),\s*(.+)$/);
+  if(kommaMatch && teile.length>1){
+    const nachname = kommaMatch[1].trim();
+    const restRoh = kommaMatch[2].trim();
+    const vornamen = restRoh.split(/\s*(?:\/|;|\bu\.\b|\bund\b|&|\+)\s*/i).map(t=>t.trim()).filter(Boolean);
+    if(vornamen.length>1 && !nachname.includes(' ')){
+      return vornamen.map(v=>({name:(v+' '+nachname).trim()}));
+    }
+  }
+
+  // Fall B: mehrere durch Trenner getrennte vollständige Namen
+  if(teile.length>1){
+    // Wenn ein Teil nur ein Vorname ist und ein anderer „Vorname Nachname",
+    // hänge den Nachnamen an den nackten Vornamen an.
+    const mitNachname = teile.find(t=>t.includes(' ') && !t.includes(','));
+    let nachname='';
+    if(mitNachname){ const w=mitNachname.split(/\s+/); nachname=w[w.length-1]; }
+    return teile.map(t=>{
+      // „Nachname, Vorname" → „Vorname Nachname"
+      const km=t.match(/^([^,]+),\s*(.+)$/);
+      if(km) return {name:(km[2].trim()+' '+km[1].trim()).trim()};
+      // nackter Vorname → Nachname ergänzen
+      if(!t.includes(' ') && nachname && t!==nachname) return {name:(t+' '+nachname).trim()};
+      return {name:t};
+    });
+  }
+
+  // Fall C: einzelner „Nachname, Vorname" → „Vorname Nachname"
+  if(kommaMatch){
+    return [{name:(kommaMatch[2].trim()+' '+kommaMatch[1].trim()).trim()}];
+  }
+  return [{name:s}];
+}
+
+async function modalMieterSplit(id){
+  const m=await idbGet('mieter',id);
+  if(!m) return;
+  // Vorhandene Personenliste hat Vorrang; sonst aus Namen parsen
+  let personen = (m.personen_liste && m.personen_liste.length)
+    ? m.personen_liste.map(p=>({name:p.name||'',geburtsdatum:p.geburtsdatum||'',anrede:p.anrede||'Herr'}))
+    : parseMieterNamen(m.mieter);
+  // Falls Personenzahl höher als erkannte Namen → Platzhalter ergänzen
+  const ziel = Math.max(parseInt(m.personen)||0, personen.length, 1);
+  while(personen.length<ziel) personen.push({name:'Kind '+(personen.length), geburtsdatum:'', anrede:''});
+  window._splitPersonen = personen;
+
+  showModal(`
+    <div class="m-title"><i class="ti ti-users-group"></i> Personen aufteilen</div>
+    <div style="background:var(--ink-05);border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:13px;color:var(--ink-60)">
+      Aktueller Eintrag: <strong>${esc(m.mieter)}</strong><br>
+      Bitte prüfen und anpassen. Jede Zeile = eine Person. Bei mehr als zwei Personen können „Kind 1/2" als Platzhalter dienen, die Sie später ändern.
+    </div>
+    <div id="splitListe"></div>
+    <button class="btn btn-sm" style="margin:4px 0 12px" onclick="splitAddRow()"><i class="ti ti-user-plus"></i> Person hinzufügen</button>
+    <div class="f">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px">
+        <input type="checkbox" id="splitNameUebernehmen" checked style="width:16px;height:16px">
+        Haupt-Mietername auf erste Person setzen
+      </label>
+    </div>
+    <div class="f-row" style="margin-top:12px">
+      <button class="btn btn-copper btn-full" onclick="saveMieterSplit('${id}')"><i class="ti ti-check"></i> Speichern</button>
+      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+    </div>`);
+  renderSplitListe();
+}
+
+function renderSplitListe(){
+  const wrap=document.getElementById('splitListe');
+  if(!wrap) return;
+  const ps=window._splitPersonen||[];
+  wrap.innerHTML=ps.map((p,i)=>`
+    <div class="f-row" style="margin-bottom:6px;align-items:flex-end" id="splitRow_${i}">
+      <div class="f" style="max-width:78px"><label style="font-size:10px">Anrede</label>
+        <select id="splitAnr_${i}" style="font-size:12px;padding:8px 4px">
+          <option value="" ${!p.anrede?'selected':''}>–</option>
+          <option value="Herr" ${p.anrede==='Herr'?'selected':''}>Herr</option>
+          <option value="Frau" ${p.anrede==='Frau'?'selected':''}>Frau</option>
+        </select></div>
+      <div class="f"><label style="font-size:10px">Name</label>
+        <input type="text" id="splitName_${i}" value="${esc(p.name||'')}" spellcheck="true" lang="de" style="font-size:13px"></div>
+      <div class="f" style="max-width:130px"><label style="font-size:10px">Geburtsdatum</label>
+        <input type="date" id="splitGeb_${i}" value="${p.geburtsdatum||''}" style="font-size:12px"></div>
+      ${i>0?`<button class="btn btn-sm btn-danger" onclick="splitRemoveRow(${i})" style="flex-shrink:0"><i class="ti ti-trash"></i></button>`:'<div style="width:0"></div>'}
+    </div>`).join('');
+}
+function splitCollect(){
+  const ps=window._splitPersonen||[];
+  const out=[];
+  for(let i=0;i<ps.length;i++){
+    const nameEl=document.getElementById('splitName_'+i);
+    if(!nameEl) continue;
+    const name=nameEl.value.trim();
+    out.push({
+      name,
+      geburtsdatum:document.getElementById('splitGeb_'+i)?.value||'',
+      anrede:document.getElementById('splitAnr_'+i)?.value||'',
+    });
+  }
+  return out;
+}
+function splitAddRow(){
+  window._splitPersonen=splitCollect();
+  window._splitPersonen.push({name:'',geburtsdatum:'',anrede:''});
+  renderSplitListe();
+}
+function splitRemoveRow(idx){
+  window._splitPersonen=splitCollect().filter((_,i)=>i!==idx);
+  renderSplitListe();
+}
+async function saveMieterSplit(id){
+  const m=await idbGet('mieter',id);
+  if(!m) return;
+  const personen=splitCollect().filter(p=>p.name);
+  if(!personen.length){ toast('Mindestens eine Person mit Namen erforderlich'); return; }
+  m.personen_liste=personen;
+  m.personen=personen.length;
+  if(document.getElementById('splitNameUebernehmen')?.checked){
+    m.mieter=personen[0].name;
+    if(personen[0].anrede) m.anrede=personen[0].anrede;
+  }
+  m.geaendert=now();
+  await idbPut('mieter',m);
+  closeModal();
+  clearTimeout(window._syncTimer);
+  window._syncTimer=setTimeout(()=>syncToOneDrive(),3000);
+  await showMieter(id);
+  toast(`${personen.length} ${personen.length===1?'Person':'Personen'} gespeichert ✓`);
+}
+
 async function modalNeueAdresse(mieterId) {
   const m = await idbGet('mieter', mieterId);
   if (!m) return;
@@ -9730,7 +10106,7 @@ async function modalNeueAdresse(mieterId) {
       Anschrift nach dem Auszug, z. B. für die Zustellung der Nebenkostenabrechnung.
     </p>
     <div class="f"><label>Neue Anschrift</label>
-      <textarea id="vmAdresse" style="min-height:80px" placeholder="Straße Hausnr.&#10;PLZ Ort">${m.neueAdresse||''}</textarea></div>
+      <textarea spellcheck="true" lang="de" id="vmAdresse" style="min-height:80px" placeholder="Straße Hausnr.&#10;PLZ Ort">${m.neueAdresse||''}</textarea></div>
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="saveNeueAdresse('${mieterId}')"><i class="ti ti-check"></i> Speichern</button>
       <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
@@ -9775,7 +10151,7 @@ async function modalAddMangel(mieterId,objektId,type='mangel'){
     <div class="f"><label>Mieter / Wohneinheit (optional)</label><select id="mgMietId">
       <option value="">– keinem Mieter –</option>
     </select></div>
-    <div class="f"><label>Bezeichnung *</label><input type="text" id="mgTitel" placeholder="z. B. Wasserhahn tropft"></div>
+    <div class="f"><label>Bezeichnung *</label><input type="text" id="mgTitel" placeholder="z. B. Wasserhahn tropft" spellcheck="true" lang="de"></div>
     <label style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--ink-05);border-radius:10px;margin-bottom:12px;cursor:pointer">
       <input type="checkbox" id="mgIstRep" ${istRep?'checked':''} style="width:18px;height:18px;flex-shrink:0">
       <span style="font-size:13px">Dies ist eine <strong>Kleinreparatur</strong> (Material & Arbeitszeit erfassen)</span>
@@ -9788,7 +10164,7 @@ async function modalAddMangel(mieterId,objektId,type='mangel'){
       </select></div>
       <div class="f"><label>Datum</label><input type="date" id="mgDatum" value="${today()}"></div>
     </div>
-    <div class="f"><label>Beschreibung</label><textarea id="mgBeschr" placeholder="Detaillierte Beschreibung..."></textarea></div>
+    <div class="f"><label>Beschreibung</label><textarea spellcheck="true" lang="de" id="mgBeschr" placeholder="Detaillierte Beschreibung..."></textarea></div>
     <div class="f-row">
       <div class="f"><label>Materialkosten Teile (€)</label><input type="number" id="mgTeile" placeholder="0,00" step="0.01" oninput="mangelKostenUpdate()"></div>
       <div class="f"><label>Status</label><select id="mgStatus">
@@ -10097,6 +10473,9 @@ async function buildPD(objId,mietId,art){
   const obj=getObj(objId);
   const m=mietId?(await idbGet('mieter',mietId)):null;
   const tg=m?.tgNr?(await idbGet('tg',m.tgNr).catch(()=>null)):null;
+  // Hinterlegte Unterschrift des aktuellen Benutzers automatisch übernehmen
+  let meineSig='';
+  try{ const u=await idbGet('users',CU?.id); meineSig=u?.signatur||CU?.signatur||''; }catch(e){}
   return {
     id:uid(),objektId:objId,mieterId:mietId,
     objektName:obj?.name||'',objektOrt:obj?.ort||'',
@@ -10115,7 +10494,7 @@ async function buildPD(objId,mietId,art){
     schoenheit:'Nicht erforderlich',
     gesamtzustand:'Gut – ordnungsgemäß übergeben',
     vereinbarungen:'',
-    sigVermieter:'',sigMieter:'',sigZeuge:'',
+    sigVermieter:meineSig,sigMieter:'',sigZeuge:'',
     status:'draft',erstellt:now(),
   };
 }
@@ -10235,7 +10614,7 @@ function getProtStep(step){
     </div>
     <div class="divider"></div>
     <div class="f"><label>Hinweise zur Schlüsselübergabe</label>
-      <textarea onchange="PD.schluesselHinweis=this.value">${d.schluesselHinweis}</textarea>
+      <textarea spellcheck="true" lang="de" onchange="PD.schluesselHinweis=this.value">${d.schluesselHinweis}</textarea>
     </div>
   </div>`;
 
@@ -10252,7 +10631,7 @@ function getProtStep(step){
       </select></div>
     </div>
     <div class="f"><label>Vereinbarungen / Hinweise</label>
-      <textarea onchange="PD.vereinbarungen=this.value" placeholder="z. B. Mieter beseitigt Mangel X bis ...">${d.vereinbarungen}</textarea>
+      <textarea spellcheck="true" lang="de" onchange="PD.vereinbarungen=this.value" placeholder="z. B. Mieter beseitigt Mangel X bis ...">${d.vereinbarungen}</textarea>
     </div>
   </div>`;
 
@@ -10262,7 +10641,9 @@ function getProtStep(step){
       Mit Unterzeichnung bestätigen beide Parteien die Vollständigkeit des Protokolls und die Schlüsselübergabe.
     </p>
     <div class="f"><label style="margin-bottom:6px">Vermieter / Verwalter: ${d.vermName}</label>
-      ${d.sigVermieter?`<div style="font-size:12px;color:var(--green);margin-bottom:4px"><i class="ti ti-circle-check"></i> Bereits unterschrieben – nur neu zeichnen, wenn Änderung gewünscht</div>`:''}
+      ${d.sigVermieter?`<div style="font-size:12px;color:var(--green);margin-bottom:6px"><i class="ti ti-circle-check"></i> Unterschrift hinterlegt – zum Ändern neu zeichnen oder löschen</div>
+        <div style="border:1px solid var(--ink-10);border-radius:8px;padding:8px;background:#fff;text-align:center;margin-bottom:8px"><img src="${d.sigVermieter}" style="max-height:60px;max-width:100%"></div>`:''}
+      ${CU?.role==='admin'?`<div id="sigAdminPick" style="margin-bottom:8px"></div>`:''}
       <canvas class="sig-pad" id="sigV"></canvas>
       <div class="sig-row"><button class="btn btn-sm btn-danger" onclick="clearSig('sigV')"><i class="ti ti-trash"></i> Löschen</button></div>
     </div>
@@ -10327,7 +10708,7 @@ function renderProtRaeume(){
         onchange="setRoomCondFull('${rn}','${c}',this.value)">
         ${COND_V.map(v=>`<option ${v===val?'selected':''}>${v}</option>`).join('')}
       </select>
-      ${showNote?`<textarea id="cn_${noteKey.replace(/[^a-zA-Z0-9]/g,'_')}"
+      ${showNote?`<textarea spellcheck="true" lang="de" id="cn_${noteKey.replace(/[^a-zA-Z0-9]/g,'_')}"
         placeholder="Bemerkung zu ${c}..."
         style="width:100%;margin-top:4px;padding:6px 8px;border:1px solid var(--ink-10);border-radius:6px;font-size:12px;font-family:var(--font);resize:vertical;min-height:52px"
         onchange="setRoomCondNote('${rn}','${c}',this.value)">${noteVal}</textarea>`:''}
@@ -10348,7 +10729,7 @@ function renderProtRaeume(){
     </div>
     <div class="f" style="margin-top:10px">
       <label>Anmerkungen zu ${rn}</label>
-      <textarea onchange="PD.raeume['${rn}'].notes=this.value" placeholder="Mängel, Besonderheiten...">${rd.notes}</textarea>
+      <textarea spellcheck="true" lang="de" onchange="PD.raeume['${rn}'].notes=this.value" placeholder="Mängel, Besonderheiten...">${rd.notes}</textarea>
     </div>`;
 }
 
@@ -10440,6 +10821,7 @@ function buildMangelSummary(){
 
 /* ── SIGNATUREN ── */
 function initSigs(){
+  populateSigAdminPick();
   ['sigV','sigM','sigZ'].forEach(id=>{
     const c=document.getElementById(id);
     if(!c||pSigPads[id]) return;
@@ -10461,6 +10843,31 @@ function initSigs(){
     // Bereits vorhandene Unterschrift (z. B. bei Admin-Bearbeitung) wieder einzeichnen
     restoreSigToCanvas(id);
   });
+}
+
+// Admin-Auswahl: hinterlegte Unterschrift eines (anderen) Administrators als Vermieter-Unterschrift setzen
+async function populateSigAdminPick(){
+  const wrap=document.getElementById('sigAdminPick');
+  if(!wrap||CU?.role!=='admin') return;
+  const users=await idbGetAll('users');
+  const admins=users.filter(u=>u.role==='admin'&&u.signatur);
+  if(!admins.length){ wrap.innerHTML=''; return; }
+  wrap.innerHTML=`<label style="font-size:12px;color:var(--ink-60);display:block;margin-bottom:4px">Hinterlegte Unterschrift verwenden</label>
+    <select onchange="setSigVermieterFromAdmin(this.value)" style="width:100%;padding:8px;border:1.5px solid var(--ink-10);border-radius:8px;font-size:13px">
+      <option value="">– manuell zeichnen –</option>
+      ${admins.map(u=>`<option value="${u.id}" ${PD&&PD._sigVermieterUser===u.id?'selected':''}>${esc(u.name)}${u.id===CU.id?' (ich)':''}</option>`).join('')}
+    </select>`;
+}
+async function setSigVermieterFromAdmin(userId){
+  if(!PD) return;
+  if(!userId){ return; }
+  const u=await idbGet('users',userId).catch(()=>null);
+  if(!u?.signatur){ toast('Keine Unterschrift hinterlegt'); return; }
+  PD.sigVermieter=u.signatur;
+  PD._sigVermieterUser=userId;
+  PD.vermName=u.name||PD.vermName;
+  renderProt(5);
+  toast('Unterschrift übernommen ✓');
 }
 
 // Zeichnet eine in PD gespeicherte Unterschrift zurück auf das Canvas,
@@ -11012,6 +11419,20 @@ async function renderSettings(){
     </div>`:''}
 
     <div class="card">
+      <div class="card-hdr"><i class="ti ti-signature"></i> Meine Unterschrift</div>
+      <p style="font-size:13px;color:var(--ink-40);margin-bottom:12px;line-height:1.6">
+        Hinterlegte Unterschrift wird bei Protokollen automatisch als Ihre Unterschrift verwendet. ${istAdmin?'Andere Administratoren können sie für gemeinsam zu unterzeichnende Dokumente (z. B. NKA) auswählen.':''}
+      </p>
+      <div id="meineSigView"></div>
+      <input type="file" id="sigUploadIn" accept="image/*" style="display:none" onchange="onSignaturUpload(this)">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+        <button class="btn btn-copper" onclick="document.getElementById('sigUploadIn').click()"><i class="ti ti-upload"></i> Unterschrift hochladen</button>
+        <button class="btn" onclick="modalSignaturZeichnen()"><i class="ti ti-pencil"></i> Zeichnen</button>
+        <button class="btn btn-danger btn-sm" id="sigDelBtn" onclick="deleteMeineSignatur()" style="display:none"><i class="ti ti-trash"></i> Entfernen</button>
+      </div>
+    </div>
+
+    <div class="card">
       <div class="card-hdr"><i class="ti ti-database"></i> Datenspeicher</div>
       <p style="font-size:13px;color:var(--ink-40);margin-bottom:12px">Alle Daten werden lokal in IndexedDB auf diesem Gerät gespeichert.</p>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
@@ -11086,6 +11507,140 @@ async function renderSettings(){
   }
 
   if(isAdmin) await renderUserList_();
+  await renderMeineSignatur();
+}
+
+/* ── Benutzer-Unterschrift (für Protokolle / NKA) ── */
+async function renderMeineSignatur(){
+  const view=document.getElementById('meineSigView');
+  if(!view||!CU) return;
+  const u=await idbGet('users',CU.id).catch(()=>null);
+  const sig=u?.signatur;
+  const delBtn=document.getElementById('sigDelBtn');
+  if(sig){
+    view.innerHTML=`<div style="border:1px solid var(--ink-10);border-radius:8px;padding:10px;background:#fff;text-align:center">
+      <img src="${sig}" style="max-height:80px;max-width:100%">
+    </div>`;
+    if(delBtn) delBtn.style.display='inline-flex';
+  } else {
+    view.innerHTML=`<div style="border:1px dashed var(--ink-20);border-radius:8px;padding:18px;text-align:center;color:var(--ink-40);font-size:13px">
+      <i class="ti ti-signature" style="font-size:22px;display:block;margin-bottom:4px"></i> Noch keine Unterschrift hinterlegt
+    </div>`;
+    if(delBtn) delBtn.style.display='none';
+  }
+}
+
+// Hochgeladene Unterschrift: schwarzen/dunklen Hintergrund entfernen → transparent, dunkle Tinte
+function signaturBildBereinigen(dataUrl){
+  return new Promise(resolve=>{
+    const img=new Image();
+    img.onload=()=>{
+      let w=img.width,h=img.height;
+      const maxW=500; if(w>maxW){ h=Math.round(h*maxW/w); w=maxW; }
+      const c=document.createElement('canvas'); c.width=w; c.height=h;
+      const ctx=c.getContext('2d'); ctx.drawImage(img,0,0,w,h);
+      let im; try{ im=ctx.getImageData(0,0,w,h); }catch(e){ resolve(dataUrl); return; }
+      const d=im.data;
+      // Durchschnittshelligkeit bestimmen → entscheiden ob heller Strich auf dunkel (invertieren) oder dunkel auf hell
+      let sum=0; for(let i=0;i<d.length;i+=4) sum+=(d[i]+d[i+1]+d[i+2])/3;
+      const avg=sum/(d.length/4);
+      const dunklerHintergrund = avg<110;
+      for(let i=0;i<d.length;i+=4){
+        const lum=(d[i]+d[i+1]+d[i+2])/3;
+        let strich, alpha;
+        if(dunklerHintergrund){ strich = lum>60; alpha=Math.min(255,Math.max(0,(lum-40)*1.8)); }
+        else { strich = lum<200; alpha=Math.min(255,Math.max(0,(200-lum)*1.6)); }
+        if(strich){ d[i]=20; d[i+1]=30; d[i+2]=60; d[i+3]=alpha; }
+        else { d[i+3]=0; }
+      }
+      ctx.putImageData(im,0,0);
+      // Bounding-Box zuschneiden
+      let minx=w,miny=h,maxx=0,maxy=0,found=false;
+      for(let y=0;y<h;y++)for(let x=0;x<w;x++){ if(d[(y*w+x)*4+3]>20){found=true;if(x<minx)minx=x;if(x>maxx)maxx=x;if(y<miny)miny=y;if(y>maxy)maxy=y;} }
+      if(!found){ resolve(c.toDataURL('image/png')); return; }
+      const pad=6; minx=Math.max(0,minx-pad);miny=Math.max(0,miny-pad);maxx=Math.min(w,maxx+pad);maxy=Math.min(h,maxy+pad);
+      const cw=maxx-minx, ch=maxy-miny;
+      const c2=document.createElement('canvas'); c2.width=cw; c2.height=ch;
+      c2.getContext('2d').drawImage(c,minx,miny,cw,ch,0,0,cw,ch);
+      resolve(c2.toDataURL('image/png'));
+    };
+    img.onerror=()=>resolve(dataUrl);
+    img.src=dataUrl;
+  });
+}
+
+async function onSignaturUpload(input){
+  const file=input.files?.[0]; if(!file) return;
+  if(file.size>5*1024*1024){ toast('Datei zu groß (max. 5 MB)'); return; }
+  const reader=new FileReader();
+  reader.onload=async e=>{
+    toast('Unterschrift wird verarbeitet …');
+    const clean=await signaturBildBereinigen(e.target.result);
+    await speichereMeineSignatur(clean);
+  };
+  reader.readAsDataURL(file);
+}
+
+async function speichereMeineSignatur(dataUrl){
+  const u=await idbGet('users',CU.id).catch(()=>null);
+  if(!u){ toast('Benutzer nicht gefunden'); return; }
+  u.signatur=dataUrl; u.geaendert=now();
+  await idbPut('users',u);
+  CU.signatur=dataUrl;
+  clearTimeout(window._syncTimer);
+  window._syncTimer=setTimeout(()=>syncToOneDrive(),3000);
+  await renderMeineSignatur();
+  toast('Unterschrift gespeichert ✓');
+}
+
+async function deleteMeineSignatur(){
+  if(!confirm('Hinterlegte Unterschrift entfernen?')) return;
+  const u=await idbGet('users',CU.id).catch(()=>null);
+  if(u){ delete u.signatur; u.geaendert=now(); await idbPut('users',u); }
+  delete CU.signatur;
+  clearTimeout(window._syncTimer);
+  window._syncTimer=setTimeout(()=>syncToOneDrive(),3000);
+  await renderMeineSignatur();
+  toast('Unterschrift entfernt');
+}
+
+// Unterschrift direkt zeichnen
+function modalSignaturZeichnen(){
+  showModal(`
+    <div class="m-title"><i class="ti ti-pencil"></i> Unterschrift zeichnen</div>
+    <p style="font-size:12px;color:var(--ink-40);margin-bottom:8px">Im Feld unterschreiben (Maus oder Finger).</p>
+    <canvas class="sig-pad" id="sigDraw" style="width:100%;height:160px;border:1.5px solid var(--ink-10);border-radius:8px;touch-action:none"></canvas>
+    <div style="display:flex;gap:8px;margin-top:10px">
+      <button class="btn btn-danger btn-sm" onclick="clearDrawSig()"><i class="ti ti-trash"></i> Löschen</button>
+      <button class="btn btn-copper" style="flex:1" onclick="saveDrawSig()"><i class="ti ti-check"></i> Übernehmen</button>
+      <button class="btn" onclick="closeModal()">Abbrechen</button>
+    </div>`);
+  setTimeout(()=>initDrawSig(),60);
+}
+let _drawSigCtx=null,_drawSigHas=false;
+function initDrawSig(){
+  const c=document.getElementById('sigDraw'); if(!c) return;
+  const dpr=window.devicePixelRatio||1;
+  const r=c.getBoundingClientRect();
+  c.width=r.width*dpr; c.height=r.height*dpr;
+  const ctx=c.getContext('2d'); ctx.scale(dpr,dpr);
+  ctx.lineWidth=2.2; ctx.lineCap='round'; ctx.lineJoin='round'; ctx.strokeStyle='#141E3C';
+  _drawSigCtx=ctx; _drawSigHas=false;
+  let drawing=false,lx=0,ly=0;
+  const pos=ev=>{ const rr=c.getBoundingClientRect(); const t=ev.touches?ev.touches[0]:ev; return {x:t.clientX-rr.left,y:t.clientY-rr.top}; };
+  const start=ev=>{ ev.preventDefault(); drawing=true; const p=pos(ev); lx=p.x; ly=p.y; };
+  const move=ev=>{ if(!drawing)return; ev.preventDefault(); const p=pos(ev); ctx.beginPath(); ctx.moveTo(lx,ly); ctx.lineTo(p.x,p.y); ctx.stroke(); lx=p.x; ly=p.y; _drawSigHas=true; };
+  const end=()=>{ drawing=false; };
+  c.addEventListener('mousedown',start); c.addEventListener('mousemove',move); window.addEventListener('mouseup',end);
+  c.addEventListener('touchstart',start,{passive:false}); c.addEventListener('touchmove',move,{passive:false}); c.addEventListener('touchend',end);
+}
+function clearDrawSig(){ const c=document.getElementById('sigDraw'); if(c&&_drawSigCtx){ _drawSigCtx.clearRect(0,0,c.width,c.height); _drawSigHas=false; } }
+async function saveDrawSig(){
+  const c=document.getElementById('sigDraw');
+  if(!c||!_drawSigHas){ toast('Bitte zuerst unterschreiben'); return; }
+  const clean=await signaturBildBereinigen(c.toDataURL('image/png'));
+  closeModal();
+  await speichereMeineSignatur(clean);
 }
 
 // Nur Alexander Nadig darf Hausmeister deaktivieren/reaktivieren
@@ -11139,7 +11694,7 @@ async function toggleUserAktiv(id){
 async function modalAddUser(){
   showModal(`
     <div class="m-title"><i class="ti ti-user-plus"></i> Benutzer hinzufügen</div>
-    <div class="f"><label>Name *</label><input type="text" id="nuName" placeholder="Vor- und Nachname"></div>
+    <div class="f"><label>Name *</label><input type="text" id="nuName" placeholder="Vor- und Nachname" spellcheck="true" lang="de"></div>
     <div class="f"><label>PIN (4 Ziffern) *</label><input type="password" id="nuPin" placeholder="••••" inputmode="numeric" maxlength="6"></div>
     <div class="f"><label>Rolle</label><select id="nuRole">
       <option value="hm">Hausmeister</option>
@@ -11183,7 +11738,7 @@ async function modalEditUser(id){
   if(!u) return;
   showModal(`
     <div class="m-title"><i class="ti ti-pencil"></i> Benutzer bearbeiten</div>
-    <div class="f"><label>Name</label><input type="text" id="euName" value="${u.name}"></div>
+    <div class="f"><label>Name</label><input type="text" id="euName" value="${u.name}" spellcheck="true" lang="de"></div>
     <div class="f"><label>Neuer PIN (leer lassen = unverändert)</label><input type="password" id="euPin" placeholder="••••" inputmode="numeric" maxlength="6"></div>
     <div class="f"><label>Rolle</label><select id="euRole">
       <option value="hm" ${u.role==='hm'?'selected':''}>Hausmeister</option>
@@ -11238,7 +11793,7 @@ async function delUser(id){
 async function exportBackup(){
   if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
   const backup={};
-  for(const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung']){
+  for(const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm']){
     backup[s]=await idbGetAll(s);
   }
   backup.exportedAt=now();backup.version=2;
@@ -11257,7 +11812,7 @@ async function importBackup(input){
   reader.onload=async function(e){
     try{
       const backup=JSON.parse(e.target.result);
-      for(const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung']){
+      for(const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm']){
         if(backup[s]){
           await idbClear(s);
           for(const item of backup[s]) await idbPut(s,item);
@@ -11465,7 +12020,7 @@ async function syncToOneDrive() {
   setSyncStatus('pending');
   try {
     const backup = {};
-    for (const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste']) {
+    for (const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm']) {
       backup[s] = await idbGetAll(s);
     }
     backup.updatedAt = now();
@@ -11536,7 +12091,7 @@ async function syncFromOneDrive() {
       await idbPut('settings', { id:'tombstones', value: mergedTomb });
 
       // Merge: ID-basiert, nur übernehmen wenn remote neuer oder lokal fehlt
-      const mergeStores = ['protokolle','aufgaben','maengel','reparaturen','dokumente','nka_archiv','einkaufsliste','wartung','termine','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste'];
+      const mergeStores = ['protokolle','aufgaben','maengel','reparaturen','dokumente','nka_archiv','einkaufsliste','wartung','termine','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm'];
       for (const s of mergeStores) {
         if (!backup[s]) continue;
         const tombS = mergedTomb[s] || {};
@@ -11872,7 +12427,7 @@ async function modalRechnungErfassen(rechnung){
     </div>
 
     <div class="f"><label>Notiz</label>
-      <textarea id="rNotiz" rows="2" placeholder="optional">${esc(r.notiz||'')}</textarea></div>
+      <textarea spellcheck="true" lang="de" id="rNotiz" rows="2" placeholder="optional">${esc(r.notiz||'')}</textarea></div>
 
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="rechnungSpeichern('${r.id||''}')"><i class="ti ti-check"></i> Speichern</button>
@@ -12642,7 +13197,7 @@ async function editMangel(id, store) {
       <div class="f"><label>Stundensatz (€/h)</label><input type="number" id="em_satz" value="${m.stundensatz||''}" step="0.01" oninput="emKostenUpdate()"></div>
     </div>
     <div id="em_kostenSum" style="font-size:13px;color:var(--ink-60);margin-bottom:12px;padding:8px 12px;background:var(--ink-05);border-radius:8px;display:none"></div>
-    <div class="f"><label>Beschreibung</label><textarea id="em_beschr">${esc(m.beschreibung||'')}</textarea></div>
+    <div class="f"><label>Beschreibung</label><textarea spellcheck="true" lang="de" id="em_beschr">${esc(m.beschreibung||'')}</textarea></div>
     <div class="f"><label>Fotos</label>
       <div id="em_fotoGrid" style="display:${(m.fotos&&m.fotos.length)?'grid':'none'};grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:8px"></div>
       <div style="display:flex;gap:6px">
@@ -12852,7 +13407,7 @@ async function editAufgabe(id) {
       </select></div>
       <div class="f"><label>Fällig am</label><input type="date" id="ea_datum" value="${a.datum||''}"></div>
     </div>
-    <div class="f"><label>Beschreibung</label><textarea id="ea_beschr">${a.beschreibung||''}</textarea></div>
+    <div class="f"><label>Beschreibung</label><textarea spellcheck="true" lang="de" id="ea_beschr">${a.beschreibung||''}</textarea></div>
     <div class="f-row">
       <button class="btn btn-copper btn-full" onclick="saveEditAufgabe('${id}')"><i class="ti ti-check"></i> Speichern</button>
       <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
