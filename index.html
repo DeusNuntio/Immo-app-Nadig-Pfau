@@ -705,7 +705,7 @@ button.chip.chip-active{background:var(--ink);color:#fff;border-color:var(--ink)
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=17;
-const APP_VERSION = '2026-06-11-v47';
+const APP_VERSION = '2026-06-12-v49';
 let idb=null;
 
 function openIDB(){
@@ -13268,6 +13268,24 @@ async function syncToOneDrive() {
   syncInProgress = true;
   setSyncStatus('pending');
   try {
+    // SCHUTZ vor Überschreiben: Liegt auf OneDrive ein NEUERER Stand als unser letzter
+    // Sync, erst dessen Daten herunterladen und mergen, bevor wir unseren Stand hochladen.
+    // Sonst könnte ein Gerät mit veralteten Daten fremde neuere Änderungen (z. B. neu
+    // erfasste Telefonnummern) plattmachen.
+    try {
+      const head = await fetch(OD_FILE_URL, {headers:{'Authorization':'Bearer '+token}});
+      if (head.ok) {
+        const remote = await head.json();
+        const ls = await idbGet('settings','lastSync').catch(()=>null);
+        const localSync = ls?.value||'';
+        if ((remote.updatedAt||'') > localSync) {
+          syncInProgress = false;            // Merge-Funktion darf laufen
+          await syncFromOneDrive();          // remote → lokal mergen (datensatzweise)
+          syncInProgress = true;
+        }
+      }
+    } catch(e){ /* offline o. 404: normaler Upload-Weg unten */ }
+
     const backup = {};
     for (const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log']) {
       backup[s] = await idbGetAll(s);
@@ -13356,9 +13374,31 @@ async function syncFromOneDrive() {
           }
         }
       }
-      // Stammdaten überschreiben
+      // Stammdaten (users, mieter, tg) datensatzweise per Zeitstempel mergen.
+      // WICHTIG: KEIN idbClear mehr – sonst löscht ein älteres Gerät neuere Feldänderungen
+      // (z. B. nachgetragene Telefonnummern) der gesamten Tabelle. Stattdessen gewinnt
+      // pro Datensatz der jüngere updatedAt; Tombstones werden respektiert.
       for (const s of ['users','mieter','tg']) {
-        if (backup[s]) { await idbClear(s); for (const item of backup[s]) await idbPut(s,item); }
+        if (!backup[s]) continue;
+        const tombS = mergedTomb[s] || {};
+        const remoteIds = new Set();
+        for (const item of backup[s]) {
+          if(!item || !item.id) continue;
+          remoteIds.add(item.id);
+          const remoteStamp = item.updatedAt||item.geaendert||item.erstellt||'';
+          // getombstoneten Datensatz nicht wieder einspielen (außer nachträglich neuer)
+          if (tombS[item.id] && !(remoteStamp && remoteStamp > tombS[item.id])) continue;
+          const local = await idbGet(s, item.id).catch(()=>null);
+          const localStamp = local ? (local.updatedAt||local.geaendert||local.erstellt||'') : '';
+          // Übernehmen, wenn lokal fehlt ODER remote gleich/neuer ist.
+          // Bei fehlenden Zeitstempeln auf beiden Seiten: remote übernehmen (Erstbefüllung).
+          if (!local || !localStamp || (remoteStamp && remoteStamp >= localStamp)) {
+            await idbPut(s, item);
+          }
+        }
+        // Lokale Datensätze, die remote fehlen, NICHT automatisch löschen –
+        // nur echte Tombstones löschen (oben bereits erledigt). So bleiben lokal
+        // neu angelegte Mieter/Benutzer erhalten, bis sie synchronisiert sind.
       }
       await idbPut('settings',{id:'lastSync',value:remoteTime});
       await renderDash(); await updateBadge();
