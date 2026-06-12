@@ -704,8 +704,8 @@ button.chip.chip-active{background:var(--ink);color:#fff;border-color:var(--ink)
 /* ═══════════════════════════════════════════════════════════
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
-const DB_NAME='immo_v2', DB_VER=17;
-const APP_VERSION = '2026-06-12-v49';
+const DB_NAME='immo_v2', DB_VER=18;
+const APP_VERSION = '2026-06-12-v54';
 let idb=null;
 
 function openIDB(){
@@ -718,7 +718,7 @@ function openIDB(){
     const req=indexedDB.open(DB_NAME,DB_VER);
     req.onupgradeneeded=e=>{
       const db=e.target.result;
-      ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','fotos','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log'].forEach(s=>{
+      ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','fotos','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','sync_log','mieter_snapshots'].forEach(s=>{
         if(!db.objectStoreNames.contains(s)){
           const store=db.createObjectStore(s,{keyPath:'id'});
           if(s==='mieter'){store.createIndex('objektId','objektId');store.createIndex('weNr','weNr')}
@@ -7229,6 +7229,8 @@ function taskHTML(t) {
         ${t.weNr?`<span>WE ${t.weNr}${mieterFuerWe(t.objektId,t.weNr)?' · '+esc(mieterFuerWe(t.objektId,t.weNr)):''}</span>`:''}
         ${t.datum?`<span>${fmtDate(t.datum)}</span>`:''}
         <span class="chip chip-${t.prio==='hoch'?'err':t.prio==='mittel'?'warn':'ok'}" style="font-size:10px;padding:1px 6px">${t.prio||'–'}</span>
+        ${t.istIntervall?`<span title="Wiederkehrende Pflichttätigkeit"><i class="ti ti-repeat" style="font-size:11px;color:var(--copper)"></i></span>`:''}
+        ${t.zugewiesenName?`<span title="Zugewiesen an"><i class="ti ti-user-check" style="font-size:10px;color:var(--copper)"></i> ${esc(t.zugewiesenName)}</span>`:''}
       </div>
       ${t.beschreibung?`<div style="font-size:12px;color:var(--ink-40);margin-top:3px">${t.beschreibung.slice(0,60)}${t.beschreibung.length>60?'…':''}</div>`:''}
     </div>
@@ -7986,6 +7988,131 @@ function getNKAVorlage(objektId) {
   return null;
 }
 
+// ── NKA-Teilpositionen speichern & laden (pro Objekt + Jahr) ──────────────
+function nkaPosKey(objektId, jahr){ return 'nka_pos_'+objektId+'_'+jahr; }
+
+// Alle Positionen aus dem Formular einsammeln → {kId:[{betrag,name}]}
+function nkaSammlePositionen(){
+  const data={};
+  document.querySelectorAll('[id^="nkaPos_"]').forEach(box=>{
+    const kId=box.id.replace('nkaPos_','');
+    const rows=[];
+    box.querySelectorAll('.nkaPosBetrag').forEach((inp,i)=>{
+      const betrag=parseFloat(inp.value)||0;
+      const nameInp=inp.parentElement.querySelector('.nkaPosName');
+      const nm=nameInp?nameInp.value.trim():'';
+      if(betrag>0 || nm) rows.push({betrag, name:nm});
+    });
+    if(rows.length) data[kId]=rows;
+  });
+  return data;
+}
+
+async function nkaSavePositionen(objektId, jahr){
+  const data=nkaSammlePositionen();
+  await idbPut('settings',{id:nkaPosKey(objektId,jahr), value:data, geaendert:nowIso()});
+  clearTimeout(window._syncTimer);
+  window._syncTimer=setTimeout(()=>syncToOneDrive(),3000);
+}
+
+// Gespeicherte Positionen ins Formular zurückschreiben
+async function nkaLoadPositionen(objektId, jahr){
+  let data={};
+  try{ const e=await idbGet('settings',nkaPosKey(objektId,jahr)); if(e&&e.value) data=e.value; }catch(_){}
+  // Erst alle Positionsbereiche leeren
+  document.querySelectorAll('[id^="nkaPosList_"]').forEach(l=>l.innerHTML='');
+  for(const kId of Object.keys(data)){
+    const box=document.getElementById('nkaPos_'+kId);
+    const list=document.getElementById('nkaPosList_'+kId);
+    if(!box||!list) continue;
+    box.style.display='block';
+    data[kId].forEach(pos=>{
+      nkaAddPos(kId);
+      const row=list.lastElementChild;
+      row.querySelector('.nkaPosBetrag').value = pos.betrag||'';
+      row.querySelector('.nkaPosName').value   = pos.name||'';
+    });
+    nkaTeilSumme(kId);
+  }
+}
+
+// ── NKA-Kostenzeile mit aufklappbaren Teilpositionen ──────────────────────
+// Das Summenfeld behält die ID nka_{kId}, damit erstelleNKA() unverändert die
+// Summe ausliest. Die Teilpositionen sind nur Eingabehilfe (nicht im Brief).
+function nkaKostenZeile(kId, name, schlLabel){
+  return `<div style="margin-bottom:8px;border:1px solid var(--ink-10);border-radius:8px;padding:8px">
+    <div class="f-row" style="margin-bottom:0">
+      <div class="f"><label>${name} <small style="color:var(--ink-40)">${schlLabel}</small></label>
+        <input type="number" id="nka_${kId}" placeholder="0,00" step="0.01"
+          oninput="nkaSummeManuell('${kId}')">
+      </div>
+      <button type="button" class="btn btn-sm" style="align-self:flex-end;margin-bottom:2px;white-space:nowrap"
+        onclick="nkaTogglePos('${kId}')" title="Einzelpositionen aufschlüsseln">
+        <i class="ti ti-plus"></i> Positionen
+      </button>
+    </div>
+    <div id="nkaPos_${kId}" style="display:none;margin-top:8px;padding-top:8px;border-top:1px dashed var(--ink-10)">
+      <div id="nkaPosList_${kId}"></div>
+      <button type="button" class="btn btn-sm" style="margin-top:4px" onclick="nkaAddPos('${kId}')">
+        <i class="ti ti-plus"></i> Position hinzufügen
+      </button>
+      <div style="font-size:11px;color:var(--ink-40);margin-top:6px">
+        Summe der Positionen wird automatisch oben eingetragen. Im Brief erscheint nur die Summe.
+      </div>
+    </div>
+  </div>`;
+}
+// Positionsbereich auf-/zuklappen (beim ersten Öffnen eine leere Zeile)
+function nkaTogglePos(kId){
+  const box=document.getElementById('nkaPos_'+kId);
+  if(!box) return;
+  const auf = box.style.display==='none';
+  box.style.display = auf ? 'block' : 'none';
+  if(auf){
+    const list=document.getElementById('nkaPosList_'+kId);
+    if(list && !list.children.length) nkaAddPos(kId);
+  }
+}
+// Neue Positionszeile (Betrag + optionale Bezeichnung)
+function nkaAddPos(kId){
+  const list=document.getElementById('nkaPosList_'+kId);
+  if(!list) return;
+  const row=document.createElement('div');
+  row.style.cssText='display:flex;gap:6px;margin-bottom:6px;align-items:center';
+  row.innerHTML=`
+    <input type="number" placeholder="0,00" step="0.01" class="nkaPosBetrag"
+      style="flex:0 0 110px;padding:6px 8px;border:1.5px solid var(--ink-10);border-radius:6px;font-size:13px"
+      oninput="nkaTeilSumme('${kId}')">
+    <input type="text" placeholder="Bezeichnung (optional)" class="nkaPosName"
+      style="flex:1;padding:6px 8px;border:1.5px solid var(--ink-10);border-radius:6px;font-size:13px">
+    <button type="button" class="btn btn-sm btn-danger" style="flex:0 0 auto"
+      onclick="this.parentElement.remove();nkaTeilSumme('${kId}')"><i class="ti ti-x"></i></button>`;
+  list.appendChild(row);
+}
+// Summe aller Positionen bilden und ins Summenfeld schreiben
+function nkaTeilSumme(kId){
+  const box=document.getElementById('nkaPos_'+kId);
+  if(!box) return;
+  let s=0, hatWert=false;
+  box.querySelectorAll('.nkaPosBetrag').forEach(inp=>{
+    const v=parseFloat(inp.value)||0; s+=v; if(v>0) hatWert=true;
+  });
+  const sum=document.getElementById('nka_'+kId);
+  if(sum){
+    // Summenfeld nur sperren, wenn echte Positionsbeträge vorliegen.
+    if(hatWert){ sum.value=s.toFixed(2); sum.readOnly=true; sum.style.background='var(--ink-05)'; }
+    else { sum.readOnly=false; sum.style.background=''; }
+  }
+}
+// Wird die Summe von Hand geändert, während Positionen offen mit Werten sind: Hinweis
+function nkaSummeManuell(kId){
+  const box=document.getElementById('nkaPos_'+kId);
+  if(!box) return;
+  const hatPos=[...box.querySelectorAll('.nkaPosBetrag')].some(i=>parseFloat(i.value)>0);
+  // Wenn Positionen aktiv sind, gewinnt deren Summe – manuelle Eingabe wird überschrieben.
+  if(hatPos) nkaTeilSumme(kId);
+}
+
 async function modalNKA(objektId) {
   if (CU?.role !== 'admin') { toast('Nur für Administratoren'); return; }
   const obj      = getObj(objektId);
@@ -8020,19 +8147,11 @@ async function modalNKA(objektId) {
         </div>`).join('')}`;
     }
     if (k.schluessel === 'besonders') {
-      return `<div class="f-row" style="margin-bottom:6px">
-        <div class="f"><label>${k.name} <small style="color:var(--ink-40)">(besondere Berechnung – Betrag aus Abrechnung)</small></label>
-          <input type="number" id="nka_${k.id}" placeholder="0,00" step="0.01">
-        </div>
-      </div>`;
+      return nkaKostenZeile(k.id, k.name, '(besondere Berechnung – Betrag aus Abrechnung)');
     }
     const schlLabel = k.schluessel==='personen'?'Personen':k.schluessel==='wfl'?'Wohnfläche':
       k.schluessel==='we'||k.schluessel==='we_fest'?'Wohneinheiten':k.schluessel==='monate'?'Monate':'';
-    return `<div class="f-row" style="margin-bottom:6px">
-      <div class="f"><label>${k.name} <small style="color:var(--ink-40)">(${schlLabel})</small></label>
-        <input type="number" id="nka_${k.id}" placeholder="0,00" step="0.01" placeholder="wird berechnet">
-      </div>
-    </div>`;
+    return nkaKostenZeile(k.id, k.name, '('+schlLabel+')');
   }).join('');
 
   showModal(`
@@ -8067,6 +8186,12 @@ async function modalNKA(objektId) {
   document.getElementById('nkaJahr').value = zt.von.slice(0,4);
   document.getElementById('nkaVon').value  = zt.von;
   document.getElementById('nkaBis').value  = zt.bis;
+  // Gespeicherte Teilpositionen für dieses Jahr laden
+  await nkaLoadPositionen(objektId, document.getElementById('nkaJahr').value);
+  // Bei Jahreswechsel: Positionen des gewählten Jahres nachladen
+  document.getElementById('nkaJahr').addEventListener('change', async (e)=>{
+    await nkaLoadPositionen(objektId, e.target.value);
+  });
 }
 
 async function erstelleNKA(objektId) {
@@ -8078,6 +8203,9 @@ async function erstelleNKA(objektId) {
   const bis     = document.getElementById('nkaBis').value;
   const fmtD    = d => d ? new Date(d).toLocaleDateString('de-DE') : '–';
   const bk      = getBriefkopf(objektId);
+  // Teilpositionen dauerhaft sichern (pro Objekt+Jahr), damit sie nächstes Mal vorausgefüllt sind
+  const nkaPositionen = nkaSammlePositionen();
+  await nkaSavePositionen(objektId, jahr);
 
   const mieter = (await idbGetAll('mieter','objektId',objektId))
     .filter(m=>m.mieter && !m._vormieter && !m._zukuenftig).sort((a,b)=>Number(a.weNr)-Number(b.weNr));
@@ -8339,6 +8467,7 @@ async function erstelleNKA(objektId) {
       mieterId:m.id, mieterName:m.mieter, weNr:m.weNr,
       gesamt, vzJahres, diff, bemerkung:ex.bem||'',
     })),
+    kostenPositionen: nkaPositionen,
   };
   await idbPut('nka_archiv', archivEntry);
   clearTimeout(window._syncTimer);
@@ -10086,6 +10215,7 @@ async function exportExcel() {
     'Kaution (€)': m.kaution||'',
     'Telefon': m.telefon||'',
     'E-Mail': m.email||'',
+    'Personen': m.personen||'',
     'Übergabe': m.uebergabe||'',
     'KR-Klausel': m.krKlausel||'',
     'KR-Höhe (€)': m.krHoehe||'',
@@ -10693,6 +10823,11 @@ async function modalAddAufgabe(mieterId,objektId){
       <div class="f"><label>Fällig am</label><input type="date" id="aDatum" value="${today()}"></div>
     </div>
     <div class="f"><label>Beschreibung</label><textarea spellcheck="true" lang="de" id="aBeschr" placeholder="Details zur Aufgabe..."></textarea></div>
+    ${CU?.role==='admin'?`<div class="f"><label>Zugewiesen an</label><select id="aZugewiesen">
+      <option value="">– nur für mich (Admin-intern) –</option>
+      ${(await idbGetAll('users')).filter(u=>u.aktiv!==false&&u.id!==CU.id).map(u=>`<option value="${u.id}">${u.name}</option>`).join('')}
+    </select>
+    <div style="font-size:11px;color:var(--ink-40);margin-top:2px">Ohne Zuweisung sehen Hausmeister diese Aufgabe nicht.</div></div>`:''}
     <div class="f-row">
       <button class="btn btn-copper btn-full" onclick="saveAufgabe()"><i class="ti ti-check"></i> Speichern</button>
       <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
@@ -10711,6 +10846,8 @@ async function saveAufgabe(){
     datum:document.getElementById('aDatum').value,
     beschreibung:document.getElementById('aBeschr').value,
     status:'offen',erstellt:now(),ersteller:CU?.name||'',erstellerId:CU?.id||'',
+    zugewiesen:document.getElementById('aZugewiesen')?.value||'',
+    zugewiesenName:document.getElementById('aZugewiesen')?.selectedOptions?.[0]?.text?.replace(/^– .* –$/,'')||'',
   });
   closeModal(); bcSend('aufgabe_changed',{});
   await refreshAufgaben(); await renderDash(); toast('Aufgabe gespeichert ✓');
@@ -10761,9 +10898,10 @@ function mieterFormHTML(obj, m={}) {
     <div class="f-row">
       <div class="f"><label>Wohnfläche (m²)</label>
         <input type="number" id="mFlaeche" value="${m.flaeche||''}" step="0.01"></div>
-      <div class="f"><label>Personen (Anzahl)</label>
+      <div class="f"><label>Personen (Anzahl)${istPersonenObjekt(obj?.id)?' <span class="chip chip-warn" style="font-size:9px;padding:0 5px">NK-relevant</span>':''}</label>
         <input type="number" id="mPersonen" value="${m.personen||personen.length||1}" min="1" max="20"
-          onchange="syncPersonenAnzahl(this.value)"></div>
+          onchange="syncPersonenAnzahl(this.value)">
+        ${istPersonenObjekt(obj?.id)?'<div style="font-size:10px;color:var(--amber);margin-top:2px">Dieses Objekt rechnet Nebenkosten nach Personen ab – bitte aktuell halten.</div>':''}</div>
     </div>
     <div class="f-row">
       <div class="f"><label>Miete (€)</label>
@@ -10873,8 +11011,9 @@ async function modalAddMieter(objektId) {
           <option value="Frau">Frau</option>
           <option value="Divers">Divers / Keine</option>
         </select></div>
-      <div class="f"><label>Personen (Anzahl)</label>
-        <input type="number" id="mPersonen" value="1" min="1" max="20" onchange="syncPersonenAnzahl(this.value)"></div>
+      <div class="f"><label>Personen (Anzahl)${istPersonenObjekt(objektId)?' <span class="chip chip-warn" style="font-size:9px;padding:0 5px">NK-relevant</span>':''}</label>
+        <input type="number" id="mPersonen" value="1" min="1" max="20" onchange="syncPersonenAnzahl(this.value)">
+        ${istPersonenObjekt(objektId)?'<div style="font-size:10px;color:var(--amber);margin-top:2px">Dieses Objekt rechnet Nebenkosten nach Personen ab – bitte aktuell halten.</div>':''}</div>
     </div>
     <div style="font-size:11px;color:var(--ink-40);margin-bottom:6px">Name · Geburtsdatum</div>
     <div id="personenListe">
@@ -12528,6 +12667,10 @@ async function importExcel(input){
             setIf('krHoehe',   r['KR-Höhe (€)']);
             setIf('krProzent', r['KR-% Jahresmiete']);
             setIf('tgNr',      r['TG-Stellplatz Nr.']);
+            setIf('personen',  r['Personen']);
+            // Frischer Zeitstempel, damit die Excel-Änderung beim OneDrive-Sync
+            // nicht von älteren Remote-Ständen überschrieben wird.
+            ziel.updatedAt = nowIso();
             await idbPut('mieter',ziel);
             imported++;
           }
@@ -12568,6 +12711,37 @@ async function importExcel(input){
 /* ═══════════════════════════════════════════════════════════
    SETTINGS PAGE
 ═══════════════════════════════════════════════════════════ */
+async function renderSyncSchutz(){
+  let h='';
+  // Konfliktprotokoll (letzte 15)
+  const log=(await idbGetAll('sync_log').catch(()=>[]))
+    .sort((a,b)=>(b.erstellt||'').localeCompare(a.erstellt||'')).slice(0,15);
+  h+='<div style="font-weight:600;font-size:13px;margin-bottom:6px"><i class="ti ti-list-details"></i> Konfliktprotokoll (letzte 15)</div>';
+  if(!log.length){
+    h+='<div style="font-size:12px;color:var(--ink-40);margin-bottom:12px">Keine Sync-Konflikte protokolliert.</div>';
+  } else {
+    h+=log.map(e=>`<div style="display:flex;gap:8px;align-items:baseline;padding:5px 0;border-bottom:1px solid var(--ink-10);font-size:12px">
+      <span style="color:var(--ink-40);white-space:nowrap">${new Date(e.erstellt).toLocaleString('de-DE',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}</span>
+      <span style="flex:1"><strong>${esc(String(e.name||e.recId||''))}</strong> <span style="color:var(--ink-40)">(${e.store})</span></span>
+      <span class="chip chip-${e.aktion&&e.aktion.startsWith('lokal')?'ok':'warn'}" style="font-size:10px;padding:1px 6px;white-space:nowrap">${esc(e.aktion||'')}</span>
+      <span style="color:var(--ink-40);white-space:nowrap">${esc(String(e.von||''))}</span>
+    </div>`).join('');
+  }
+  // Snapshots
+  const snaps=(await idbGetAll('mieter_snapshots').catch(()=>[]))
+    .sort((a,b)=>(b.erstellt||'').localeCompare(a.erstellt||''));
+  h+='<div style="font-weight:600;font-size:13px;margin:14px 0 6px"><i class="ti ti-database"></i> Lokale Mieter-Sicherungen ('+snaps.length+'/10)</div>';
+  if(!snaps.length){
+    h+='<div style="font-size:12px;color:var(--ink-40)">Noch keine Sicherung vorhanden. Sie entsteht automatisch beim nächsten Sync oder Import.</div>';
+  } else {
+    h+=snaps.map(s=>`<div style="display:flex;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid var(--ink-10);font-size:12px">
+      <span style="flex:1">${new Date(s.erstellt).toLocaleString('de-DE')} <span style="color:var(--ink-40)">· ${s.anzahl} Mieter, ${s.mitTelefon} mit Tel. · Anlass: ${esc(s.anlass||'')}</span></span>
+      <button class="btn btn-sm" onclick="restoreMieterSnapshot('${s.id}')"><i class="ti ti-restore"></i> Wiederherstellen</button>
+    </div>`).join('');
+  }
+  return h;
+}
+
 async function renderSettings(){
   const setting=await idbGet('settings','lastImport').catch(()=>null);
   const el=document.getElementById('page-settings');
@@ -12599,6 +12773,15 @@ async function renderSettings(){
         Pro Objekt festlegen, welche Reinigungs-/Pflichttätigkeiten in welchem Intervall fällig werden. Aktivierte Tätigkeiten erscheinen automatisch als To-Do beim zuständigen Hausmeister – mit steigender Priorität, je näher die Frist rückt.
       </p>
       <div id="intervallConfigEl"></div>
+    </div>`:''}
+
+    ${isAdmin?`<div class="card">
+      <div class="card-hdr"><i class="ti ti-shield-check"></i> Sync-Verlauf & Sicherungen</div>
+      <p style="font-size:13px;color:var(--ink-40);margin-bottom:12px;line-height:1.6">
+        Das Konfliktprotokoll zeigt, wann beim Sync vorhandene Datensätze überschrieben oder behalten wurden.
+        Vor jedem Sync und Import wird der Mieter-Stand automatisch lokal gesichert (letzte 10 Stände, nur auf diesem Gerät).
+      </p>
+      <div id="syncSchutzEl"></div>
     </div>`:''}
 
     ${isAdmin?`<div class="card">
@@ -12731,6 +12914,7 @@ async function renderSettings(){
 
   if(isAdmin) await renderUserList_();
   if(isAdmin){ const ivEl=document.getElementById('intervallConfigEl'); if(ivEl) ivEl.innerHTML=await renderIntervallConfig(); }
+  if(isAdmin){ const ssEl=document.getElementById('syncSchutzEl'); if(ssEl) ssEl.innerHTML=await renderSyncSchutz(); }
   await renderMeineSignatur();
   // Niimbot-Druckdichte vorselektieren
   try{
@@ -13053,22 +13237,98 @@ async function exportBackup(){
   toast('Backup exportiert ✓');
 }
 
+/* ═══════════════════════════════════════════════════════════
+   SYNC-SCHUTZ: Snapshots + Konfliktprotokoll
+═══════════════════════════════════════════════════════════ */
+// Lokale Sicherung des Mieter-Stands (NICHT synchronisiert, geräteeigen).
+// Wird vor jedem Sync-Merge und vor jedem Backup-Import angelegt.
+async function erstelleMieterSnapshot(anlass){
+  try{
+    const mieter=await idbGetAll('mieter');
+    if(!mieter.length) return;
+    await idbPut('mieter_snapshots',{
+      id:uid(), erstellt:nowIso(), anlass:anlass||'sync',
+      anzahl:mieter.length,
+      mitTelefon:mieter.filter(m=>m.telefon).length,
+      daten:mieter,
+    });
+    // Nur die letzten 10 behalten
+    const alle=(await idbGetAll('mieter_snapshots')).sort((a,b)=>(b.erstellt||'').localeCompare(a.erstellt||''));
+    for(const s of alle.slice(10)) await idbDelete('mieter_snapshots',s.id).catch(()=>{});
+  }catch(e){ console.warn('Snapshot:',e); }
+}
+
+// Snapshot zurückspielen: alle Mieter daraus mit FRISCHEM Zeitstempel schreiben,
+// damit der wiederhergestellte Stand beim nächsten Sync auf allen Geräten gewinnt.
+async function restoreMieterSnapshot(id){
+  const snap=await idbGet('mieter_snapshots',id).catch(()=>null);
+  if(!snap){ toast('Sicherung nicht gefunden'); return; }
+  if(!confirm(`Mieter-Stand vom ${new Date(snap.erstellt).toLocaleString('de-DE')} wiederherstellen?\n\n${snap.anzahl} Mieter (${snap.mitTelefon} mit Telefon) werden mit frischem Zeitstempel zurückgespielt und setzen sich beim Sync auf allen Geräten durch.`)) return;
+  const NOW=nowIso();
+  for(const m of snap.daten){ m.updatedAt=NOW; await idbPut('mieter',m); }
+  toast(`✓ ${snap.anzahl} Mieter wiederhergestellt`);
+  clearTimeout(window._syncTimer);
+  window._syncTimer=setTimeout(()=>syncToOneDrive(),2000);
+  if(curPage==='settings') renderSettings();
+  await renderDash();
+}
+
+// Konfliktprotokoll: dokumentiert, wenn beim Sync ein vorhandener Datensatz
+// überschrieben oder bewusst behalten wurde. Wird synchronisiert, damit der
+// Admin geräteübergreifend sieht, was passiert ist.
+async function logSyncKonflikt(eintrag){
+  try{
+    await idbPut('sync_log',{id:uid(), erstellt:nowIso(), geaendert:nowIso(), ...eintrag});
+  }catch(e){}
+}
+async function pruneSyncLog(){
+  try{
+    const alle=(await idbGetAll('sync_log')).sort((a,b)=>(b.erstellt||'').localeCompare(a.erstellt||''));
+    for(const e of alle.slice(300)) await idbDelete('sync_log',e.id).catch(()=>{});
+  }catch(e){}
+}
+
+// Objekte, die Nebenkosten (auch) nach Personen umlegen
+function istPersonenObjekt(oid){
+  return ['ruhrt41','mind23','mind25','kyff28','kyff30','kyff32'].includes(oid);
+}
+
 async function importBackup(input){
   if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
   const file=input.files[0]; if(!file) return;
-  if(!confirm('Alle aktuellen Daten durch Backup ersetzen?')) return;
+  if(!confirm('Backup-Datei importieren? Im nächsten Schritt wählst du den Importmodus.')) return;
   const reader=new FileReader();
   reader.onload=async function(e){
     try{
       const backup=JSON.parse(e.target.result);
-      for(const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log']){
-        if(backup[s]){
-          await idbClear(s);
-          for(const item of backup[s]) await idbPut(s,item);
+      await erstelleMieterSnapshot('import');
+      const modus = confirm('Importmodus wählen:\n\nOK = Zusammenführen (empfohlen): neuere Daten gewinnen, nichts geht verloren.\nAbbrechen = Vollständig ersetzen (alter Modus): lokale Daten werden komplett überschrieben.');
+      const alleStores=['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log'];
+      if(!modus){
+        // Vollständig ersetzen (alter Modus)
+        for(const s of alleStores){
+          if(backup[s]){ await idbClear(s); for(const item of backup[s]) await idbPut(s,item); }
+        }
+      } else {
+        // Zusammenführen: pro Datensatz nur übernehmen, wenn remote neuer oder lokal fehlt
+        for(const s of alleStores){
+          if(!backup[s]) continue;
+          for(const item of backup[s]){
+            if(!item||!item.id){ continue; }
+            const remoteStamp=item.updatedAt||item.geaendert||item.erstellt||'';
+            const local=await idbGet(s,item.id).catch(()=>null);
+            const localStamp=local?(local.updatedAt||local.geaendert||local.erstellt||''):'';
+            const remoteAelter=(remoteStamp&&localStamp&&remoteStamp<localStamp);
+            if(!remoteAelter) await idbPut(s,item);
+          }
         }
       }
-      toast('Backup importiert ✓');
+      // Nach Import lokalen Stand hochladen, damit alle Geräte ihn ziehen
+      try{ await idbDelete('settings','lastSync'); }catch(_){}
+      toast(modus?'Backup zusammengeführt ✓':'Backup importiert ✓');
       await initApp();
+      clearTimeout(window._syncTimer);
+      window._syncTimer=setTimeout(()=>syncToOneDrive(),2000);
     }catch(err){toast('Fehler beim Import: '+err.message);}
   };
   reader.readAsText(file);
@@ -13287,7 +13547,7 @@ async function syncToOneDrive() {
     } catch(e){ /* offline o. 404: normaler Upload-Weg unten */ }
 
     const backup = {};
-    for (const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log']) {
+    for (const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','sync_log']) {
       backup[s] = await idbGetAll(s);
     }
     backup.updatedAt = now();
@@ -13328,6 +13588,8 @@ async function syncFromOneDrive() {
     const ls = await idbGet('settings','lastSync').catch(()=>null);
     const localTime  = ls?.value||'';
     if (remoteTime > localTime) {
+      // Sicherung des aktuellen Mieter-Stands, bevor Remote-Daten einfließen
+      await erstelleMieterSnapshot('sync');
       // Tombstones zusammenführen (lokal + remote): {store: {id: loeschZeitpunkt}}
       const localTombRec = await idbGet('settings','tombstones').catch(()=>null);
       const localTomb = localTombRec?.value || {};
@@ -13358,7 +13620,7 @@ async function syncFromOneDrive() {
       await idbPut('settings', { id:'tombstones', value: mergedTomb });
 
       // Merge: ID-basiert, nur übernehmen wenn remote neuer oder lokal fehlt
-      const mergeStores = ['protokolle','aufgaben','maengel','reparaturen','dokumente','nka_archiv','einkaufsliste','wartung','termine','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log'];
+      const mergeStores = ['protokolle','aufgaben','maengel','reparaturen','dokumente','nka_archiv','einkaufsliste','wartung','termine','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','sync_log'];
       for (const s of mergeStores) {
         if (!backup[s]) continue;
         const tombS = mergedTomb[s] || {};
@@ -13369,7 +13631,8 @@ async function syncFromOneDrive() {
           if (tombS[item.id] && !(remoteStamp && remoteStamp > tombS[item.id])) continue;
           const local = await idbGet(s, item.id).catch(()=>null);
           const localStamp  = local ? (local.geaendert||local.updatedAt||local.erstellt||'') : '';
-          if (!local || remoteStamp >= localStamp) {
+          const remoteAelter = (remoteStamp && localStamp && remoteStamp < localStamp);
+          if (!remoteAelter) {
             await idbPut(s, item);
           }
         }
@@ -13390,9 +13653,21 @@ async function syncFromOneDrive() {
           if (tombS[item.id] && !(remoteStamp && remoteStamp > tombS[item.id])) continue;
           const local = await idbGet(s, item.id).catch(()=>null);
           const localStamp = local ? (local.updatedAt||local.geaendert||local.erstellt||'') : '';
-          // Übernehmen, wenn lokal fehlt ODER remote gleich/neuer ist.
-          // Bei fehlenden Zeitstempeln auf beiden Seiten: remote übernehmen (Erstbefüllung).
-          if (!local || !localStamp || (remoteStamp && remoteStamp >= localStamp)) {
+          // Übernehmen, wenn lokal fehlt ODER lokal keinen Stempel hat ODER
+          // remote keinen/gleichen/neueren Stempel hat. Nur wenn beide Stempel
+          // existieren und remote ÄLTER ist, behalten wir den lokalen Stand.
+          const remoteAelter = (remoteStamp && localStamp && remoteStamp < localStamp);
+          // Konfliktprotokoll: nur wenn lokal vorhanden und Stempel sich unterscheiden
+          if (local && localStamp && remoteStamp && remoteStamp !== localStamp) {
+            await logSyncKonflikt({
+              store:s, recId:item.id,
+              name:item.mieter||item.name||item.id,
+              aktion: remoteAelter ? 'lokal behalten (remote älter)' : 'übernommen von remote',
+              lokalStamp:localStamp, remoteStamp,
+              von:backup.updatedBy||'unbekannt',
+            });
+          }
+          if (!remoteAelter) {
             await idbPut(s, item);
           }
         }
@@ -13400,6 +13675,7 @@ async function syncFromOneDrive() {
         // nur echte Tombstones löschen (oben bereits erledigt). So bleiben lokal
         // neu angelegte Mieter/Benutzer erhalten, bis sie synchronisiert sind.
       }
+      await pruneSyncLog();
       await idbPut('settings',{id:'lastSync',value:remoteTime});
       await renderDash(); await updateBadge();
       toast('✓ Synchronisiert (' + (backup.updatedBy||'') + ')');
