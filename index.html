@@ -111,6 +111,12 @@ body{background:var(--surface);color:var(--ink);font-size:15px;-webkit-font-smoo
 /* ── CARDS ── */
 .card{background:var(--white);border-radius:var(--radius-lg);border:1px solid var(--ink-10);padding:16px;margin-bottom:12px;box-shadow:var(--shadow)}
 .card-hdr{font-size:12px;font-weight:600;color:var(--ink-40);text-transform:uppercase;letter-spacing:.6px;margin-bottom:12px;display:flex;align-items:center;gap:6px}
+.settings-card{background:var(--white);border-radius:var(--radius-lg);border:1px solid var(--ink-10);padding:16px;margin-bottom:12px;box-shadow:var(--shadow)}
+.settings-tabs{display:flex;gap:4px;margin-bottom:14px;position:sticky;top:0;z-index:5;background:var(--bg,#f4f5f7);padding:4px 0}
+.st-tab{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;padding:8px 4px;border:1px solid var(--ink-10);border-radius:10px;background:var(--white);color:var(--ink-40);font-size:11px;font-weight:600;cursor:pointer;transition:all .15s}
+.st-tab i{font-size:18px}
+.st-tab.active{background:#0C447C;color:#fff;border-color:#0C447C}
+.st-tab:active{transform:scale(.96)}
 .card-hdr i{font-size:15px;color:var(--copper)}
 
 /* ── OBJEKT CARDS ── */
@@ -705,7 +711,7 @@ button.chip.chip-active{background:var(--ink);color:#fff;border-color:var(--ink)
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=18;
-const APP_VERSION = '2026-06-13-v59b';
+const APP_VERSION = '2026-06-14-v60';
 let idb=null;
 
 function openIDB(){
@@ -13742,12 +13748,31 @@ async function renderSyncSchutz(){
   return h;
 }
 
+// Reiter in den Einstellungen umschalten (gemerkter Reiter überdauert Re-Render)
+let _settingsTab = 'allgemein';
+function switchSettingsTab(tab){
+  _settingsTab = tab;
+  document.querySelectorAll('.settings-card').forEach(c=>{
+    c.style.display = (c.dataset.tab===tab) ? '' : 'none';
+  });
+  document.querySelectorAll('.st-tab').forEach(b=>{
+    b.classList.toggle('active', b.dataset.tab===tab);
+  });
+}
+
 async function renderSettings(){
   const setting=await idbGet('settings','lastImport').catch(()=>null);
   const el=document.getElementById('page-settings');
   const isAdmin=CU?.role==='admin';
   el.innerHTML=`
-    <div class="card">
+    <div class="settings-tabs">
+      <button class="st-tab active" data-tab="allgemein" onclick="switchSettingsTab('allgemein')"><i class="ti ti-adjustments"></i><span>Allgemein</span></button>
+      ${isAdmin?`<button class="st-tab" data-tab="objekte" onclick="switchSettingsTab('objekte')"><i class="ti ti-building"></i><span>Objekte</span></button>`:''}
+      ${isAdmin?`<button class="st-tab" data-tab="daten" onclick="switchSettingsTab('daten')"><i class="ti ti-database"></i><span>Daten</span></button>`:''}
+      ${isAdmin?`<button class="st-tab" data-tab="system" onclick="switchSettingsTab('system')"><i class="ti ti-settings"></i><span>System</span></button>`:''}
+    </div>
+
+    <div class="settings-card" data-tab="allgemein">
       <div class="card-hdr"><i class="ti ti-user-circle"></i> Angemeldet als</div>
       <div style="display:flex;align-items:center;gap:12px">
         <div class="user-av ${CU?.role==='admin'?'admin':''}"><i class="ti ti-user"></i></div>
@@ -13759,7 +13784,7 @@ async function renderSettings(){
       </div>
     </div>
 
-    <div class="card">
+    <div class="settings-card" data-tab="objekte">
       <div class="card-hdr"><i class="ti ti-calendar-stats"></i> Wartungsfristen</div>
       <p style="font-size:13px;color:var(--ink-40);margin-bottom:12px;line-height:1.6">
         Wiederkehrende Fristen wie Heizungswartung, Rauchmelder-Prüfung oder Legionellenuntersuchung verwalten. Fällige Termine erscheinen automatisch im Dashboard.
@@ -13767,7 +13792,7 @@ async function renderSettings(){
       <button class="btn btn-primary btn-full" onclick="nav('wartung')"><i class="ti ti-calendar-stats"></i> Wartungsfristen öffnen</button>
     </div>
 
-    ${isAdmin?`<div class="card">
+    ${isAdmin?`<div class="settings-card" data-tab="objekte">
       <div class="card-hdr"><i class="ti ti-repeat"></i> Wiederkehrende Pflichttätigkeiten</div>
       <p style="font-size:13px;color:var(--ink-40);margin-bottom:12px;line-height:1.6">
         Pro Objekt festlegen, welche Reinigungs-/Pflichttätigkeiten in welchem Intervall fällig werden. Aktivierte Tätigkeiten erscheinen automatisch als To-Do beim zuständigen Hausmeister – mit steigender Priorität, je näher die Frist rückt.
@@ -13775,7 +13800,7 @@ async function renderSettings(){
       <div id="intervallConfigEl"></div>
     </div>`:''}
 
-    ${isAdmin?`<div class="card">
+    ${isAdmin?`<div class="settings-card" data-tab="daten">
       <div class="card-hdr"><i class="ti ti-shield-check"></i> Sync-Verlauf & Sicherungen</div>
       <p style="font-size:13px;color:var(--ink-40);margin-bottom:12px;line-height:1.6">
         Das Konfliktprotokoll zeigt, wann beim Sync vorhandene Datensätze überschrieben oder behalten wurden.
@@ -13784,7 +13809,7 @@ async function renderSettings(){
       <div id="syncSchutzEl"></div>
     </div>`:''}
 
-    ${isAdmin?`<div class="card">
+    ${isAdmin?`<div class="settings-card" data-tab="daten">
       <div class="card-hdr"><i class="ti ti-file-spreadsheet"></i> Mieterdaten (Excel-Import)</div>
       <p style="font-size:13px;color:var(--ink-40);margin-bottom:12px;line-height:1.6">
         Excel-Datei (.xlsm) hochladen, um Mieter- und Objektdaten abzugleichen. Vorhandene Mieter werden über Objekt, WE-Nr. und Name erkannt und nur in geänderten Feldern aktualisiert – leere Excel-Zellen überschreiben nichts. In der App neu angelegte Mieter sowie alle Protokolle, Aufgaben, Mängel und Dokumente bleiben erhalten.
@@ -13798,7 +13823,7 @@ async function renderSettings(){
       <div id="importStatus" style="margin-top:10px"></div>
     </div>`:''}
 
-    ${isAdmin?`<div class="card">
+    ${isAdmin?`<div class="settings-card" data-tab="system">
       <div class="card-hdr"><i class="ti ti-shield"></i> Benutzerverwaltung</div>
       <div id="userListEl"></div>
       <button class="btn btn-primary btn-full" style="margin-top:10px" onclick="modalAddUser()">
@@ -13806,7 +13831,7 @@ async function renderSettings(){
       </button>
     </div>`:''}
 
-    ${isAdmin?`<div class="card">
+    ${isAdmin?`<div class="settings-card" data-tab="objekte">
       <div class="card-hdr"><i class="ti ti-mail-cog"></i> Briefkopf / Absenderadressen</div>
       <p style="font-size:13px;color:var(--ink-40);margin-bottom:12px;line-height:1.6">
         Absenderadresse je Objektgruppe für alle PDF-Dokumente. Änderungen werden über OneDrive synchronisiert.
@@ -13814,7 +13839,7 @@ async function renderSettings(){
       <div id="briefkopfConfigEl"></div>
     </div>`:''}
 
-    <div class="card">
+    <div class="settings-card" data-tab="allgemein">
       <div class="card-hdr"><i class="ti ti-signature"></i> Meine Unterschrift</div>
       <p style="font-size:13px;color:var(--ink-40);margin-bottom:12px;line-height:1.6">
         Hinterlegte Unterschrift wird bei Protokollen automatisch als Ihre Unterschrift verwendet. ${isAdmin?'Andere Administratoren können sie für gemeinsam zu unterzeichnende Dokumente (z. B. NKA) auswählen.':''}
@@ -13828,7 +13853,7 @@ async function renderSettings(){
       </div>
     </div>
 
-    <div class="card">
+    <div class="settings-card" data-tab="system">
       <div class="card-hdr"><i class="ti ti-printer"></i> Niimbot B1 Etikettendrucker</div>
       <p style="font-size:13px;color:var(--ink-40);margin-bottom:12px;line-height:1.6">
         Direktdruck von QR-Etiketten ohne Umweg über die Niimbot-App. ${niimbotIstVerbunden()?'<span style="color:var(--green,#2E7D52)">Verbunden'+(_niimbotName?' ('+esc(_niimbotName)+')':'')+'</span>':'Funktioniert nur in <strong>Chrome für Android</strong> mit eingeschaltetem Bluetooth.'}
@@ -13846,7 +13871,7 @@ async function renderSettings(){
       </div>
     </div>
 
-    <div class="card">
+    <div class="settings-card" data-tab="daten">
       <div class="card-hdr"><i class="ti ti-database"></i> Datenspeicher</div>
       <p style="font-size:13px;color:var(--ink-40);margin-bottom:12px">Alle Daten werden lokal in IndexedDB auf diesem Gerät gespeichert.</p>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
@@ -13858,7 +13883,7 @@ async function renderSettings(){
       ${isAdmin?`<input type="file" id="importBackupIn" accept=".json" style="display:none" onchange="importBackup(this)">`:''}
     </div>
 
-    <div class="card">
+    <div class="settings-card" data-tab="allgemein">
       <div class="card-hdr"><i class="ti ti-bell"></i> Benachrichtigungen</div>
       <p style="font-size:13px;color:var(--ink-40);margin-bottom:12px;line-height:1.6">
         Push-Benachrichtigungen bei fälligen und überfälligen Aufgaben.
@@ -13877,7 +13902,7 @@ async function renderSettings(){
       </div>
     </div>
 
-    <div class="card">
+    <div class="settings-card" data-tab="allgemein">
       <div class="card-hdr"><i class="ti ti-clock-cog"></i> Tätigkeiten (Zeiterfassung)</div>
       <div style="font-size:12px;color:var(--ink-40);margin-bottom:8px">Tätigkeiten für die Zeiterfassung verwalten: ein-/ausblenden, umbenennen, Umlagefähigkeit festlegen, neue anlegen.</div>
       <button class="btn btn-full" onclick="modalTaetigkeitenVerwalten()"><i class="ti ti-settings"></i> Tätigkeiten verwalten</button>
@@ -13885,7 +13910,7 @@ async function renderSettings(){
       <button class="btn btn-full btn-danger" style="margin-top:8px" onclick="modalZeitenBereinigen()"><i class="ti ti-trash"></i> Testzeiten bereinigen (vor Stichtag)</button>
     </div>
 
-    <div class="card">
+    <div class="settings-card" data-tab="daten">
       <div class="card-hdr"><i class="ti ti-brand-onedrive"></i> OneDrive-Sync</div>
       <div id="onedriveSyncCard"></div>
     </div>
@@ -13931,6 +13956,14 @@ async function renderSettings(){
     const sel=document.getElementById('niimbotDichte');
     if(sel) sel.value=String(nd?.value||3);
   }catch(e){}
+  // Reiter nur für Admins; Hausmeister sehen alle (wenigen) Karten als Liste
+  if(isAdmin){
+    const tabVerfuegbar = !!document.querySelector('.st-tab[data-tab="'+_settingsTab+'"]');
+    switchSettingsTab(tabVerfuegbar ? _settingsTab : 'allgemein');
+  } else {
+    document.querySelectorAll('.settings-card').forEach(c=>{ c.style.display=''; });
+    const tabs=document.querySelector('.settings-tabs'); if(tabs) tabs.style.display='none';
+  }
 }
 
 /* ── Benutzer-Unterschrift (für Protokolle / NKA) ── */
