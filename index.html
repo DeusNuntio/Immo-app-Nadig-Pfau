@@ -718,7 +718,7 @@ button.chip.chip-active{background:var(--ink);color:#fff;border-color:var(--ink)
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=20;
-const APP_VERSION = '2026-06-15-v65';
+const APP_VERSION = '2026-06-15-v68';
 let idb=null;
 
 function openIDB(){
@@ -6720,9 +6720,8 @@ async function renderObjMieter(el){
 
   if(!mieter.length && !zukuenftig.length){
     el.innerHTML=`${gebaeudeStatsHTML(stamm,personenGesamt,mieter.length,istAdmin)}
-      <div class="empty"><i class="ti ti-user-off"></i><p>Keine Mieterdaten vorhanden.<br>Bitte Excel importieren oder neuen Mieter anlegen.</p></div>
-      <button class="btn btn-copper btn-full" style="margin-top:12px" onclick="modalAddMieter('${currentObjId}')"><i class="ti ti-user-plus"></i> Neuer Mieter</button>
-      <button class="btn btn-primary btn-full" style="margin-top:8px" onclick="nav('settings')"><i class="ti ti-upload"></i> Excel importieren</button>`;
+      <div class="empty"><i class="ti ti-user-off"></i><p>Keine Mieterdaten vorhanden.<br>Bitte neuen Mieter anlegen.</p></div>
+      <button class="btn btn-copper btn-full" style="margin-top:12px" onclick="modalAddMieter('${currentObjId}')"><i class="ti ti-user-plus"></i> Neuer Mieter</button>`;
     return;
   }
   // Grundrisse laden
@@ -6924,7 +6923,7 @@ async function showMieter(id){
       <div class="det-field"><label>Gesamtmiete</label><span>${fmtEur(m.gesamt)}</span></div>`:''}
       <div class="det-field"><label>Wohnfläche</label><span>${m.flaeche?m.flaeche+' m²':'–'}</span></div>
       <div class="det-field"><label>Einzug</label><span>${m.einzug||'–'}</span></div>
-      ${CU?.role==='admin'?`<div class="det-field"><label>Kaution</label><span>${fmtEur(m.kaution)}</span></div>`:''}
+      ${CU?.role==='admin'?(()=>{ const _kd=kautionDetailVon(m); const _si=kautionStatusInfo(_kd.status); const _ai=kautionArtInfo(_kd.art); return `<div class="det-field"><label>Kaution</label><span>${fmtEur(kautionSaldo(_kd))} <span style="font-size:10px;color:${_si.farbe}">· ${_ai.label.split(' (')[0]} · ${_si.label}</span></span></div>`; })():''}
       ${m.telefon?`<div class="det-field"><label>Telefon</label><span><a href="tel:${m.telefon}">${m.telefon}</a></span></div>`:''}
       ${m.email?`<div class="det-field"><label>E-Mail</label><span><a href="mailto:${m.email}">${m.email}</a></span></div>`:''}
     </div>
@@ -6968,8 +6967,10 @@ async function showMieter(id){
     <button class="btn btn-sm" onclick="modalEditMieter('${m.id}')"><i class="ti ti-pencil"></i> Bearbeiten</button>
     <button class="btn btn-sm" onclick="modalMieterSplit('${m.id}')"><i class="ti ti-users-group"></i> Personen aufteilen</button>
     ${CU?.role==='admin'?`<button class="btn btn-sm btn-copper" onclick="modalMieterhoehung('${m.id}')"><i class="ti ti-trending-up"></i> Mieterhöhung</button>`:''}
+    ${CU?.role==='admin'?`<button class="btn btn-sm" onclick="modalKaution('${m.id}')"><i class="ti ti-lock-dollar"></i> Kaution</button>`:''}
     <button class="btn btn-sm" onclick="showMieterDokumente('${m.id}')"><i class="ti ti-paperclip"></i> Archiv & Dokumente</button>
     <button class="btn btn-sm" onclick="modalWohnungGrundriss('${m.objektId}','${esc(String(m.weNr||''))}')"><i class="ti ti-map"></i> Grundriss</button>
+    <button class="btn btn-sm" onclick="modalWohnungsbilder('${m.objektId}','${esc(String(m.weNr||''))}')"><i class="ti ti-photo-scan"></i> Bilder</button>
     <button class="btn btn-sm" onclick="druckeWohnungsgeberBescheinigung('${m.id}')"><i class="ti ti-file-certificate"></i> WGB</button>
     ${CU?.role==='admin'?`<button class="btn btn-sm" onclick="modalMietbescheinigung('${m.id}')"><i class="ti ti-receipt-2"></i> Mietbescheinigung</button>`:''}
     <button class="btn btn-sm" onclick="modalBrief('${m.id}','${m.objektId}')"><i class="ti ti-mail"></i> Brief</button>
@@ -7809,8 +7810,10 @@ function initNotifications() {
 const DOK_TYPEN = [
   {val:'plan',    label:'Grundriss / Plan',    icon:'ti-map'},
   {val:'foto',    label:'Foto',                icon:'ti-photo'},
+  {val:'wohnungsbild',label:'Wohnungsbild',      icon:'ti-photo-scan'},
   {val:'ausweis', label:'Ausweisdokument',      icon:'ti-id'},
   {val:'vertrag', label:'Mietvertrag',          icon:'ti-file-text'},
+  {val:'lastschrift',label:'SEPA-Lastschriftmandat', icon:'ti-building-bank'},
   {val:'abrechnung',label:'Abrechnung',         icon:'ti-receipt'},
   {val:'nka',     label:'Nebenkostenabrechnung',icon:'ti-receipt-2'},
   {val:'brief',   label:'Schreiben / Brief',    icon:'ti-mail'},
@@ -7875,8 +7878,10 @@ async function renderDokumente(el, objektId, mieterId) {
   let docs = mieterId
     ? alle.filter(d=>d.mieterId===mieterId)
     : alle.filter(d=>d.objektId===objektId && !d.mieterId);
-  // NKA-Dokumente sind nur für Administratoren sichtbar
-  if (CU?.role !== 'admin') docs = docs.filter(d=>d.typ!=='nka');
+  // Sensible Dokumente sind nur für Administratoren sichtbar:
+  // NKA (Finanzdaten), Ausweise (§20 PAuswG / Art.9 DSGVO), SEPA-Mandate (Bankdaten)
+  const ADMIN_ONLY_DOK = ['nka','ausweis','lastschrift'];
+  if (CU?.role !== 'admin') docs = docs.filter(d=>!ADMIN_ONLY_DOK.includes(d.typ));
 
   const gruppeByTyp = {};
   DOK_TYPEN.forEach(t=>{ gruppeByTyp[t.val]=[]; });
@@ -7946,7 +7951,7 @@ function modalUploadDok(objektId, mieterId) {
       <input type="text" id="dokName" placeholder="z. B. Grundriss EG, Ausweis Mustermann..." spellcheck="true" lang="de"></div>
     <div class="f"><label>Typ</label>
       <select id="dokTyp">
-        ${DOK_TYPEN.filter(t=>CU?.role==='admin'||t.val!=='nka').map(t=>`<option value="${t.val}">${t.label}</option>`).join('')}
+        ${DOK_TYPEN.filter(t=>CU?.role==='admin'||!['nka','ausweis','lastschrift'].includes(t.val)).map(t=>`<option value="${t.val}">${t.label}</option>`).join('')}
       </select>
     </div>
     <div class="f"><label>Notiz (optional)</label>
@@ -7955,6 +7960,7 @@ function modalUploadDok(objektId, mieterId) {
       <input type="file" id="dokFile" accept="image/*,.pdf,.doc,.docx,.xls,.xlsx"
         style="padding:8px;border:1.5px solid var(--ink-10);border-radius:var(--radius);width:100%;font-size:13px">
     </div>
+    <div id="dokDsgvoHinweis" style="display:none;font-size:11px;color:var(--amber);background:var(--amber-l);border-radius:8px;padding:8px 10px;margin-top:8px"></div>
     <div id="dokUploadInfo" style="font-size:12px;color:var(--ink-40);margin-top:6px"></div>
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="saveDok('${objektId}','${mieterId}')">
@@ -7972,6 +7978,21 @@ function modalUploadDok(objektId, mieterId) {
       }
     }
   });
+  const dokTypEl = document.getElementById('dokTyp');
+  const dokHinweisEl = document.getElementById('dokDsgvoHinweis');
+  function dokTypHinweis(){
+    const v = dokTypEl.value;
+    if(v==='ausweis'){
+      dokHinweisEl.innerHTML = '<i class="ti ti-shield-lock"></i> Ausweisdokumente enthalten besonders schützenswerte Daten. Speicherung nur, solange ein berechtigter Zweck besteht (§ 20 PAuswG, Art. 5 Abs. 1 lit. e DSGVO). Nur für Administratoren sichtbar.';
+      dokHinweisEl.style.display='block';
+    } else if(v==='lastschrift'){
+      dokHinweisEl.innerHTML = '<i class="ti ti-shield-lock"></i> SEPA-Mandat enthält Bankdaten. Nur für Administratoren sichtbar.';
+      dokHinweisEl.style.display='block';
+    } else {
+      dokHinweisEl.style.display='none';
+    }
+  }
+  if(dokTypEl){ dokTypEl.addEventListener('change', dokTypHinweis); dokTypHinweis(); }
 }
 
 async function saveDok(objektId, mieterId) {
@@ -8016,6 +8037,34 @@ async function downloadDok(id) {
   a.href = d.data;
   a.download = d.name + (d.mimeType?.includes('pdf')?'.pdf':d.mimeType?.includes('image')?'.jpg':'');
   a.click();
+}
+
+// Dokument über das native Teilen-Menü weiterleiten (Mail, WhatsApp, …) mit Download-Fallback
+async function dokTeilen(id) {
+  const d = await idbGet('dokumente', id);
+  if (!d || !d.data) { toast('Kein Dokument vorhanden'); return; }
+  try {
+    const res = await fetch(d.data);
+    const blob = await res.blob();
+    const isPdf = (d.mimeType||'').includes('pdf');
+    const ext = isPdf ? '.pdf' : (d.mimeType||'').includes('image') ? '.jpg' : '';
+    const safeName = (d.name||'Dokument').replace(/[^a-zA-Z0-9äöüÄÖÜß _-]/g,'').slice(0,50) || 'Dokument';
+    const file = new File([blob], safeName+ext, { type: blob.type || d.mimeType || 'application/octet-stream' });
+    if (navigator.canShare && navigator.canShare({ files:[file] })) {
+      await navigator.share({ files:[file], title: safeName });
+      return;
+    }
+    // Fallback: herunterladen
+    const a = document.createElement('a');
+    a.href = d.data; a.download = safeName+ext;
+    document.body.appendChild(a); a.click(); a.remove();
+    toast('Heruntergeladen – kann jetzt weitergeleitet werden');
+  } catch(e) {
+    if (e && e.name === 'AbortError') return; // Nutzer hat abgebrochen
+    console.warn('dokTeilen:', e);
+    try { const a=document.createElement('a'); a.href=d.data; a.download=(d.name||'Dokument'); a.click(); }
+    catch(_){ toast('Teilen nicht möglich'); }
+  }
 }
 
 async function deleteDok(id) {
@@ -9073,7 +9122,7 @@ async function erstelleNKA(objektId, korrektur) {
         <div class="bk-right" style="order:1;text-align:left">
           <div class="bk-absender">${bk.absender||bk.name} · ${bk.strasse} · ${bk.ort}</div>
           <div class="bk-empf">
-            <strong>${adressNachnamen(m)}</strong><br>
+            <strong>${adressNachnamenVertrag(m)}</strong><br>
             ${obj?.name||''}<br>
             ${obj?.ort||''}
           </div>
@@ -9085,7 +9134,7 @@ async function erstelleNKA(objektId, korrektur) {
       <h2 style="margin:14px 0 2px">${obj?.name||''} · WE ${m.weNr}${m.etage?' · '+m.etage:''}</h2>
       ${korrektur?`<div style="background:#FDECEA;border:1px solid #C0392B;color:#C0392B;padding:6px 10px;border-radius:4px;font-size:10px;margin-bottom:8px"><strong>Korrektur:</strong> ${esc(korrektur.text||'Diese Abrechnung ersetzt eine zuvor erstellte Fassung.')}</div>`:''}
       <h1 style="margin-bottom:8px">Mietnebenkosten – Einzelabrechnung${korrektur?' (Korrektur)':''}</h1>
-      <p style="font-size:11px;margin-bottom:6px">${getAnrede(m)},</p>
+      <p style="font-size:11px;margin-bottom:6px">${getAnredeVertrag(m)},</p>
       <p style="font-size:11px;margin-bottom:10px;line-height:1.6">anbei erhalten Sie Ihre Nebenkostenabrechnung gemäß folgender Aufstellung:</p>
       <table class="info-table" style="margin:10px 0 8px">
         <tr><td></td><td>von</td><td>bis</td><td>Monate</td></tr>
@@ -9764,7 +9813,7 @@ async function erstelleNKALiegenschaft(lgId, korrektur){
         </div>
         <div class="bk-right" style="order:1;text-align:left">
           <div class="bk-absender">${bk.absender||bk.name} · ${bk.strasse} · ${bk.ort}</div>
-          <div class="bk-empf"><strong>${adressNachnamen(m)}</strong><br>${obj?.name||''}<br>${obj?.ort||''}</div>
+          <div class="bk-empf"><strong>${adressNachnamenVertrag(m)}</strong><br>${obj?.name||''}<br>${obj?.ort||''}</div>
           <div style="margin-top:8mm;font-size:10px;color:#555">${today}</div>
         </div>
       </div>
@@ -9772,7 +9821,7 @@ async function erstelleNKALiegenschaft(lgId, korrektur){
       ${korrBanner}
       <h2 style="margin:14px 0 2px">${obj?.name||''} · WE ${m.weNr}${m.etage?' · '+m.etage:''}</h2>
       <h1 style="margin-bottom:8px">Mietnebenkosten – Einzelabrechnung${korrektur?' (Korrektur)':''}</h1>
-      <p style="font-size:11px;margin-bottom:6px">${getAnrede(m)},</p>
+      <p style="font-size:11px;margin-bottom:6px">${getAnredeVertrag(m)},</p>
       <p style="font-size:11px;margin-bottom:10px;line-height:1.6">anbei erhalten Sie Ihre Nebenkostenabrechnung gemäß folgender Aufstellung:</p>
       <table class="info-table" style="margin:10px 0 8px">
         <tr><td></td><td>von</td><td>bis</td><td>Monate</td></tr>
@@ -10783,6 +10832,55 @@ function getAnredeKurz(m) {
   return 'Herr ' + m.mieter;
 }
 
+/* ── Vertragspartner-Logik (rechtsverbindliche Schreiben: NKA, Mieterhöhung) ──
+   Liefert die als Vertragspartner markierten, lebenden Personen.
+   Fallback: ist keine Person markiert (Altdaten), gelten alle lebenden Personen
+   bzw. der Hauptmieter – damit bleibt das Verhalten abwärtskompatibel. */
+function vertragspartnerVon(m){
+  const lebend = (m.personen_liste||[]).filter(p=>p && p.name && !p.verstorben);
+  if(lebend.length){
+    const vp = lebend.filter(p=>p.vertragspartner);
+    return vp.length ? vp : lebend; // kein Flag gesetzt -> alle (Altverhalten)
+  }
+  // Keine Personenliste: Hauptmieter als einziger Vertragspartner
+  return [{name:m.mieter||'', anrede:m.anrede||'Herr'}];
+}
+
+// Briefanrede ausschließlich an die Vertragspartner (für NKA & Mieterhöhung)
+function getAnredeVertrag(m){
+  const vp = vertragspartnerVon(m);
+  const pfx = a => a === 'Frau' ? 'Sehr geehrte Frau' : a === 'Divers' ? 'Guten Tag,' : 'Sehr geehrter Herr';
+  const namePfx = a => a === 'Frau' ? 'Frau' : a === 'Divers' ? '' : 'Herr';
+  if(vp.length === 1){
+    const p = vp[0];
+    if(p.anrede === 'Divers') return 'Guten Tag, ' + p.name;
+    return pfx(p.anrede) + ' ' + p.name;
+  }
+  const erste = vp[0];
+  const teile = vp.slice(1).map(p => (namePfx(p.anrede) ? namePfx(p.anrede) + ' ' : '') + p.name);
+  const kopf = pfx(erste.anrede) + ' ' + erste.name;
+  if(teile.length === 1) return kopf + ' und ' + teile[0];
+  return kopf + ', ' + teile.slice(0,-1).join(', ') + ' und ' + teile[teile.length-1];
+}
+
+// Adress-Nachnamen nur der Vertragspartner; Fallback auf bisherige Heuristik
+function adressNachnamenVertrag(m){
+  const lebend = (m.personen_liste||[]).filter(p=>p && p.name && !p.verstorben);
+  const vp = lebend.filter(p=>p.vertragspartner);
+  if(vp.length){
+    const nachname = n => {
+      n = (n||'').trim();
+      if(n.includes(',')) return n.split(',')[0].trim();
+      const teile = n.split(/\s+/);
+      return teile.length>1 ? teile[teile.length-1] : n;
+    };
+    const namen = vp.map(p=>nachname(p.name)).filter(Boolean);
+    return namen.slice(0,2).join(' und ');
+  }
+  // keine explizite Markierung -> bewährte Heuristik
+  return adressNachnamen(m);
+}
+
 // ── Briefeditor ──────────────────────────────────────────────
 async function modalBrief(mieterId, objektId) {
   let mieter = [];
@@ -11311,38 +11409,61 @@ async function modalGrundriss(objektId) {
 
 /* Grundriss pro Wohnung – genau ein Plan je WE, wird beim erneuten Hochladen überschrieben.
    Schlüssel deterministisch aus Objekt + WE-Nr., damit er bei Mieterwechsel erhalten bleibt. */
-function wohnungGrundrissId(objektId, weNr){
-  return 'plan_'+objektId+'_we'+String(weNr).replace(/\W/g,'');
+// Slot 'a' = bestehende ID (abwärtskompatibel), Slot 'b' = zweite Ebene (Maisonette)
+function wohnungGrundrissId(objektId, weNr, slot){
+  const base = 'plan_'+objektId+'_we'+String(weNr).replace(/\W/g,'');
+  return (slot==='b') ? base+'_b' : base;
 }
+
 async function modalWohnungGrundriss(objektId, weNr){
-  const planId=wohnungGrundrissId(objektId,weNr);
-  const plan=await idbGet('dokumente',planId).catch(()=>null);
   const obj=getObj(objektId);
+  const planA=await idbGet('dokumente',wohnungGrundrissId(objektId,weNr,'a')).catch(()=>null);
+  const planB=await idbGet('dokumente',wohnungGrundrissId(objektId,weNr,'b')).catch(()=>null);
+  // Slot B wird nur angeboten, wenn A vorhanden ist (erst Hauptgrundriss, dann zweite Ebene)
+  const zeigeB = !!planA;
+
+  const slotHTML = (slot, plan, label) => {
+    const planId = wohnungGrundrissId(objektId,weNr,slot);
+    const istBild = plan?.mimeType?.startsWith('image/');
+    return `
+    <div style="margin-bottom:14px">
+      <div style="font-size:12px;font-weight:700;color:var(--ink-60);margin-bottom:6px"><i class="ti ti-map"></i> ${label}</div>
+      <div>${plan
+        ? (istBild
+            ? `<img src="${plan.data}" style="width:100%;border-radius:8px;cursor:pointer" onclick="openFoto('${planId}','dok')">`
+            : `<button class="btn btn-full" onclick="downloadDok('${planId}')"><i class="ti ti-file-type-pdf"></i> ${esc(plan.name||'Grundriss')} herunterladen</button>`)
+        : `<div class="empty" style="padding:16px"><i class="ti ti-map-off"></i><p>Noch kein ${slot==='b'?'Grundriss der zweiten Ebene':'Grundriss'} hinterlegt.</p></div>`}
+      </div>
+      <input type="file" id="wgrFile_${slot}" accept="image/*,.pdf" style="display:none" onchange="onWohnungGrundrissFile('${objektId}','${esc(String(weNr||''))}','${slot}')">
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">
+        <button class="btn btn-sm btn-copper" onclick="document.getElementById('wgrFile_${slot}').click()">
+          <i class="ti ti-upload"></i> ${plan?'Ersetzen':'Hochladen'}
+        </button>
+        ${plan?`<button class="btn btn-sm" onclick="teileWohnungGrundriss('${objektId}','${esc(String(weNr||''))}','${slot}')"><i class="ti ti-share"></i> Weiterleiten</button>`:''}
+        ${plan?`<button class="btn btn-sm btn-danger" onclick="deleteWohnungGrundriss('${objektId}','${esc(String(weNr||''))}','${slot}')"><i class="ti ti-trash"></i></button>`:''}
+      </div>
+    </div>`;
+  };
+
   showModal(`
     <div class="m-title"><i class="ti ti-map"></i> Grundriss – ${obj?.name||''} · WE ${esc(String(weNr||''))}</div>
-    <div id="wgrView">${plan
-      ? (plan.mimeType?.startsWith('image/')
-          ? `<img src="${plan.data}" style="width:100%;border-radius:8px;cursor:pointer" onclick="openFoto('${plan.data}','Grundriss WE ${esc(String(weNr||''))}')">`
-          : `<button class="btn btn-full" onclick="downloadDok('${planId}')"><i class="ti ti-download"></i> ${esc(plan.name||'Grundriss')} herunterladen</button>`)
-      : `<div class="empty" style="padding:20px"><i class="ti ti-map-off"></i><p>Noch kein Grundriss für diese Wohnung.</p></div>`}
-    </div>
-    <input type="file" id="wgrFile" accept="image/*,.pdf" style="display:none" onchange="onWohnungGrundrissFile('${objektId}','${esc(String(weNr||''))}')">
-    <button class="btn btn-copper btn-full" style="margin-top:10px" onclick="document.getElementById('wgrFile').click()">
-      <i class="ti ti-upload"></i> Grundriss ${plan?'ersetzen':'hochladen'}
-    </button>
-    ${plan?`<button class="btn btn-full btn-danger" style="margin-top:6px" onclick="deleteWohnungGrundriss('${objektId}','${esc(String(weNr||''))}')"><i class="ti ti-trash"></i> Löschen</button>`:''}
-    <button class="btn btn-full" style="margin-top:6px" onclick="closeModal()">Schließen</button>`);
+    ${slotHTML('a', planA, 'Grundriss')}
+    ${zeigeB ? slotHTML('b', planB, '2. Ebene (Maisonette / Galerie)')
+             : `<div style="font-size:11px;color:var(--ink-40);margin-bottom:10px"><i class="ti ti-info-circle"></i> Für Maisonette-Wohnungen lässt sich nach dem ersten Grundriss eine zweite Ebene ergänzen.</div>`}
+    <button class="btn btn-full" style="margin-top:4px" onclick="closeModal()">Schließen</button>`);
 }
-async function onWohnungGrundrissFile(objektId, weNr){
-  const file=document.getElementById('wgrFile')?.files?.[0];
+
+async function onWohnungGrundrissFile(objektId, weNr, slot){
+  slot = slot==='b' ? 'b' : 'a';
+  const file=document.getElementById('wgrFile_'+slot)?.files?.[0];
   if(!file) return;
   if(file.size>10*1024*1024){ toast('Datei zu groß (max. 10 MB)'); return; }
   const reader=new FileReader();
   reader.onload=async e=>{
     const dok={
-      id:wohnungGrundrissId(objektId,weNr),
-      name:'Grundriss WE '+weNr,
-      typ:'plan', objektId, weNr, mieterId:null,
+      id:wohnungGrundrissId(objektId,weNr,slot),
+      name:'Grundriss WE '+weNr+(slot==='b'?' (2. Ebene)':''),
+      typ:'plan', objektId, weNr, grundrissSlot:slot, mieterId:null,
       data:e.target.result, mimeType:file.type, size:file.size,
       erstellt:now(), geaendert:now(), ersteller:CU?.name||'',
     };
@@ -11354,13 +11475,126 @@ async function onWohnungGrundrissFile(objektId, weNr){
   };
   reader.readAsDataURL(file);
 }
-async function deleteWohnungGrundriss(objektId, weNr){
-  if(!confirm('Grundriss dieser Wohnung löschen?')) return;
-  await deleteMitTombstone('dokumente', wohnungGrundrissId(objektId,weNr));
+
+async function deleteWohnungGrundriss(objektId, weNr, slot){
+  slot = slot==='b' ? 'b' : 'a';
+  if(!confirm(slot==='b'?'Grundriss der zweiten Ebene löschen?':'Grundriss dieser Wohnung löschen?')) return;
+  await deleteMitTombstone('dokumente', wohnungGrundrissId(objektId,weNr,slot));
   clearTimeout(window._syncTimer);
   window._syncTimer=setTimeout(()=>syncToOneDrive(),3000);
   toast('Grundriss gelöscht');
   modalWohnungGrundriss(objektId,weNr);
+}
+
+// Grundriss über das native Teilen-Menü weiterleiten (mit Download-Fallback)
+async function teileWohnungGrundriss(objektId, weNr, slot){
+  const planId = wohnungGrundrissId(objektId,weNr,slot==='b'?'b':'a');
+  await dokTeilen(planId);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   WOHNUNGSBILDER (mit Beschreibung) – je Wohnung, Ablage in 'dokumente'
+═══════════════════════════════════════════════════════════ */
+function wohnungsbildPrefix(objektId, weNr){
+  return 'wbild_'+objektId+'_we'+String(weNr).replace(/\W/g,'')+'_';
+}
+async function ladeWohnungsbilder(objektId, weNr){
+  const pfx = wohnungsbildPrefix(objektId, weNr);
+  const alle = await idbGetAll('dokumente').catch(()=>[]);
+  return alle.filter(d=>d.typ==='wohnungsbild' && typeof d.id==='string' && d.id.startsWith(pfx))
+             .sort((a,b)=>String(a.erstellt).localeCompare(String(b.erstellt)));
+}
+
+async function modalWohnungsbilder(objektId, weNr){
+  const obj=getObj(objektId);
+  const bilder=await ladeWohnungsbilder(objektId, weNr);
+  let h=`<div class="m-title"><i class="ti ti-photo-scan"></i> Wohnungsbilder – ${obj?.name||''} · WE ${esc(String(weNr||''))}</div>`;
+  if(!bilder.length){
+    h+=`<div class="empty" style="padding:20px"><i class="ti ti-photo-off"></i><p>Noch keine Bilder für diese Wohnung.</p></div>`;
+  } else {
+    h+=`<div style="max-height:54vh;overflow-y:auto;padding-right:4px">`;
+    bilder.forEach(b=>{
+      h+=`<div style="margin-bottom:12px;border:1px solid var(--ink-10);border-radius:10px;overflow:hidden">
+        <img src="${b.data}" style="width:100%;display:block;cursor:pointer" onclick="openFoto('${b.id}','dok')">
+        <div style="padding:8px 10px">
+          <div style="font-size:13px;color:var(--ink)">${b.beschreibung?esc(b.beschreibung):'<span style="color:#888780">Ohne Beschreibung</span>'}</div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">
+            <button class="btn btn-sm" onclick="modalWohnungsbildEdit('${objektId}','${esc(String(weNr||''))}','${b.id}')"><i class="ti ti-pencil"></i> Beschreibung</button>
+            <button class="btn btn-sm" onclick="dokTeilen('${b.id}')"><i class="ti ti-share"></i></button>
+            <button class="btn btn-sm btn-danger" onclick="deleteWohnungsbild('${objektId}','${esc(String(weNr||''))}','${b.id}')"><i class="ti ti-trash"></i></button>
+          </div>
+        </div>
+      </div>`;
+    });
+    h+=`</div>`;
+  }
+  h+=`
+    <input type="file" id="wbFile" accept="image/*" style="display:none" onchange="onWohnungsbildFile('${objektId}','${esc(String(weNr||''))}')">
+    <button class="btn btn-copper btn-full" style="margin-top:10px" onclick="document.getElementById('wbFile').click()">
+      <i class="ti ti-upload"></i> Bild hinzufügen
+    </button>
+    <button class="btn btn-full" style="margin-top:6px" onclick="closeModal()">Schließen</button>`;
+  showModal(h);
+}
+
+async function onWohnungsbildFile(objektId, weNr){
+  const file=document.getElementById('wbFile')?.files?.[0];
+  if(!file) return;
+  if(file.size>10*1024*1024){ toast('Datei zu groß (max. 10 MB)'); return; }
+  const reader=new FileReader();
+  reader.onload=async e=>{
+    const dok={
+      id: wohnungsbildPrefix(objektId,weNr)+uid(),
+      name:'Wohnungsbild WE '+weNr,
+      typ:'wohnungsbild', objektId, weNr, mieterId:null,
+      beschreibung:'',
+      data:e.target.result, mimeType:file.type, size:file.size,
+      erstellt:now(), geaendert:now(), ersteller:CU?.name||'',
+    };
+    await idbPut('dokumente',dok);
+    clearTimeout(window._syncTimer);
+    window._syncTimer=setTimeout(()=>syncToOneDrive(),3000);
+    toast('Bild gespeichert ✓');
+    modalWohnungsbilder(objektId,weNr);
+    // direkt zur Beschreibung
+    setTimeout(()=>modalWohnungsbildEdit(objektId,weNr,dok.id), 250);
+  };
+  reader.readAsDataURL(file);
+}
+
+async function modalWohnungsbildEdit(objektId, weNr, bildId){
+  const b=await idbGet('dokumente',bildId).catch(()=>null);
+  if(!b){ toast('Bild nicht gefunden'); return; }
+  showModal(`
+    <div class="m-title"><i class="ti ti-pencil"></i> Beschreibung</div>
+    <img src="${b.data}" style="width:100%;border-radius:8px;margin-bottom:10px">
+    <div class="f"><label>Beschreibung</label>
+      <textarea spellcheck="true" lang="de" id="wbBeschr" style="min-height:70px" placeholder="z. B. Wohnzimmer mit Blick zum Hof, Laminat 2022 erneuert">${esc(b.beschreibung||'')}</textarea></div>
+    <div class="f-row" style="margin-top:12px">
+      <button class="btn btn-copper btn-full" onclick="saveWohnungsbildBeschr('${objektId}','${esc(String(weNr||''))}','${bildId}')"><i class="ti ti-check"></i> Speichern</button>
+      <button class="btn btn-full" onclick="modalWohnungsbilder('${objektId}','${esc(String(weNr||''))}')">Zurück</button>
+    </div>`);
+}
+
+async function saveWohnungsbildBeschr(objektId, weNr, bildId){
+  const b=await idbGet('dokumente',bildId).catch(()=>null);
+  if(!b) return;
+  b.beschreibung=document.getElementById('wbBeschr')?.value?.trim()||'';
+  b.geaendert=now();
+  await idbPut('dokumente',b);
+  clearTimeout(window._syncTimer);
+  window._syncTimer=setTimeout(()=>syncToOneDrive(),3000);
+  toast('Beschreibung gespeichert ✓');
+  modalWohnungsbilder(objektId,weNr);
+}
+
+async function deleteWohnungsbild(objektId, weNr, bildId){
+  if(!confirm('Dieses Bild löschen?')) return;
+  await deleteMitTombstone('dokumente', bildId);
+  clearTimeout(window._syncTimer);
+  window._syncTimer=setTimeout(()=>syncToOneDrive(),3000);
+  toast('Bild gelöscht');
+  modalWohnungsbilder(objektId,weNr);
 }
 
 
@@ -12000,7 +12234,7 @@ p{font-size:11px;line-height:1.8;margin-bottom:6px}
 </div>
 <div class="trenn"></div>
 <h2>${ueberschrift} gemäß ${grund}</h2>
-<p>${getAnrede(m)},</p>
+<p>${getAnredeVertrag(m)},</p>
 <p>${istZustimmung
   ? `für Ihre Wohnung in ${obj?.name||''}, WE ${m.weNr}, bitten wir Sie um Zustimmung zu einer Erhöhung der Nettokaltmiete bis zur ortsüblichen Vergleichsmiete gemäß § 558 BGB. Die Erhöhung soll zum <strong>${wirksamAb}</strong> wirksam werden:`
   : istModernisierung
@@ -12123,14 +12357,26 @@ async function exportExcel() {
     'TG-Stellplatz Nr.': m.tgNr||'',
   }));
   const tgJson = tg.map(t=>({ 'Nr': t.nr, 'Mieter': t.mieter||'', 'Ab': t.ab||'', 'Miete (€)': t.miete||'' }));
-  const wsApp = XLSX.utils.aoa_to_sheet([
+  // JSON-Strings in Chunks < 32000 Zeichen aufteilen (Excel-Zellenlimit: 32767).
+  // Format: Markerzeile + n Chunkzeilen, damit beliebig viele Mieter passen.
+  function chunkString(str, size){
+    const out=[]; for(let i=0;i<str.length;i+=size) out.push(str.slice(i,i+size)); return out.length?out:[''];
+  }
+  const CH=30000;
+  const mieterStr=JSON.stringify(mieterJson);
+  const tgStr=JSON.stringify(tgJson);
+  const mieterChunks=chunkString(mieterStr,CH);
+  const tgChunks=chunkString(tgStr,CH);
+  const appRows=[
     ['_APP_DATEN – Automatisch erzeugt. Nicht manuell ändern.'],
-    ['Mieterdaten (JSON) in Zelle A4, Tiefgaragen-Daten (JSON) in Zelle A6.'],
+    ['Format v2: Daten in Chunks. Reihenfolge der Markerzeilen beachten.'],
     [],
-    [JSON.stringify(mieterJson)],
-    [],
-    [JSON.stringify(tgJson)],
-  ]);
+    ['__MIETER_CHUNKS__', String(mieterChunks.length)],
+  ];
+  mieterChunks.forEach(c=>appRows.push([c]));
+  appRows.push(['__TG_CHUNKS__', String(tgChunks.length)]);
+  tgChunks.forEach(c=>appRows.push([c]));
+  const wsApp = XLSX.utils.aoa_to_sheet(appRows);
   XLSX.utils.book_append_sheet(wb, wsApp, '_APP_DATEN');
 
   const dateiname = 'NadigPfau_Export_' + today() + '.xlsx';
@@ -12762,7 +13008,7 @@ function mieterFormHTML(obj, m={}) {
   const personenRows = personen.map((p,i)=>`
     <div class="f-row" style="margin-bottom:4px" id="pRow_${i}">
       <div class="f"><input type="text" id="pName_${i}" value="${p.name||''}"
-        placeholder="Vor- und Nachname Person ${i+1}" style="font-size:13px"></div>
+        placeholder="Nachname, Vorname (Person ${i+1})" style="font-size:13px"></div>
       <div class="f"><input type="date" id="pGeb_${i}" value="${p.geburtsdatum||''}"
         style="font-size:13px" title="Geburtsdatum"></div>
       ${i>0?`<button class="btn btn-sm btn-danger" onclick="removePerson(${i})" style="flex-shrink:0"><i class="ti ti-trash"></i></button>`:''}
@@ -12859,7 +13105,7 @@ function mieterFormHTML(obj, m={}) {
     </div>
     <div class="f"><label>SEPA-Mandat (Referenz / Datum)</label>
       <input type="text" id="mSepaMandat" value="${esc(m.sepaMandat||'')}" placeholder="z. B. MAND-2024-012 · erteilt am 01.03.2024"></div>
-    <div class="f"><label>Bemerkung Bankverbindung</label>
+    <div class="f"><label>Bemerkung</label>
       <textarea spellcheck="true" lang="de" id="mBankBem" style="min-height:44px">${esc(m.bankBemerkung||'')}</textarea></div>
     `:''}`;
 }
@@ -12869,7 +13115,7 @@ function addPersonRow() {
   const i = liste.children.length;
   const div = document.createElement('div');
   div.className = 'f-row'; div.style.marginBottom = '4px'; div.id = 'pRow_'+i;
-  div.innerHTML = `<select id="pAnr_${i}" style="width:70px;padding:8px 4px;border:1.5px solid var(--ink-10);border-radius:var(--radius);font-size:12px;margin-right:4px"><option>Herr</option><option>Frau</option><option>Divers</option></select><div class="f"><input type="text" id="pName_${i}" placeholder="Vor- und Nachname" style="font-size:13px"></div>
+  div.innerHTML = `<select id="pAnr_${i}" style="width:70px;padding:8px 4px;border:1.5px solid var(--ink-10);border-radius:var(--radius);font-size:12px;margin-right:4px"><option>Herr</option><option>Frau</option><option>Divers</option></select><div class="f"><input type="text" id="pName_${i}" placeholder="Nachname, Vorname" style="font-size:13px"></div>
     <div class="f"><input type="date" id="pGeb_${i}" style="font-size:13px" title="Geburtsdatum"></div>
     <button class="btn btn-sm btn-danger" onclick="removePerson(${i})" style="flex-shrink:0"><i class="ti ti-trash"></i></button>`;
   liste.appendChild(div);
@@ -12951,7 +13197,7 @@ async function modalAddMieter(objektId) {
     <div style="font-size:11px;color:var(--ink-40);margin-bottom:6px">Name · Geburtsdatum</div>
     <div id="personenListe">
       <div class="f-row" style="margin-bottom:4px" id="pRow_0">
-        <div class="f"><input type="text" id="pName_0" placeholder="Vor- und Nachname Person 1" style="font-size:13px"></div>
+        <div class="f"><input type="text" id="pName_0" placeholder="Nachname, Vorname (Person 1)" style="font-size:13px"></div>
         <div class="f"><input type="date" id="pGeb_0" style="font-size:13px" title="Geburtsdatum"></div>
       </div>
     </div>
@@ -13236,20 +13482,28 @@ function parseMieterNamen(roh){
 async function modalMieterSplit(id){
   const m=await idbGet('mieter',id);
   if(!m) return;
+  // Einzugsdatum als ISO für die Vorbelegung von "Dabei ab"
+  const einzugISO = m.einzugISO || (m.einzug && m.einzug.includes('.') ? m.einzug.split('.').reverse().join('-').replace(/^(\d{4})-(\d)-/, '$1-0$2-').replace(/-(\d)$/, '-0$1') : (m.einzug||''));
   // Vorhandene Personenliste hat Vorrang; sonst aus Namen parsen
   let personen = (m.personen_liste && m.personen_liste.length)
-    ? m.personen_liste.map(p=>({name:p.name||'',geburtsdatum:p.geburtsdatum||'',anrede:p.anrede||'Herr',telefon:p.telefon||'',email:p.email||'',ab:p.ab||'',bis:p.bis||'',verstorben:!!p.verstorben}))
-    : parseMieterNamen(m.mieter).map((p,i)=>({...p,telefon:i===0?(m.telefon||''):'',email:i===0?(m.email||''):'',verstorben:false}));
+    ? m.personen_liste.map(p=>({name:p.name||'',geburtsdatum:p.geburtsdatum||'',anrede:p.anrede||'Herr',telefon:p.telefon||'',email:p.email||'',ab:p.ab||'',bis:p.bis||'',verstorben:!!p.verstorben,vertragspartner:p.vertragspartner!==undefined?!!p.vertragspartner:true}))
+    : parseMieterNamen(m.mieter).map((p,i)=>({...p,telefon:i===0?(m.telefon||''):'',email:i===0?(m.email||''):'',verstorben:false,vertragspartner:true}));
+  // Punkt 4: "Dabei ab" mit dem Einzug vorbelegen, wo es noch leer ist.
+  // Spätere abweichende Einzüge einzelner Personen werden manuell geändert.
+  if(einzugISO && /^\d{4}-\d{2}-\d{2}$/.test(einzugISO)){
+    personen.forEach(p=>{ if(!p.ab) p.ab=einzugISO; });
+  }
   // Falls Personenzahl höher als erkannte Namen → Platzhalter ergänzen
   const ziel = Math.max(parseInt(m.personen)||0, personen.length, 1);
-  while(personen.length<ziel) personen.push({name:'Kind '+(personen.length), geburtsdatum:'', anrede:'',telefon:'',email:'',ab:'',bis:'',verstorben:false});
+  while(personen.length<ziel) personen.push({name:'Kind '+(personen.length), geburtsdatum:'', anrede:'',telefon:'',email:'',ab:'',bis:'',verstorben:false,vertragspartner:false});
   window._splitPersonen = personen;
 
   showModal(`
     <div class="m-title"><i class="ti ti-users-group"></i> Personen aufteilen</div>
     <div style="background:var(--ink-05);border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:13px;color:var(--ink-60)">
       Aktueller Eintrag: <strong>${esc(m.mieter)}</strong><br>
-      Bitte prüfen und anpassen. Jede Zeile = eine Person. „Dabei ab/bis" steuert, ab bzw. bis zu welchem Monat die Person in der NK-Abrechnung zählt (leer = ganzer Zeitraum). Maßgeblich ist der Monatserste.
+      Bitte prüfen und anpassen. Jede Zeile = eine Person. „Dabei ab/bis" steuert, ab bzw. bis zu welchem Monat die Person in der NK-Abrechnung zählt (leer = ganzer Zeitraum). Maßgeblich ist der Monatserste.<br><br>
+      <strong>Vertragspartner</strong> markiert, wer im Mietvertrag als Mietpartei genannt ist. Nebenkostenabrechnung und Mieterhöhung müssen rechtlich an <strong>alle</strong> Vertragspartner gemeinsam gerichtet werden.
     </div>
     <div id="splitListe"></div>
     <button class="btn btn-sm" style="margin:4px 0 12px" onclick="splitAddRow()"><i class="ti ti-user-plus"></i> Person hinzufügen</button>
@@ -13312,12 +13566,18 @@ function renderSplitListe(){
         <div class="f"><label style="font-size:10px">Dabei bis</label>
           <input type="date" id="splitBis_${i}" value="${p.bis||''}" style="font-size:12px" title="Letzter Monat, in dem die Person zählt (leer = unbefristet)"></div>
       </div>
-      <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-size:12px;color:${p.verstorben?'var(--ink)':'var(--ink-40)'}">
-        <input type="checkbox" id="splitTot_${i}" ${p.verstorben?'checked':''} onchange="splitToggleTot(${i})" style="width:15px;height:15px"> verstorben
-      </label>
+      <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+        <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-size:12px;color:${p.vertragspartner?'var(--copper)':'var(--ink-40)'};font-weight:${p.vertragspartner?'600':'400'}" title="Im Mietvertrag als Mietpartei genannt – erhält NKA und Mieterhöhung">
+          <input type="checkbox" id="splitVp_${i}" ${p.vertragspartner?'checked':''} onchange="splitToggleVp(${i})" style="width:15px;height:15px"> <i class="ti ti-file-signature" style="font-size:13px"></i> Vertragspartner
+        </label>
+        <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-size:12px;color:${p.verstorben?'var(--ink)':'var(--ink-40)'}">
+          <input type="checkbox" id="splitTot_${i}" ${p.verstorben?'checked':''} onchange="splitToggleTot(${i})" style="width:15px;height:15px"> verstorben
+        </label>
+      </div>
     </div>`).join('');
 }
 function splitToggleTot(i){ window._splitPersonen=splitCollect(); renderSplitListe(); }
+function splitToggleVp(i){ window._splitPersonen=splitCollect(); renderSplitListe(); }
 function splitCollect(){
   const ps=window._splitPersonen||[];
   const out=[];
@@ -13333,6 +13593,7 @@ function splitCollect(){
       ab:document.getElementById('splitAb_'+i)?.value||'',
       bis:document.getElementById('splitBis_'+i)?.value||'',
       verstorben:document.getElementById('splitTot_'+i)?.checked||false,
+      vertragspartner:document.getElementById('splitVp_'+i)?.checked||false,
     });
   }
   return out;
@@ -13411,6 +13672,279 @@ async function saveNeueAdresse(mieterId) {
   window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
   await showMieter(mieterId);
   toast('Anschrift gespeichert ✓');
+}
+
+/* ═══════════════════════════════════════════════════════════
+   KAUTIONSVERWALTUNG (nur Admin)
+   §551 BGB: max. 3 Nettokaltmieten, getrennte insolvenzfeste Anlage,
+   marktübliche Verzinsung; Zinsen stehen dem Mieter zu.
+═══════════════════════════════════════════════════════════ */
+const KAUTION_ARTEN = [
+  {val:'bar',         label:'Barkaution (auf Kautionskonto)', icon:'ti-cash'},
+  {val:'ueberweisung',label:'Überweisung (einmalig)',         icon:'ti-arrows-exchange'},
+  {val:'raten',       label:'Ratenzahlung (§551 II BGB)',     icon:'ti-calendar-repeat'},
+  {val:'konto',       label:'Verpfändetes Sparkonto / Anlage',icon:'ti-building-bank'},
+  {val:'versicherung',label:'Kautionsbürgschaft / -versicherung', icon:'ti-shield-check'},
+];
+const KAUTION_STATUS = [
+  {val:'offen',         label:'offen / ausstehend',  farbe:'var(--amber)'},
+  {val:'teilweise',     label:'teilweise eingegangen',farbe:'var(--amber)'},
+  {val:'vollstaendig',  label:'vollständig hinterlegt',farbe:'var(--green)'},
+  {val:'angelegt',      label:'angelegt / verpfändet',farbe:'var(--green)'},
+  {val:'zurueckgezahlt',label:'zurückgezahlt',        farbe:'var(--ink-40)'},
+  {val:'einbehalten',   label:'(teilweise) einbehalten',farbe:'var(--copper)'},
+];
+function kautionStatusInfo(v){ return KAUTION_STATUS.find(x=>x.val===v) || KAUTION_STATUS[0]; }
+function kautionArtInfo(v){ return KAUTION_ARTEN.find(x=>x.val===v) || KAUTION_ARTEN[0]; }
+
+// Migration: altes Einzelfeld m.kaution -> kautionDetail.betrag (ohne Datenverlust)
+function kautionDetailVon(m){
+  const kd = m.kautionDetail ? {...m.kautionDetail} : {};
+  if(kd.betrag==null && (m.kaution||m.kaution===0)) kd.betrag = parseBetrag(m.kaution);
+  kd.art        = kd.art || 'bar';
+  kd.status     = kd.status || 'offen';
+  kd.raten      = Array.isArray(kd.raten)?kd.raten:[];
+  kd.bewegungen = Array.isArray(kd.bewegungen)?kd.bewegungen:[]; // Zins/Verrechnung/Auszahlung
+  return kd;
+}
+
+// Summe eingegangener Raten
+function kautionRatenSumme(kd){ return (kd.raten||[]).reduce((s,r)=>s+parseBetrag(r.betrag),0); }
+// Summe Zinsgutschriften
+function kautionZinsSumme(kd){ return (kd.bewegungen||[]).filter(b=>b.art==='zins').reduce((s,b)=>s+parseBetrag(b.betrag),0); }
+// Summe Verrechnungen + Auszahlungen (Abgänge)
+function kautionAbgangSumme(kd){ return (kd.bewegungen||[]).filter(b=>b.art==='verrechnung'||b.art==='auszahlung').reduce((s,b)=>s+parseBetrag(b.betrag),0); }
+// Aktueller Saldo: Soll-Betrag + Zinsen − Abgänge (bei Raten: bisher eingegangene Raten + Zinsen − Abgänge)
+function kautionSaldo(kd){
+  const grund = kd.art==='raten' ? kautionRatenSumme(kd) : parseBetrag(kd.betrag);
+  return grund + kautionZinsSumme(kd) - kautionAbgangSumme(kd);
+}
+
+async function modalKaution(mieterId){
+  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  const m = await idbGet('mieter', mieterId);
+  if(!m) return;
+  const obj = getObj(m.objektId);
+  const kd = kautionDetailVon(m);
+  window._kautionMieterId = mieterId;
+  window._kautionRaten = kd.raten.map(r=>({...r}));
+  window._kautionBew   = kd.bewegungen.map(b=>({...b}));
+
+  // §551-Hinweis: max. 3 Nettokaltmieten
+  const kalt = parseBetrag(m.miete)||0;
+  const max3 = kalt*3;
+  const betr = parseBetrag(kd.betrag)||0;
+  const ueber = max3>0 && betr>max3+0.005;
+
+  showModal(`
+    <div class="m-title"><i class="ti ti-lock-dollar"></i> Kaution – ${esc(m.mieter)}</div>
+    <div style="font-size:11px;color:var(--ink-40);margin-bottom:10px">${esc(obj?.name||'')} · WE ${m.weNr}</div>
+
+    ${kalt>0?`<div style="font-size:11px;background:var(--ink-05);border-radius:8px;padding:8px 10px;margin-bottom:10px;color:var(--ink-60)">
+      <i class="ti ti-scale"></i> Höchstbetrag nach § 551 Abs. 1 BGB (3 Nettokaltmieten): <strong>${fmtEur(max3)}</strong>
+      ${ueber?`<div style="color:var(--copper);margin-top:4px"><i class="ti ti-alert-triangle"></i> Hinterlegter Betrag übersteigt die zulässige Höchstgrenze.</div>`:''}
+    </div>`:''}
+
+    <div class="f-row">
+      <div class="f"><label>Art der Kaution</label>
+        <select id="kdArt" onchange="kautionArtChange()">
+          ${KAUTION_ARTEN.map(a=>`<option value="${a.val}" ${kd.art===a.val?'selected':''}>${a.label}</option>`).join('')}
+        </select></div>
+      <div class="f"><label>Status</label>
+        <select id="kdStatus">
+          ${KAUTION_STATUS.map(st=>`<option value="${st.val}" ${kd.status===st.val?'selected':''}>${st.label}</option>`).join('')}
+        </select></div>
+    </div>
+    <div class="f-row">
+      <div class="f"><label>Vereinbarter Betrag (€)</label>
+        <input type="number" id="kdBetrag" value="${betr||''}" step="0.01"></div>
+      <div class="f"><label>Eingang / Beginn</label>
+        <input type="date" id="kdEingang" value="${kd.eingang||''}"></div>
+    </div>
+
+    <!-- Anlage-Block: Konto / Verzinsung -->
+    <div id="kdAnlageBlock" style="border-top:1px solid var(--ink-10);margin-top:8px;padding-top:8px">
+      <div style="font-size:12px;font-weight:600;color:var(--ink-60);margin-bottom:6px"><i class="ti ti-building-bank"></i> Anlage</div>
+      <div class="f-row">
+        <div class="f"><label>Kreditinstitut / Anlage</label>
+          <input type="text" id="kdBank" value="${esc(kd.kontoBank||'')}" placeholder="z. B. Sparkasse Krefeld"></div>
+        <div class="f"><label>Verzinsung (% p.a.)</label>
+          <input type="number" id="kdZins" value="${kd.verzinsung||''}" step="0.01" placeholder="marktüblich"></div>
+      </div>
+      <div class="f"><label>IBAN Kautionskonto</label>
+        <input type="text" id="kdIban" value="${esc(kd.kontoIban||'')}" placeholder="getrennt vom Vermögen des Vermieters" autocomplete="off"></div>
+    </div>
+
+    <!-- Versicherungs-Block -->
+    <div id="kdVersBlock" style="border-top:1px solid var(--ink-10);margin-top:8px;padding-top:8px;display:none">
+      <div style="font-size:12px;font-weight:600;color:var(--ink-60);margin-bottom:6px"><i class="ti ti-shield-check"></i> Bürgschaft / Versicherung</div>
+      <div class="f-row">
+        <div class="f"><label>Bürge / Versicherer</label>
+          <input type="text" id="kdVersicherer" value="${esc(kd.versicherer||'')}" placeholder="z. B. R+V, Bank"></div>
+        <div class="f"><label>Bürgschafts-/Vertrags-Nr.</label>
+          <input type="text" id="kdBuergNr" value="${esc(kd.buergschaftNr||'')}"></div>
+      </div>
+    </div>
+
+    <!-- Raten-Block -->
+    <div id="kdRatenBlock" style="border-top:1px solid var(--ink-10);margin-top:8px;padding-top:8px;display:none">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+        <div style="font-size:12px;font-weight:600;color:var(--ink-60)"><i class="ti ti-calendar-repeat"></i> Raten (max. 3, § 551 Abs. 2 BGB)</div>
+        <button type="button" class="btn btn-sm" onclick="kautionRatenAdd()"><i class="ti ti-plus"></i></button>
+      </div>
+      <div id="kdRatenListe"></div>
+      <div id="kdRatenSumme" style="font-size:11px;color:var(--ink-40);text-align:right;margin-top:4px"></div>
+    </div>
+
+    <!-- Bewegungen: Zinsen / Verrechnung / Auszahlung -->
+    <div style="border-top:1px solid var(--ink-10);margin-top:8px;padding-top:8px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+        <div style="font-size:12px;font-weight:600;color:var(--ink-60)"><i class="ti ti-arrows-left-right"></i> Zinsen / Verrechnung / Auszahlung</div>
+        <button type="button" class="btn btn-sm" onclick="kautionBewAdd()"><i class="ti ti-plus"></i></button>
+      </div>
+      <div id="kdBewListe"></div>
+      <div id="kdSaldo" style="font-size:12px;font-weight:700;text-align:right;margin-top:6px;color:var(--ink)"></div>
+    </div>
+
+    <div class="f" style="margin-top:8px"><label>Bemerkung</label>
+      <textarea spellcheck="true" lang="de" id="kdNotiz" style="min-height:44px">${esc(kd.notiz||'')}</textarea></div>
+
+    <div class="f-row" style="margin-top:12px">
+      <button class="btn btn-copper btn-full" onclick="saveKaution('${mieterId}')"><i class="ti ti-check"></i> Speichern</button>
+      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+    </div>`);
+
+  kautionArtChange();
+  kautionRatenRender();
+  kautionBewRender();
+}
+
+function kautionArtChange(){
+  const art = document.getElementById('kdArt')?.value;
+  const show = (id,b)=>{ const el=document.getElementById(id); if(el) el.style.display=b?'block':'none'; };
+  show('kdRatenBlock', art==='raten');
+  show('kdVersBlock',  art==='versicherung');
+  // Anlage-Block für Bürgschaft ausblenden (kein Kautionskonto)
+  show('kdAnlageBlock', art!=='versicherung');
+}
+
+function kautionRatenCollect(){
+  const out=[]; const list=window._kautionRaten||[];
+  for(let i=0;i<list.length;i++){
+    const d=document.getElementById('kdRatenDat_'+i), b=document.getElementById('kdRatenBet_'+i), n=document.getElementById('kdRatenNot_'+i);
+    if(!b) continue;
+    out.push({datum:d?.value||'', betrag:parseBetrag(b.value), notiz:n?.value?.trim()||''});
+  }
+  return out;
+}
+function kautionRatenRender(){
+  window._kautionRaten = kautionRatenCollect().length?kautionRatenCollect():window._kautionRaten;
+  const wrap=document.getElementById('kdRatenListe'); if(!wrap) return;
+  const ps=window._kautionRaten||[];
+  wrap.innerHTML = ps.map((r,i)=>`
+    <div class="f-row" style="margin-bottom:5px;align-items:flex-end">
+      <div class="f" style="max-width:130px"><label style="font-size:9px">Datum</label>
+        <input type="date" id="kdRatenDat_${i}" value="${r.datum||''}" style="font-size:12px"></div>
+      <div class="f"><label style="font-size:9px">Betrag (€)</label>
+        <input type="number" id="kdRatenBet_${i}" value="${r.betrag||''}" step="0.01" style="font-size:12px"></div>
+      <div class="f"><label style="font-size:9px">Notiz</label>
+        <input type="text" id="kdRatenNot_${i}" value="${esc(r.notiz||'')}" style="font-size:12px"></div>
+      <button class="btn btn-sm btn-danger" onclick="kautionRatenRemove(${i})" style="flex-shrink:0"><i class="ti ti-trash"></i></button>
+    </div>`).join('') || '<div style="font-size:11px;color:var(--ink-40)">Noch keine Raten erfasst.</div>';
+  const sum=ps.reduce((s,r)=>s+parseBetrag(r.betrag),0);
+  const sumEl=document.getElementById('kdRatenSumme'); if(sumEl) sumEl.textContent='Summe Raten: '+fmtEur(sum);
+  kautionSaldoRender();
+}
+function kautionRatenAdd(){
+  window._kautionRaten=kautionRatenCollect();
+  if(window._kautionRaten.length>=3){ toast('Höchstens 3 Raten nach § 551 Abs. 2 BGB'); return; }
+  window._kautionRaten.push({datum:'',betrag:'',notiz:''});
+  kautionRatenRender();
+}
+function kautionRatenRemove(i){ window._kautionRaten=kautionRatenCollect().filter((_,x)=>x!==i); kautionRatenRender(); }
+
+const KAUTION_BEW_ARTEN=[
+  {val:'zins',        label:'Zinsgutschrift'},
+  {val:'verrechnung', label:'Verrechnung (z. B. NK-Nachzahlung, Schaden)'},
+  {val:'auszahlung',  label:'Auszahlung an Mieter'},
+];
+function kautionBewCollect(){
+  const out=[]; const list=window._kautionBew||[];
+  for(let i=0;i<list.length;i++){
+    const a=document.getElementById('kdBewArt_'+i), d=document.getElementById('kdBewDat_'+i), b=document.getElementById('kdBewBet_'+i), n=document.getElementById('kdBewNot_'+i);
+    if(!b) continue;
+    out.push({art:a?.value||'verrechnung', datum:d?.value||'', betrag:parseBetrag(b.value), notiz:n?.value?.trim()||''});
+  }
+  return out;
+}
+function kautionBewRender(){
+  const cur=kautionBewCollect();
+  window._kautionBew = cur.length?cur:window._kautionBew;
+  const wrap=document.getElementById('kdBewListe'); if(!wrap) return;
+  const ps=window._kautionBew||[];
+  wrap.innerHTML = ps.map((b,i)=>`
+    <div style="border:1px solid var(--ink-10);border-radius:8px;padding:8px;margin-bottom:6px">
+      <div class="f-row" style="margin-bottom:4px;align-items:flex-end">
+        <div class="f"><label style="font-size:9px">Art</label>
+          <select id="kdBewArt_${i}" style="font-size:12px">
+            ${KAUTION_BEW_ARTEN.map(x=>`<option value="${x.val}" ${b.art===x.val?'selected':''}>${x.label}</option>`).join('')}
+          </select></div>
+        <div class="f" style="max-width:120px"><label style="font-size:9px">Datum</label>
+          <input type="date" id="kdBewDat_${i}" value="${b.datum||''}" style="font-size:12px"></div>
+      </div>
+      <div class="f-row" style="align-items:flex-end">
+        <div class="f" style="max-width:120px"><label style="font-size:9px">Betrag (€)</label>
+          <input type="number" id="kdBewBet_${i}" value="${b.betrag||''}" step="0.01" style="font-size:12px"></div>
+        <div class="f"><label style="font-size:9px">Notiz</label>
+          <input type="text" id="kdBewNot_${i}" value="${esc(b.notiz||'')}" style="font-size:12px"></div>
+        <button class="btn btn-sm btn-danger" onclick="kautionBewRemove(${i})" style="flex-shrink:0"><i class="ti ti-trash"></i></button>
+      </div>
+    </div>`).join('') || '<div style="font-size:11px;color:var(--ink-40)">Keine Bewegungen erfasst.</div>';
+  kautionSaldoRender();
+}
+function kautionBewAdd(){ window._kautionBew=kautionBewCollect(); window._kautionBew.push({art:'verrechnung',datum:today(),betrag:'',notiz:''}); kautionBewRender(); }
+function kautionBewRemove(i){ window._kautionBew=kautionBewCollect().filter((_,x)=>x!==i); kautionBewRender(); }
+
+function kautionSaldoRender(){
+  const art=document.getElementById('kdArt')?.value;
+  const betrag=parseBetrag(document.getElementById('kdBetrag')?.value);
+  const raten=kautionRatenCollect().reduce((s,r)=>s+parseBetrag(r.betrag),0);
+  const bew=kautionBewCollect();
+  const zins=bew.filter(b=>b.art==='zins').reduce((s,b)=>s+parseBetrag(b.betrag),0);
+  const abgang=bew.filter(b=>b.art==='verrechnung'||b.art==='auszahlung').reduce((s,b)=>s+parseBetrag(b.betrag),0);
+  const grund = art==='raten' ? raten : betrag;
+  const saldo = grund + zins - abgang;
+  const el=document.getElementById('kdSaldo');
+  if(el) el.innerHTML = `Aktueller Kautionssaldo: <span style="color:var(--copper)">${fmtEur(saldo)}</span>`
+    + `<div style="font-size:10px;font-weight:400;color:var(--ink-40);margin-top:2px">Grundbetrag ${fmtEur(grund)} + Zinsen ${fmtEur(zins)} − Abgänge ${fmtEur(abgang)}</div>`;
+}
+
+async function saveKaution(mieterId){
+  const m = await idbGet('mieter', mieterId);
+  if(!m) return;
+  const kd = kautionDetailVon(m);
+  kd.art        = document.getElementById('kdArt').value;
+  kd.status     = document.getElementById('kdStatus').value;
+  kd.betrag     = parseBetrag(document.getElementById('kdBetrag').value);
+  kd.eingang    = document.getElementById('kdEingang').value;
+  kd.kontoBank  = document.getElementById('kdBank')?.value?.trim()||'';
+  kd.verzinsung = document.getElementById('kdZins')?.value||'';
+  kd.kontoIban  = document.getElementById('kdIban')?.value?.trim()||'';
+  kd.versicherer= document.getElementById('kdVersicherer')?.value?.trim()||'';
+  kd.buergschaftNr=document.getElementById('kdBuergNr')?.value?.trim()||'';
+  kd.raten      = kautionRatenCollect().filter(r=>r.betrag||r.datum);
+  kd.bewegungen = kautionBewCollect().filter(b=>b.betrag||b.notiz);
+  kd.notiz      = document.getElementById('kdNotiz')?.value?.trim()||'';
+  m.kautionDetail = kd;
+  // Altfeld m.kaution synchron halten (für Listen/Export/Altfunktionen)
+  m.kaution = kd.art==='raten' ? kautionRatenSumme(kd) : kd.betrag;
+  m.geaendert = now();
+  await idbPut('mieter', m);
+  closeModal();
+  clearTimeout(window._syncTimer);
+  window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
+  await showMieter(mieterId);
+  toast('Kaution gespeichert ✓');
 }
 
 
@@ -14582,8 +15116,43 @@ async function importExcel(input){
       if(wb.SheetNames.includes('_APP_DATEN')){
         const ws=wb.Sheets['_APP_DATEN'];
 
-        // Mieterdaten aus A4
-        const raw=ws['A4']?.v;
+        // Hilfsfunktion: liest entweder das neue Chunk-Format (Markerzeilen
+        // __MIETER_CHUNKS__ / __TG_CHUNKS__ + n Folgezeilen) oder das alte
+        // Format (Mieter-JSON in A4, TG-JSON in A6). Gibt zusammengesetzte
+        // JSON-Strings {mieterStr, tgStr} zurück.
+        function leseAppDaten(ws){
+          const range=XLSX.utils.decode_range(ws['!ref']||'A1:A1');
+          const zelle=(r)=>{ const c=ws[XLSX.utils.encode_cell({r:r,c:0})]; return c?String(c.v):''; };
+          let mieterStr='', tgStr='';
+          let gefundenChunk=false;
+          for(let r=range.s.r; r<=range.e.r; r++){
+            const v=zelle(r);
+            if(v==='__MIETER_CHUNKS__'){
+              gefundenChunk=true;
+              const cntCell=ws[XLSX.utils.encode_cell({r:r,c:1})];
+              const n=parseInt(cntCell?cntCell.v:0)||0;
+              let s='';
+              for(let k=1;k<=n;k++) s+=zelle(r+k);
+              mieterStr=s; r+=n;
+            } else if(v==='__TG_CHUNKS__'){
+              gefundenChunk=true;
+              const cntCell=ws[XLSX.utils.encode_cell({r:r,c:1})];
+              const n=parseInt(cntCell?cntCell.v:0)||0;
+              let s='';
+              for(let k=1;k<=n;k++) s+=zelle(r+k);
+              tgStr=s; r+=n;
+            }
+          }
+          if(!gefundenChunk){
+            mieterStr=ws['A4']?.v||'';
+            tgStr=ws['A6']?.v||'';
+          }
+          return {mieterStr, tgStr};
+        }
+        const _appDaten=leseAppDaten(ws);
+
+        // Mieterdaten
+        const raw=_appDaten.mieterStr;
         if(raw){
           const data=JSON.parse(raw);
           // Merge statt Löschen: vorhandene Mieter bleiben erhalten; nur gefüllte Excel-Felder aktualisieren.
@@ -14628,8 +15197,8 @@ async function importExcel(input){
           }
         }
 
-        // TG-Daten aus A6 – ebenfalls Merge: vorhandene Plätze ergänzen, leere Felder behalten
-        const rawTG=ws['A6']?.v;
+        // TG-Daten – ebenfalls Merge: vorhandene Plätze ergänzen, leere Felder behalten
+        const rawTG=_appDaten.tgStr;
         if(rawTG){
           const hasVal=v=>v!==undefined && v!==null && String(v).trim()!=='';
           const tgData=JSON.parse(rawTG);
@@ -15102,7 +15671,7 @@ async function toggleUserAktiv(id){
 async function modalAddUser(){
   showModal(`
     <div class="m-title"><i class="ti ti-user-plus"></i> Benutzer hinzufügen</div>
-    <div class="f"><label>Name *</label><input type="text" id="nuName" placeholder="Vor- und Nachname" spellcheck="true" lang="de"></div>
+    <div class="f"><label>Name *</label><input type="text" id="nuName" placeholder="Nachname, Vorname" spellcheck="true" lang="de"></div>
     <div class="f"><label>PIN (4 Ziffern) *</label><input type="password" id="nuPin" placeholder="••••" inputmode="numeric" maxlength="6"></div>
     <div class="f"><label>Rolle</label><select id="nuRole">
       <option value="hm">Hausmeister</option>
