@@ -718,7 +718,7 @@ button.chip.chip-active{background:var(--ink);color:#fff;border-color:var(--ink)
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=20;
-const APP_VERSION = '2026-06-15-v69';
+const APP_VERSION = '2026-06-15-v70';
 let idb=null;
 
 function openIDB(){
@@ -6909,7 +6909,7 @@ async function showMieter(id){
   let h=`<div class="det-hdr">
     <div class="det-av-row">
       <div class="det-av">${ini}</div>
-      <div><div class="det-name">${m.mieter}</div>
+      <div><div class="det-name">${esc(hauptmieterNachnamen(m)||m.mieter)}</div>
         <div class="det-we">${obj?.name||''} · WE ${m.weNr} · ${m.etage||''}${m.leerstand?' · \u26A0 LEERSTAND':''}</div>
       </div>
     </div>
@@ -10518,7 +10518,59 @@ async function erstelleMietbescheinigung(mieterId){
   toast('Mietbescheinigung erstellt ✓');
 }
 
-async function druckeWohnungsgeberBescheinigung(mieterId) {
+// Vorschalt-Dialog: hinterlegte Admin-Unterschriften für die WGB wählen (analog NKA)
+async function druckeWohnungsgeberBescheinigung(mieterId){
+  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  const m = await idbGet('mieter', mieterId);
+  if(!m){ toast('Mieter nicht gefunden'); return; }
+  const users = await idbGetAll('users').catch(()=>[]);
+  const admins = users.filter(u=>u.role==='admin' && u.signatur);
+  // Vorauswahl: eingeloggter Admin, falls Signatur vorhanden
+  window._wgbSigUserIds = (admins.some(u=>u.id===CU?.id)) ? [CU.id] : [];
+  const liste = admins.length
+    ? admins.map(u=>`
+        <label style="display:flex;align-items:center;gap:8px;padding:6px 8px;border:1px solid var(--ink-10);border-radius:8px;margin-bottom:6px;cursor:pointer">
+          <input type="checkbox" value="${u.id}" ${window._wgbSigUserIds.includes(u.id)?'checked':''} onchange="wgbSigToggle('${u.id}')" style="width:16px;height:16px">
+          <img src="${u.signatur}" style="max-height:34px;background:#fff;border:1px solid var(--ink-10);border-radius:4px">
+          <span style="font-size:13px">${esc(u.name||'')}</span>
+        </label>`).join('')
+    : '<div style="font-size:12px;color:var(--amber)">Keine hinterlegten Unterschriften. Unter „Mein Profil“ kann eine Unterschrift hinterlegt werden. Ohne Auswahl wird ein leeres Unterschriftsfeld gedruckt.</div>';
+  showModal(`
+    <div class="m-title"><i class="ti ti-file-certificate"></i> Wohnungsgeberbescheinigung</div>
+    <div style="font-size:12px;color:var(--ink-40);margin-bottom:8px">${esc(m.mieter)} · WE ${esc(String(m.weNr||''))}</div>
+    <div class="f-section-title" style="margin-top:4px"><i class="ti ti-signature"></i> Unterschrift(en)</div>
+    <div style="font-size:11px;color:var(--ink-40);margin-bottom:6px">Eine oder zwei hinterlegte Unterschriften wählen (z. B. Alexander Nadig und Anna Pfau).</div>
+    <div id="wgbSigPick">${liste}</div>
+    <div class="f-row" style="margin-top:12px">
+      <button class="btn btn-copper btn-full" onclick="wgbDruckStart('${mieterId}')"><i class="ti ti-printer"></i> Erstellen & Drucken</button>
+      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+    </div>`);
+}
+
+function wgbSigToggle(userId){
+  const set = new Set(window._wgbSigUserIds||[]);
+  if(set.has(userId)) set.delete(userId);
+  else {
+    if(set.size>=2){ toast('Maximal zwei Unterschriften'); const cb=document.querySelector('#wgbSigPick input[value="'+userId+'"]'); if(cb) cb.checked=false; return; }
+    set.add(userId);
+  }
+  window._wgbSigUserIds=[...set];
+}
+
+async function wgbGewaehlteSignaturen(){
+  const ids=(window._wgbSigUserIds||[]).slice(0,2);
+  const out=[];
+  for(const id of ids){ const u=await idbGet('users',id).catch(()=>null); if(u&&u.signatur) out.push({name:u.name||'', signatur:u.signatur}); }
+  return out;
+}
+
+async function wgbDruckStart(mieterId){
+  const sigListe = await wgbGewaehlteSignaturen();
+  closeModal();
+  await wgbErzeugeUndDrucke(mieterId, sigListe);
+}
+
+async function wgbErzeugeUndDrucke(mieterId, sigListe) {
   const m   = await idbGet('mieter', mieterId);
   if (!m) return;
   const obj = getObj(m.objektId);
@@ -10612,14 +10664,19 @@ oder zur Verfügung zu stellen, obwohl ein tatsächlicher Bezug der Wohnung wede
 </p>
 
 <div class="sig-area">
-  <div class="sig-box">
-    <div style="height:35px"></div>
-    Ort, Datum: ${heute}<br>Unterschrift des Wohnungsgebers
-  </div>
-  <div class="sig-box">
+  ${(sigListe&&sigListe.length)
+    ? sigListe.map(sg=>`<div class="sig-box">
+        <img src="${sg.signatur}" style="max-height:48px;display:block;margin:0 auto 2px">
+        Ort, Datum: ${heute}<br>${esc(sg.name||'')} – Wohnungsgeber
+      </div>`).join('')
+    : `<div class="sig-box">
+        <div style="height:35px"></div>
+        Ort, Datum: ${heute}<br>Unterschrift des Wohnungsgebers
+      </div>`}
+  ${(sigListe&&sigListe.length>=2)?'':`<div class="sig-box">
     <div style="height:35px"></div>
     Stempel (optional)
-  </div>
+  </div>`}
 </div>
 
 <div class="footer">
@@ -15013,25 +15070,47 @@ function printViaIframe(html){
     if (old) old.remove();
     const f = document.createElement('iframe');
     f.id = 'printFrame';
-    f.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden';
+    // WICHTIG: Der iframe muss echte Druckgröße haben. Ein 0x0- bzw. hidden-iframe
+    // rendert seinen Inhalt auf Android/Samsung nicht für den Druck -> leere Seite.
+    // Daher A4-Breite, außerhalb des sichtbaren Bereichs positioniert.
+    f.style.cssText = 'position:fixed;left:-10000px;top:0;width:210mm;height:297mm;border:0;background:#fff';
+    f.setAttribute('aria-hidden','true');
     document.body.appendChild(f);
     const fd = f.contentWindow.document;
     fd.open(); fd.write(html); fd.close();
+
+    let done = false;
+    const cleanup = () => { setTimeout(()=>{ try{ f.remove(); }catch(_){} }, 1500); };
     const doPrint = () => {
-      try { f.contentWindow.focus(); f.contentWindow.print(); }
-      catch(e){ console.warn('iframe-Druck:', e); }
+      if (done) return; done = true;
+      try {
+        f.contentWindow.focus();
+        // onafterprint zum Aufräumen (wo unterstützt)
+        try { f.contentWindow.onafterprint = cleanup; } catch(_){}
+        f.contentWindow.print();
+        cleanup();
+      } catch(e){ console.warn('iframe-Druck:', e); cleanup(); }
     };
-    // Warten bis Bilder geladen sind
-    if (f.contentWindow.document.readyState === 'complete') setTimeout(doPrint, 500);
-    else f.addEventListener('load', ()=>setTimeout(doPrint, 500));
+
+    // Auf vollständiges Laden (inkl. Bilder/SVG) warten, dann drucken.
+    const win = f.contentWindow;
+    if (win.document.readyState === 'complete') {
+      setTimeout(doPrint, 400);
+    } else {
+      f.addEventListener('load', ()=>setTimeout(doPrint, 400));
+      // Sicherheits-Timeout, falls 'load' nicht feuert
+      setTimeout(doPrint, 1200);
+    }
     return true;
   } catch(e) {
     console.warn('printViaIframe fehlgeschlagen, Fallback window.open:', e);
-    const win = window.open('', '_blank');
-    if (!win) { toast('Druck nicht möglich – bitte Popups erlauben'); return false; }
-    win.document.write(html); win.document.close();
-    win.addEventListener('load', () => setTimeout(() => win.print(), 600));
-    return true;
+    try {
+      const w = window.open('', '_blank');
+      if (!w) { toast('Druck nicht möglich – bitte Popups erlauben'); return false; }
+      w.document.write(html); w.document.close();
+      w.addEventListener('load', () => setTimeout(() => { try{ w.focus(); w.print(); }catch(_){} }, 600));
+      return true;
+    } catch(e2){ toast('Druck fehlgeschlagen: '+e2.message); return false; }
   }
 }
 
