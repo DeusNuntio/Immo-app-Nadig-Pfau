@@ -718,7 +718,7 @@ button.chip.chip-active{background:var(--ink);color:#fff;border-color:var(--ink)
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=20;
-const APP_VERSION = '2026-06-15-v63';
+const APP_VERSION = '2026-06-15-v64';
 let idb=null;
 
 function openIDB(){
@@ -794,11 +794,22 @@ function idbGetAll(store,indexName,value){
     req.onerror=()=>rej(req.error);
   });
 }
-function idbPut(store,obj){
+// Stores, deren Datensätze einen frischen updatedAt bei JEDER Bearbeitung
+// brauchen, damit der Sync-Merge Konflikte korrekt auflöst.
+const _STAMP_STORES = ['mieter','users','tg'];
+// idbPut(store,obj, {keepStamp:true}) → vorhandenen Stempel NICHT überschreiben
+// (für Sync/Merge/Restore, wo der gemergte Stempel erhalten bleiben soll).
+function idbPut(store,obj,opts){
   return new Promise((res,rej)=>{
-    // updatedAt für Merge-Strategie automatisch setzen
-    if (obj && typeof obj === 'object' && !obj.updatedAt) {
-      obj.updatedAt = new Date().toISOString();
+    if (obj && typeof obj === 'object') {
+      if (opts && opts.keepStamp) {
+        if (!obj.updatedAt) obj.updatedAt = new Date().toISOString();
+      } else if (_STAMP_STORES.includes(store)) {
+        // Bei normaler Bearbeitung immer aktualisieren, damit Änderungen "gewinnen".
+        obj.updatedAt = new Date().toISOString();
+      } else if (!obj.updatedAt) {
+        obj.updatedAt = new Date().toISOString();
+      }
     }
     const tx=idb.transaction(store,'readwrite');
     const req=tx.objectStore(store).put(obj);
@@ -6921,16 +6932,16 @@ async function showMieter(id){
       ${m.telefon?`<a href="tel:${m.telefon}" class="btn btn-success"><i class="ti ti-phone"></i> Anrufen</a>`:''}
       ${m.email?`<a href="mailto:${m.email}" class="btn btn-copper"><i class="ti ti-mail"></i> E-Mail</a>`:''}
     </div>`:''}
-    ${CU?.role==='admin'&&(m.iban||m.zahlweise||m.sepaMandat)?`<div style="margin-top:10px;background:var(--ink-05);border-radius:8px;padding:10px 12px">
-      <div style="font-size:12px;font-weight:700;color:var(--ink-60);margin-bottom:6px"><i class="ti ti-building-bank"></i> Bankverbindung</div>
+    ${CU?.role==='admin'&&(m.iban||m.zahlweise||m.sepaMandat)?`<div style="margin-top:10px;background:#fff;border:1px solid var(--ink-10);border-radius:8px;padding:10px 12px;color:#1a2433">
+      <div style="font-size:12px;font-weight:700;color:#0C447C;margin-bottom:6px"><i class="ti ti-building-bank"></i> Bankverbindung</div>
       <div class="det-grid">
-        ${m.zahlweise?`<div class="det-field"><label>Zahlungsweise</label><span>${m.zahlweise==='sepa'?'SEPA-Lastschrift':'Selbstüberweisung'}</span></div>`:''}
-        ${m.kontoinhaber?`<div class="det-field"><label>Kontoinhaber</label><span>${esc(m.kontoinhaber)}</span></div>`:''}
-        ${m.iban?`<div class="det-field"><label>IBAN</label><span style="font-variant-numeric:tabular-nums">${esc(m.iban)}</span></div>`:''}
-        ${m.bic?`<div class="det-field"><label>BIC</label><span>${esc(m.bic)}</span></div>`:''}
-        ${m.sepaMandat?`<div class="det-field"><label>SEPA-Mandat</label><span>${esc(m.sepaMandat)}</span></div>`:''}
+        ${m.zahlweise?`<div class="det-field"><label style="color:#6b7280">Zahlungsweise</label><span style="color:#1a2433">${m.zahlweise==='sepa'?'SEPA-Lastschrift':'Selbstüberweisung'}</span></div>`:''}
+        ${m.kontoinhaber?`<div class="det-field"><label style="color:#6b7280">Kontoinhaber</label><span style="color:#1a2433">${esc(m.kontoinhaber)}</span></div>`:''}
+        ${m.iban?`<div class="det-field"><label style="color:#6b7280">IBAN</label><span style="font-variant-numeric:tabular-nums;letter-spacing:0.5px;color:#1a2433">${esc(fmtIban(m.iban))}</span></div>`:''}
+        ${m.bic?`<div class="det-field"><label style="color:#6b7280">BIC</label><span style="color:#1a2433">${esc(m.bic)}</span></div>`:''}
+        ${m.sepaMandat?`<div class="det-field"><label style="color:#6b7280">SEPA-Mandat</label><span style="color:#1a2433">${esc(m.sepaMandat)}</span></div>`:''}
       </div>
-      ${m.bankBemerkung?`<div style="font-size:11px;color:var(--ink-60);margin-top:6px">${esc(m.bankBemerkung)}</div>`:''}
+      ${m.bankBemerkung?`<div style="font-size:11px;color:#6b7280;margin-top:6px">${esc(m.bankBemerkung)}</div>`:''}
     </div>`:''}
     <div style="display:none"><!-- dummy --></div
       ${tg?`<div class="det-field"><label>TG-Stellplatz</label><span>Nr. ${tg.nr} · ${fmtEur(tg.miete)}/Mon.</span></div>`:''}
@@ -7852,8 +7863,7 @@ async function openArchivDok(id) {
     const html = decodeURIComponent(d.data.replace(/^data:text\/html;charset=utf-8,/, ''));
     const ok = printViaIframe(html);
     if (!ok) {
-      const win = window.open('', '_blank');
-      if (win) { win.document.write(html); win.document.close(); }
+      druckHTML(html);
     }
   } else {
     downloadDok(id);
@@ -9242,7 +9252,7 @@ h2{font-size:11px;font-weight:700;color:#1F4E79}
 <!-- EINZELBRIEFE -->
 ${briefeHTML}
 
-<scr` + `ipt>window.onload=()=>setTimeout(()=>window.print(),700)</scr` + `ipt>
+<scr` + `ipt>(function(){var p=function(){setTimeout(function(){window.focus();window.print();},700);};if(document.readyState==='complete'){p();}else{window.addEventListener('load',p);}})()</scr` + `ipt>
 </body></html>`;
 
   // Pro Mieter im Archiv ablegen (auch für ausgezogene/Vormieter abrufbar)
@@ -9256,10 +9266,7 @@ ${briefeHTML}
   }
 
   // PDF-Fenster öffnen
-  const win = window.open('', '_blank');
-  if (!win) { toast('Popup blockiert – Abrechnung wurde im Archiv gespeichert'); return; }
-  win.document.write(nkaHtml);
-  win.document.close();
+  druckHTML(nkaHtml);
 }
 
 function nkaZeile(name, schluessel, geteilt, betrag, anteil, preis, kosten) {
@@ -9896,7 +9903,7 @@ h2{font-size:11px;font-weight:700;color:#1F4E79}
   <div class="footer">Nebenkostenabrechnung ${jahr} · ${vorlage.label} · Nadig Pfau Hausverwaltung</div>
 </div>
 ${briefeHTML}
-<scr`+`ipt>window.onload=()=>setTimeout(()=>window.print(),700)</scr`+`ipt>
+<scr`+`ipt>(function(){var p=function(){setTimeout(function(){window.focus();window.print();},700);};if(document.readyState==='complete'){p();}else{window.addEventListener('load',p);}})()</scr`+`ipt>
 </body></html>`;
 
   // Je Mieter im Archiv ablegen
@@ -9909,9 +9916,7 @@ ${briefeHTML}
   }
   closeModal();
   toast(korrektur?'Korrektur gespeichert und wird gedruckt…':'NKA gespeichert und wird gedruckt…');
-  const win=window.open('','_blank');
-  if(!win){ toast('Popup blockiert – Abrechnung wurde im Archiv gespeichert'); return; }
-  win.document.write(nkaHtml); win.document.close();
+  druckHTML(nkaHtml);
 }
 
 async function renderProtokollArchiv() {
@@ -10455,10 +10460,9 @@ async function erstelleMietbescheinigung(mieterId){
   </style>`;
   const html=`<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8"><title>Mietbescheinigung – ${esc(m.mieter||'')}</title>${style}</head>
     <body>${seite1}<div class="page-break"></div>${seite2}
-    <scr`+`ipt>window.onload=()=>setTimeout(()=>window.print(),500)</scr`+`ipt></body></html>`;
+    <scr`+`ipt>(function(){var p=function(){setTimeout(function(){window.focus();window.print();},500);};if(document.readyState==='complete'){p();}else{window.addEventListener('load',p);}})()</scr`+`ipt></body></html>`;
 
-  const win=window.open('','_blank');
-  if(win){ win.document.write(html); win.document.close(); }
+  druckHTML(html);
   closeModal();
   toast('Mietbescheinigung erstellt ✓');
 }
@@ -10485,8 +10489,6 @@ async function druckeWohnungsgeberBescheinigung(mieterId) {
       <td style="border-bottom:1px solid #999;padding:4px 2px;font-size:11px;min-height:22px">${val}</td>
     </tr>`;
   }
-
-  const win = window.open('', '_blank');
 
   const wgbHtml = `<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8">
 <title>Wohnungsgeberbescheinigung – ${m.mieter}</title>
@@ -10573,7 +10575,7 @@ oder zur Verfügung zu stellen, obwohl ein tatsächlicher Bezug der Wohnung wede
   Wohnungsgeberbescheinigung gem. § 19 BMG · ${obj?.name||''} WE ${m.weNr||''} · ${m.mieter} · ${heute}
 </div>
 
-<scr` + `ipt>window.onload=()=>setTimeout(()=>window.print(),500)</scr` + `ipt>
+<scr` + `ipt>(function(){var p=function(){setTimeout(function(){window.focus();window.print();},500);};if(document.readyState==='complete'){p();}else{window.addEventListener('load',p);}})()</scr` + `ipt>
 </body></html>`;
 
   await archiviereMieterDokument({
@@ -10584,8 +10586,7 @@ oder zur Verfügung zu stellen, obwohl ein tatsächlicher Bezug der Wohnung wede
   });
 
   if (!win) { toast('WGB archiviert – Popup blockiert'); return; }
-  win.document.write(wgbHtml);
-  win.document.close();
+  druckHTML(wgbHtml);
 }
 
 
@@ -10921,9 +10922,7 @@ async function druckeBrief(mieterId, objektId) {
     briefSeiten.push({m, pageHTML});
   }
 
-  const win = window.open('', '_blank');
-  if (!win) { toast('Popup blockiert'); return; }
-  win.document.write(`<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8">
+  const _briefDruckHtml = `<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8">
 <title>Brief – ${betreff}</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
@@ -10937,9 +10936,9 @@ body{font-family:Arial,sans-serif;font-size:11px;color:#111;padding:20px}
 @media print{body{padding:0;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
 </style></head><body>
 ${briefeHTML}
-\x3cscript\x3ewindow.onload=()=>setTimeout(()=>window.print(),500)\x3c/script\x3e
-</body></html>`);
-  win.document.close();
+\x3cscript\x3e(function(){var p=function(){setTimeout(function(){window.focus();window.print();},500);};if(document.readyState==='complete'){p();}else{window.addEventListener('load',p);}})()\x3c/script\x3e
+</body></html>`;
+  druckHTML(_briefDruckHtml);
 
   // Jeden Brief beim jeweiligen Mieter archivieren
   const briefStyleHead = `<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8"><title>Brief – ${betreff}</title><style>
@@ -10953,7 +10952,7 @@ body{font-family:Arial,sans-serif;font-size:11px;color:#111;padding:20px}
 @media print{body{padding:0;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
 </style></head><body>`;
   for (const {m, pageHTML} of briefSeiten) {
-    const einzelHtml = `${briefStyleHead}${pageHTML}<scr`+`ipt>window.onload=()=>setTimeout(()=>window.print(),400)</scr`+`ipt></body></html>`;
+    const einzelHtml = `${briefStyleHead}${pageHTML}<scr`+`ipt>(function(){var p=function(){setTimeout(function(){window.focus();window.print();},400);};if(document.readyState==='complete'){p();}else{window.addEventListener('load',p);}})()</scr`+`ipt></body></html>`;
     await archiviereMieterDokument({
       mieterId: m.id, objektId: m.objektId,
       typ: 'brief',
@@ -11069,7 +11068,7 @@ body{font-family:Arial,sans-serif;background:#fff;padding:20px;max-width:190mm;m
     <div class="foot-date">${fmtD(datum)}</div>
   </div>
 </div>
-\x3cscript\x3ewindow.onload=()=>setTimeout(()=>window.print(),500)\x3c/script\x3e
+\x3cscript\x3e(function(){var p=function(){setTimeout(function(){window.focus();window.print();},500);};if(document.readyState==='complete'){p();}else{window.addEventListener('load',p);}})()\x3c/script\x3e
 </body></html>`);
   win.document.close();
 }
@@ -11956,8 +11955,6 @@ async function saveMieterhoehung(mieterId) {
                      : istModernisierung ? 'Mieterhöhungserklärung'
                      : 'Mitteilung zur Mietanpassung';
 
-  const win = window.open('', '_blank');
-
   const mhHtml = `<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8">
 <title>Mieterhöhung – ${m.mieter}</title>
 <style>
@@ -12028,7 +12025,7 @@ ${istZustimmung
 <div style="font-size:8px;color:#aaa;margin-top:16mm;padding-top:4mm;border-top:1px solid #eee">
   Mieterhöhungsschreiben · ${obj?.name||''} WE ${m.weNr} · ${m.mieter} · ${heute} · Nadig Pfau Hausverwaltung
 </div>
-\x3cscript\x3ewindow.onload=()=>setTimeout(()=>window.print(),600)\x3c/script\x3e
+\x3cscript\x3e(function(){var p=function(){setTimeout(function(){window.focus();window.print();},600);};if(document.readyState==='complete'){p();}else{window.addEventListener('load',p);}})()\x3c/script\x3e
 </body></html>`;
 
   // Im Mieter-Archiv ablegen
@@ -12040,8 +12037,7 @@ ${istZustimmung
   });
 
   if (!win) { toast('Mieterhöhung gespeichert & archiviert – Popup blockiert'); await showMieter(mieterId); return; }
-  win.document.write(mhHtml);
-  win.document.close();
+  druckHTML(mhHtml);
   await showMieter(mieterId);
   toast('Mieterhöhung gespeichert ✓');
 }
@@ -15259,7 +15255,7 @@ async function restoreMieterSnapshot(id){
   if(!snap){ toast('Sicherung nicht gefunden'); return; }
   if(!confirm(`Mieter-Stand vom ${new Date(snap.erstellt).toLocaleString('de-DE')} wiederherstellen?\n\n${snap.anzahl} Mieter (${snap.mitTelefon} mit Telefon) werden mit frischem Zeitstempel zurückgespielt und setzen sich beim Sync auf allen Geräten durch.`)) return;
   const NOW=nowIso();
-  for(const m of snap.daten){ m.updatedAt=NOW; await idbPut('mieter',m); }
+  for(const m of snap.daten){ m.updatedAt=NOW; await idbPut('mieter',m,{keepStamp:true}); }
   toast(`✓ ${snap.anzahl} Mieter wiederhergestellt`);
   clearTimeout(window._syncTimer);
   window._syncTimer=setTimeout(()=>syncToOneDrive(),2000);
@@ -15287,6 +15283,42 @@ function istPersonenObjekt(oid){
   return ['ruhrt41','mind23','mind25','kyff28','kyff30','kyff32'].includes(oid);
 }
 
+// ── Feldsicheres Zusammenführen (Datenverlust-Schutz) ──────────────
+// Gibt den Zeitstempel eines Datensatzes zurück ('' wenn keiner).
+function recStamp(r){ return r ? (r.updatedAt||r.geaendert||r.erstellt||'') : ''; }
+function _istLeer(v){ return v===undefined||v===null||v===''||(Array.isArray(v)&&v.length===0); }
+
+// Führt remote in local zusammen. Regeln:
+//  - Fehlt local komplett → remote übernehmen.
+//  - Sonst gewinnt grundsätzlich der Datensatz mit dem JÜNGEREN Zeitstempel,
+//    ABER: ein gefülltes Feld wird NIE durch ein leeres Feld der anderen
+//    Seite überschrieben. Hat eine Seite keinen Zeitstempel, verliert sie
+//    bei echten Feldkonflikten (gefüllt vs. gefüllt) gegen die Seite mit Stempel.
+//  - Felder, die nur eine Seite kennt, bleiben erhalten.
+// Liefert {merged, changed} – merged ist das zu speichernde Objekt.
+function mergeRecord(local, remote){
+  if(!local) return {merged: remote, changed:true};
+  if(!remote) return {merged: local, changed:false};
+  const ls=recStamp(local), rs=recStamp(remote);
+  // Wer ist "neuer"? Ohne Stempel = älter. Bei Gleichstand: remote (Konvention).
+  let remoteNeuer;
+  if(rs&&ls) remoteNeuer = rs>=ls;
+  else if(rs&&!ls) remoteNeuer = true;   // remote hat Stempel, local nicht
+  else if(!rs&&ls) remoteNeuer = false;  // local hat Stempel, remote nicht
+  else remoteNeuer = true;               // keiner hat Stempel
+  const primary = remoteNeuer ? remote : local;
+  const secondary = remoteNeuer ? local : remote;
+  const merged = {...secondary, ...primary};
+  // Felder zurückholen, bei denen primary leer, secondary aber gefüllt ist
+  for(const k in secondary){
+    if(_istLeer(merged[k]) && !_istLeer(secondary[k])) merged[k]=secondary[k];
+  }
+  // Stempel auf den jüngeren setzen
+  const neuerStamp = (rs>ls)?rs:ls;
+  if(neuerStamp){ if(merged.updatedAt!==undefined||rs||ls) merged.updatedAt=neuerStamp; }
+  return {merged, changed:true};
+}
+
 async function importBackup(input){
   if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
   const file=input.files[0]; if(!file) return;
@@ -15309,11 +15341,9 @@ async function importBackup(input){
           if(!backup[s]) continue;
           for(const item of backup[s]){
             if(!item||!item.id){ continue; }
-            const remoteStamp=item.updatedAt||item.geaendert||item.erstellt||'';
             const local=await idbGet(s,item.id).catch(()=>null);
-            const localStamp=local?(local.updatedAt||local.geaendert||local.erstellt||''):'';
-            const remoteAelter=(remoteStamp&&localStamp&&remoteStamp<localStamp);
-            if(!remoteAelter) await idbPut(s,item);
+            const {merged}=mergeRecord(local, item);
+            await idbPut(s,merged,{keepStamp:true});
           }
         }
       }
@@ -15624,11 +15654,9 @@ async function syncFromOneDrive() {
           const remoteStamp = item.geaendert||item.updatedAt||item.erstellt||'';
           if (tombS[item.id] && !(remoteStamp && remoteStamp > tombS[item.id])) continue;
           const local = await idbGet(s, item.id).catch(()=>null);
-          const localStamp  = local ? (local.geaendert||local.updatedAt||local.erstellt||'') : '';
-          const remoteAelter = (remoteStamp && localStamp && remoteStamp < localStamp);
-          if (!remoteAelter) {
-            await idbPut(s, item);
-          }
+          // Feldsicher zusammenführen: gefüllte Werte werden nie durch leere überschrieben.
+          const {merged} = mergeRecord(local, item);
+          await idbPut(s, merged,{keepStamp:true});
         }
       }
       // Stammdaten (users, mieter, tg) datensatzweise per Zeitstempel mergen.
@@ -15647,23 +15675,23 @@ async function syncFromOneDrive() {
           if (tombS[item.id] && !(remoteStamp && remoteStamp > tombS[item.id])) continue;
           const local = await idbGet(s, item.id).catch(()=>null);
           const localStamp = local ? (local.updatedAt||local.geaendert||local.erstellt||'') : '';
-          // Übernehmen, wenn lokal fehlt ODER lokal keinen Stempel hat ODER
-          // remote keinen/gleichen/neueren Stempel hat. Nur wenn beide Stempel
-          // existieren und remote ÄLTER ist, behalten wir den lokalen Stand.
-          const remoteAelter = (remoteStamp && localStamp && remoteStamp < localStamp);
-          // Konfliktprotokoll: nur wenn lokal vorhanden und Stempel sich unterscheiden
+          // Feldsicher zusammenführen statt pauschal ersetzen: kein gefülltes
+          // Feld wird durch ein leeres überschrieben; bei echten Konflikten
+          // gewinnt der jüngere Zeitstempel, eine stempel-lose Seite verliert.
+          const {merged} = mergeRecord(local, item);
+          // Konfliktprotokoll mit Wiederherstellungs-Info: nur bei echtem Feldkonflikt
           if (local && localStamp && remoteStamp && remoteStamp !== localStamp) {
+            const remoteAelter = (remoteStamp < localStamp);
             await logSyncKonflikt({
               store:s, recId:item.id,
               name:item.mieter||item.name||item.id,
               aktion: remoteAelter ? 'lokal behalten (remote älter)' : 'übernommen von remote',
               lokalStamp:localStamp, remoteStamp,
               von:backup.updatedBy||'unbekannt',
+              snapshotLokal: local, snapshotRemote: item,
             });
           }
-          if (!remoteAelter) {
-            await idbPut(s, item);
-          }
+          await idbPut(s, merged,{keepStamp:true});
         }
         // Lokale Datensätze, die remote fehlen, NICHT automatisch löschen –
         // nur echte Tombstones löschen (oben bereits erledigt). So bleiben lokal
@@ -15905,6 +15933,37 @@ function esc(v){
 }
 function today(){return new Date().toISOString().split('T')[0];}
 function now(){return new Date().toLocaleString('de-DE');}
+// IBAN in 4er-Gruppen darstellen: DE88 3125 1220 1401 2572 07
+function fmtIban(iban){
+  if(!iban) return '';
+  const clean=String(iban).replace(/\s+/g,'').toUpperCase();
+  return clean.replace(/(.{4})/g,'$1 ').trim();
+}
+
+// Robustes Öffnen einer Druckansicht. document.write nach window.open zeigt in
+// manchen Browsern (v. a. mobil) nur eine weiße Seite, weil window.onload bereits
+// gefeuert hat und das eingebettete Druckskript nicht mehr ausgelöst wird.
+// Lösung: Inhalt als Blob-URL öffnen; der Druckdialog wird unten im HTML
+// per mehrfach abgesichertem Auslöser gestartet. Liefert true bei Erfolg.
+function druckHTML(html){
+  try{
+    const blob=new Blob([html],{type:'text/html'});
+    const url=URL.createObjectURL(blob);
+    const win=window.open(url,'_blank');
+    if(!win){ URL.revokeObjectURL(url); toast('Popup blockiert – bitte Popups erlauben'); return false; }
+    // URL nach einiger Zeit freigeben (nicht sofort, sonst lädt die Seite nicht)
+    setTimeout(()=>{ try{ URL.revokeObjectURL(url); }catch(_){} }, 60000);
+    return true;
+  }catch(e){
+    // Fallback: klassisch document.write
+    try{
+      const win=window.open('','_blank');
+      if(!win){ toast('Popup blockiert'); return false; }
+      win.document.write(html); win.document.close();
+      return true;
+    }catch(e2){ toast('Druck fehlgeschlagen: '+e2.message); return false; }
+  }
+}
 function fmtDate(v){
   if(!v) return '–';
   if(/^\d{4}-\d{2}-\d{2}/.test(v)) return new Date(v).toLocaleDateString('de-DE');
