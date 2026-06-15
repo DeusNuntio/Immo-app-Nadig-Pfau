@@ -718,7 +718,7 @@ button.chip.chip-active{background:var(--ink);color:#fff;border-color:var(--ink)
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=20;
-const APP_VERSION = '2026-06-15-v68';
+const APP_VERSION = '2026-06-15-v69';
 let idb=null;
 
 function openIDB(){
@@ -6743,13 +6743,15 @@ async function renderObjMieter(el){
   mieter.forEach(m=>{
     const ini=initials(m.mieter);
     const pers=personenAnzahl(m);
-    const namen=ersteZweiNamen(m);
     const personen=personenVon(m);
     const alleVerstorben=!m.leerstand && personen.length>0 && personen.every(p=>p.verstorben);
-    // Anzeigename: erste zwei Personen nebeneinander, sonst Hauptname
-    const anzeigeName = namen.length>1
-      ? namen.join(' · ')
-      : (namen[0]||m.mieter);
+    // Anzeigename (Punkt 6): Nachname(n) der Vertragspartner. Fallback auf bisherige
+    // Logik (erste zwei Personen), falls keine Vertragspartner markiert sind.
+    const vpNachnamen = hauptmieterNachnamen(m);
+    const namen=ersteZweiNamen(m);
+    const anzeigeName = vpNachnamen
+      ? vpNachnamen
+      : (namen.length>1 ? namen.join(' · ') : (namen[0]||m.mieter));
     h+=`<div class="mieter-row${alleVerstorben?' mieter-verstorben':''}" onclick="showMieter('${m.id}')">
       <div class="m-avatar">${ini}</div>
       <div class="m-body">
@@ -10634,8 +10636,9 @@ oder zur Verfügung zu stellen, obwohl ein tatsächlicher Bezug der Wohnung wede
     html: wgbHtml,
   });
 
-  if (!win) { toast('WGB archiviert – Popup blockiert'); return; }
-  druckHTML(wgbHtml);
+  // druckHTML übernimmt das Öffnen inkl. Popup-Prüfung
+  const ok = druckHTML(wgbHtml);
+  toast(ok ? 'Wohnungsgeberbescheinigung erstellt ✓' : 'WGB archiviert – Druck im Dokumentenarchiv abrufbar');
 }
 
 
@@ -10881,6 +10884,65 @@ function adressNachnamenVertrag(m){
   return adressNachnamen(m);
 }
 
+// Nachname aus "Nachname, Vorname" oder "Vorname Nachname" extrahieren
+function nachnameAus(name){
+  let n=(name||'').trim();
+  if(!n) return '';
+  if(n.includes(',')) return n.split(',')[0].trim();
+  const teile=n.split(/\s+/);
+  return teile.length>1 ? teile[teile.length-1] : n;
+}
+
+// Anzeigename für Übersicht/Listen: Nachname(n) ALLER Vertragspartner (lebend).
+// Fallback: erste lebende Person bzw. bisheriger m.mieter.
+function hauptmieterNachnamen(m){
+  const lebend=(m.personen_liste||[]).filter(p=>p && p.name && !p.verstorben);
+  const vp=lebend.filter(p=>p.vertragspartner);
+  const basis = vp.length ? vp : (lebend.length ? [lebend[0]] : []);
+  if(!basis.length) return nachnameAus(m.mieter) || (m.mieter||'');
+  // doppelte Nachnamen (z. B. Eheleute) zusammenfassen
+  const namen=[...new Set(basis.map(p=>nachnameAus(p.name)).filter(Boolean))];
+  if(namen.length<=1) return namen[0]||'';
+  if(namen.length===2) return namen.join(' und ');
+  return namen.slice(0,-1).join(', ')+' und '+namen[namen.length-1];
+}
+
+// Brief-Anrede mit NACHNAMEN der Vertragspartner (Punkt 4):
+// "Sehr geehrter Herr Müller", "Sehr geehrte Frau Schmidt und Herr Schmidt", …
+function getAnredeVertragNachname(m){
+  const vp = vertragspartnerVon(m);
+  const pfxName = p => {
+    const nn = nachnameAus(p.name);
+    if(p.anrede === 'Frau')   return 'Frau ' + nn;
+    if(p.anrede === 'Divers') return nn;
+    return 'Herr ' + nn;
+  };
+  if(!vp.length) return 'Sehr geehrte Damen und Herren';
+  if(vp.length === 1){
+    const p = vp[0];
+    if(p.anrede === 'Divers') return 'Guten Tag, ' + nachnameAus(p.name);
+    return (p.anrede === 'Frau' ? 'Sehr geehrte ' : 'Sehr geehrter ') + pfxName(p);
+  }
+  // mehrere Vertragspartner: korrektes Genus für die erste Person
+  const erste = vp[0];
+  const kopf = (erste.anrede === 'Frau' ? 'Sehr geehrte ' : 'Sehr geehrter ') + pfxName(erste);
+  const rest = vp.slice(1).map(pfxName);
+  if(rest.length === 1) return kopf + ' und ' + rest[0];
+  return kopf + ', ' + rest.slice(0,-1).join(', ') + ' und ' + rest[rest.length-1];
+}
+
+// Volle Namen der Vertragspartner für das Anschriftenfeld (je Zeile eine Person)
+function adressVollNamenVertrag(m){
+  const vp = vertragspartnerVon(m);
+  const zeile = p => {
+    const anr = p.anrede==='Frau' ? 'Frau ' : p.anrede==='Divers' ? '' : 'Herr ';
+    return anr + (p.name||'');
+  };
+  const namen = vp.map(zeile).map(x=>x.trim()).filter(Boolean);
+  if(!namen.length) return esc(m.mieter||'');
+  return namen.map(esc).join('<br>');
+}
+
 // ── Briefeditor ──────────────────────────────────────────────
 async function modalBrief(mieterId, objektId) {
   let mieter = [];
@@ -10916,7 +10978,7 @@ async function modalBrief(mieterId, objektId) {
     <div class="f"><label>Datum</label>
       <input type="date" id="briefDatum" value="${today()}"></div>
     <div class="f"><label>Anrede</label>
-      <input type="text" id="briefAnrede" value="${mieterId&&mieter[0]?getAnrede(mieter[0]):'Sehr geehrte Damen und Herren'}"></div>
+      <input type="text" id="briefAnrede" value="${mieterId&&mieter[0]?getAnredeVertragNachname(mieter[0]):'Sehr geehrte Damen und Herren'}"></div>
     <div class="f"><label>Inhalt *</label>
       <textarea spellcheck="true" lang="de" id="briefText" style="min-height:140px" placeholder="Text des Schreibens..."></textarea></div>
     <div class="f"><label>Grußformel</label>
@@ -10979,7 +11041,7 @@ async function druckeBrief(mieterId, objektId) {
   let briefeHTML = '';
   const briefSeiten = []; // {m, pageHTML} je Empfänger für Archivierung
   for (const m of empfaenger) {
-    const empfAnrede = empfSel === 'all' ? getAnrede(m) : anrede;
+    const empfAnrede = empfSel === 'all' ? getAnredeVertragNachname(m) : anrede;
     const pageHTML = `
     <div class="page">
       <div class="bk-box">
@@ -11001,7 +11063,7 @@ async function druckeBrief(mieterId, objektId) {
         <div class="bk-right">
           <div style="font-size:7px;color:#999;text-decoration:underline;margin-bottom:2mm">${abs.name}${abs.strasse?' · '+abs.strasse+' · '+abs.ort:''}</div>
           <div style="font-size:10px;line-height:1.7">
-            <strong>${m.mieter}</strong><br>
+            <strong>${adressVollNamenVertrag(m)}</strong><br>
             ${m._vormieter&&m.neueAdresse?m.neueAdresse.replace(/\n/g,'<br>'):`${obj?.name||m.objekt||''}<br>
             WE ${m.weNr}${m.etage?' · '+m.etage:''}<br>
             ${obj?.ort||''}`}
@@ -11027,9 +11089,9 @@ async function druckeBrief(mieterId, objektId) {
 body{font-family:Arial,sans-serif;font-size:11px;color:#111;padding:20px}
 .page{page-break-after:always;padding-bottom:20px}
 .page:last-child{page-break-after:avoid}
-.bk-box{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:0}
-.bk-left{width:85mm;padding-top:5mm}
-.bk-right{width:85mm;padding-top:45mm;text-align:left}
+.bk-box{display:flex;flex-direction:row;justify-content:space-between;align-items:flex-start;margin-bottom:0;width:100%}
+.bk-left{flex:0 0 85mm;width:85mm;padding-top:5mm;order:0}
+.bk-right{flex:0 0 85mm;width:85mm;padding-top:45mm;text-align:left;order:1}
 @page{margin:1.5cm;size:A4}
 @media print{body{padding:0;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
 </style></head><body>
@@ -11043,9 +11105,9 @@ ${briefeHTML}
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:Arial,sans-serif;font-size:11px;color:#111;padding:20px}
 .page{padding-bottom:20px}
-.bk-box{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:0}
-.bk-left{width:85mm;padding-top:5mm}
-.bk-right{width:85mm;padding-top:45mm;text-align:left}
+.bk-box{display:flex;flex-direction:row;justify-content:space-between;align-items:flex-start;margin-bottom:0;width:100%}
+.bk-left{flex:0 0 85mm;width:85mm;padding-top:5mm;order:0}
+.bk-right{flex:0 0 85mm;width:85mm;padding-top:45mm;text-align:left;order:1}
 @page{margin:1.5cm;size:A4}
 @media print{body{padding:0;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
 </style></head><body>`;
@@ -11120,10 +11182,8 @@ function druckeAushang(objektId) {
   }[stil] || {bg:'#EEF4FB', border:'#185FA5', head:'#0C447C'};
 
   closeModal();
-  const win = window.open('', '_blank');
-  if (!win) { toast('Popup blockiert'); return; }
 
-  win.document.write(`<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8">
+  const _aushangHtml = `<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8">
 <title>Aushang – ${titel}</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
@@ -11167,8 +11227,8 @@ body{font-family:Arial,sans-serif;background:#fff;padding:20px;max-width:190mm;m
   </div>
 </div>
 \x3cscript\x3e(function(){var p=function(){setTimeout(function(){window.focus();window.print();},500);};if(document.readyState==='complete'){p();}else{window.addEventListener('load',p);}})()\x3c/script\x3e
-</body></html>`);
-  win.document.close();
+</body></html>`;
+  druckHTML(_aushangHtml);
 }
 
 
@@ -12270,7 +12330,6 @@ ${istZustimmung
     html: mhHtml,
   });
 
-  if (!win) { toast('Mieterhöhung gespeichert & archiviert – Popup blockiert'); await showMieter(mieterId); return; }
   druckHTML(mhHtml);
   await showMieter(mieterId);
   toast('Mieterhöhung gespeichert ✓');
@@ -13507,11 +13566,8 @@ async function modalMieterSplit(id){
     </div>
     <div id="splitListe"></div>
     <button class="btn btn-sm" style="margin:4px 0 12px" onclick="splitAddRow()"><i class="ti ti-user-plus"></i> Person hinzufügen</button>
-    <div class="f">
-      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px">
-        <input type="checkbox" id="splitNameUebernehmen" checked style="width:16px;height:16px">
-        Haupt-Mietername auf erste Person setzen
-      </label>
+    <div style="font-size:11px;color:var(--ink-40);margin:2px 0 6px">
+      <i class="ti ti-info-circle"></i> In Übersicht und Listen erscheint automatisch der/die Nachname(n) der als <strong>Vertragspartner</strong> markierten Personen.
     </div>
     <div style="border-top:1px solid var(--ink-10);margin:12px 0 8px;padding-top:10px">
       <div style="font-size:12px;font-weight:600;color:var(--ink-60);margin-bottom:6px"><i class="ti ti-heart-handshake"></i> Pflege-/Zusatzkontakt (optional)</div>
@@ -13616,15 +13672,17 @@ async function saveMieterSplit(id){
   // Personenzahl = lebende Personen
   const lebend=personen.filter(p=>!p.verstorben);
   m.personen=lebend.length||personen.length;
-  if(document.getElementById('splitNameUebernehmen')?.checked){
-    const erster=(lebend[0]||personen[0]);
-    m.mieter=erster.name;
-    if(erster.anrede) m.anrede=erster.anrede;
-  }
-  // Kontaktdaten des Mieters auf erste lebende Person spiegeln (für Listen/Altfunktionen)
-  const haupt=lebend[0]||personen[0];
-  if(haupt.telefon) m.telefon=haupt.telefon;
-  if(haupt.email) m.email=haupt.email;
+  // Anzeigename = Nachname(n) der Vertragspartner (Punkt 1/6). Immer automatisch,
+  // damit Übersicht und Listen konsistent bleiben. Volle Namen stehen in personen_liste.
+  m.mieter = hauptmieterNachnamen(m) || (lebend[0]||personen[0]).name;
+  // Anrede der ersten Vertragspartei (für Altfunktionen)
+  const vpListe = lebend.filter(p=>p.vertragspartner);
+  const ersterVp = vpListe[0] || lebend[0] || personen[0];
+  if(ersterVp?.anrede) m.anrede=ersterVp.anrede;
+  // Kontaktdaten des Mieters auf erste Vertragspartei/erste lebende Person spiegeln
+  const haupt=ersterVp;
+  if(haupt?.telefon) m.telefon=haupt.telefon;
+  if(haupt?.email) m.email=haupt.email;
   // Pflege-/Zusatzkontakt
   const zkName=document.getElementById('zkName')?.value.trim()||'';
   if(zkName){
@@ -16538,20 +16596,23 @@ function fmtIban(iban){
 // Lösung: Inhalt als Blob-URL öffnen; der Druckdialog wird unten im HTML
 // per mehrfach abgesichertem Auslöser gestartet. Liefert true bei Erfolg.
 function druckHTML(html){
+  // Zuverlässiger Druck über verstecktes iframe (gleiche Herkunft wie die App).
+  // Blob-/Popup-Tabs drucken auf Android/Samsung häufig eine leere Seite, weil
+  // window.print() im Blob-Kontext den Body nicht rechtzeitig rendert.
+  // Das in den Druckvorlagen eingebettete Auto-Print-Script wird entfernt,
+  // da printViaIframe den Druck nach dem load-Event selbst auslöst.
   try{
-    const blob=new Blob([html],{type:'text/html'});
-    const url=URL.createObjectURL(blob);
-    const win=window.open(url,'_blank');
-    if(!win){ URL.revokeObjectURL(url); toast('Popup blockiert – bitte Popups erlauben'); return false; }
-    // URL nach einiger Zeit freigeben (nicht sofort, sonst lädt die Seite nicht)
-    setTimeout(()=>{ try{ URL.revokeObjectURL(url); }catch(_){} }, 60000);
-    return true;
+    const clean = html.replace(/<scr(?:ipt|.)*?focus\(\);window\.print\(\)[\s\S]*?<\/scr.{0,3}ipt>/gi, '')
+                      .replace(/\\x3cscript[\s\S]*?focus\(\);window\.print\(\)[\s\S]*?\\x3c\/script\\x3e/gi, '');
+    return printViaIframe(clean);
   }catch(e){
-    // Fallback: klassisch document.write
+    console.warn('druckHTML/iframe fehlgeschlagen, Fallback:', e);
     try{
-      const win=window.open('','_blank');
-      if(!win){ toast('Popup blockiert'); return false; }
-      win.document.write(html); win.document.close();
+      const blob=new Blob([html],{type:'text/html'});
+      const url=URL.createObjectURL(blob);
+      const win=window.open(url,'_blank');
+      if(!win){ URL.revokeObjectURL(url); toast('Popup blockiert – bitte Popups erlauben'); return false; }
+      setTimeout(()=>{ try{ URL.revokeObjectURL(url); }catch(_){} }, 60000);
       return true;
     }catch(e2){ toast('Druck fehlgeschlagen: '+e2.message); return false; }
   }
