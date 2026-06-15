@@ -718,7 +718,7 @@ button.chip.chip-active{background:var(--ink);color:#fff;border-color:var(--ink)
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=20;
-const APP_VERSION = '2026-06-15-v64';
+const APP_VERSION = '2026-06-15-v65';
 let idb=null;
 
 function openIDB(){
@@ -14883,6 +14883,7 @@ async function renderSettings(){
       </p>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn btn-copper" onclick="syncFromOneDrive()"><i class="ti ti-refresh"></i> Jetzt synchronisieren</button>
+        <button class="btn btn-sm" onclick="syncFromOneDriveForce()"><i class="ti ti-cloud-download"></i> Vom Server laden (erzwingen)</button>
         <button class="btn btn-sm btn-danger" onclick="msalLogout()"><i class="ti ti-logout"></i> Microsoft-Konto abmelden</button>
       </div>` : `
       <p style="font-size:13px;color:var(--ink-40);margin-bottom:12px;line-height:1.6">
@@ -15574,7 +15575,7 @@ async function syncToOneDrive() {
     for (const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','versorger_archiv','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch','sync_log']) {
       backup[s] = await idbGetAll(s);
     }
-    backup.updatedAt = now();
+    backup.updatedAt = new Date().toISOString();
     backup.updatedBy = odTokens?.user_name || 'Unbekannt';
     // Tombstones (geräteübergreifend gelöschte Datensätze) mitführen, damit sie nicht zurückgemergt werden
     try { const tomb=await idbGet('settings','tombstones'); backup.tombstones = tomb?.value || {}; } catch(e){ backup.tombstones={}; }
@@ -15598,6 +15599,16 @@ async function syncToOneDrive() {
 };
 
 // ── Sync von OneDrive ─────────────────────────────────────
+// Erzwingt den Download vom Server (umgeht den Zeitstempel-Vergleich).
+// Nützlich, wenn ein Gerät einen falschen lastSync-Stand hat und deshalb
+// neuere Server-Daten nicht zieht. Der Merge bleibt feldsicher.
+async function syncFromOneDriveForce(){
+  if(!confirm('Daten vom Server (OneDrive) laden und mit den lokalen Daten zusammenführen?\n\nGefüllte Felder werden dabei nicht durch leere überschrieben.')) return;
+  window._forceSyncDownload = true;
+  try { await syncFromOneDrive(); }
+  finally { window._forceSyncDownload = false; }
+}
+
 async function syncFromOneDrive() {
   const token = await odGetToken();
   if (!token) return;
@@ -15611,7 +15622,19 @@ async function syncFromOneDrive() {
     const remoteTime = backup.updatedAt||'';
     const ls = await idbGet('settings','lastSync').catch(()=>null);
     const localTime  = ls?.value||'';
-    if (remoteTime > localTime) {
+    // Robust: echten Zeitwert bilden. Deutsches Format ("15.6.2026, 14:07")
+    // in ein vergleichbares Datum wandeln; ISO bleibt ISO. Bei Unklarheit
+    // lieber synchronisieren als überspringen (remoteVal=Infinity-Fallback).
+    function _zeitWert(t){
+      if(!t) return 0;
+      if(/^\d{4}-\d{2}-\d{2}T/.test(t)) return new Date(t).getTime();
+      // deutsches Format TT.M.JJJJ, HH:MM[:SS]
+      const m=String(t).match(/(\d{1,2})\.(\d{1,2})\.(\d{4})[,\s]+(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+      if(m) return new Date(+m[3],+m[2]-1,+m[1],+m[4],+m[5],+(m[6]||0)).getTime();
+      const d=Date.parse(t); return isNaN(d)?0:d;
+    }
+    const remoteVal=_zeitWert(remoteTime), localVal=_zeitWert(localTime);
+    if (window._forceSyncDownload || remoteVal > localVal || (remoteTime && remoteTime!==localTime && remoteVal===0)) {
       // Sicherung des aktuellen Mieter-Stands, bevor Remote-Daten einfließen
       await erstelleMieterSnapshot('sync');
       // Tombstones zusammenführen (lokal + remote): {store: {id: loeschZeitpunkt}}
