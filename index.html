@@ -379,6 +379,21 @@ button.chip.chip-active{background:var(--ink);color:#fff;border-color:var(--ink)
   .app-body{padding-bottom:0!important;overflow:visible!important}
   .page{display:block!important}
 }
+/* In-Page-Druckmodus: ganze App verbergen, nur #printRoot drucken */
+#printRoot{display:none}
+body.printing-active{overflow:visible!important}
+body.printing-active #appScreen,
+body.printing-active #loginScreen,
+body.printing-active .modal-bg,
+body.printing-active #installBanner,
+body.printing-active #splash{display:none!important}
+body.printing-active #printRoot{display:block!important}
+@media print{
+  body.printing-active #appScreen,
+  body.printing-active #loginScreen,
+  body.printing-active .modal-bg{display:none!important}
+  body.printing-active #printRoot{display:block!important}
+}
 
 /* ── SUCHE & FILTER ── */
 .search-bar{display:flex;gap:8px;margin-bottom:12px;align-items:center}
@@ -680,6 +695,9 @@ button.chip.chip-active{background:var(--ink);color:#fff;border-color:var(--ink)
 <!-- FAB -->
 <button class="fab" id="fab" onclick="fabAction()"><i class="ti ti-plus" id="fabIcon"></i></button>
 
+<!-- DRUCK-CONTAINER (In-Page-Druck, zuverlässig auf Android/PWA) -->
+<div id="printRoot" aria-hidden="true"></div>
+
 
 <!-- FOTO OVERLAY (Vollbild) -->
 <div class="foto-overlay" id="fotoOverlay" onclick="closeFotoOverlay()">
@@ -718,7 +736,7 @@ button.chip.chip-active{background:var(--ink);color:#fff;border-color:var(--ink)
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=20;
-const APP_VERSION = '2026-06-15-v70';
+const APP_VERSION = '2026-06-15-v71';
 let idb=null;
 
 function openIDB(){
@@ -10665,17 +10683,17 @@ oder zur Verfügung zu stellen, obwohl ein tatsächlicher Bezug der Wohnung wede
 
 <div class="sig-area">
   ${(sigListe&&sigListe.length)
-    ? sigListe.map(sg=>`<div class="sig-box">
-        <img src="${sg.signatur}" style="max-height:48px;display:block;margin:0 auto 2px">
-        Ort, Datum: ${heute}<br>${esc(sg.name||'')} – Wohnungsgeber
+    ? sigListe.map(sg=>`<div class="sig-box" style="border-top:none">
+        <img src="${sg.signatur}" style="max-height:46px;display:block;margin:0 auto -2px;position:relative;z-index:1">
+        <div style="border-top:1px solid #333;padding-top:4px">Ort, Datum: ${heute}<br>${esc(sg.name||'')} – Wohnungsgeber</div>
       </div>`).join('')
-    : `<div class="sig-box">
-        <div style="height:35px"></div>
-        Ort, Datum: ${heute}<br>Unterschrift des Wohnungsgebers
+    : `<div class="sig-box" style="border-top:none">
+        <div style="height:38px"></div>
+        <div style="border-top:1px solid #333;padding-top:4px">Ort, Datum: ${heute}<br>Unterschrift des Wohnungsgebers</div>
       </div>`}
-  ${(sigListe&&sigListe.length>=2)?'':`<div class="sig-box">
-    <div style="height:35px"></div>
-    Stempel (optional)
+  ${(sigListe&&sigListe.length>=2)?'':`<div class="sig-box" style="border-top:none">
+    <div style="height:38px"></div>
+    <div style="border-top:1px solid #333;padding-top:4px">Stempel (optional)</div>
   </div>`}
 </div>
 
@@ -16675,17 +16693,63 @@ function fmtIban(iban){
 // Lösung: Inhalt als Blob-URL öffnen; der Druckdialog wird unten im HTML
 // per mehrfach abgesichertem Auslöser gestartet. Liefert true bei Erfolg.
 function druckHTML(html){
-  // Zuverlässiger Druck über verstecktes iframe (gleiche Herkunft wie die App).
-  // Blob-/Popup-Tabs drucken auf Android/Samsung häufig eine leere Seite, weil
-  // window.print() im Blob-Kontext den Body nicht rechtzeitig rendert.
-  // Das in den Druckvorlagen eingebettete Auto-Print-Script wird entfernt,
-  // da printViaIframe den Druck nach dem load-Event selbst auslöst.
+  // IN-PAGE-DRUCK: Der zuverlässigste Weg auf Android/Samsung-PWAs.
+  // iframe- und Blob-Tab-Druck liefern dort oft eine leere Seite, weil der
+  // Browser beim Drucken den falschen (leeren) Body verwendet. Stattdessen
+  // schreiben wir Inhalt + Styles der Druckvorlage in #printRoot der Hauptseite,
+  // blenden per CSS-Klasse 'printing-active' die App aus und drucken das
+  // aktuelle Fenster. Damit druckt der Browser garantiert den sichtbaren Inhalt.
   try{
-    const clean = html.replace(/<scr(?:ipt|.)*?focus\(\);window\.print\(\)[\s\S]*?<\/scr.{0,3}ipt>/gi, '')
-                      .replace(/\\x3cscript[\s\S]*?focus\(\);window\.print\(\)[\s\S]*?\\x3c\/script\\x3e/gi, '');
-    return printViaIframe(clean);
+    const root = document.getElementById('printRoot');
+    if(!root) throw new Error('printRoot fehlt');
+
+    // <style>-Blöcke aus der Vorlage extrahieren
+    let styles = '';
+    const styleRe = /<style[^>]*>([\s\S]*?)<\/style>/gi;
+    let mt;
+    while((mt = styleRe.exec(html)) !== null){ styles += mt[1] + '\n'; }
+
+    // Body-Inhalt extrahieren (zwischen <body> und </body>)
+    let body = html;
+    const bm = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+    if(bm) body = bm[1];
+    // eingebettete Auto-Print-Scripts entfernen (wir drucken selbst)
+    body = body.replace(/<scr(?:ipt|.)*?>[\s\S]*?window\.print\(\)[\s\S]*?<\/scr.{0,3}ipt>/gi, '')
+               .replace(/<scr(?:ipt|.)*?>[\s\S]*?<\/scr.{0,3}ipt>/gi, '');
+
+    // @page- und @media-Regeln dürfen NICHT in @media print verschachtelt werden
+    // (Browser ignorieren das teils). Daher separat ausgeben, den Rest in @media print.
+    let atRules = '';
+    let rest = styles;
+    rest = rest.replace(/@media[^{]*\{[\s\S]*?\}\s*\}/gi, m => { atRules += m + '\n'; return ''; });
+    rest = rest.replace(/@page[^{]*\{[\s\S]*?\}/gi, m => { atRules += m + '\n'; return ''; });
+    // body-Regeln der Vorlage auf #printRoot umlenken, sonst wirken sie beim Druck
+    // auf die App-Seite (falsche Ränder). 'body' am Selektor-Anfang -> '#printRoot'.
+    rest = rest.replace(/(^|,|\})\s*body\b/gi, '$1 #printRoot');
+
+    // Styles der Vorlage NUR im Druckmodus wirksam machen, damit globale Regeln
+    // (z. B. *{margin:0} oder body{...}) die App-Oberfläche nicht zerschießen.
+    root.innerHTML = '<style>'+atRules+'\n@media print{'+rest+'}</style>'+body;
+
+    document.body.classList.add('printing-active');
+
+    const cleanup = () => {
+      document.body.classList.remove('printing-active');
+      root.innerHTML = '';
+      window.onafterprint = null;
+    };
+    window.onafterprint = cleanup;
+
+    // kurze Verzögerung, damit Layout/SVG/Bilder stehen, dann drucken
+    setTimeout(()=>{
+      try{ window.focus(); window.print(); }
+      catch(e){ console.warn('window.print:', e); }
+      // Sicherheits-Cleanup, falls onafterprint nicht feuert
+      setTimeout(cleanup, 1500);
+    }, 350);
+    return true;
   }catch(e){
-    console.warn('druckHTML/iframe fehlgeschlagen, Fallback:', e);
+    console.warn('In-Page-Druck fehlgeschlagen, Fallback:', e);
     try{
       const blob=new Blob([html],{type:'text/html'});
       const url=URL.createObjectURL(blob);
