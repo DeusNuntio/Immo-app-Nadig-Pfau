@@ -111,6 +111,12 @@ body{background:var(--surface);color:var(--ink);font-size:15px;-webkit-font-smoo
 /* ── CARDS ── */
 .card{background:var(--white);border-radius:var(--radius-lg);border:1px solid var(--ink-10);padding:16px;margin-bottom:12px;box-shadow:var(--shadow)}
 .card-hdr{font-size:12px;font-weight:600;color:var(--ink-40);text-transform:uppercase;letter-spacing:.6px;margin-bottom:12px;display:flex;align-items:center;gap:6px}
+.bb-chips{display:flex;gap:6px;overflow-x:auto;padding:2px 0;-webkit-overflow-scrolling:touch}
+.bb-chip{flex:0 0 auto;padding:5px 11px;border:1px solid var(--ink-10);border-radius:16px;background:var(--white);color:var(--ink-60);font-size:12px;font-weight:500;cursor:pointer;white-space:nowrap}
+.bb-chip.active{background:#0C447C;color:#fff;border-color:#0C447C}
+.bb-card{background:var(--white);border:1px solid var(--ink-10);border-radius:12px;padding:12px;margin-bottom:8px;box-shadow:var(--shadow)}
+.bb-card.bb-notdienst{border-left:3px solid var(--red)}
+.bb-badge{display:inline-block;background:var(--red-l);color:var(--red);font-size:10px;font-weight:600;padding:1px 7px;border-radius:10px;margin-left:6px;vertical-align:middle}
 .settings-card{background:var(--white);border-radius:var(--radius-lg);border:1px solid var(--ink-10);padding:16px;margin-bottom:12px;box-shadow:var(--shadow)}
 .settings-tabs{display:flex;gap:4px;margin-bottom:14px;position:sticky;top:0;z-index:5;background:var(--bg,#f4f5f7);padding:4px 0}
 .st-tab{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;padding:8px 4px;border:1px solid var(--ink-10);border-radius:10px;background:var(--white);color:var(--ink-40);font-size:11px;font-weight:600;cursor:pointer;transition:all .15s}
@@ -639,6 +645,7 @@ button.chip.chip-active{background:var(--ink);color:#fff;border-color:var(--ink)
     <div id="page-urlaub" class="page"></div>
     <div id="page-rechnungen" class="page"></div>
     <div id="page-settings" class="page"></div>
+    <div id="page-branchenbuch" class="page"><div id="branchenbuchView" data-view="branchenbuch"></div></div>
   </div>
 
   <div class="bottom-nav">
@@ -710,8 +717,8 @@ button.chip.chip-active{background:var(--ink);color:#fff;border-color:var(--ink)
 /* ═══════════════════════════════════════════════════════════
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
-const DB_NAME='immo_v2', DB_VER=18;
-const APP_VERSION = '2026-06-14-v60';
+const DB_NAME='immo_v2', DB_VER=19;
+const APP_VERSION = '2026-06-14-v62';
 let idb=null;
 
 function openIDB(){
@@ -724,7 +731,7 @@ function openIDB(){
     const req=indexedDB.open(DB_NAME,DB_VER);
     req.onupgradeneeded=e=>{
       const db=e.target.result;
-      ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','fotos','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','sync_log','mieter_snapshots'].forEach(s=>{
+      ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','fotos','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','sync_log','mieter_snapshots','branchenbuch'].forEach(s=>{
         if(!db.objectStoreNames.contains(s)){
           const store=db.createObjectStore(s,{keyPath:'id'});
           if(s==='mieter'){store.createIndex('objektId','objektId');store.createIndex('weNr','weNr')}
@@ -741,6 +748,7 @@ function openIDB(){
           if(s==='zaehler'){store.createIndex('objektId','objektId')}
           if(s==='zaehlerstaende'){store.createIndex('objektId','objektId');store.createIndex('zaehlerId','zaehlerId')}
           if(s==='versorger'){store.createIndex('objektId','objektId')}
+          if(s==='branchenbuch'){store.createIndex('kategorie','kategorie')}
           if(s==='lager'){store.createIndex('objektId','objektId');store.createIndex('kategorie','kategorie')}
           if(s==='lager_anforderung'){store.createIndex('status','status')}
           if(s==='arbeitszeit'){store.createIndex('userId','userId');store.createIndex('datum','datum')}
@@ -1016,7 +1024,7 @@ function nav(id,title,sub,push=true){
   const TITLES={dash:'Dashboard',aufgaben:'Aufgaben & Mängel',settings:'Einstellungen',
                 objekt:'Objekt',mieter:'Mieter',protokoll:'Übergabeprotokoll',
                 'protokoll-archiv':'Protokoll-Archiv',
-                'kalender':'Kalender','wartung':'Wartungsfristen','lager':'Lager & Material','urlaub':'Urlaub','rechnungen':'Rechnungen'};
+                'kalender':'Kalender','wartung':'Wartungsfristen','lager':'Lager & Material','urlaub':'Urlaub','rechnungen':'Rechnungen','branchenbuch':'Branchenbuch'};
   document.getElementById('hdrTitle').textContent=title||TITLES[id]||id;
   document.getElementById('hdrSub').textContent=sub||'';
   document.getElementById('hdrBack').classList.toggle('vis',push&&id!=='dash');
@@ -1031,6 +1039,7 @@ function nav(id,title,sub,push=true){
     navStack=[];
     history.replaceState({navId:'dash'}, '', window.location.pathname);
   }
+  if(id==='branchenbuch'){ const el=document.getElementById('branchenbuchView'); if(el) renderBranchenbuch(el); }
   curPage=id;
 }
 
@@ -1162,6 +1171,7 @@ async function renderDash() {
     <button class="qa-btn" onclick="newProtokoll()"><i class="ti ti-clipboard-check"></i> Neues Protokoll</button>
     <button class="qa-btn copper" onclick="nav('zeit')"><i class="ti ti-clock"></i> Zeiterfassung</button>
     <button class="qa-btn" onclick="nav('wartung')"><i class="ti ti-calendar-stats"></i> Wartung</button>
+    <button class="qa-btn" onclick="nav('branchenbuch')"><i class="ti ti-address-book"></i> Branchenbuch</button>
     <button class="qa-btn" onclick="modalMeinePackliste()"><i class="ti ti-backpack"></i> Meine Packliste</button>
     ${CU?.role==='admin'?`<button class="qa-btn" onclick="nav('rechnungen')"><i class="ti ti-file-invoice"></i> Rechnungen</button>`:''}
     ${CU?.role==='admin'?`<button class="qa-btn" onclick="nav('settings')"><i class="ti ti-upload"></i> Excel-Import</button>`:''}
@@ -13871,17 +13881,17 @@ async function renderSettings(){
       </div>
     </div>
 
-    <div class="settings-card" data-tab="daten">
+    ${isAdmin?`<div class="settings-card" data-tab="daten">
       <div class="card-hdr"><i class="ti ti-database"></i> Datenspeicher</div>
       <p style="font-size:13px;color:var(--ink-40);margin-bottom:12px">Alle Daten werden lokal in IndexedDB auf diesem Gerät gespeichert.</p>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
-        ${isAdmin?`<button class="btn" onclick="exportBackup()"><i class="ti ti-download"></i> Backup exportieren</button>
+        <button class="btn" onclick="exportBackup()"><i class="ti ti-download"></i> Backup exportieren</button>
         <button class="btn" onclick="exportExcel()"><i class="ti ti-file-spreadsheet"></i> Excel exportieren</button>
-        <button class="btn" onclick="document.getElementById('importBackupIn').click()"><i class="ti ti-upload"></i> Backup importieren</button>`:''}
+        <button class="btn" onclick="document.getElementById('importBackupIn').click()"><i class="ti ti-upload"></i> Backup importieren</button>
         <button class="btn btn-danger" onclick="confirmReset()"><i class="ti ti-trash"></i> Zurücksetzen</button>
       </div>
-      ${isAdmin?`<input type="file" id="importBackupIn" accept=".json" style="display:none" onchange="importBackup(this)">`:''}
-    </div>
+      <input type="file" id="importBackupIn" accept=".json" style="display:none" onchange="importBackup(this)">
+    </div>`:''}
 
     <div class="settings-card" data-tab="allgemein">
       <div class="card-hdr"><i class="ti ti-bell"></i> Benachrichtigungen</div>
@@ -13904,16 +13914,16 @@ async function renderSettings(){
 
     <div class="settings-card" data-tab="allgemein">
       <div class="card-hdr"><i class="ti ti-clock-cog"></i> Tätigkeiten (Zeiterfassung)</div>
-      <div style="font-size:12px;color:var(--ink-40);margin-bottom:8px">Tätigkeiten für die Zeiterfassung verwalten: ein-/ausblenden, umbenennen, Umlagefähigkeit festlegen, neue anlegen.</div>
-      <button class="btn btn-full" onclick="modalTaetigkeitenVerwalten()"><i class="ti ti-settings"></i> Tätigkeiten verwalten</button>
-      <button class="btn btn-full" style="margin-top:8px" onclick="modalTaetigkeitQRListe()"><i class="ti ti-qrcode"></i> Alle Tätigkeits-QR-Codes drucken</button>
-      <button class="btn btn-full btn-danger" style="margin-top:8px" onclick="modalZeitenBereinigen()"><i class="ti ti-trash"></i> Testzeiten bereinigen (vor Stichtag)</button>
+      <div style="font-size:12px;color:var(--ink-40);margin-bottom:8px">${isAdmin?'Tätigkeiten für die Zeiterfassung verwalten: ein-/ausblenden, umbenennen, Umlagefähigkeit festlegen, neue anlegen.':'Tätigkeits-QR-Codes zum Aushängen ausdrucken.'}</div>
+      ${isAdmin?`<button class="btn btn-full" onclick="modalTaetigkeitenVerwalten()"><i class="ti ti-settings"></i> Tätigkeiten verwalten</button>`:''}
+      <button class="btn btn-full" ${isAdmin?'style="margin-top:8px"':''} onclick="modalTaetigkeitQRListe()"><i class="ti ti-qrcode"></i> Alle Tätigkeits-QR-Codes drucken</button>
+      ${isAdmin?`<button class="btn btn-full btn-danger" style="margin-top:8px" onclick="modalZeitenBereinigen()"><i class="ti ti-trash"></i> Testzeiten bereinigen (vor Stichtag)</button>`:''}
     </div>
 
-    <div class="settings-card" data-tab="daten">
+    ${isAdmin?`<div class="settings-card" data-tab="daten">
       <div class="card-hdr"><i class="ti ti-brand-onedrive"></i> OneDrive-Sync</div>
       <div id="onedriveSyncCard"></div>
-    </div>
+    </div>`:''}
 
     <div style="text-align:center;padding:14px 0 24px;color:var(--ink-40);font-size:12px">
       <i class="ti ti-package" style="font-size:14px"></i> Nadig Pfau Hausverwaltung<br>
@@ -14268,7 +14278,7 @@ async function delUser(id){
 async function exportBackup(){
   if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
   const backup={};
-  for(const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log']){
+  for(const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch']){
     backup[s]=await idbGetAll(s);
   }
   backup.exportedAt=now();backup.version=2;
@@ -14345,7 +14355,7 @@ async function importBackup(input){
       const backup=JSON.parse(e.target.result);
       await erstelleMieterSnapshot('import');
       const modus = confirm('Importmodus wählen:\n\nOK = Zusammenführen (empfohlen): neuere Daten gewinnen, nichts geht verloren.\nAbbrechen = Vollständig ersetzen (alter Modus): lokale Daten werden komplett überschrieben.');
-      const alleStores=['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log'];
+      const alleStores=['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch'];
       if(!modus){
         // Vollständig ersetzen (alter Modus)
         for(const s of alleStores){
@@ -14589,7 +14599,7 @@ async function syncToOneDrive() {
     } catch(e){ /* offline o. 404: normaler Upload-Weg unten */ }
 
     const backup = {};
-    for (const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','sync_log']) {
+    for (const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch','sync_log']) {
       backup[s] = await idbGetAll(s);
     }
     backup.updatedAt = now();
@@ -14662,7 +14672,7 @@ async function syncFromOneDrive() {
       await idbPut('settings', { id:'tombstones', value: mergedTomb });
 
       // Merge: ID-basiert, nur übernehmen wenn remote neuer oder lokal fehlt
-      const mergeStores = ['protokolle','aufgaben','maengel','reparaturen','dokumente','nka_archiv','einkaufsliste','wartung','termine','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','sync_log'];
+      const mergeStores = ['protokolle','aufgaben','maengel','reparaturen','dokumente','nka_archiv','einkaufsliste','wartung','termine','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch','sync_log'];
       for (const s of mergeStores) {
         if (!backup[s]) continue;
         const tombS = mergedTomb[s] || {};
@@ -14791,6 +14801,161 @@ function closeModal(){
 /* ═══════════════════════════════════════════════════════════
    UTILS
 ═══════════════════════════════════════════════════════════ */
+/* ═══════════════════════════════════════════════════════════
+   v62: Branchenbuch / Kontaktverzeichnis
+   Store: branchenbuch  | Hausmeister sieht nur Handwerker+Notdienst
+═══════════════════════════════════════════════════════════ */
+const BB_KATEGORIEN = [
+  {key:'sanitaer',     label:'Sanitär',        icon:'ti-droplet',        hm:true},
+  {key:'elektro',      label:'Elektro',        icon:'ti-bolt',           hm:true},
+  {key:'dachdecker',   label:'Dachdecker',     icon:'ti-home-2',         hm:true},
+  {key:'heizung',      label:'Heizung',        icon:'ti-flame',          hm:true},
+  {key:'schluessel',   label:'Schlüsseldienst',icon:'ti-key',            hm:true},
+  {key:'notdienst',    label:'Notdienst',      icon:'ti-urgent',         hm:true},
+  {key:'maler',        label:'Maler/Bau',      icon:'ti-paint',          hm:true},
+  {key:'bank',         label:'Bank',           icon:'ti-building-bank',  hm:false},
+  {key:'versicherung', label:'Versicherung',   icon:'ti-shield-check',   hm:false},
+  {key:'behoerde',     label:'Behörde',        icon:'ti-building-estate',hm:false},
+  {key:'sonstiges',    label:'Sonstiges',      icon:'ti-dots',           hm:true},
+];
+const BB_ORTE = ['Krefeld','Düsseldorf','Monheim','Mönchengladbach'];
+function bbKat(key){ return BB_KATEGORIEN.find(k=>k.key===key)||{label:key,icon:'ti-dots',hm:false}; }
+function bbSichtbarFuerHM(key){ return !!bbKat(key).hm; }
+
+let _bbFilter = {kat:'', ort:''};
+
+async function renderBranchenbuch(el){
+  const istAdmin = CU?.role==='admin';
+  let alle = (await idbGetAll('branchenbuch').catch(()=>[])).filter(x=>x && !x._deleted);
+  // Hausmeister: nur handwerkliche Kategorien + Notdienst
+  if(!istAdmin) alle = alle.filter(x=>bbSichtbarFuerHM(x.kategorie));
+
+  // Kategorien, die für die Rolle verfügbar sind
+  const katsVerfuegbar = BB_KATEGORIEN.filter(k=>istAdmin||k.hm);
+
+  // Filter anwenden
+  let liste = alle.slice();
+  if(_bbFilter.kat) liste = liste.filter(x=>x.kategorie===_bbFilter.kat);
+  if(_bbFilter.ort) liste = liste.filter(x=>(x.orte||[]).includes(_bbFilter.ort) || (x.orte||[]).includes('*'));
+  liste.sort((a,b)=> (a.kategorie||'').localeCompare(b.kategorie||'') || (a.firma||'').localeCompare(b.firma||''));
+
+  const katChips = `<button class="bb-chip ${_bbFilter.kat===''?'active':''}" onclick="bbSetFilter('kat','')">Alle</button>`
+    + katsVerfuegbar.map(k=>`<button class="bb-chip ${_bbFilter.kat===k.key?'active':''}" onclick="bbSetFilter('kat','${k.key}')"><i class="ti ${k.icon}"></i> ${k.label}</button>`).join('');
+  const ortChips = `<button class="bb-chip ${_bbFilter.ort===''?'active':''}" onclick="bbSetFilter('ort','')">Alle Orte</button>`
+    + BB_ORTE.map(o=>`<button class="bb-chip ${_bbFilter.ort===o?'active':''}" onclick="bbSetFilter('ort','${o}')">${o}</button>`).join('');
+
+  const karten = liste.length ? liste.map(x=>{
+    const k=bbKat(x.kategorie);
+    const orte = (x.orte||[]).includes('*') ? 'Alle Orte' : (x.orte||[]).join(', ');
+    const tel = x.telefon ? `<a href="tel:${x.telefon.replace(/[^+\d]/g,'')}" style="color:var(--ink-80);text-decoration:none"><i class="ti ti-phone"></i> ${esc(x.telefon)}</a>` : '';
+    const mob = x.mobil ? `<a href="tel:${x.mobil.replace(/[^+\d]/g,'')}" style="color:var(--ink-80);text-decoration:none"><i class="ti ti-device-mobile"></i> ${esc(x.mobil)}</a>` : '';
+    const mail= x.email ? `<a href="mailto:${x.email}" style="color:var(--ink-80);text-decoration:none"><i class="ti ti-mail"></i> ${esc(x.email)}</a>` : '';
+    return `<div class="bb-card ${x.notdienst?'bb-notdienst':''}">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+        <div style="flex:1">
+          <div style="font-weight:600;font-size:14px;color:var(--ink)"><i class="ti ${k.icon}" style="color:var(--ink-40)"></i> ${esc(x.firma||'')}
+            ${x.notdienst?'<span class="bb-badge">24h Notdienst</span>':''}</div>
+          ${x.ansprechpartner?`<div style="font-size:12px;color:var(--ink-60);margin-top:2px"><i class="ti ti-user"></i> ${esc(x.ansprechpartner)}</div>`:''}
+          <div style="font-size:11px;color:var(--ink-40);margin-top:1px">${k.label}${orte?' · '+esc(orte):''}</div>
+        </div>
+        ${istAdmin?`<div style="display:flex;gap:4px">
+          <button class="btn btn-sm" onclick="modalBranchenbuch('${x.id}')"><i class="ti ti-edit"></i></button>
+        </div>`:''}
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:6px;font-size:13px">${tel}${mob}${mail}</div>
+      ${x.notiz?`<div style="font-size:12px;color:var(--ink-60);margin-top:6px;padding-top:6px;border-top:1px solid var(--ink-10)">${esc(x.notiz)}</div>`:''}
+    </div>`;
+  }).join('') : '<div class="empty"><i class="ti ti-address-book"></i><p>Keine Einträge'+(_bbFilter.kat||_bbFilter.ort?' für diesen Filter':'')+'.</p></div>';
+
+  el.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+      <h2 style="font-size:18px;font-weight:700;color:var(--ink)"><i class="ti ti-address-book"></i> Branchenbuch</h2>
+      ${istAdmin?`<button class="btn btn-copper btn-sm" onclick="modalBranchenbuch()"><i class="ti ti-plus"></i> Neu</button>`:''}
+    </div>
+    <div class="bb-chips">${katChips}</div>
+    <div class="bb-chips" style="margin-top:4px">${ortChips}</div>
+    <div style="margin-top:12px">${karten}</div>`;
+}
+
+function bbSetFilter(feld,val){
+  _bbFilter[feld]=val;
+  const el=document.getElementById('branchenbuchView')||document.querySelector('[data-view="branchenbuch"]');
+  if(el) renderBranchenbuch(el);
+}
+
+async function modalBranchenbuch(id){
+  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  const x = id ? (await idbGet('branchenbuch',id).catch(()=>null))||{} : {};
+  const orte = x.orte||[];
+  const katOpts = BB_KATEGORIEN.map(k=>`<option value="${k.key}" ${x.kategorie===k.key?'selected':''}>${k.label}</option>`).join('');
+  const ortCb = (val,label)=>`<label style="display:inline-flex;align-items:center;gap:5px;margin:2px 8px 2px 0;font-size:13px">
+    <input type="checkbox" class="bbOrt" value="${val}" ${orte.includes(val)?'checked':''} style="width:15px;height:15px"> ${label}</label>`;
+  showModal(`
+    <div class="m-title"><i class="ti ti-address-book"></i> ${id?'Eintrag bearbeiten':'Neuer Eintrag'}</div>
+    <div class="f"><label>Firma / Name *</label>
+      <input type="text" id="bbFirma" value="${esc(x.firma||'')}" placeholder="z. B. Sanitär Schmitz GmbH"></div>
+    <div class="f-row">
+      <div class="f"><label>Kategorie *</label><select id="bbKat">${katOpts}</select></div>
+      <div class="f"><label>Ansprechpartner</label><input type="text" id="bbAP" value="${esc(x.ansprechpartner||'')}" placeholder="Herr Schmitz"></div>
+    </div>
+    <div class="f"><label>Orte</label>
+      <div style="margin-top:4px">
+        <label style="display:inline-flex;align-items:center;gap:5px;margin:2px 8px 2px 0;font-size:13px;font-weight:600">
+          <input type="checkbox" class="bbOrt" value="*" ${orte.includes('*')?'checked':''} style="width:15px;height:15px"> Ortsübergreifend</label><br>
+        ${BB_ORTE.map(o=>ortCb(o,o)).join('')}
+      </div>
+    </div>
+    <div class="f-row">
+      <div class="f"><label>Telefon</label><input type="tel" id="bbTel" value="${esc(x.telefon||'')}" placeholder="02151 ..."></div>
+      <div class="f"><label>Mobil</label><input type="tel" id="bbMobil" value="${esc(x.mobil||'')}" placeholder="0170 ..."></div>
+    </div>
+    <div class="f"><label>E-Mail</label><input type="email" id="bbMail" value="${esc(x.email||'')}"></div>
+    <label style="display:flex;align-items:center;gap:8px;font-size:13px;margin:8px 0;cursor:pointer">
+      <input type="checkbox" id="bbNotdienst" ${x.notdienst?'checked':''} style="width:16px;height:16px"> 24h-Notdienst</label>
+    <div class="f"><label>Notiz</label>
+      <textarea id="bbNotiz" spellcheck="true" lang="de" style="width:100%;min-height:50px;padding:8px;border:1.5px solid var(--ink-10);border-radius:8px;font-family:var(--font);font-size:13px;resize:vertical">${esc(x.notiz||'')}</textarea></div>
+    <div class="f-row" style="margin-top:12px">
+      <button class="btn btn-copper btn-full" onclick="saveBranchenbuch('${id||''}')"><i class="ti ti-check"></i> Speichern</button>
+      ${id?`<button class="btn btn-danger" onclick="deleteBranchenbuch('${id}')"><i class="ti ti-trash"></i></button>`:''}
+      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+    </div>`);
+}
+
+async function saveBranchenbuch(id){
+  const firma=document.getElementById('bbFirma')?.value.trim();
+  if(!firma){ toast('Bitte Firma/Name eingeben'); return; }
+  const orte=[...document.querySelectorAll('.bbOrt:checked')].map(c=>c.value);
+  const rec = id ? (await idbGet('branchenbuch',id).catch(()=>({}))) : {id:uid()};
+  rec.firma=firma;
+  rec.kategorie=document.getElementById('bbKat')?.value||'sonstiges';
+  rec.ansprechpartner=document.getElementById('bbAP')?.value.trim()||'';
+  rec.orte=orte;
+  rec.telefon=document.getElementById('bbTel')?.value.trim()||'';
+  rec.mobil=document.getElementById('bbMobil')?.value.trim()||'';
+  rec.email=document.getElementById('bbMail')?.value.trim()||'';
+  rec.notdienst=document.getElementById('bbNotdienst')?.checked||false;
+  rec.notiz=document.getElementById('bbNotiz')?.value.trim()||'';
+  rec.geaendert=now();
+  await idbPut('branchenbuch',rec);
+  clearTimeout(window._syncTimer);
+  window._syncTimer=setTimeout(()=>syncToOneDrive(),2000);
+  closeModal();
+  const el=document.getElementById('branchenbuchView')||document.querySelector('[data-view="branchenbuch"]');
+  if(el) renderBranchenbuch(el);
+  toast('Gespeichert ✓');
+}
+
+async function deleteBranchenbuch(id){
+  if(!confirm('Diesen Eintrag wirklich löschen?')) return;
+  await deleteMitTombstone('branchenbuch', id);
+  clearTimeout(window._syncTimer);
+  window._syncTimer=setTimeout(()=>syncToOneDrive(),2000);
+  closeModal();
+  const el=document.getElementById('branchenbuchView')||document.querySelector('[data-view="branchenbuch"]');
+  if(el) renderBranchenbuch(el);
+  toast('Gelöscht');
+}
+
 function uid(){return 'id_'+Date.now()+'_'+Math.random().toString(36).slice(2,7);}
 function esc(v){
   if(v===null||v===undefined) return '';
