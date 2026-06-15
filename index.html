@@ -717,8 +717,8 @@ button.chip.chip-active{background:var(--ink);color:#fff;border-color:var(--ink)
 /* ═══════════════════════════════════════════════════════════
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
-const DB_NAME='immo_v2', DB_VER=19;
-const APP_VERSION = '2026-06-14-v62';
+const DB_NAME='immo_v2', DB_VER=20;
+const APP_VERSION = '2026-06-15-v63';
 let idb=null;
 
 function openIDB(){
@@ -731,7 +731,7 @@ function openIDB(){
     const req=indexedDB.open(DB_NAME,DB_VER);
     req.onupgradeneeded=e=>{
       const db=e.target.result;
-      ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','fotos','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','sync_log','mieter_snapshots','branchenbuch'].forEach(s=>{
+      ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','fotos','wartung','zaehler','zaehlerstaende','versorger','versorger_archiv','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','sync_log','mieter_snapshots','branchenbuch'].forEach(s=>{
         if(!db.objectStoreNames.contains(s)){
           const store=db.createObjectStore(s,{keyPath:'id'});
           if(s==='mieter'){store.createIndex('objektId','objektId');store.createIndex('weNr','weNr')}
@@ -748,6 +748,7 @@ function openIDB(){
           if(s==='zaehler'){store.createIndex('objektId','objektId')}
           if(s==='zaehlerstaende'){store.createIndex('objektId','objektId');store.createIndex('zaehlerId','zaehlerId')}
           if(s==='versorger'){store.createIndex('objektId','objektId')}
+          if(s==='versorger_archiv'){store.createIndex('objektId','objektId');store.createIndex('versorgerId','versorgerId')}
           if(s==='branchenbuch'){store.createIndex('kategorie','kategorie')}
           if(s==='lager'){store.createIndex('objektId','objektId');store.createIndex('kategorie','kategorie')}
           if(s==='lager_anforderung'){store.createIndex('status','status')}
@@ -1546,7 +1547,8 @@ async function zeigeZaehlerVerlauf(zaehlerId){
       <td style="padding:6px 4px;font-size:12px">${diff}</td>
       <td style="padding:6px 4px;font-size:11px;color:var(--ink-40)">${proTag}</td>
       <td style="padding:6px 4px;text-align:right">${s.foto?`<button class="btn btn-sm" onclick="openFoto('${s.id}','zaehlerstand')"><i class="ti ti-photo"></i></button>`:''}
-        ${CU?.role==='admin'?`<button class="btn btn-sm btn-danger" onclick="delZaehlerstand('${s.id}','${zaehlerId}')"><i class="ti ti-trash"></i></button>`:''}</td>
+        ${CU?.role==='admin'?`<button class="btn btn-sm" onclick="modalZaehlerstandEdit('${s.id}','${zaehlerId}')"><i class="ti ti-pencil"></i></button>
+        <button class="btn btn-sm btn-danger" onclick="delZaehlerstand('${s.id}','${zaehlerId}')"><i class="ti ti-trash"></i></button>`:''}</td>
     </tr>`;
   }
   // Jahresvergleich: Verbrauch pro Kalenderjahr
@@ -1588,6 +1590,52 @@ async function delZaehlerstand(id, zaehlerId){
   window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
   await zeigeZaehlerVerlauf(zaehlerId);
   toast('Ablesung gelöscht');
+}
+
+// Einzelnen Ablesewert bearbeiten (nur Admin)
+async function modalZaehlerstandEdit(id, zaehlerId){
+  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  const st = await idbGet('zaehlerstaende', id);
+  if(!st){ toast('Ablesung nicht gefunden'); return; }
+  const z = await idbGet('zaehler', zaehlerId);
+  const einheit = z?.einheit || st.einheit || '';
+  const datumISO = st.datumISO || (st.datum && st.datum.includes('.') ? st.datum.split('.').reverse().join('-') : today());
+  showModal(`
+    <div class="m-title"><i class="ti ti-pencil"></i> Ablesung bearbeiten – ${z?.name||''}</div>
+    <div class="f"><label>Zählerstand (${einheit}) *</label>
+      <input type="number" id="zseWert" step="0.001" inputmode="decimal" value="${st.wert!=null?st.wert:''}"></div>
+    <div class="f"><label>Ablesedatum</label>
+      <input type="date" id="zseDatum" value="${datumISO}"></div>
+    <div class="f"><label>Zählernummer (optional)</label>
+      <input type="text" id="zseNummer" value="${esc(st.nummer||'')}"></div>
+    <div class="f"><label>Bemerkung (optional)</label>
+      <textarea spellcheck="true" lang="de" id="zseBemerkung" style="min-height:50px">${esc(st.bemerkung||'')}</textarea></div>
+    <div class="f-row" style="margin-top:12px">
+      <button class="btn btn-copper btn-full" onclick="saveZaehlerstandEdit('${id}','${zaehlerId}')"><i class="ti ti-check"></i> Speichern</button>
+      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+    </div>`);
+}
+
+async function saveZaehlerstandEdit(id, zaehlerId){
+  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  const st = await idbGet('zaehlerstaende', id);
+  if(!st) return;
+  const wert = document.getElementById('zseWert')?.value;
+  if(wert===''||wert==null){ toast('Bitte Zählerstand eingeben'); return; }
+  const datumISO = document.getElementById('zseDatum')?.value || st.datumISO || today();
+  st.wert = parseFloat(wert);
+  st.datumISO = datumISO;
+  st.datum = new Date(datumISO).toLocaleDateString('de-DE');
+  st.nummer = document.getElementById('zseNummer')?.value?.trim() || '';
+  st.bemerkung = document.getElementById('zseBemerkung')?.value?.trim() || '';
+  st.geaendert = now();
+  st.geaendertVon = CU?.name || '';
+  await idbPut('zaehlerstaende', st);
+  closeModal();
+  clearTimeout(window._syncTimer);
+  window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
+  await zeigeZaehlerVerlauf(zaehlerId);
+  toast('Ablesung aktualisiert ✓');
 }
 
 // Zusätzlichen Zähler anlegen (Admin)
@@ -1912,6 +1960,35 @@ async function saveVersorgerFortsetzen(formData){
       toast('Passwort konnte nicht verschlüsselt werden');
     }
   }
+  // Automatische Archivierung: Wenn sich Anbieter ODER Passwort gegenüber dem
+  // bisherigen Stand ändert, wird der ALTE Stand unverändert (inkl. altem
+  // verschlüsseltem Passwort) als Archiv-Version gesichert. So bleiben frühere
+  // Versorger/Zugangsdaten dauerhaft erhalten.
+  if(alt){
+    const anbieterGeaendert = (alt.anbieter||'') !== (fd.anbieter||'');
+    // Passwortwechsel: Klartext wurde eingegeben UND unterscheidet sich vom bisherigen
+    let pwGeaendert=false;
+    if(fd.pwKlartext){
+      let altKlar='';
+      try{ altKlar = alt.passwortEnc ? await _decryptVal(alt.passwortEnc) : ''; }catch(e){ altKlar=''; }
+      if(altKlar!==fd.pwKlartext) pwGeaendert=true;
+    }
+    if(anbieterGeaendert || pwGeaendert){
+      await idbPut('versorger_archiv', {
+        id: 'va_'+alt.id+'_'+Date.now().toString(36),
+        versorgerId: alt.id,
+        objektId: alt.objektId,
+        sparte: alt.sparte, anbieter: alt.anbieter,
+        vertragsnummer: alt.vertragsnummer, vertragsbeginn: alt.vertragsbeginn,
+        vertragsende: alt.vertragsende, kuendigungsfristMonate: alt.kuendigungsfristMonate,
+        einheit: alt.einheit, grundpreis: alt.grundpreis, arbeitspreis: alt.arbeitspreis,
+        website: alt.website, login: alt.login, passwortEnc: alt.passwortEnc||null, notiz: alt.notiz,
+        grund: anbieterGeaendert && pwGeaendert ? 'Anbieter- und Passwortwechsel'
+             : anbieterGeaendert ? 'Anbieterwechsel' : 'Passwortwechsel',
+        archiviert: now(), archiviertVon: CU?.name||'',
+      });
+    }
+  }
   const v = {
     id: fd.versorgerId || ('vs_'+fd.objektId+'_'+Math.random().toString(36).slice(2,7)),
     objektId: fd.objektId,
@@ -2013,10 +2090,43 @@ async function zeigeVersorgerDetail(versorgerId){
     ${zeile('Benutzer / Kundennr.', v.login, {mono:true})}
     ${pwZeile}
     ${v.notiz?`<div style="margin-top:10px;font-size:13px;color:var(--ink-60)"><strong>Notiz:</strong><br>${v.notiz.replace(/\n/g,'<br>')}</div>`:''}
+    <div id="versArchivBox" style="margin-top:12px"></div>
     <div class="f-row" style="margin-top:14px">
       <button class="btn btn-copper btn-full" onclick="modalVersorger('${v.objektId}','${v.id}')"><i class="ti ti-pencil"></i> Bearbeiten</button>
       <button class="btn btn-full" onclick="closeModal()">Schließen</button>
     </div>`);
+  await renderVersorgerArchiv(versorgerId);
+}
+
+// Zeigt frühere Versorger-/Zugangsdaten-Stände (Archiv) im Detail an.
+async function renderVersorgerArchiv(versorgerId){
+  const box=document.getElementById('versArchivBox');
+  if(!box) return;
+  const hist=(await idbGetAll('versorger_archiv','versorgerId',versorgerId))
+    .sort((a,b)=>new Date(b.archiviert||0)-new Date(a.archiviert||0));
+  if(!hist.length){ box.innerHTML=''; return; }
+  let rows='';
+  for(const h of hist){
+    const sp=getSparte(h.sparte);
+    let pwTxt='';
+    if(h.passwortEnc){
+      if(cryptoIstEntsperrt()){
+        const klar=await _decryptVal(h.passwortEnc);
+        pwTxt=klar?`<div style="font-size:11px"><span style="color:var(--ink-40)">Passwort:</span> <span style="font-family:monospace">${esc(klar)}</span></div>`:'';
+      } else {
+        pwTxt=`<div style="font-size:11px;color:var(--ink-40)">Passwort verschlüsselt – zum Anzeigen entsperren</div>`;
+      }
+    }
+    rows+=`<div style="background:var(--ink-05);border-radius:8px;padding:8px 10px;margin-bottom:6px">
+      <div style="display:flex;justify-content:space-between;font-size:12px">
+        <strong>${esc(h.anbieter||sp.label)}</strong>
+        <span style="color:var(--ink-40)">${h.archiviert?new Date(h.archiviert).toLocaleDateString('de-DE'):''}</span>
+      </div>
+      <div style="font-size:11px;color:var(--ink-40)">${h.grund||'archiviert'}${h.vertragsnummer?' · Vertrag '+esc(h.vertragsnummer):''}${h.login?' · Benutzer '+esc(h.login):''}</div>
+      ${pwTxt}
+    </div>`;
+  }
+  box.innerHTML=`<div class="f-section-title"><i class="ti ti-history"></i> Frühere Versorger / Zugangsdaten (${hist.length})</div>${rows}`;
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -6616,6 +6726,8 @@ async function renderObjMieter(el){
       <button class="btn btn-sm" onclick="modalBrief('','${currentObjId}')"><i class="ti ti-mail"></i> Brief</button>
       <button class="btn btn-sm" onclick="modalAushang('${currentObjId}')"><i class="ti ti-news"></i> Aushang</button>
       ${CU?.role==='admin'?`<button class="btn btn-sm" onclick="modalNKA('${currentObjId}')"><i class="ti ti-receipt"></i> NKA</button>`:''}
+      ${CU?.role==='admin'&&(getObj(currentObjId)?.gruppe==='krefeld')?`<button class="btn btn-sm btn-copper" onclick="modalNKALiegenschaft('lg_krefeld')"><i class="ti ti-buildings"></i> NKA Krefeld (alle Häuser)</button>`:''}
+      ${CU?.role==='admin'&&(getObj(currentObjId)?.gruppe==='mg')?`<button class="btn btn-sm btn-copper" onclick="modalNKALiegenschaft('lg_mg')"><i class="ti ti-buildings"></i> NKA Mönchengladbach (alle Häuser)</button>`:''}
     </div>
   </div>`;
   mieter.forEach(m=>{
@@ -6808,6 +6920,17 @@ async function showMieter(id){
     ${m.telefon||m.email?`<div style="display:flex;gap:7px;margin-top:8px;flex-wrap:wrap">
       ${m.telefon?`<a href="tel:${m.telefon}" class="btn btn-success"><i class="ti ti-phone"></i> Anrufen</a>`:''}
       ${m.email?`<a href="mailto:${m.email}" class="btn btn-copper"><i class="ti ti-mail"></i> E-Mail</a>`:''}
+    </div>`:''}
+    ${CU?.role==='admin'&&(m.iban||m.zahlweise||m.sepaMandat)?`<div style="margin-top:10px;background:var(--ink-05);border-radius:8px;padding:10px 12px">
+      <div style="font-size:12px;font-weight:700;color:var(--ink-60);margin-bottom:6px"><i class="ti ti-building-bank"></i> Bankverbindung</div>
+      <div class="det-grid">
+        ${m.zahlweise?`<div class="det-field"><label>Zahlungsweise</label><span>${m.zahlweise==='sepa'?'SEPA-Lastschrift':'Selbstüberweisung'}</span></div>`:''}
+        ${m.kontoinhaber?`<div class="det-field"><label>Kontoinhaber</label><span>${esc(m.kontoinhaber)}</span></div>`:''}
+        ${m.iban?`<div class="det-field"><label>IBAN</label><span style="font-variant-numeric:tabular-nums">${esc(m.iban)}</span></div>`:''}
+        ${m.bic?`<div class="det-field"><label>BIC</label><span>${esc(m.bic)}</span></div>`:''}
+        ${m.sepaMandat?`<div class="det-field"><label>SEPA-Mandat</label><span>${esc(m.sepaMandat)}</span></div>`:''}
+      </div>
+      ${m.bankBemerkung?`<div style="font-size:11px;color:var(--ink-60);margin-top:6px">${esc(m.bankBemerkung)}</div>`:''}
     </div>`:''}
     <div style="display:none"><!-- dummy --></div
       ${tg?`<div class="det-field"><label>TG-Stellplatz</label><span>Nr. ${tg.nr} · ${fmtEur(tg.miete)}/Mon.</span></div>`:''}
@@ -8557,6 +8680,9 @@ async function modalNKA(objektId) {
     <button type="button" class="btn btn-sm" onclick="nkaAddCustom()">
       <i class="ti ti-plus"></i> Eigene Kostenart hinzufügen
     </button>
+    <div class="f-section-title" style="margin-top:10px"><i class="ti ti-signature"></i> Unterschrift(en) unter der Abrechnung</div>
+    <div style="font-size:11px;color:var(--ink-40);margin-bottom:6px">Es können eine oder zwei hinterlegte Unterschriften gewählt werden (z. B. Alexander Nadig und Anna Pfau).</div>
+    <div id="nkaSigPick"></div>
     </div>
     <div class="f-row" style="margin-top:14px">
       <button class="btn btn-copper btn-full" onclick="erstelleNKA('${objektId}')">
@@ -8565,6 +8691,7 @@ async function modalNKA(objektId) {
       <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
     </div>`,
   );
+  await populateNkaSigPick();
 
   // Zeitraum: Jahr = Jahr des Von-Datums. Jahreswechsel verschiebt Von/Bis (P2).
   const zt = getNKAZeitraum(objektId);
@@ -8620,7 +8747,56 @@ async function modalNKA(objektId) {
   });
 }
 
-async function erstelleNKA(objektId) {
+// Unterschrift-Auswahl für die NKA (1 oder 2 Admins mit hinterlegter Signatur)
+window._nkaSigUserIds = [];
+async function populateNkaSigPick(){
+  const wrap=document.getElementById('nkaSigPick');
+  if(!wrap) return;
+  const users=await idbGetAll('users');
+  const admins=users.filter(u=>u.role==='admin'&&u.signatur);
+  if(!admins.length){
+    wrap.innerHTML='<div style="font-size:11px;color:var(--amber)">Keine hinterlegten Unterschriften gefunden. Unter „Mein Profil“ kann eine Unterschrift hinterlegt werden.</div>';
+    window._nkaSigUserIds=[];
+    return;
+  }
+  // Vorauswahl: der eingeloggte Admin, falls er eine Unterschrift hat
+  if(!window._nkaSigUserIds.length && admins.some(u=>u.id===CU?.id)) window._nkaSigUserIds=[CU.id];
+  wrap.innerHTML=admins.map(u=>`
+    <label style="display:flex;align-items:center;gap:8px;font-size:13px;padding:4px 0;cursor:pointer">
+      <input type="checkbox" value="${u.id}" ${window._nkaSigUserIds.includes(u.id)?'checked':''}
+        onchange="nkaSigToggle('${u.id}',this.checked)" style="width:16px;height:16px">
+      <img src="${u.signatur}" style="max-height:34px;background:#fff;border:1px solid var(--ink-10);border-radius:4px">
+      <span>${esc(u.name)}${u.id===CU?.id?' (ich)':''}</span>
+    </label>`).join('');
+}
+function nkaSigToggle(userId, checked){
+  const set=new Set(window._nkaSigUserIds||[]);
+  if(checked){
+    if(set.size>=2){
+      toast('Maximal zwei Unterschriften');
+      // Checkbox zurücksetzen
+      const cb=document.querySelector('#nkaSigPick input[value="'+userId+'"]');
+      if(cb) cb.checked=false;
+      return;
+    }
+    set.add(userId);
+  } else {
+    set.delete(userId);
+  }
+  window._nkaSigUserIds=[...set];
+}
+// Liefert [{name, signatur}] der gewählten Unterschriften (max. 2)
+async function nkaGewaehlteSignaturen(){
+  const ids=(window._nkaSigUserIds||[]).slice(0,2);
+  const out=[];
+  for(const id of ids){
+    const u=await idbGet('users',id).catch(()=>null);
+    if(u&&u.signatur) out.push({name:u.name||'', signatur:u.signatur});
+  }
+  return out;
+}
+
+async function erstelleNKA(objektId, korrektur) {
   const obj     = getObj(objektId);
   const vorlage = getNKAVorlage(objektId);
   if (!vorlage) return;
@@ -8783,8 +8959,31 @@ async function erstelleNKA(objektId) {
 
   // Einzel-Briefe HTML generieren
   const today=new Date().toLocaleDateString('de-DE');
-  let meineSig='';
-  try{ const u=await idbGet('users',CU?.id); meineSig=u?.signatur||CU?.signatur||''; }catch(e){}
+  // Gewählte Unterschrift(en) (1 oder 2). Fallback: eingeloggter Admin.
+  let sigListe=[];
+  try{ sigListe = await nkaGewaehlteSignaturen(); }catch(e){}
+  if(!sigListe.length){
+    try{ const u=await idbGet('users',CU?.id); const sg=u?.signatur||CU?.signatur||''; if(sg) sigListe=[{name:u?.name||bk.name,signatur:sg}]; }catch(e){}
+  }
+  // Gruß-Block-HTML mit 1 oder 2 Unterschriften nebeneinander
+  let grussHTML;
+  if(sigListe.length>=2){
+    grussHTML=`<div class="gruss">Mit freundlichen Grüßen
+      <div style="display:flex;gap:40px;margin-top:6px">
+        ${sigListe.map(sg=>`<div style="text-align:left">
+          <img src="${sg.signatur}" style="max-height:54px;display:block;margin:2px 0">
+          <div style="border-top:1px solid #999;padding-top:2px;font-size:9px">${sg.name}</div>
+        </div>`).join('')}
+      </div>
+      <div style="margin-top:4px;font-size:9px;color:#666">${bk.name}</div>
+    </div>`;
+  } else if(sigListe.length===1){
+    grussHTML=`<div class="gruss">Mit freundlichen Grüßen<br>
+      <img src="${sigListe[0].signatur}" style="max-height:60px;display:block;margin:2px 0">
+      ${bk.name}</div>`;
+  } else {
+    grussHTML=`<div class="gruss">Mit freundlichen Grüßen<br><br>${bk.name}</div>`;
+  }
   let briefeHTML='';
 
   mieterErgebnisse.forEach(({m,ex,nkAnteil,gesamt,vzJahres,diff})=>{
@@ -8874,7 +9073,8 @@ async function erstelleNKA(objektId) {
       <div class="bk-trennlinie"></div>
 
       <h2 style="margin:14px 0 2px">${obj?.name||''} · WE ${m.weNr}${m.etage?' · '+m.etage:''}</h2>
-      <h1 style="margin-bottom:8px">Mietnebenkosten – Einzelabrechnung</h1>
+      ${korrektur?`<div style="background:#FDECEA;border:1px solid #C0392B;color:#C0392B;padding:6px 10px;border-radius:4px;font-size:10px;margin-bottom:8px"><strong>Korrektur:</strong> ${esc(korrektur.text||'Diese Abrechnung ersetzt eine zuvor erstellte Fassung.')}</div>`:''}
+      <h1 style="margin-bottom:8px">Mietnebenkosten – Einzelabrechnung${korrektur?' (Korrektur)':''}</h1>
       <p style="font-size:11px;margin-bottom:6px">${getAnrede(m)},</p>
       <p style="font-size:11px;margin-bottom:10px;line-height:1.6">anbei erhalten Sie Ihre Nebenkostenabrechnung gemäß folgender Aufstellung:</p>
       <table class="info-table" style="margin:10px 0 8px">
@@ -8916,21 +9116,23 @@ async function erstelleNKA(objektId) {
         : 'Das Guthaben wird mit der kommenden Mietzahlung verrechnet bzw. ausgezahlt.'
       }</p>
 
-      <div class="gruss">Mit freundlichen Grüßen<br>
-        ${meineSig?`<img src="${meineSig}" style="max-height:60px;display:block;margin:2px 0">`:'<br>'}
-        ${bk.name}</div>
+      ${grussHTML}
     </div>`;
   });
 
   // NKA im Archiv speichern
   const archivEntry = {
-    id: uid(),
+    id: korrektur?.originalId || uid(),
     objektId, objektName: obj?.name||'',
     jahr, von, bis,
     erstellt: now(), ersteller: CU?.name||'',
     mieterAnzahl: mieter.length,
     gesamtkosten,
     gesamtNachzahlung, gesamtGuthaben,
+    istKorrektur: !!korrektur,
+    korrekturText: korrektur?.text||'',
+    korrekturVon: korrektur?(CU?.name||''):'',
+    korrekturAm: korrektur?now():'',
     mieterErgebnisse: mieterErgebnisse.map(({m,ex,gesamt,vzJahres,diff})=>({
       mieterId:m.id, mieterName:m.mieter, weNr:m.weNr,
       gesamt, vzJahres, diff, bemerkung:ex.bem||'',
@@ -8940,7 +9142,7 @@ async function erstelleNKA(objektId) {
   await idbPut('nka_archiv', archivEntry);
   clearTimeout(window._syncTimer);
   window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
-  toast('NKA gespeichert und wird gedruckt...');
+  toast(korrektur?'Korrektur gespeichert und wird gedruckt…':'NKA gespeichert und wird gedruckt...');
 
   const nkaHtml = `<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8">
 <title>Nebenkostenabrechnung ${jahr} – ${obj?.name}</title>
@@ -8996,12 +9198,13 @@ h2{font-size:11px;font-weight:700;color:#1F4E79}
   <div style="font-size:9px;color:#555;margin-bottom:10px">
     ${bk.name}${bk.zusatz?' · '+bk.zusatz:''} · ${bk.strasse} · ${bk.ort} · Tel: ${bk.tel}
   </div>
-  <h1>Nebenkostenabrechnung ${jahr}</h1>
+  <h1>Nebenkostenabrechnung ${jahr}${korrektur?' (Korrektur)':''}</h1>
   <div style="font-size:11px;color:#444;margin-bottom:10px">
     ${obj?.name||''} · ${obj?.ort||''}<br>
     Abrechnungszeitraum: ${fmtD(von)} – ${fmtD(bis)}<br>
     Erstellt am: ${today} · ${CU?.name||''}
   </div>
+  ${korrektur?`<div style="background:#FDECEA;border:1px solid #C0392B;color:#C0392B;padding:6px 10px;border-radius:4px;font-size:10px;margin-bottom:10px"><strong>Korrektur:</strong> ${esc(korrektur.text||'')}</div>`:''}
 
   <div class="stat-box">
     <div class="stat-item"><div class="n">${mieter.length}</div><div class="l">Wohneinheiten</div></div>
@@ -9076,6 +9279,639 @@ function nkaZeile(name, schluessel, geteilt, betrag, anteil, preis, kosten) {
     <td style="text-align:right">${typeof preis==='number'?preis.toFixed(4)+'€':preis}</td>
     <td style="text-align:right">${fmtEur(kosten)}</td>
   </tr>`;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   LIEGENSCHAFTSWEITE NEBENKOSTENABRECHNUNG (Krefeld / Mönchengladbach)
+   Eine Eingabemaske für alle Häuser einer Liegenschaft. Mieter aller
+   zugehörigen Objekte erscheinen untereinander (inkl. Vormieter im Zeitraum).
+   Krefeld: Wasser/Entwässerung getrennt nach Gruppe Inrather (181/183/185)
+   und Wilmendyk (7/9/11/13); Verteilung jeweils nach Fläche INNERHALB der
+   Gruppe. Alle übrigen Kosten gemeinsam über alle Mieter nach Fläche.
+   Heiz-Warmwasser je Mieter eintragbar (wie Ruhrtalstr.).
+═══════════════════════════════════════════════════════════ */
+
+// Gruppenzuordnung Krefeld (für Wasser/Entwässerung getrennte Abrechnungskreise)
+const KREFELD_GRUPPEN = {
+  inrather:  { label:'Inrather', objektIds:['inr181','inr183','inr185'] },
+  wilmendyk: { label:'Wilmendyk', objektIds:['wilm7','wilm9','wilm11','wilm13'] },
+};
+function krefeldGruppeVonObjekt(objektId){
+  if(KREFELD_GRUPPEN.inrather.objektIds.includes(objektId)) return 'inrather';
+  if(KREFELD_GRUPPEN.wilmendyk.objektIds.includes(objektId)) return 'wilmendyk';
+  return null;
+}
+
+// Liegenschaftsweite Kostenvorlagen.
+// Schlüssel 'wfl_gruppe' = Fläche, aber nur innerhalb der über 'gruppe' bezeichneten Gruppe.
+const NKA_LG_VORLAGEN = {
+  lg_krefeld: {
+    label: 'Krefeld – alle Häuser (Inrather Str. & Wilmendyk)',
+    lgId: 'lg_krefeld',
+    kosten: [
+      {id:'wasser_inr',     name:'Wasser (BK) – Inrather',        schluessel:'wfl_gruppe', gruppe:'inrather'},
+      {id:'wasser_wilm',    name:'Wasser (BK) – Wilmendyk',       schluessel:'wfl_gruppe', gruppe:'wilmendyk'},
+      {id:'entw_inr',       name:'Entwässerung (BK) – Inrather',  schluessel:'wfl_gruppe', gruppe:'inrather'},
+      {id:'entw_wilm',      name:'Entwässerung (BK) – Wilmendyk', schluessel:'wfl_gruppe', gruppe:'wilmendyk'},
+      {id:'muell',          name:'Müllabfuhr',                    schluessel:'wfl'},
+      {id:'beleuchtung',    name:'Beleuchtung',                   schluessel:'wfl'},
+      {id:'haftpflicht',    name:'Haftpflichtversicherung',       schluessel:'wfl'},
+      {id:'gebvrs',         name:'Wohngebäudeversicherung',       schluessel:'wfl'},
+      {id:'regenwasser',    name:'Regenwasser',                   schluessel:'wfl'},
+      {id:'schnee',         name:'Schnee- und Eisbeseitigung',    schluessel:'wfl'},
+      {id:'strassenreinig', name:'Straßenreinigung',              schluessel:'wfl'},
+      {id:'gartenpflege',   name:'Gartenpflege',                  schluessel:'wfl'},
+      {id:'brandschutz',    name:'Wartung Brandschutz',           schluessel:'wfl'},
+      {id:'grundsteuer',    name:'Grundsteuer',                   schluessel:'wfl'},
+      {id:'hausreinigung',  name:'Hausreinigung',                 schluessel:'wfl'},
+      {id:'legionellen',    name:'Legionellenprüfung',            schluessel:'wfl'},
+      {id:'heizung',        name:'Heiz-Warmwasserkosten',         schluessel:'einzeln'},
+    ],
+  },
+  lg_mg: {
+    label: 'Mönchengladbach – alle Häuser (Kyffhäuser 28/30/32)',
+    lgId: 'lg_mg',
+    kosten: [
+      {id:'wasser_abw',     name:'Wasser / Abwasser',             schluessel:'personen'},
+      {id:'muell',          name:'Müll',                          schluessel:'personen'},
+      {id:'allg_strom',     name:'Allgemeinstrom',                schluessel:'wfl'},
+      {id:'regenwasser',    name:'Regenwasser',                   schluessel:'wfl'},
+      {id:'strassenreinig', name:'Straßenreinigung',              schluessel:'wfl'},
+      {id:'grundsteuer',    name:'Grundsteuer',                   schluessel:'wfl'},
+      {id:'gebvrs',         name:'Gebäudeversicherung',           schluessel:'wfl'},
+      {id:'haftpflicht',    name:'Haftpflichtversicherung',       schluessel:'wfl'},
+      {id:'vorgarten',      name:'Vorgartenpflege',               schluessel:'wfl'},
+      {id:'heizung',        name:'Heiz-Warmwasserkosten',         schluessel:'einzeln'},
+    ],
+  },
+};
+
+function getNKALgVorlage(lgId){ return NKA_LG_VORLAGEN[lgId]||null; }
+
+// Alle abrechenbaren Mieter einer Liegenschaft laden (aktuelle + Vormieter mit Überschneidung)
+async function ladeLgMieter(lgId, von, bis){
+  const lg=LIEGENSCHAFTEN.find(l=>l.id===lgId);
+  if(!lg) return [];
+  let alle=[];
+  for(const oid of lg.objektIds){
+    const liste=await idbGetAll('mieter','objektId',oid);
+    alle=alle.concat(liste);
+  }
+  return alle
+    .filter(m=>{
+      if(!m.mieter || m._zukuenftig) return false;
+      if(!m._vormieter) return true;
+      return (von&&bis) ? wohnMonate(m, von, bis) > 0 : true;
+    })
+    .sort((a,b)=>{
+      // erst nach Objekt (Reihenfolge in lg.objektIds), dann WE-Nr.
+      const oa=lg.objektIds.indexOf(a.objektId), ob=lg.objektIds.indexOf(b.objektId);
+      if(oa!==ob) return oa-ob;
+      return Number(a.weNr)-Number(b.weNr) || (a._vormieter?1:-1);
+    });
+}
+
+// Speicher-/Ladeschlüssel für Zwischenstände einer Liegenschaft
+function nkaLgPosKey(lgId, von, bis){ return 'nka_lg_'+lgId+'_'+(von||'')+'_'+(bis||''); }
+
+async function modalNKALiegenschaft(lgId){
+  if (CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  const vorlage=getNKALgVorlage(lgId);
+  if(!vorlage){ toast('Keine Liegenschafts-Vorlage'); return; }
+  await ladeBriefkopfCache();
+
+  // Zeitraum-Vorgabe: Vorjahr 01.01.–31.12.
+  const cy=new Date().getFullYear();
+  const defJahr=Math.max(2025, cy-1);
+  const von0=defJahr+'-01-01', bis0=defJahr+'-12-31';
+  const mieter=await ladeLgMieter(lgId, von0, bis0);
+
+  // Heizung/Einzeln-Block (je Mieter) – analog Ruhrtalstr.
+  const heizBlock = vorlage.kosten.filter(k=>k.schluessel==='einzeln').map(k=>`
+    <div class="f-section-title" style="margin-top:10px"><i class="ti ti-flame"></i> ${k.name} – je Mieter</div>
+    ${mieter.map(m=>{
+      const eISO = m.einzugISO || (m.einzug&&m.einzug.includes('.')?m.einzug.split('.').reverse().join('-'):m.einzug) || '';
+      const aISO = m.auszugISO || (m.auszug&&m.auszug.includes('.')?m.auszug.split('.').reverse().join('-'):m.auszug) || '';
+      const objN = getObj(m.objektId)?.name||'';
+      return `<div style="background:var(--ink-05);border-radius:8px;padding:8px;margin-bottom:6px" id="nkaLgCard_${m.id}">
+        <div style="font-size:12px;font-weight:600;margin-bottom:6px">${objN} · WE ${m.weNr} – ${esc(m.mieter)}
+          ${m._vormieter?'<span class="chip chip-warn" style="font-size:9px;padding:0 5px">Vormieter</span>':''}
+          <span id="nkaLgWohnM_${m.id}" style="font-weight:400;color:var(--ink-40)"></span></div>
+        <div class="f-row">
+          <div class="f"><label>Einzug</label><input type="date" id="nkaLg_ein_${m.id}" value="${eISO}" onchange="nkaLgDatumChange()"></div>
+          <div class="f"><label>Auszug</label><input type="date" id="nkaLg_aus_${m.id}" value="${aISO}" onchange="nkaLgDatumChange()"></div>
+        </div>
+        <div class="f-row">
+          <div class="f"><label>${k.name} (€)</label><input type="text" inputmode="decimal" id="nkaLg_${k.id}_${m.id}" placeholder="0,00"></div>
+          <div class="f"><label>NK-Vorauszahlung (€/Mon.)</label><input type="text" inputmode="decimal" id="nkaLg_vz_${m.id}" value="${m.nk||''}"></div>
+        </div>
+        <div class="f-row">
+          <div class="f"><label>Kleinreparaturen (€)</label><input type="text" inputmode="decimal" id="nkaLg_kr_${m.id}" placeholder="0,00"></div>
+          <div class="f"><label>Sonstiges (€)</label><input type="text" inputmode="decimal" id="nkaLg_so_${m.id}" placeholder="0,00"></div>
+        </div>
+        <div class="f" style="margin-top:4px">
+          <textarea spellcheck="true" lang="de" id="nkaLg_bem_${m.id}" placeholder="Bemerkung für diesen Mieter (erscheint im Brief)..."
+            style="width:100%;padding:6px 8px;border:1.5px solid var(--ink-10);border-radius:6px;font-size:12px;font-family:var(--font);resize:vertical;min-height:44px"></textarea>
+        </div>
+      </div>`;}).join('')}`).join('');
+
+  // Gesamtkosten-Felder (alle nicht-einzeln)
+  const gesamtFelder = vorlage.kosten.filter(k=>k.schluessel!=='einzeln').map(k=>{
+    let hint='';
+    if(k.schluessel==='wfl_gruppe'){
+      const grp=KREFELD_GRUPPEN[k.gruppe];
+      hint=`<div style="font-size:10px;color:var(--ink-40)">Verteilung nur ${grp?.label} (Fläche)</div>`;
+    } else if(k.schluessel==='wfl'){ hint='<div style="font-size:10px;color:var(--ink-40)">Verteilung nach Fläche (alle)</div>'; }
+    else if(k.schluessel==='personen'){ hint='<div style="font-size:10px;color:var(--ink-40)">Verteilung nach Personen (alle)</div>'; }
+    return `<div class="f"><label>${k.name} (€)</label>
+      <input type="text" inputmode="decimal" id="nkaLg_${k.id}" placeholder="0,00">${hint}</div>`;
+  }).join('');
+
+  let jahrOpts=''; for(let y=cy;y>=2025;y--) jahrOpts+='<option value="'+y+'" '+(y===defJahr?'selected':'')+'>'+y+'</option>';
+
+  showModal(`
+    <div class="m-title"><i class="ti ti-receipt"></i> Nebenkostenabrechnung – Liegenschaft</div>
+    <div style="font-size:13px;font-weight:600;color:var(--copper);margin-bottom:10px">${vorlage.label}</div>
+    <div style="font-size:11px;color:var(--ink-40);margin-bottom:10px"><i class="ti ti-users"></i> ${mieter.length} Mieter aus allen Häusern dieser Liegenschaft</div>
+    <div id="nkaLgFormWrap">
+    <div class="f-row">
+      <div class="f"><label>Abrechnungsjahr</label><select id="nkaLgJahr">${jahrOpts}</select></div>
+      <div class="f"><label>Zeitraum</label>
+        <div style="display:flex;gap:6px;align-items:center">
+          <input type="date" id="nkaLgVon" value="${von0}" style="flex:1;padding:8px;border:1.5px solid var(--ink-10);border-radius:var(--radius);font-size:13px">
+          <span style="color:var(--ink-40)">–</span>
+          <input type="date" id="nkaLgBis" value="${bis0}" style="flex:1;padding:8px;border:1.5px solid var(--ink-10);border-radius:var(--radius);font-size:13px">
+        </div>
+      </div>
+    </div>
+    <div class="f-section-title" style="margin-top:8px"><i class="ti ti-building"></i> Gesamtkosten</div>
+    <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;color:var(--ink-60);margin-bottom:8px">
+      <input type="checkbox" id="nkaLgLeerstand" style="width:15px;height:15px">
+      Leerstand auf Mieter umlegen (Standard: aus)
+    </label>
+    ${gesamtFelder}
+    ${heizBlock}
+    <div class="f-section-title" style="margin-top:10px"><i class="ti ti-signature"></i> Unterschrift(en)</div>
+    <div style="font-size:11px;color:var(--ink-40);margin-bottom:6px">Eine oder zwei hinterlegte Unterschriften (z. B. Alexander Nadig und Anna Pfau).</div>
+    <div id="nkaLgSigPick"></div>
+    </div>
+    <div class="f-row" style="margin-top:14px">
+      <button class="btn btn-copper btn-full" onclick="erstelleNKALiegenschaft('${lgId}')"><i class="ti ti-file-type-pdf"></i> Abrechnung erstellen</button>
+      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+    </div>`);
+
+  window._nkaLgMieter=mieter;
+  window._nkaLgId=lgId;
+  await populateNkaLgSigPick();
+  nkaLgUpdateWohnmonate();
+
+  // Jahr → Zeitraum
+  document.getElementById('nkaLgJahr').addEventListener('change', async e=>{
+    const j=parseInt(e.target.value);
+    document.getElementById('nkaLgVon').value=j+'-01-01';
+    document.getElementById('nkaLgBis').value=j+'-12-31';
+    // Mieterliste für neuen Zeitraum neu laden und Maske neu öffnen
+    closeModal();
+    window._nkaLgPendingJahr=j;
+    await modalNKALiegenschaftJahr(lgId, j);
+  });
+  document.getElementById('nkaLgVon').addEventListener('change', nkaLgUpdateWohnmonate);
+  document.getElementById('nkaLgBis').addEventListener('change', nkaLgUpdateWohnmonate);
+}
+
+// Variante mit fixem Jahr (für Zeitraumwechsel) – lädt Mieterliste passend
+async function modalNKALiegenschaftJahr(lgId, jahr){
+  // einfache Wiederöffnung: modalNKALiegenschaft mit Default neu, dann Jahr setzen
+  await modalNKALiegenschaft(lgId);
+  const sel=document.getElementById('nkaLgJahr');
+  if(sel && String(jahr)!==sel.value){
+    sel.value=String(jahr);
+    document.getElementById('nkaLgVon').value=jahr+'-01-01';
+    document.getElementById('nkaLgBis').value=jahr+'-12-31';
+    nkaLgUpdateWohnmonate();
+  }
+}
+
+window.nkaLgDatumChange=function(){ nkaLgUpdateWohnmonate(); };
+function nkaLgUpdateWohnmonate(){
+  const von=document.getElementById('nkaLgVon')?.value, bis=document.getElementById('nkaLgBis')?.value;
+  const n=anzahlMonate(von,bis);
+  (window._nkaLgMieter||[]).forEach(m=>{
+    const el=document.getElementById('nkaLgWohnM_'+m.id);
+    if(!el) return;
+    const ein=document.getElementById('nkaLg_ein_'+m.id)?.value||null;
+    const aus=document.getElementById('nkaLg_aus_'+m.id)?.value||null;
+    const mTmp={...m, einzugISO:ein, auszugISO:aus, einzug:ein, auszug:aus};
+    const wm=wohnMonate(mTmp,von,bis);
+    el.textContent=' · '+wm+'/'+n+' Mon.'+(wm!==n?' (anteilig)':'');
+    const card=document.getElementById('nkaLgCard_'+m.id);
+    if(card && m._vormieter && wm===0) card.style.opacity='0.45';
+    else if(card) card.style.opacity='';
+  });
+}
+
+// Unterschrift-Picker für die Liegenschafts-NKA (max. 2)
+window._nkaLgSigIds=[];
+async function populateNkaLgSigPick(){
+  const wrap=document.getElementById('nkaLgSigPick');
+  if(!wrap) return;
+  const users=await idbGetAll('users');
+  const admins=users.filter(u=>u.role==='admin'&&u.signatur);
+  if(!admins.length){ wrap.innerHTML='<div style="font-size:11px;color:var(--amber)">Keine hinterlegten Unterschriften.</div>'; window._nkaLgSigIds=[]; return; }
+  if(!window._nkaLgSigIds.length && admins.some(u=>u.id===CU?.id)) window._nkaLgSigIds=[CU.id];
+  wrap.innerHTML=admins.map(u=>`
+    <label style="display:flex;align-items:center;gap:8px;font-size:13px;padding:4px 0;cursor:pointer">
+      <input type="checkbox" value="${u.id}" ${window._nkaLgSigIds.includes(u.id)?'checked':''}
+        onchange="nkaLgSigToggle('${u.id}',this.checked)" style="width:16px;height:16px">
+      <img src="${u.signatur}" style="max-height:34px;background:#fff;border:1px solid var(--ink-10);border-radius:4px">
+      <span>${esc(u.name)}${u.id===CU?.id?' (ich)':''}</span>
+    </label>`).join('');
+}
+function nkaLgSigToggle(userId, checked){
+  const set=new Set(window._nkaLgSigIds||[]);
+  if(checked){
+    if(set.size>=2){ toast('Maximal zwei Unterschriften'); const cb=document.querySelector('#nkaLgSigPick input[value="'+userId+'"]'); if(cb) cb.checked=false; return; }
+    set.add(userId);
+  } else set.delete(userId);
+  window._nkaLgSigIds=[...set];
+}
+async function nkaLgGewaehlteSignaturen(){
+  const ids=(window._nkaLgSigIds||[]).slice(0,2); const out=[];
+  for(const id of ids){ const u=await idbGet('users',id).catch(()=>null); if(u&&u.signatur) out.push({name:u.name||'',signatur:u.signatur}); }
+  return out;
+}
+
+// Erstellt die liegenschaftsweite NKA: berechnet je Mieter, erzeugt ein
+// Sammeldokument (Deckblatt + Einzelbriefe) und legt es je Mieter im Archiv ab.
+// korrektur: optionales {originalId, text} für nachträgliche Korrekturen.
+async function erstelleNKALiegenschaft(lgId, korrektur){
+  if (CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  const vorlage=getNKALgVorlage(lgId);
+  if(!vorlage) return;
+  const lg=LIEGENSCHAFTEN.find(l=>l.id===lgId);
+  const jahr=document.getElementById('nkaLgJahr').value;
+  const von =document.getElementById('nkaLgVon').value;
+  const bis =document.getElementById('nkaLgBis').value;
+  const fmtD=d=>d?new Date(d).toLocaleDateString('de-DE'):'–';
+  await ladeBriefkopfCache();
+
+  // Mieter erneut zeitraumgenau laden (Vormieter nur bei Überschneidung)
+  const mieter=await ladeLgMieter(lgId, von, bis);
+  if(!mieter.length){ toast('Keine Mieter im Zeitraum'); return; }
+
+  // In der Maske geänderte Einzug-/Auszugsdaten übernehmen
+  for(const m of mieter){
+    const ein=document.getElementById('nkaLg_ein_'+m.id)?.value;
+    const aus=document.getElementById('nkaLg_aus_'+m.id)?.value;
+    let geaendert=false;
+    if(ein){ const de=new Date(ein).toLocaleDateString('de-DE'); if(m.einzug!==de||m.einzugISO!==ein){ m.einzug=de; m.einzugISO=ein; geaendert=true; } }
+    if(aus){ const da=new Date(aus).toLocaleDateString('de-DE'); if(m.auszug!==da||m.auszugISO!==aus){ m.auszug=da; m.auszugISO=aus; geaendert=true; } }
+    if(geaendert){ m.geaendert=now(); await idbPut('mieter',m); }
+  }
+
+  const leerstandUmlegen=document.getElementById('nkaLgLeerstand')?.checked||false;
+  const periodeMonate=anzahlMonate(von,bis)||12;
+
+  // Divisoren (Flächen-/Personen-/WE-Monate) über alle Mieter
+  const sumFM =mieter.reduce((s,m)=>s+flaechenMonate(m,von,bis),0);
+  const sumPM =mieter.reduce((s,m)=>s+personenMonate(m,von,bis),0);
+  const sumWEM=mieter.reduce((s,m)=>s+weMonate(m,von,bis),0);
+  const aktiv =mieter.filter(m=>!m._vormieter);
+  const vollFM=aktiv.reduce((s,m)=>s+(parseFloat(m.flaeche)||0),0)*periodeMonate;
+  const vollPM=aktiv.reduce((s,m)=>s+(parseInt(m.personen)||1),0)*periodeMonate;
+  const gesamtWFL = leerstandUmlegen?(vollFM||sumFM):sumFM;
+  const gesamtPers= leerstandUmlegen?(vollPM||sumPM):sumPM;
+  const gesamtWE  = sumWEM;
+
+  // Gruppen-Divisoren (Krefeld): Flächen-Monate je Gruppe
+  const gruppenFM={inrather:0, wilmendyk:0};
+  mieter.forEach(m=>{
+    const g=krefeldGruppeVonObjekt(m.objektId);
+    if(g) gruppenFM[g]+=flaechenMonate(m,von,bis);
+  });
+
+  // Kostenbeträge einlesen
+  const kostenMap={};
+  vorlage.kosten.forEach(k=>{
+    if(k.schluessel==='einzeln'){
+      kostenMap[k.id]={};
+      mieter.forEach(m=>{kostenMap[k.id][m.id]=parseBetrag(document.getElementById('nkaLg_'+k.id+'_'+m.id)?.value);});
+    } else {
+      kostenMap[k.id]=parseBetrag(document.getElementById('nkaLg_'+k.id)?.value);
+    }
+  });
+
+  // Reparaturen im Zeitraum (für automatische Kleinreparaturen)
+  const alleReps=await idbGetAll('reparaturen');
+  const vonDate=von?new Date(von):null, bisDate=bis?new Date(bis):null;
+
+  // Extras je Mieter
+  const mieterExtras={};
+  for(const m of mieter){
+    const krManual=parseBetrag(document.getElementById('nkaLg_kr_'+m.id)?.value);
+    const repsImZeitraum=alleReps.filter(r=>{
+      if(r.mieterId!==m.id||!r.datum) return false;
+      const rd=new Date(r.datum);
+      if(vonDate&&rd<vonDate) return false;
+      if(bisDate&&rd>bisDate) return false;
+      return true;
+    });
+    const krAuto=repsImZeitraum.reduce((s,r)=>s+(parseFloat(r.kosten)||0),0);
+    mieterExtras[m.id]={
+      vz: parseBetrag(document.getElementById('nkaLg_vz_'+m.id)?.value)||(parseFloat(m.nk)||0),
+      kr: krManual+krAuto, krManual, krAuto, repsImZeitraum,
+      so: parseBetrag(document.getElementById('nkaLg_so_'+m.id)?.value),
+      bem: document.getElementById('nkaLg_bem_'+m.id)?.value||'',
+    };
+  }
+
+  // Anteil eines Mieters an einer Kostenart
+  function getAnteil(k, m){
+    const betrag=kostenMap[k.id];
+    const fm=flaechenMonate(m,von,bis);
+    const pm=personenMonate(m,von,bis);
+    switch(k.schluessel){
+      case 'wfl':        return gesamtWFL>0?betrag*fm/gesamtWFL:0;
+      case 'personen':   return gesamtPers>0?betrag*pm/gesamtPers:0;
+      case 'wfl_gruppe': {
+        const g=krefeldGruppeVonObjekt(m.objektId);
+        if(g!==k.gruppe) return 0;                 // Mieter außerhalb der Gruppe: kein Anteil
+        const div=gruppenFM[k.gruppe]||0;
+        return div>0?betrag*fm/div:0;
+      }
+      case 'einzeln':    return betrag[m.id]||0;
+      default:           return 0;
+    }
+  }
+
+  // Gesamtkosten (ohne einzeln)
+  const gesamtkosten=vorlage.kosten.filter(k=>k.schluessel!=='einzeln').reduce((s,k)=>s+(kostenMap[k.id]||0),0);
+
+  // Gesamtkosten-Tabelle
+  let kostenZeilen='';
+  vorlage.kosten.forEach(k=>{
+    if(k.schluessel==='einzeln') return;
+    const b=kostenMap[k.id]; if(!b) return;
+    const sl=k.schluessel==='personen'?'Personen':k.schluessel==='wfl_gruppe'?('Fläche '+(KREFELD_GRUPPEN[k.gruppe]?.label||'')):'Wohnfläche';
+    kostenZeilen+=`<tr><td style="padding:3px 8px;border:1px solid #dde;font-size:10px">${k.name}</td>
+      <td style="padding:3px 8px;border:1px solid #dde;font-size:10px">${sl}</td>
+      <td style="padding:3px 8px;border:1px solid #dde;font-size:10px;text-align:right;font-weight:600">${fmtEur(b)}</td></tr>`;
+  });
+
+  // Ergebnisse + Übersicht
+  const heizId=(vorlage.kosten.find(k=>k.schluessel==='einzeln')||{}).id;
+  let uebersichtRows='', gesamtNachzahlung=0, gesamtGuthaben=0;
+  const mieterErgebnisse=[];
+  mieter.forEach(m=>{
+    const ex=mieterExtras[m.id];
+    const vzJahres=vzSummeZeitraum(m,von,bis);
+    let nkAnteil=0; vorlage.kosten.forEach(k=>{nkAnteil+=getAnteil(k,m);});
+    const gesamt=nkAnteil+ex.kr+ex.so;
+    const diff=gesamt-vzJahres;
+    if(diff>0) gesamtNachzahlung+=diff; else gesamtGuthaben+=Math.abs(diff);
+    mieterErgebnisse.push({m,ex,nkAnteil,gesamt,vzJahres,diff});
+    const heiz=heizId?(kostenMap[heizId]?.[m.id]||0):0;
+    const objN=getObj(m.objektId)?.name||'';
+    const diffCol=diff>0?'#C0392B':'#2E7D52';
+    const diffTxt=diff>0?`Nachz.: ${fmtEur(diff)}`:`Gutschr.: ${fmtEur(Math.abs(diff))}`;
+    uebersichtRows+=`<tr>
+      <td style="padding:4px 6px;border:1px solid #dde;font-size:9px">${objN} · WE ${m.weNr}</td>
+      <td style="padding:4px 6px;border:1px solid #dde;font-size:9px">${esc(m.mieter)}</td>
+      <td style="padding:4px 6px;border:1px solid #dde;font-size:9px;text-align:right">${parseFloat(m.flaeche)||0} m²</td>
+      <td style="padding:4px 6px;border:1px solid #dde;font-size:9px;text-align:right">${fmtEur(nkAnteil-heiz-ex.kr-ex.so)}</td>
+      <td style="padding:4px 6px;border:1px solid #dde;font-size:9px;text-align:right">${heiz>0?fmtEur(heiz):'–'}</td>
+      <td style="padding:4px 6px;border:1px solid #dde;font-size:9px;text-align:right">${ex.kr>0?fmtEur(ex.kr):'–'}</td>
+      <td style="padding:4px 6px;border:1px solid #dde;font-size:9px;text-align:right;font-weight:600">${fmtEur(gesamt)}</td>
+      <td style="padding:4px 6px;border:1px solid #dde;font-size:9px;text-align:right">${fmtEur(vzJahres)}</td>
+      <td style="padding:4px 6px;border:1px solid #dde;font-size:9px;text-align:right;font-weight:700;color:${diffCol}">${diffTxt}</td>
+    </tr>`;
+  });
+
+  // Unterschriften
+  const today=new Date().toLocaleDateString('de-DE');
+  let sigListe=[]; try{ sigListe=await nkaLgGewaehlteSignaturen(); }catch(e){}
+  if(!sigListe.length){ try{ const u=await idbGet('users',CU?.id); if(u?.signatur) sigListe=[{name:u.name||'',signatur:u.signatur}]; }catch(e){} }
+
+  // Einzelbriefe
+  let briefeHTML='';
+  mieterErgebnisse.forEach(({m,ex,nkAnteil,gesamt,vzJahres,diff})=>{
+    const obj=getObj(m.objektId);
+    const bk=getBriefkopf(m.objektId);
+    const diffPos=diff>0, diffAbs=Math.abs(diff);
+    const heiz=heizId?(kostenMap[heizId]?.[m.id]||0):0;
+    const mWohnM=wohnMonate(m,von,bis);
+    const _eISO=m.einzugISO||null, _aISO=m.auszugISO||null;
+    const mWohnVon=(_eISO&&new Date(_eISO)>new Date(von))?_eISO:von;
+    const mWohnBis=(_aISO&&new Date(_aISO)<new Date(bis))?_aISO:bis;
+
+    let posZeilen='';
+    vorlage.kosten.forEach(k=>{
+      if(k.schluessel==='einzeln'){
+        const h=kostenMap[k.id]?.[m.id]||0;
+        if(h>0) posZeilen+=nkaZeile(k.name,'bes. Berechnung','',h,1,h);
+        return;
+      }
+      const b=kostenMap[k.id]||0; if(!b) return;
+      const fm=flaechenMonate(m,von,bis), pm=personenMonate(m,von,bis);
+      let geteilt,anteil,preis,kosten,slLabel;
+      if(k.schluessel==='wfl'){ geteilt=gesamtWFL; anteil=fm; preis=gesamtWFL>0?b/gesamtWFL:0; kosten=gesamtWFL>0?b*fm/gesamtWFL:0; slLabel='WFL'; }
+      else if(k.schluessel==='personen'){ geteilt=gesamtPers; anteil=pm; preis=gesamtPers>0?b/gesamtPers:0; kosten=gesamtPers>0?b*pm/gesamtPers:0; slLabel='Personen'; }
+      else if(k.schluessel==='wfl_gruppe'){
+        const g=krefeldGruppeVonObjekt(m.objektId);
+        slLabel='WFL '+(KREFELD_GRUPPEN[k.gruppe]?.label||'');
+        if(g!==k.gruppe){ return; }              // Position betrifft diesen Mieter nicht
+        const div=gruppenFM[k.gruppe]||0;
+        geteilt=div; anteil=fm; preis=div>0?b/div:0; kosten=div>0?b*fm/div:0;
+      } else { return; }
+      posZeilen+=nkaZeile(k.name, slLabel,
+        typeof geteilt==='number'?geteilt.toFixed(2):geteilt, b, anteil, preis, kosten);
+    });
+    if(ex.repsImZeitraum?.length>0){
+      ex.repsImZeitraum.forEach(r=>{ posZeilen+=nkaZeile(r.titel+' ('+fmtDate(r.datum)+')', r.extern==='extern'?'Extern':'Intern','–','–','–','–',r.kosten||0); });
+    }
+    if(ex.krManual>0) posZeilen+=nkaZeile('Kleinreparaturen (manuell)','–','–','–','–','–',ex.krManual);
+    if(ex.so>0) posZeilen+=nkaZeile('Sonstiges','–','–','–','–','–',ex.so);
+
+    let grussHTML;
+    if(sigListe.length>=2){
+      grussHTML=`<div class="gruss">Mit freundlichen Grüßen
+        <div style="display:flex;gap:40px;margin-top:6px">
+          ${sigListe.map(sg=>`<div style="text-align:left"><img src="${sg.signatur}" style="max-height:54px;display:block;margin:2px 0"><div style="border-top:1px solid #999;padding-top:2px;font-size:9px">${sg.name}</div></div>`).join('')}
+        </div><div style="margin-top:4px;font-size:9px;color:#666">${bk.name}</div></div>`;
+    } else if(sigListe.length===1){
+      grussHTML=`<div class="gruss">Mit freundlichen Grüßen<br><img src="${sigListe[0].signatur}" style="max-height:60px;display:block;margin:2px 0">${bk.name}</div>`;
+    } else { grussHTML=`<div class="gruss">Mit freundlichen Grüßen<br><br>${bk.name}</div>`; }
+
+    const korrBanner = korrektur ? `<div style="background:#FDECEA;border:1px solid #C0392B;color:#C0392B;padding:6px 10px;border-radius:4px;font-size:10px;margin-bottom:8px"><strong>Korrektur:</strong> ${esc(korrektur.text||'Diese Abrechnung ersetzt eine zuvor erstellte Fassung.')}</div>` : '';
+
+    briefeHTML+=`
+    <div class="pagebreak">
+      <div class="bk-box">
+        <div class="bk-left" style="order:2;text-align:right;padding-top:5mm">
+          <svg width="230" height="86" viewBox="0 0 1000 200" xmlns="http://www.w3.org/2000/svg" style="display:inline-block">
+            <text x="160" y="130" font-family="Georgia,serif" font-size="56px" font-weight="400" letter-spacing="1.8px" fill="#0C447C">NADIG PFAU</text>
+            <line x1="130" y1="140" x2="850" y2="140" stroke="#185FA5" stroke-width="0.6" opacity="0.15"/>
+            <text x="160" y="165" font-family="Arial,Helvetica,sans-serif" font-size="12px" letter-spacing="1.4px" fill="#888780">HAUSVERWALTUNG</text>
+          </svg>
+          <div style="font-size:8px;color:#555;margin-top:4px;line-height:1.5">${bk.strasse} · ${bk.ort}<br>Tel: ${bk.tel}<br>${bk.email||''}</div>
+        </div>
+        <div class="bk-right" style="order:1;text-align:left">
+          <div class="bk-absender">${bk.absender||bk.name} · ${bk.strasse} · ${bk.ort}</div>
+          <div class="bk-empf"><strong>${adressNachnamen(m)}</strong><br>${obj?.name||''}<br>${obj?.ort||''}</div>
+          <div style="margin-top:8mm;font-size:10px;color:#555">${today}</div>
+        </div>
+      </div>
+      <div class="bk-trennlinie"></div>
+      ${korrBanner}
+      <h2 style="margin:14px 0 2px">${obj?.name||''} · WE ${m.weNr}${m.etage?' · '+m.etage:''}</h2>
+      <h1 style="margin-bottom:8px">Mietnebenkosten – Einzelabrechnung${korrektur?' (Korrektur)':''}</h1>
+      <p style="font-size:11px;margin-bottom:6px">${getAnrede(m)},</p>
+      <p style="font-size:11px;margin-bottom:10px;line-height:1.6">anbei erhalten Sie Ihre Nebenkostenabrechnung gemäß folgender Aufstellung:</p>
+      <table class="info-table" style="margin:10px 0 8px">
+        <tr><td></td><td>von</td><td>bis</td><td>Monate</td></tr>
+        <tr><td>Abrechnungszeitraum</td><td>${fmtD(von)}</td><td>${fmtD(bis)}</td><td>${anzahlMonate(von,bis)}</td></tr>
+        <tr><td>Ihr Abrechnungszeitraum</td><td>${fmtD(mWohnVon)}</td><td>${fmtD(mWohnBis)}</td><td>${mWohnM}</td></tr>
+      </table>
+      <table class="info-table" style="margin-bottom:10px">
+        <tr><td>Ihre Wohnmonate</td><td>WFL</td><td>Personenmonate</td><td>Vorauszahlung</td></tr>
+        <tr><td>${mWohnM}</td><td>${parseFloat(m.flaeche)||0} m²</td><td>${personenMonate(m,von,bis)}</td><td>${fmtEur(vzJahres)} gesamt</td></tr>
+      </table>
+      <table class="pos-table">
+        <thead><tr><th>Kostenart</th><th>Schlüssel</th><th>Betrag</th><th>Geteilt durch</th><th>Ihr Anteil</th><th>Preis/Anteil</th><th>Ihre Kosten</th></tr></thead>
+        <tbody>${posZeilen}</tbody>
+      </table>
+      <table class="summen-table">
+        <tr><td>Summe Nebenkosten</td><td>${fmtEur(nkAnteil-heiz-ex.kr-ex.so)}</td></tr>
+        ${heiz>0?`<tr><td>Heiz-Warmwasserkosten</td><td>${fmtEur(heiz)}</td></tr>`:''}
+        ${ex.kr>0?`<tr><td>Kleinreparaturen</td><td>${fmtEur(ex.kr)}</td></tr>`:''}
+        ${ex.so>0?`<tr><td>Sonstiges</td><td>${fmtEur(ex.so)}</td></tr>`:''}
+        <tr class="total"><td>Gesamtnebenkosten</td><td>${fmtEur(gesamt)}</td></tr>
+        <tr><td>Summe Vorauszahlung</td><td>${fmtEur(vzJahres)}</td></tr>
+        <tr class="${diffPos?'nachzahl':'gutschr'}"><td>${diffPos?'Nachzahlung':'Guthaben'}</td><td>${fmtEur(diffAbs)}</td></tr>
+      </table>
+      ${ex.bem?`<div class="bemerkung"><strong>Hinweis:</strong> ${ex.bem}</div>`:''}
+      <p class="abschluss">${diffPos?'Bitte überweisen Sie den Nachzahlungsbetrag innerhalb von 4 Wochen auf unser Konto.':'Das Guthaben wird mit der kommenden Mietzahlung verrechnet bzw. ausgezahlt.'}</p>
+      ${grussHTML}
+    </div>`;
+  });
+
+  // Archiv-Eintrag (ein Eintrag je Liegenschaft+Zeitraum)
+  const bkDeck=getBriefkopf(lg.objektIds[0]);
+  const archivEntry={
+    id: korrektur?.originalId || uid(),
+    lgId, objektId: lg.objektIds[0], objektName: vorlage.label,
+    istLiegenschaft:true,
+    jahr, von, bis,
+    erstellt: now(), ersteller: CU?.name||'',
+    mieterAnzahl: mieter.length,
+    gesamtkosten, gesamtNachzahlung, gesamtGuthaben,
+    istKorrektur: !!korrektur,
+    korrekturText: korrektur?.text||'',
+    korrekturVon: korrektur?CU?.name||'':'',
+    korrekturAm: korrektur?now():'',
+    sigUserIds: (window._nkaLgSigIds||[]).slice(0,2),
+    leerstandUmlegen,
+    kostenBetraege: Object.fromEntries(vorlage.kosten.filter(k=>k.schluessel!=='einzeln').map(k=>[k.id, document.getElementById('nkaLg_'+k.id)?.value||''])),
+    heizBetraege: heizId?Object.fromEntries(mieter.map(m=>[m.id, document.getElementById('nkaLg_'+heizId+'_'+m.id)?.value||''])):{},
+    mieterFelder: Object.fromEntries(mieter.map(m=>[m.id,{
+      vz: document.getElementById('nkaLg_vz_'+m.id)?.value||'',
+      kr: document.getElementById('nkaLg_kr_'+m.id)?.value||'',
+      so: document.getElementById('nkaLg_so_'+m.id)?.value||'',
+      bem: document.getElementById('nkaLg_bem_'+m.id)?.value||'',
+      ein: document.getElementById('nkaLg_ein_'+m.id)?.value||'',
+      aus: document.getElementById('nkaLg_aus_'+m.id)?.value||'',
+    }])),
+    mieterErgebnisse: mieterErgebnisse.map(({m,ex,gesamt,vzJahres,diff})=>({
+      mieterId:m.id, mieterName:m.mieter, objektId:m.objektId, objektName:getObj(m.objektId)?.name||'', weNr:m.weNr,
+      gesamt, vzJahres, diff, bemerkung:ex.bem||'',
+    })),
+  };
+  await idbPut('nka_archiv', archivEntry);
+  clearTimeout(window._syncTimer);
+  window._syncTimer=setTimeout(()=>syncToOneDrive(),3000);
+
+  const nkaHtml=`<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8">
+<title>Nebenkostenabrechnung ${jahr} – ${vorlage.label}</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:Arial,sans-serif;font-size:10px;color:#111;padding:16px}
+h1{font-size:13px;font-weight:700;margin-bottom:6px}
+h2{font-size:11px;font-weight:700;color:#1F4E79}
+.pagebreak{page-break-after:always;padding-bottom:20px;margin-bottom:20px}
+.pagebreak:last-child{page-break-after:avoid}
+.bk-box{display:flex;justify-content:space-between;align-items:flex-start}
+.bk-left{width:85mm;padding-top:5mm}
+.bk-right{width:85mm;text-align:left;line-height:1.6;font-size:10px;padding-top:45mm}
+.bk-absender{font-size:7px;color:#999;text-decoration:underline;margin-bottom:2mm}
+.bk-empf{font-size:10px;line-height:1.6;color:#111}
+.bk-trennlinie{border-bottom:1px solid #185FA5;margin:4mm 0 6mm;opacity:0.3}
+.info-table{width:100%;border-collapse:collapse;font-size:9px}
+.info-table td{padding:2px 6px;border:none;color:#444}
+.info-table tr:first-child td{font-weight:700;color:#1F4E79}
+.pos-table{width:100%;border-collapse:collapse;margin-bottom:8px}
+.pos-table th{padding:3px 6px;background:#1F4E79;color:#fff;font-size:9px;text-align:left}
+.pos-table td{padding:2px 6px;border:1px solid #dde;font-size:9px}
+.pos-table td:last-child{text-align:right;font-weight:600}
+.summen-table{width:50%;margin-left:50%;border-collapse:collapse;margin-bottom:10px}
+.summen-table td{padding:3px 8px;border:1px solid #dde;font-size:10px}
+.summen-table td:last-child{text-align:right;font-weight:600}
+.total td{background:#e8f0fe;font-weight:700}
+.nachzahl td{background:#FDECEA;color:#C0392B;font-weight:700}
+.gutschr td{background:#E6F4EC;color:#2E7D52;font-weight:700}
+.bemerkung{background:#FEF3E2;border-left:3px solid #D4820A;padding:6px 10px;font-size:10px;margin:8px 0;border-radius:3px}
+.abschluss{font-size:10px;color:#444;margin:10px 0;line-height:1.6}
+.gruss{font-size:10px;margin-top:20px;color:#333}
+.deckblatt h1{font-size:16px;color:#1F4E79;border-bottom:3px solid #1F4E79;padding-bottom:6px;margin-bottom:10px}
+.stat-box{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px}
+.stat-item{border:1px solid #dde;border-radius:4px;padding:8px;text-align:center}
+.stat-item .n{font-size:20px;font-weight:700;color:#1F4E79}
+.stat-item .l{font-size:9px;color:#666}
+.uebersicht-table{width:100%;border-collapse:collapse}
+.uebersicht-table th{padding:4px 6px;background:#1F4E79;color:#fff;font-size:9px;text-align:left}
+.uebersicht-table td{padding:3px 6px;border:1px solid #dde;font-size:9px}
+.footer{font-size:8px;color:#aaa;text-align:center;padding-top:6px;border-top:1px solid #eee;margin-top:10px}
+@page{margin:1.5cm;size:A4}
+@media print{body{padding:0;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+</style></head><body>
+<div class="deckblatt pagebreak">
+  <div style="font-size:9px;color:#555;margin-bottom:10px">${bkDeck.name}${bkDeck.zusatz?' · '+bkDeck.zusatz:''} · ${bkDeck.strasse} · ${bkDeck.ort} · Tel: ${bkDeck.tel}</div>
+  <h1>Nebenkostenabrechnung ${jahr}${korrektur?' (Korrektur)':''}</h1>
+  <div style="font-size:11px;color:#444;margin-bottom:10px">${vorlage.label}<br>Abrechnungszeitraum: ${fmtD(von)} – ${fmtD(bis)}<br>Erstellt am: ${today} · ${CU?.name||''}</div>
+  ${korrektur?`<div style="background:#FDECEA;border:1px solid #C0392B;color:#C0392B;padding:6px 10px;border-radius:4px;font-size:10px;margin-bottom:10px"><strong>Korrektur:</strong> ${esc(korrektur.text||'')}</div>`:''}
+  <div class="stat-box">
+    <div class="stat-item"><div class="n">${mieter.length}</div><div class="l">Mieter</div></div>
+    <div class="stat-item"><div class="n" style="color:#C0392B">${fmtEur(gesamtNachzahlung)}</div><div class="l">Gesamt Nachzahlungen</div></div>
+    <div class="stat-item"><div class="n" style="color:#2E7D52">${fmtEur(gesamtGuthaben)}</div><div class="l">Gesamt Guthaben</div></div>
+  </div>
+  <h2 style="margin-bottom:6px">Gesamtkosten</h2>
+  <table class="uebersicht-table" style="margin-bottom:12px">
+    <thead><tr><th>Kostenart</th><th>Schlüssel</th><th style="text-align:right">Betrag</th></tr></thead>
+    <tbody>${kostenZeilen}<tr style="background:#e8f0fe;font-weight:700"><td colspan="2">Gesamtkosten</td><td style="text-align:right">${fmtEur(gesamtkosten)}</td></tr></tbody>
+  </table>
+  <h2 style="margin-bottom:6px">Ergebnis je Wohneinheit</h2>
+  <table class="uebersicht-table">
+    <thead><tr><th>Haus / WE</th><th>Mieter</th><th>m²</th><th style="text-align:right">NK-Anteil</th><th style="text-align:right">Heizung</th><th style="text-align:right">KR</th><th style="text-align:right">Gesamt</th><th style="text-align:right">Vorauszahlung</th><th style="text-align:right">Ergebnis</th></tr></thead>
+    <tbody>${uebersichtRows}</tbody>
+  </table>
+  <div class="footer">Nebenkostenabrechnung ${jahr} · ${vorlage.label} · Nadig Pfau Hausverwaltung</div>
+</div>
+${briefeHTML}
+<scr`+`ipt>window.onload=()=>setTimeout(()=>window.print(),700)</scr`+`ipt>
+</body></html>`;
+
+  // Je Mieter im Archiv ablegen
+  for(const {m} of mieterErgebnisse){
+    await archiviereMieterDokument({
+      mieterId:m.id, objektId:m.objektId, typ:'nka',
+      name:`Nebenkostenabrechnung ${jahr} – ${vorlage.label}${korrektur?' (Korrektur)':''}`,
+      html:nkaHtml,
+    });
+  }
+  closeModal();
+  toast(korrektur?'Korrektur gespeichert und wird gedruckt…':'NKA gespeichert und wird gedruckt…');
+  const win=window.open('','_blank');
+  if(!win){ toast('Popup blockiert – Abrechnung wurde im Archiv gespeichert'); return; }
+  win.document.write(nkaHtml); win.document.close();
 }
 
 async function renderProtokollArchiv() {
@@ -9812,7 +10648,12 @@ async function renderNKAArchiv(el, objektId) {
       +'<div style="font-size:12px;color:var(--green);font-weight:600">Gutschr.: '+fmtEur(nka.gesamtGuthaben||0)+'</div>'
       +'</div></div>'
       +'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">'+ergebnisChips+'</div>'
+      +(nka.istLiegenschaft?'<div style="font-size:10px;color:var(--copper);margin-bottom:6px"><i class="ti ti-buildings"></i> Liegenschaftsweite Abrechnung</div>':'')
+      +(nka.istKorrektur?'<div style="font-size:10px;color:#C0392B;margin-bottom:6px"><i class="ti ti-edit"></i> Korrektur'+(nka.korrekturText?': '+esc(nka.korrekturText):'')+(nka.korrekturAm?' · '+nka.korrekturAm:'')+'</div>':'')
+      +'<div style="display:flex;gap:6px;flex-wrap:wrap">'
+      +`<button class="btn btn-sm btn-copper" onclick="modalNKAKorrektur('${nka.id}')"><i class="ti ti-edit"></i> Korrektur</button>`
       +`<button class="btn btn-sm btn-danger" onclick="deleteNKA('${nka.id}')"><i class="ti ti-trash"></i> Löschen</button>`
+      +'</div>'
       +'</div>';
   });
 
@@ -9827,6 +10668,76 @@ async function deleteNKA(id) {
   const el = document.getElementById('objTabContent');
   if (el && currentObjId) await renderNKAArchiv(el, currentObjId);
   toast('NKA gelöscht');
+}
+
+// Nachträgliche Korrektur einer fertigen Abrechnung (alle Objekte).
+// Fragt einen kurzen Korrekturtext ab und öffnet die passende Maske,
+// vorbefüllt mit den gespeicherten Werten. Das Ergebnis wird als Korrektur
+// gekennzeichnet und ersetzt den bisherigen Archiv-Eintrag (gleiche ID).
+async function modalNKAKorrektur(nkaId){
+  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  const nka=await idbGet('nka_archiv', nkaId);
+  if(!nka){ toast('Eintrag nicht gefunden'); return; }
+  showModal(`
+    <div class="m-title"><i class="ti ti-edit"></i> Abrechnung korrigieren</div>
+    <p style="font-size:12px;color:var(--ink-60);margin-bottom:10px">
+      Die Abrechnung <strong>${esc(nka.objektName||'')} · ${nka.jahr}</strong> wird zur Korrektur erneut geöffnet.
+      Korrigieren Sie die fehlerhaften Werte und erstellen Sie die Abrechnung neu. Der Hinweis „Korrektur“ erscheint auf jedem Brief.
+    </p>
+    <div class="f"><label>Kurzer Korrekturhinweis (erscheint im Brief) *</label>
+      <textarea spellcheck="true" lang="de" id="korrText" style="min-height:60px" placeholder="z. B. Korrigierte Heizkosten aufgrund nachträglich eingegangener Schlussrechnung."></textarea></div>
+    <div class="f-row" style="margin-top:12px">
+      <button class="btn btn-copper btn-full" onclick="starteNKAKorrektur('${nkaId}')"><i class="ti ti-arrow-right"></i> Maske öffnen</button>
+      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+    </div>`);
+}
+
+async function starteNKAKorrektur(nkaId){
+  const nka=await idbGet('nka_archiv', nkaId);
+  if(!nka) return;
+  const text=document.getElementById('korrText')?.value?.trim();
+  if(!text){ toast('Bitte einen Korrekturhinweis eingeben'); return; }
+  window._nkaKorrektur={ originalId: nka.id, text };
+  closeModal();
+
+  if(nka.istLiegenschaft && nka.lgId){
+    await modalNKALiegenschaft(nka.lgId);
+    // Zeitraum + Werte aus Archiv setzen
+    const setVal=(id,v)=>{ const el=document.getElementById(id); if(el!=null&&v!=null) el.value=v; };
+    const jahrSel=document.getElementById('nkaLgJahr');
+    if(jahrSel && nka.jahr){ jahrSel.value=String(nka.jahr); }
+    setVal('nkaLgVon', nka.von); setVal('nkaLgBis', nka.bis);
+    const leer=document.getElementById('nkaLgLeerstand'); if(leer) leer.checked=!!nka.leerstandUmlegen;
+    Object.entries(nka.kostenBetraege||{}).forEach(([k,v])=>setVal('nkaLg_'+k, v));
+    const vorlage=getNKALgVorlage(nka.lgId);
+    const heizId=(vorlage?.kosten.find(k=>k.schluessel==='einzeln')||{}).id;
+    if(heizId) Object.entries(nka.heizBetraege||{}).forEach(([mid,v])=>setVal('nkaLg_'+heizId+'_'+mid, v));
+    Object.entries(nka.mieterFelder||{}).forEach(([mid,f])=>{
+      setVal('nkaLg_vz_'+mid, f.vz); setVal('nkaLg_kr_'+mid, f.kr); setVal('nkaLg_so_'+mid, f.so);
+      const bem=document.getElementById('nkaLg_bem_'+mid); if(bem&&f.bem!=null) bem.value=f.bem;
+      setVal('nkaLg_ein_'+mid, f.ein); setVal('nkaLg_aus_'+mid, f.aus);
+    });
+    if(nka.sigUserIds && nka.sigUserIds.length){ window._nkaLgSigIds=nka.sigUserIds.slice(0,2); await populateNkaLgSigPick(); }
+    nkaLgUpdateWohnmonate();
+    // „Abrechnung erstellen“ erzeugt nun eine Korrektur (gleiche ID)
+    const wrap=document.getElementById('nkaLgFormWrap');
+    if(wrap){
+      const btn=wrap.parentElement.querySelector('button.btn-copper[onclick^="erstelleNKALiegenschaft"]');
+      if(btn) btn.setAttribute('onclick', `erstelleNKALiegenschaft('${nka.lgId}', window._nkaKorrektur)`);
+    }
+    toast('Werte geladen – bitte korrigieren und „Abrechnung erstellen“');
+  } else {
+    // Objektbasierte NKA: Maske öffnen; Zwischenstände werden über nkaLoadPositionen
+    // wiederhergestellt. Hinweis: gespeicherte Beträge müssen ggf. neu eingegeben werden.
+    await modalNKA(nka.objektId);
+    const jahrSel=document.getElementById('nkaJahr'); if(jahrSel&&nka.jahr) jahrSel.value=String(nka.jahr);
+    const setV=(id,v)=>{const el=document.getElementById(id);if(el!=null&&v!=null)el.value=v;};
+    setV('nkaVon', nka.von); setV('nkaBis', nka.bis);
+    // Erstellen-Button auf Korrektur umbiegen
+    const btn=document.querySelector('button.btn-copper[onclick^="erstelleNKA("]');
+    if(btn) btn.setAttribute('onclick', `erstelleNKA('${nka.objektId}', window._nkaKorrektur)`);
+    toast('Bitte Werte prüfen/korrigieren und „Abrechnung erstellen“');
+  }
 }
 
 
@@ -11932,7 +12843,29 @@ function mieterFormHTML(obj, m={}) {
           m.auszug.split('.').reverse().join('-'):m.auszug||''}"></div>
       <div class="f"><label>TG-Stellplatz Nr.</label>
         <input type="text" id="mTgNr" value="${m.tgNr||''}"></div>
-    </div>`;
+    </div>
+    ${CU?.role==='admin'?`
+    <div class="f-section-title"><i class="ti ti-building-bank"></i> Bankverbindung / Zahlung (nur Admin)</div>
+    <div class="f-row">
+      <div class="f"><label>Zahlungsweise</label>
+        <select id="mZahlweise">
+          <option value="sepa" ${(m.zahlweise||'')==='sepa'?'selected':''}>SEPA-Lastschrift (Einzug)</option>
+          <option value="ueberweisung" ${(m.zahlweise||'')==='ueberweisung'?'selected':''}>Mieter überweist selbst</option>
+        </select></div>
+      <div class="f"><label>Kontoinhaber</label>
+        <input type="text" id="mKontoinhaber" value="${esc(m.kontoinhaber||'')}" placeholder="abweichend vom Mieter"></div>
+    </div>
+    <div class="f-row">
+      <div class="f"><label>IBAN</label>
+        <input type="text" id="mIban" value="${esc(m.iban||'')}" placeholder="DE.. .... .... .... .... .." autocomplete="off"></div>
+      <div class="f"><label>BIC</label>
+        <input type="text" id="mBic" value="${esc(m.bic||'')}" placeholder="optional" autocomplete="off"></div>
+    </div>
+    <div class="f"><label>SEPA-Mandat (Referenz / Datum)</label>
+      <input type="text" id="mSepaMandat" value="${esc(m.sepaMandat||'')}" placeholder="z. B. MAND-2024-012 · erteilt am 01.03.2024"></div>
+    <div class="f"><label>Bemerkung Bankverbindung</label>
+      <textarea spellcheck="true" lang="de" id="mBankBem" style="min-height:44px">${esc(m.bankBemerkung||'')}</textarea></div>
+    `:''}`;
 }
 
 function addPersonRow() {
@@ -12220,6 +13153,15 @@ async function saveEditMieter(id) {
   m.telefon = document.getElementById('mTel').value;
   m.email   = document.getElementById('mEmail').value;
   m.tgNr    = document.getElementById('mTgNr').value;
+  // Bankverbindung / Zahlung (nur Admin sieht die Felder; HM-Formular enthält sie nicht)
+  if(document.getElementById('mIban')){
+    m.zahlweise    = document.getElementById('mZahlweise')?.value || m.zahlweise || '';
+    m.kontoinhaber = document.getElementById('mKontoinhaber')?.value?.trim() || '';
+    m.iban         = document.getElementById('mIban')?.value?.trim() || '';
+    m.bic          = document.getElementById('mBic')?.value?.trim() || '';
+    m.sepaMandat   = document.getElementById('mSepaMandat')?.value?.trim() || '';
+    m.bankBemerkung= document.getElementById('mBankBem')?.value?.trim() || '';
+  }
   await idbPut('mieter', m);
   closeModal();
   clearTimeout(window._syncTimer);
@@ -14599,7 +15541,7 @@ async function syncToOneDrive() {
     } catch(e){ /* offline o. 404: normaler Upload-Weg unten */ }
 
     const backup = {};
-    for (const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch','sync_log']) {
+    for (const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','versorger_archiv','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch','sync_log']) {
       backup[s] = await idbGetAll(s);
     }
     backup.updatedAt = now();
@@ -14672,7 +15614,7 @@ async function syncFromOneDrive() {
       await idbPut('settings', { id:'tombstones', value: mergedTomb });
 
       // Merge: ID-basiert, nur übernehmen wenn remote neuer oder lokal fehlt
-      const mergeStores = ['protokolle','aufgaben','maengel','reparaturen','dokumente','nka_archiv','einkaufsliste','wartung','termine','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch','sync_log'];
+      const mergeStores = ['protokolle','aufgaben','maengel','reparaturen','dokumente','nka_archiv','einkaufsliste','wartung','termine','zaehler','zaehlerstaende','versorger','versorger_archiv','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch','sync_log'];
       for (const s of mergeStores) {
         if (!backup[s]) continue;
         const tombS = mergedTomb[s] || {};
