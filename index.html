@@ -736,7 +736,7 @@ body.printing-active #printRoot{display:block!important}
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=20;
-const APP_VERSION = '2026-06-16-v78';
+const APP_VERSION = '2026-06-16-v79';
 let idb=null;
 
 function openIDB(){
@@ -6694,7 +6694,7 @@ function personenBlockHTML(m){
   let h=`<div class="card" style="margin-bottom:12px">
     <div class="card-hdr" style="display:flex;align-items:center;justify-content:space-between">
       <span><i class="ti ti-users"></i> Bewohner (${lebend}${personen.length!==lebend?' von '+personen.length:''})</span>
-      <button class="btn btn-sm" onclick="modalMieterSplit('${m.id}')"><i class="ti ti-pencil"></i> Bearbeiten</button>
+      <button class="btn btn-sm" onclick="modalEditMieter('${m.id}')"><i class="ti ti-pencil"></i> Bearbeiten</button>
     </div>`;
   personen.forEach((p,i)=>{
     const v=p.verstorben;
@@ -7041,7 +7041,6 @@ async function showMieter(id){
     <button class="btn" onclick="modalAddMangel('${m.id}','${m.objektId}','mangel')"><i class="ti ti-alert-triangle"></i> Mangel</button>
     <button class="btn btn-sm" onclick="modalAddReparatur('${m.id}','${m.objektId}')"><i class="ti ti-tools"></i> Reparatur</button>
     <button class="btn btn-sm" onclick="modalEditMieter('${m.id}')"><i class="ti ti-pencil"></i> Bearbeiten</button>
-    <button class="btn btn-sm" onclick="modalMieterSplit('${m.id}')"><i class="ti ti-users-group"></i> Personen aufteilen</button>
     ${CU?.role==='admin'?`<button class="btn btn-sm btn-copper" onclick="modalMieterhoehung('${m.id}')"><i class="ti ti-trending-up"></i> Mieterhöhung</button>`:''}
     ${CU?.role==='admin'?`<button class="btn btn-sm" onclick="modalKaution('${m.id}')"><i class="ti ti-lock-dollar"></i> Kaution</button>`:''}
     <button class="btn btn-sm" onclick="showMieterDokumente('${m.id}')"><i class="ti ti-paperclip"></i> Archiv & Dokumente</button>
@@ -13411,29 +13410,62 @@ async function saveAufgabe(){
 /* ═══════════════════════════════════════════════════════════
    MIETER HINZUFÜGEN / BEARBEITEN / LÖSCHEN
 ═══════════════════════════════════════════════════════════ */
+// ── Eine einzelne Personenzeile (vollständig) für Bearbeiten/Neu-Maske ──
+// Enthält alle Felder, die früher nur im separaten "Personen aufteilen" lagen,
+// damit es nur EINEN Eingabe-/Speicherort für Mieterdaten gibt (kein Datenverlust
+// mehr durch zwei konkurrierende Masken).
+function personenZeileHTML(p, i){
+  p = p || {};
+  const vp = (p.vertragspartner!==undefined) ? !!p.vertragspartner : true;
+  return `
+    <div style="border:1px solid var(--ink-10);border-radius:8px;padding:10px;margin-bottom:8px;${p.verstorben?'opacity:.6':''}" id="pRow_${i}">
+      <div class="f-row" style="align-items:flex-end;margin-bottom:6px">
+        <div class="f" style="max-width:78px"><label style="font-size:10px">Anrede</label>
+          <select id="pAnr_${i}" style="font-size:12px;padding:8px 4px">
+            <option value="" ${!p.anrede?'selected':''}>–</option>
+            <option value="Herr" ${p.anrede==='Herr'?'selected':''}>Herr</option>
+            <option value="Frau" ${p.anrede==='Frau'?'selected':''}>Frau</option>
+            <option value="Divers" ${p.anrede==='Divers'?'selected':''}>Divers</option>
+          </select></div>
+        <div class="f"><label style="font-size:10px">Name (Nachname, Vorname)</label>
+          <input type="text" id="pName_${i}" value="${esc(p.name||'')}" spellcheck="true" lang="de" placeholder="Nachname, Vorname" style="font-size:13px"></div>
+        ${i>0?`<button type="button" class="btn btn-sm btn-danger" onclick="removePerson(${i})" style="flex-shrink:0"><i class="ti ti-trash"></i></button>`:'<div style="width:0"></div>'}
+      </div>
+      <div class="f-row" style="margin-bottom:6px">
+        <div class="f"><label style="font-size:10px">Geburtsdatum</label>
+          <input type="date" id="pGeb_${i}" value="${p.geburtsdatum||''}" style="font-size:12px"></div>
+        <div class="f"><label style="font-size:10px">Telefon</label>
+          <input type="tel" id="pTel_${i}" value="${esc(p.telefon||'')}" style="font-size:12px" placeholder="optional"></div>
+      </div>
+      <div class="f" style="margin-bottom:6px"><label style="font-size:10px">E-Mail</label>
+        <input type="email" id="pMail_${i}" value="${esc(p.email||'')}" style="font-size:12px" placeholder="optional"></div>
+      <div class="f-row" style="margin-bottom:6px">
+        <div class="f"><label style="font-size:10px">Dabei ab (NK-Wirkung)</label>
+          <input type="date" id="pAb_${i}" value="${p.ab||''}" style="font-size:12px" title="Ab diesem Monat zählt die Person in der NK-Abrechnung"></div>
+        <div class="f"><label style="font-size:10px">Dabei bis</label>
+          <input type="date" id="pBis_${i}" value="${p.bis||''}" style="font-size:12px" title="Letzter Monat, in dem die Person zählt (leer = unbefristet)"></div>
+      </div>
+      <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+        <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-size:12px;color:${vp?'var(--copper)':'var(--ink-40)'};font-weight:${vp?'600':'400'}" title="Im Mietvertrag als Mietpartei genannt – erhält NKA und Mieterhöhung">
+          <input type="checkbox" id="pVp_${i}" ${vp?'checked':''} style="width:15px;height:15px"> <i class="ti ti-file-signature" style="font-size:13px"></i> Vertragspartner
+        </label>
+        <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-size:12px;color:${p.verstorben?'var(--ink)':'var(--ink-40)'}">
+          <input type="checkbox" id="pTot_${i}" ${p.verstorben?'checked':''} style="width:15px;height:15px"> verstorben
+        </label>
+      </div>
+    </div>`;
+}
+
 function mieterFormHTML(obj, m={}) {
-  // Personen-Liste aufbauen (min. 1 Zeile)
-  const personen = m.personen_liste || (m.mieter ? [{name:m.mieter}] : [{}]);
-  const personenRows = personen.map((p,i)=>`
-    <div class="f-row" style="margin-bottom:4px" id="pRow_${i}">
-      <div class="f"><input type="text" id="pName_${i}" value="${p.name||''}"
-        placeholder="Nachname, Vorname (Person ${i+1})" style="font-size:13px"></div>
-      <div class="f"><input type="date" id="pGeb_${i}" value="${p.geburtsdatum||''}"
-        style="font-size:13px" title="Geburtsdatum"></div>
-      ${i>0?`<button class="btn btn-sm btn-danger" onclick="removePerson(${i})" style="flex-shrink:0"><i class="ti ti-trash"></i></button>`:''}
-    </div>`).join('');
+  // Personen-Liste aufbauen (min. 1 Zeile). Einzige Quelle: personen_liste.
+  let personen = (m.personen_liste && m.personen_liste.length)
+    ? m.personen_liste
+    : (m.mieter ? [{name:m.mieter, anrede:m.anrede||'Herr', telefon:m.telefon||'', email:m.email||'', vertragspartner:true}] : [{vertragspartner:true}]);
+  const personenRows = personen.map((p,i)=>personenZeileHTML(p,i)).join('');
 
   return `
-    <div class="f-row">
-      <div class="f"><label>Anrede</label>
-        <select id="mAnrede">
-          <option value="Herr" ${(m.anrede||'Herr')==='Herr'?'selected':''}>Herr</option>
-          <option value="Frau" ${m.anrede==='Frau'?'selected':''}>Frau</option>
-          <option value="Divers" ${m.anrede==='Divers'?'selected':''}>Divers / Keine</option>
-        </select></div>
-      <div class="f"><label>WE-Nr. *</label>
-        <input type="number" id="mWeNr" value="${m.weNr||''}" placeholder="1"></div>
-    </div>
+    <div class="f"><label>WE-Nr. *</label>
+      <input type="number" id="mWeNr" value="${m.weNr||''}" placeholder="1"></div>
     <div style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:${m.leerstand?'var(--amber-l)':'var(--ink-05)'};border-radius:8px;margin-bottom:8px">
       <input type="checkbox" id="mLeerstand" ${m.leerstand?'checked':''} style="width:18px;height:18px;cursor:pointer">
       <label for="mLeerstand" style="font-size:13px;font-weight:500;cursor:pointer;color:${m.leerstand?'var(--amber)':'var(--ink-60)'}">
@@ -13444,19 +13476,33 @@ function mieterFormHTML(obj, m={}) {
       <label>Etage / Lage</label>
       <input type="text" id="mEtage" value="${m.etage||''}" placeholder="z. B. 1.OG rechts">
     </div>
-    <div class="f-section-title"><i class="ti ti-users"></i> Bewohner</div>
-    <div style="font-size:11px;color:var(--ink-40);margin-bottom:6px">Name · Geburtsdatum</div>
+    <div class="f-section-title"><i class="ti ti-users"></i> Bewohner / Vertragspartner</div>
+    <div style="font-size:11px;color:var(--ink-40);margin-bottom:8px;line-height:1.5">Jede Zeile = eine Person. <strong>Vertragspartner</strong> markiert, wer im Mietvertrag genannt ist – NKA und Mieterhöhung müssen an alle Vertragspartner gemeinsam gerichtet werden. In Übersicht und Listen erscheint automatisch der/die Nachname(n) der Vertragspartner.</div>
     <div id="personenListe">${personenRows}</div>
-    <button class="btn btn-sm" style="margin-bottom:12px" onclick="addPersonRow()">
+    <button type="button" class="btn btn-sm" style="margin-bottom:12px" onclick="addPersonRow()">
       <i class="ti ti-user-plus"></i> Person hinzufügen
     </button>
+    <div style="border-top:1px solid var(--ink-10);margin:4px 0 10px;padding-top:10px">
+      <div style="font-size:12px;font-weight:600;color:var(--ink-60);margin-bottom:6px"><i class="ti ti-heart-handshake"></i> Pflege-/Zusatzkontakt (optional)</div>
+      <div class="f-row" style="margin-bottom:6px">
+        <div class="f"><label style="font-size:10px">Name</label>
+          <input type="text" id="zkName" value="${esc(m.zusatzkontakt?.name||'')}" spellcheck="true" lang="de" style="font-size:12px" placeholder="z. B. Tochter, Betreuer"></div>
+        <div class="f" style="max-width:120px"><label style="font-size:10px">Rolle</label>
+          <input type="text" id="zkRolle" value="${esc(m.zusatzkontakt?.rolle||'')}" style="font-size:12px" placeholder="Pflegekontakt"></div>
+      </div>
+      <div class="f-row">
+        <div class="f"><label style="font-size:10px">Telefon</label>
+          <input type="tel" id="zkTel" value="${esc(m.zusatzkontakt?.telefon||'')}" style="font-size:12px"></div>
+        <div class="f"><label style="font-size:10px">E-Mail</label>
+          <input type="email" id="zkMail" value="${esc(m.zusatzkontakt?.email||'')}" style="font-size:12px"></div>
+      </div>
+    </div>
     <div class="f-row">
       <div class="f"><label>Wohnfläche (m²)</label>
         <input type="number" id="mFlaeche" value="${m.flaeche||''}" step="0.01"></div>
       <div class="f"><label>Personen (Anzahl)${istPersonenObjekt(obj?.id)?' <span class="chip chip-warn" style="font-size:9px;padding:0 5px">NK-relevant</span>':''}</label>
-        <input type="number" id="mPersonen" value="${m.personen||personen.length||1}" min="1" max="20"
-          onchange="syncPersonenAnzahl(this.value)">
-        ${istPersonenObjekt(obj?.id)?'<div style="font-size:10px;color:var(--amber);margin-top:2px">Dieses Objekt rechnet Nebenkosten nach Personen ab – bitte aktuell halten.</div>':''}</div>
+        <input type="number" id="mPersonen" value="${m.personen||personen.filter(p=>!p.verstorben).length||1}" min="1" max="20">
+        <div style="font-size:10px;color:var(--ink-40);margin-top:2px">${istPersonenObjekt(obj?.id)?'Dieses Objekt rechnet Nebenkosten nach Personen ab. ':''}Wird beim Speichern aus der Zahl lebender Personen abgeleitet, sofern hier nicht abweichend gesetzt.</div></div>
     </div>
     <div class="f-row">
       <div class="f"><label>Miete (€)</label>
@@ -13481,12 +13527,6 @@ function mieterFormHTML(obj, m={}) {
           m.einzug.split('.').reverse().join('-'):m.einzug||''}"></div>
       <div class="f"><label>Kaution (€)</label>
         <input type="number" id="mKaution" value="${m.kaution||''}" step="0.01"></div>
-    </div>
-    <div class="f-row">
-      <div class="f"><label>Telefon</label>
-        <input type="tel" id="mTel" value="${m.telefon||''}" placeholder="+49 ..."></div>
-      <div class="f"><label>E-Mail</label>
-        <input type="email" id="mEmail" value="${m.email||''}" placeholder="name@domain.de"></div>
     </div>
     <div class="f-row">
       <div class="f"><label>Auszug</label>
@@ -13520,41 +13560,45 @@ function mieterFormHTML(obj, m={}) {
 }
 
 function addPersonRow() {
-  const liste = document.getElementById('personenListe');
-  const i = liste.children.length;
-  const div = document.createElement('div');
-  div.className = 'f-row'; div.style.marginBottom = '4px'; div.id = 'pRow_'+i;
-  div.innerHTML = `<select id="pAnr_${i}" style="width:70px;padding:8px 4px;border:1.5px solid var(--ink-10);border-radius:var(--radius);font-size:12px;margin-right:4px"><option>Herr</option><option>Frau</option><option>Divers</option></select><div class="f"><input type="text" id="pName_${i}" placeholder="Nachname, Vorname" style="font-size:13px"></div>
-    <div class="f"><input type="date" id="pGeb_${i}" style="font-size:13px" title="Geburtsdatum"></div>
-    <button class="btn btn-sm btn-danger" onclick="removePerson(${i})" style="flex-shrink:0"><i class="ti ti-trash"></i></button>`;
-  liste.appendChild(div);
-  document.getElementById('mPersonen').value = liste.children.length;
+  // bestehende Eingaben sichern, neue leere Zeile anhängen, komplett neu zeichnen
+  const aktuell = getPersonenFromForm(false);
+  aktuell.push({name:'', anrede:'', geburtsdatum:'', telefon:'', email:'', ab:'', bis:'', verstorben:false, vertragspartner:false});
+  redrawPersonenListe(aktuell);
 }
 
 function removePerson(idx) {
-  const el = document.getElementById('pRow_'+idx);
-  if (el) { el.remove(); document.getElementById('mPersonen').value = document.getElementById('personenListe').children.length; }
+  const aktuell = getPersonenFromForm(false).filter((_,i)=>i!==idx);
+  redrawPersonenListe(aktuell.length?aktuell:[{vertragspartner:true}]);
 }
 
-function syncPersonenAnzahl(n) {
+function redrawPersonenListe(personen){
   const liste = document.getElementById('personenListe');
-  const current = liste.children.length;
-  const target = parseInt(n)||1;
-  for (let i = current; i < target; i++) addPersonRow();
-  for (let i = current-1; i >= target; i--) {
-    const el = document.getElementById('pRow_'+i);
-    if (el && i > 0) el.remove();
-  }
+  if(!liste) return;
+  liste.innerHTML = personen.map((p,i)=>personenZeileHTML(p,i)).join('');
 }
 
-function getPersonenFromForm() {
+// Liest alle Personenzeilen vollständig aus.
+// nurMitName=true (Standard) filtert leere Zeilen heraus (für Speichern);
+// nurMitName=false behält alle Zeilen (für Zwischenstand beim Hinzufügen/Entfernen).
+function getPersonenFromForm(nurMitName=true) {
   const liste = document.getElementById('personenListe');
   const result = [];
+  if(!liste) return result;
   for (let i = 0; i < liste.children.length; i++) {
-    const name = document.getElementById('pName_'+i)?.value?.trim();
-    const geb  = document.getElementById('pGeb_'+i)?.value;
-    const anr  = document.getElementById('pAnr_'+i)?.value || (i===0 ? (document.getElementById('mAnrede')?.value||'Herr') : 'Herr');
-    if (name) result.push({name, geburtsdatum: geb||'', anrede: anr});
+    if(!document.getElementById('pName_'+i)) continue;
+    const name = document.getElementById('pName_'+i)?.value?.trim()||'';
+    if(nurMitName && !name) continue;
+    result.push({
+      name,
+      anrede:       document.getElementById('pAnr_'+i)?.value||'',
+      geburtsdatum: document.getElementById('pGeb_'+i)?.value||'',
+      telefon:      document.getElementById('pTel_'+i)?.value?.trim()||'',
+      email:        document.getElementById('pMail_'+i)?.value?.trim()||'',
+      ab:           document.getElementById('pAb_'+i)?.value||'',
+      bis:          document.getElementById('pBis_'+i)?.value||'',
+      verstorben:   document.getElementById('pTot_'+i)?.checked||false,
+      vertragspartner: document.getElementById('pVp_'+i)?.checked||false,
+    });
   }
   return result;
 }
@@ -13600,17 +13644,12 @@ async function modalAddMieter(objektId) {
           <option value="Divers">Divers / Keine</option>
         </select></div>
       <div class="f"><label>Personen (Anzahl)${istPersonenObjekt(objektId)?' <span class="chip chip-warn" style="font-size:9px;padding:0 5px">NK-relevant</span>':''}</label>
-        <input type="number" id="mPersonen" value="1" min="1" max="20" onchange="syncPersonenAnzahl(this.value)">
+        <input type="number" id="mPersonen" value="1" min="1" max="20">
         ${istPersonenObjekt(objektId)?'<div style="font-size:10px;color:var(--amber);margin-top:2px">Dieses Objekt rechnet Nebenkosten nach Personen ab – bitte aktuell halten.</div>':''}</div>
     </div>
-    <div style="font-size:11px;color:var(--ink-40);margin-bottom:6px">Name · Geburtsdatum</div>
-    <div id="personenListe">
-      <div class="f-row" style="margin-bottom:4px" id="pRow_0">
-        <div class="f"><input type="text" id="pName_0" placeholder="Nachname, Vorname (Person 1)" style="font-size:13px"></div>
-        <div class="f"><input type="date" id="pGeb_0" style="font-size:13px" title="Geburtsdatum"></div>
-      </div>
-    </div>
-    <button class="btn btn-sm" style="margin-bottom:12px" onclick="addPersonRow()">
+    <div style="font-size:11px;color:var(--ink-40);margin-bottom:6px">Jede Zeile = eine Person. Vertragspartner = im Mietvertrag genannt.</div>
+    <div id="personenListe">${personenZeileHTML({vertragspartner:true},0)}</div>
+    <button type="button" class="btn btn-sm" style="margin-bottom:12px" onclick="addPersonRow()">
       <i class="ti ti-user-plus"></i> Person hinzufügen
     </button>
 
@@ -13782,14 +13821,36 @@ async function saveEditMieter(id) {
   const m = await idbGet('mieter', id);
   if (!m) return;
   const persListe = getPersonenFromForm();
-  const name = persListe[0]?.name || m.mieter;
+  if(!persListe.length){ toast('Mindestens eine Person mit Namen erforderlich'); return; }
   const einzug = document.getElementById('mEinzug').value;
   const auszug = document.getElementById('mAuszug').value;
-  m.anrede  = document.getElementById('mAnrede')?.value||m.anrede||'Herr';
+  // Einzug als ISO zum Vorbelegen von "Dabei ab", wo leer
+  if(einzug && /^\d{4}-\d{2}-\d{2}$/.test(einzug)){
+    persListe.forEach(p=>{ if(!p.ab) p.ab=einzug; });
+  }
   m.leerstand = document.getElementById('mLeerstand')?.checked||false;
-  m.mieter  = name;
-  m.personen = parseInt(document.getElementById('mPersonen').value)||persListe.length||1;
   m.personen_liste = persListe;
+  // Anzeigename = Nachname(n) der Vertragspartner; sonst erste lebende Person.
+  const lebend = persListe.filter(p=>!p.verstorben);
+  m.mieter = hauptmieterNachnamen(m) || (lebend[0]||persListe[0]).name;
+  // Anrede + gespiegelte Kontaktdaten = erste Vertragspartei (Altfunktionen/Schnellzugriff)
+  const vpListe = lebend.filter(p=>p.vertragspartner);
+  const haupt = vpListe[0] || lebend[0] || persListe[0];
+  if(haupt?.anrede) m.anrede = haupt.anrede;
+  m.telefon = haupt?.telefon || '';
+  m.email   = haupt?.email   || '';
+  // Zusatzkontakt
+  const zkName = document.getElementById('zkName')?.value?.trim()||'';
+  if(zkName){
+    m.zusatzkontakt = {
+      name: zkName,
+      rolle: document.getElementById('zkRolle')?.value?.trim()||'Zusatzkontakt',
+      telefon: document.getElementById('zkTel')?.value?.trim()||'',
+      email: document.getElementById('zkMail')?.value?.trim()||'',
+    };
+  } else { delete m.zusatzkontakt; }
+  // Personenzahl: manueller Wert hat Vorrang, sonst lebende Personen
+  m.personen = parseInt(document.getElementById('mPersonen').value)||lebend.length||persListe.length||1;
   m.weNr    = document.getElementById('mWeNr').value || m.weNr;
   m.etage   = document.getElementById('mEtage').value;
   m.flaeche = document.getElementById('mFlaeche').value;
@@ -13806,8 +13867,6 @@ async function saveEditMieter(id) {
   if(auszug){ m.auszug = new Date(auszug).toLocaleDateString('de-DE'); m.auszugISO = auszug; }
   else { m.auszug = ''; m.auszugISO = ''; }
   m.kaution = parseFloat(document.getElementById('mKaution').value)||m.kaution||'';
-  m.telefon = document.getElementById('mTel').value;
-  m.email   = document.getElementById('mEmail').value;
   m.tgNr    = document.getElementById('mTgNr').value;
   // Bankverbindung / Zahlung (nur Admin sieht die Felder; HM-Formular enthält sie nicht)
   if(document.getElementById('mIban')){
@@ -13893,7 +13952,8 @@ function parseMieterNamen(roh){
   return [{name:s}];
 }
 
-async function modalMieterSplit(id){
+async function modalMieterSplit(id){ return modalEditMieter(id); }
+async function _modalMieterSplit_alt(id){
   const m=await idbGet('mieter',id);
   if(!m) return;
   // Einzugsdatum als ISO für die Vorbelegung von "Dabei ab"
