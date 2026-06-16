@@ -736,7 +736,7 @@ body.printing-active #printRoot{display:block!important}
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=20;
-const APP_VERSION = '2026-06-16-v74';
+const APP_VERSION = '2026-06-16-v75';
 let idb=null;
 
 function openIDB(){
@@ -7920,10 +7920,8 @@ async function openArchivDok(id) {
   if (!d || !d.data) return;
   if (d.istHtml) {
     const html = decodeURIComponent(d.data.replace(/^data:text\/html;charset=utf-8,/, ''));
-    const ok = printViaIframe(html);
-    if (!ok) {
-      druckHTML(html);
-    }
+    // Robust: archiviertes Dokument als eigenständige Seite im Tab öffnen.
+    oeffneDruckDokument(html, d.name||'Dokument');
   } else {
     downloadDok(id);
   }
@@ -11131,6 +11129,42 @@ function updateBriefAnrede() {
   }
 }
 
+// ════════════════════════════════════════════════════════════════
+// BRIEFDRUCK – komplett neu (v75)
+// Robuster Weg für Android/Samsung-PWA: das fertige, eigenständige
+// HTML-Dokument wird als Blob in einem neuen Tab geöffnet. Der Browser
+// rendert es als echte Seite und zeigt die native Druck-/PDF-Vorschau.
+// KEINE Style-Zerlegung, KEIN #printRoot-Umweg, KEIN @media-Verschachteln.
+// ════════════════════════════════════════════════════════════════
+function oeffneDruckDokument(html, titel){
+  try{
+    const blob = new Blob([html], {type:'text/html;charset=utf-8'});
+    const url  = URL.createObjectURL(blob);
+    const w = window.open(url, '_blank');
+    if(!w){
+      URL.revokeObjectURL(url);
+      toast('Bitte Pop-ups für diese App erlauben, dann erneut drucken.');
+      return false;
+    }
+    // URL erst nach dem Laden freigeben, sonst bleibt das Tab leer
+    setTimeout(()=>{ try{ URL.revokeObjectURL(url); }catch(_){ } }, 60000);
+    return true;
+  }catch(e){
+    console.warn('oeffneDruckDokument:', e);
+    toast('Druck fehlgeschlagen: '+e.message);
+    return false;
+  }
+}
+
+// Anrede normalisieren: stellt sicher, dass genau EIN Komma am Ende steht
+// ("Sehr geehrter Herr Müller" -> "Sehr geehrter Herr Müller,").
+function anredeMitKomma(a){
+  let t = (a||'').trim();
+  t = t.replace(/[,\s]+$/,''); // vorhandene Satzzeichen/Leerzeichen am Ende weg
+  if(!t) return 'Sehr geehrte Damen und Herren,';
+  return t + ',';
+}
+
 async function druckeBrief(mieterId, objektId) {
   const betreff = document.getElementById('briefBetreff')?.value?.trim();
   const text    = document.getElementById('briefText')?.value?.trim();
@@ -11161,82 +11195,83 @@ async function druckeBrief(mieterId, objektId) {
 
   closeModal();
 
-  // Mehrere Empfänger = mehrere Seiten
-  let briefeHTML = '';
-  const briefSeiten = []; // {m, pageHTML} je Empfänger für Archivierung
-  for (const m of empfaenger) {
-    const empfAnrede = empfSel === 'all' ? getAnredeVertragNachname(m) : anrede;
-    const pageHTML = `
-    <div class="page">
-      <div class="bk-box">
-        <div class="bk-left">
-          <svg width="150" height="55" viewBox="0 0 1000 200" xmlns="http://www.w3.org/2000/svg">
-            <line x1="50" y1="104" x2="50" y2="64" stroke="#0C447C" stroke-width="3.2" stroke-linecap="round" opacity="0.95"/>
-            <line x1="50" y1="64" x2="73" y2="104" stroke="#0C447C" stroke-width="3.2" stroke-linecap="round" opacity="0.95"/>
-            <line x1="73" y1="64" x2="73" y2="104" stroke="#0C447C" stroke-width="3.2" stroke-linecap="round" opacity="0.95"/>
-            <line x1="80" y1="64" x2="80" y2="104" stroke="#185FA5" stroke-width="3.2" stroke-linecap="round"/>
-            <path d="M 80,64 Q 105,64 105,74 Q 105,84 80,84" fill="none" stroke="#185FA5" stroke-width="3.2" stroke-linecap="round"/>
-            <ellipse cx="97" cy="74" rx="7" ry="8.5" fill="#85B7EB" opacity="0.9"/>
-            <ellipse cx="97" cy="74" rx="3.5" ry="4.2" fill="white" opacity="0.95"/>
-            <ellipse cx="97" cy="73.5" rx="1.6" ry="2" fill="#185FA5"/>
-            <text x="160" y="130" font-family="Georgia,serif" font-size="56px" fill="#0C447C">NADIG PFAU</text>
-            <text x="160" y="165" font-family="Arial,sans-serif" font-size="12px" letter-spacing="1.4px" fill="#888780">HAUSVERWALTUNG</text>
-          </svg>
-          <div style="font-size:7px;color:#555;margin-top:3px">${abs.strasse?abs.strasse+' · ':''} ${abs.ort}${abs.tel?' · Tel: '+abs.tel:''}</div>
-        </div>
-        <div class="bk-right">
-          <div style="font-size:7px;color:#999;text-decoration:underline;margin-bottom:2mm">${abs.name}${abs.strasse?' · '+abs.strasse+' · '+abs.ort:''}</div>
-          <div style="font-size:10px;line-height:1.7">
-            <strong>${adressVollNamenVertrag(m)}</strong><br>
-            ${m._vormieter&&m.neueAdresse?m.neueAdresse.replace(/\n/g,'<br>'):`${obj?.name||m.objekt||''}<br>
-            WE ${m.weNr}${m.etage?' · '+m.etage:''}<br>
-            ${obj?.ort||''}`}
-          </div>
-          <div style="margin-top:8mm;font-size:10px;color:#555">${fmtD(datum)}</div>
-        </div>
+  // Eigenständiges Brief-Dokument je Empfänger zusammenbauen.
+  // Gemeinsames CSS (einmal im Dokumentkopf). DIN-5008-nahes Layout mit
+  // Anschriftenfeld im Fensterbereich.
+  const briefCss = `
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{background:#fff}
+body{font-family:Arial,Helvetica,sans-serif;font-size:11pt;color:#111;line-height:1.5}
+.page{position:relative;width:210mm;min-height:297mm;padding:20mm 20mm 20mm 25mm;page-break-after:always}
+.page:last-child{page-break-after:auto}
+.kopf{display:flex;justify-content:space-between;align-items:flex-start;gap:10mm}
+.kopf-logo{flex:0 0 auto}
+.kopf-abs{flex:0 0 auto;text-align:right;font-size:8pt;color:#555;max-width:75mm}
+.absenderzeile{font-size:7pt;color:#777;text-decoration:underline;margin:10mm 0 1mm}
+.anschrift{font-size:11pt;line-height:1.45;min-height:25mm}
+.datumzeile{text-align:right;font-size:10pt;color:#333;margin:6mm 0 8mm}
+.betreff{font-weight:700;font-size:11pt;margin-bottom:6mm}
+.anrede{margin-bottom:4mm}
+.fliesstext{white-space:pre-wrap;line-height:1.6;margin-bottom:8mm}
+.gruss{margin-bottom:14mm}
+.signatur{font-size:11pt}
+@page{size:A4;margin:0}
+@media print{
+  html,body{width:210mm}
+  .page{margin:0}
+  body{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+}`;
+
+  const logoSvg = `<svg width="150" height="55" viewBox="0 0 1000 200" xmlns="http://www.w3.org/2000/svg">
+    <line x1="50" y1="104" x2="50" y2="64" stroke="#0C447C" stroke-width="3.2" stroke-linecap="round" opacity="0.95"/>
+    <line x1="50" y1="64" x2="73" y2="104" stroke="#0C447C" stroke-width="3.2" stroke-linecap="round" opacity="0.95"/>
+    <line x1="73" y1="64" x2="73" y2="104" stroke="#0C447C" stroke-width="3.2" stroke-linecap="round" opacity="0.95"/>
+    <line x1="80" y1="64" x2="80" y2="104" stroke="#185FA5" stroke-width="3.2" stroke-linecap="round"/>
+    <path d="M 80,64 Q 105,64 105,74 Q 105,84 80,84" fill="none" stroke="#185FA5" stroke-width="3.2" stroke-linecap="round"/>
+    <ellipse cx="97" cy="74" rx="7" ry="8.5" fill="#85B7EB" opacity="0.9"/>
+    <ellipse cx="97" cy="74" rx="3.5" ry="4.2" fill="white" opacity="0.95"/>
+    <ellipse cx="97" cy="73.5" rx="1.6" ry="2" fill="#185FA5"/>
+    <text x="160" y="130" font-family="Georgia,serif" font-size="56px" fill="#0C447C">NADIG PFAU</text>
+    <text x="160" y="165" font-family="Arial,sans-serif" font-size="12px" letter-spacing="1.4px" fill="#888780">HAUSVERWALTUNG</text>
+  </svg>`;
+
+  const absRueck = `${abs.name||''}${abs.strasse?' · '+abs.strasse:''}${abs.ort?' · '+abs.ort:''}`;
+
+  function seiteFuer(m){
+    const empfAnredeRoh = empfSel === 'all' ? getAnredeVertragNachname(m) : anrede;
+    const empfAnrede = anredeMitKomma(empfAnredeRoh);
+    const anschrift = (m._vormieter && m.neueAdresse)
+      ? esc(m.neueAdresse).replace(/\n/g,'<br>')
+      : `${esc(obj?.name||m.objekt||'')}<br>WE ${esc(String(m.weNr||''))}${m.etage?' · '+esc(m.etage):''}<br>${esc(obj?.ort||'')}`;
+    return `<div class="page">
+      <div class="kopf">
+        <div class="kopf-logo">${logoSvg}</div>
+        <div class="kopf-abs">${abs.strasse?esc(abs.strasse)+'<br>':''}${abs.ort?esc(abs.ort)+'<br>':''}${abs.tel?'Tel: '+esc(abs.tel)+'<br>':''}${abs.email?esc(abs.email):''}</div>
       </div>
-      <div style="border-bottom:1px solid #185FA5;opacity:0.3;margin:4mm 0 6mm"></div>
-      <div style="font-size:11px;font-weight:700;margin-bottom:6mm">${betreff}</div>
-      <div style="font-size:11px;margin-bottom:5mm">${empfAnrede},</div>
-      <div style="font-size:11px;line-height:1.8;white-space:pre-wrap;margin-bottom:8mm">${text}</div>
-      <div style="font-size:11px;margin-bottom:16mm">${gruss}</div>
-      <div style="font-size:11px">${abs.name}</div>
+      <div class="absenderzeile">${esc(absRueck)}</div>
+      <div class="anschrift"><strong>${esc(adressVollNamenVertrag(m))}</strong><br>${anschrift}</div>
+      <div class="datumzeile">${esc(fmtD(datum))}</div>
+      <div class="betreff">${esc(betreff)}</div>
+      <div class="anrede">${esc(empfAnrede)}</div>
+      <div class="fliesstext">${esc(text)}</div>
+      <div class="gruss">${esc(gruss)}</div>
+      <div class="signatur">${esc(abs.name||'')}</div>
     </div>`;
-    briefeHTML += pageHTML;
-    briefSeiten.push({m, pageHTML});
   }
 
-  const _briefDruckHtml = `<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8">
-<title>Brief – ${betreff}</title>
-<style>
-*{margin:0;padding:0;box-sizing:border-box}
-body{font-family:Arial,sans-serif;font-size:11px;color:#111;padding:20px}
-.page{page-break-after:always;padding-bottom:20px}
-.page:last-child{page-break-after:avoid}
-.bk-box{display:flex;flex-direction:row;justify-content:space-between;align-items:flex-start;margin-bottom:0;width:100%}
-.bk-left{flex:0 0 85mm;width:85mm;padding-top:5mm;order:0}
-.bk-right{flex:0 0 85mm;width:85mm;padding-top:45mm;text-align:left;order:1}
-@page{margin:1.5cm;size:A4}
-@media print{body{padding:0;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
-</style></head><body>
-${briefeHTML}
-\x3cscript\x3e(function(){var p=function(){setTimeout(function(){window.focus();window.print();},500);};if(document.readyState==='complete'){p();}else{window.addEventListener('load',p);}})()\x3c/script\x3e
-</body></html>`;
-  druckHTML(_briefDruckHtml);
+  // Auto-Print-Snippet: nach dem Laden Druckdialog öffnen
+  const autoPrint = '\x3cscript\x3e(function(){function p(){setTimeout(function(){try{window.focus();window.print();}catch(e){}},600);}if(document.readyState==="complete"){p();}else{window.addEventListener("load",p);}})();\x3c/script\x3e';
 
-  // Jeden Brief beim jeweiligen Mieter archivieren
-  const briefStyleHead = `<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8"><title>Brief – ${betreff}</title><style>
-*{margin:0;padding:0;box-sizing:border-box}
-body{font-family:Arial,sans-serif;font-size:11px;color:#111;padding:20px}
-.page{padding-bottom:20px}
-.bk-box{display:flex;flex-direction:row;justify-content:space-between;align-items:flex-start;margin-bottom:0;width:100%}
-.bk-left{flex:0 0 85mm;width:85mm;padding-top:5mm;order:0}
-.bk-right{flex:0 0 85mm;width:85mm;padding-top:45mm;text-align:left;order:1}
-@page{margin:1.5cm;size:A4}
-@media print{body{padding:0;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
-</style></head><body>`;
-  for (const {m, pageHTML} of briefSeiten) {
-    const einzelHtml = `${briefStyleHead}${pageHTML}<scr`+`ipt>(function(){var p=function(){setTimeout(function(){window.focus();window.print();},400);};if(document.readyState==='complete'){p();}else{window.addEventListener('load',p);}})()</scr`+`ipt></body></html>`;
+  // Sammeldokument (alle Empfänger) für den Druck
+  let briefeHTML = '';
+  for(const m of empfaenger){ briefeHTML += seiteFuer(m); }
+  const dokKopf = `<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Brief – ${esc(betreff)}</title><style>${briefCss}</style></head><body>`;
+  const druckDok = dokKopf + briefeHTML + autoPrint + '</body></html>';
+  oeffneDruckDokument(druckDok, 'Brief – '+betreff);
+
+  // Jeden Brief einzeln archivieren (eigenes vollständiges Dokument, ohne Auto-Print)
+  for(const m of empfaenger){
+    const einzelHtml = dokKopf + seiteFuer(m) + '</body></html>';
     await archiviereMieterDokument({
       mieterId: m.id, objektId: m.objektId,
       typ: 'brief',
