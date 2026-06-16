@@ -736,7 +736,7 @@ body.printing-active #printRoot{display:block!important}
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=20;
-const APP_VERSION = '2026-06-16-v76';
+const APP_VERSION = '2026-06-16-v78';
 let idb=null;
 
 function openIDB(){
@@ -6612,6 +6612,21 @@ async function modalGebaeudeStamm(objektId){
         <option value="">– bitte wählen –</option>
         ${HEIZUNG_ARTEN.map(h=>`<option value="${h}" ${s.heizung===h?'selected':''}>${h}</option>`).join('')}
       </select></div>
+    <div class="f-section-title" style="margin-top:14px"><i class="ti ti-building-bank"></i> Bankverbindung für Mietzahlung (Mieterportal)</div>
+    <div style="font-size:11px;color:var(--ink-40);margin:-4px 0 8px">Diese Bankzeile wird Mietern im Portal zur Überweisung angezeigt. Es wird kein Kontostand / Saldo veröffentlicht.</div>
+    <div class="f"><label>Kontoinhaber / Empfänger</label>
+      <input type="text" id="gsKtoInhaber" value="${esc(s.ktoInhaber||'')}" placeholder="z. B. Alexander Nadig u. Anna Pfau GbR"></div>
+    <div class="f-row">
+      <div class="f"><label>IBAN</label>
+        <input type="text" id="gsKtoIban" value="${esc(s.ktoIban||'')}" placeholder="DE.. .... .... .... .... .." autocomplete="off"></div>
+      <div class="f"><label>BIC</label>
+        <input type="text" id="gsKtoBic" value="${esc(s.ktoBic||'')}" placeholder="optional" autocomplete="off"></div>
+    </div>
+    <div class="f"><label>Bank (optional)</label>
+      <input type="text" id="gsKtoBank" value="${esc(s.ktoBank||'')}" placeholder="z. B. Sparkasse Krefeld"></div>
+    <div class="f"><label>Verwendungszweck-Vorlage (optional)</label>
+      <input type="text" id="gsKtoZweck" value="${esc(s.ktoZweck||'')}" placeholder="z. B. Miete {Objekt} WE {Nr} {Monat}">
+      <div style="font-size:10px;color:var(--ink-40);margin-top:2px">Hinweis für den Mieter, wie der Verwendungszweck anzugeben ist.</div></div>
     <div class="f"><label>Notiz (optional)</label>
       <textarea id="gsNotiz" spellcheck="true" lang="de" style="min-height:50px" placeholder="z. B. Dachsanierung 2021, neue Fenster ...">${esc(s.notiz||'')}</textarea></div>
     <div class="f-row" style="margin-top:12px">
@@ -6630,6 +6645,11 @@ async function saveGebaeudeStamm(objektId){
     modernisiert:document.getElementById('gsModern')?.value?.trim()||'',
     heizung:document.getElementById('gsHeizung')?.value||'',
     mietspiegel:parseFloat(String(document.getElementById('gsMietspiegel')?.value||'').replace(',','.'))||'',
+    ktoInhaber:document.getElementById('gsKtoInhaber')?.value?.trim()||'',
+    ktoIban:document.getElementById('gsKtoIban')?.value?.trim()||'',
+    ktoBic:document.getElementById('gsKtoBic')?.value?.trim()||'',
+    ktoBank:document.getElementById('gsKtoBank')?.value?.trim()||'',
+    ktoZweck:document.getElementById('gsKtoZweck')?.value?.trim()||'',
     notiz:document.getElementById('gsNotiz')?.value?.trim()||'',
     geaendert:now(),
   };
@@ -7880,6 +7900,69 @@ const DOK_TYPEN = [
 ];
 
 /* ═══════════════════════════════════════════════════════════
+   PAKET B – MIETERPORTAL: Dokument-Freigabe-Logik
+   Mieter rufen freigegebene Dokumente später über die Website ab
+   (QR → Login-Seite → Token per Mail → Azure-Function holt die in
+   der App freigegebenen Dokumente aus OneDrive; KEINE Speicherung
+   auf der Website). Sicherheit: Default überall = NICHT freigegeben.
+═══════════════════════════════════════════════════════════ */
+
+// Dokumenttypen, die überhaupt für das Mieterportal freigegeben werden dürfen.
+// Sensible Typen (Ausweis, SEPA-Mandat, interne Fotos/Pläne) sind bewusst
+// NICHT enthalten und können nie an den Mieter ausgeliefert werden.
+const PORTAL_DOK_TYPEN = ['vertrag','nka','abrechnung','wgb','brief','mieterhoehung'];
+
+// Generelle Typ-Voreinstellung aus settings lesen (Default: false = gesperrt).
+async function getPortalTypDefaults(){
+  const rec = await idbGet('settings','portal_typ_freigabe').catch(()=>null);
+  const def = (rec && rec.value) ? rec.value : {};
+  const out = {};
+  PORTAL_DOK_TYPEN.forEach(t => { out[t] = def[t] === true; });
+  return out;
+}
+
+async function setPortalTypDefault(typ, freigegeben){
+  if(!PORTAL_DOK_TYPEN.includes(typ)) return;
+  const rec = await idbGet('settings','portal_typ_freigabe').catch(()=>null)
+            || {id:'portal_typ_freigabe', value:{}};
+  rec.value = rec.value || {};
+  rec.value[typ] = freigegeben === true;
+  rec.geaendert = nowIso();
+  await idbPut('settings', rec);
+  clearTimeout(window._syncTimer);
+  window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
+}
+
+// Effektive Freigabe eines Einzeldokuments:
+//   - portalFreigabe === true/false  → Einzel-Override gewinnt
+//   - portalFreigabe === undefined/null → Typ-Voreinstellung greift
+//   - Typ nicht portalfähig → immer false
+function istPortalFreigegeben(dok, typDefaults){
+  if(!dok || !dok.mieterId) return false;            // nur mieterbezogene Dok.
+  if(!PORTAL_DOK_TYPEN.includes(dok.typ)) return false;
+  if(dok.portalFreigabe === true)  return true;
+  if(dok.portalFreigabe === false) return false;
+  return typDefaults[dok.typ] === true;
+}
+
+// Schnittstelle für die Azure-Function (Paket C): alle effektiv für einen
+// Mieter freigegebenen Dokumente. Liefert nur Metadaten + Daten-Referenz,
+// die Auslieferung/Authentifizierung übernimmt später die Brücke.
+async function portalDokumenteFuerMieter(mieterId){
+  if(!mieterId) return [];
+  const [alle, typDefaults] = await Promise.all([
+    idbGetAll('dokumente'),
+    getPortalTypDefaults()
+  ]);
+  return alle
+    .filter(d => d.mieterId === mieterId && istPortalFreigegeben(d, typDefaults))
+    .map(d => ({
+      id:d.id, typ:d.typ, name:d.name, erstellt:d.erstellt||d.erstellt,
+      mimeType:d.mimeType, objektId:d.objektId||null
+    }));
+}
+
+/* ═══════════════════════════════════════════════════════════
    MIETER-ARCHIV: erzeugte Schreiben automatisch beim Mieter ablegen
    Speichert generiertes HTML als druckbares Dokument im 'dokumente'-Store
    (vorhandener mieterId-Index). So bleibt jedes Schreiben pro Mieter
@@ -7928,6 +8011,7 @@ async function openArchivDok(id) {
 
 async function renderDokumente(el, objektId, mieterId) {
   const alle = await idbGetAll('dokumente');
+  const portalTypDefaults = await getPortalTypDefaults();
   let docs = mieterId
     ? alle.filter(d=>d.mieterId===mieterId)
     : alle.filter(d=>d.objektId===objektId && !d.mieterId);
@@ -7969,6 +8053,11 @@ async function renderDokumente(el, objektId, mieterId) {
           <div style="font-size:11px;color:var(--ink-40);margin-top:1px">${d.erstellt||''} · ${isHtmlDok?'Schreiben':fmtBytes(d.size||0)}</div>
           ${d.notiz?`<div style="font-size:11px;color:var(--ink-60);margin-top:2px;font-style:italic">${d.notiz}</div>`:''}
         </div>
+        ${(CU?.role==='admin' && d.mieterId && PORTAL_DOK_TYPEN.includes(d.typ)) ? (()=>{
+            const frei = istPortalFreigegeben(d, portalTypDefaults);
+            const ueberschrieben = (d.portalFreigabe===true||d.portalFreigabe===false);
+            return `<button class="btn btn-sm" title="${frei?'Für Mieterportal freigegeben':'Nicht freigegeben'}${ueberschrieben?' (manuell gesetzt)':' (Typ-Standard)'} – tippen zum Umschalten" onclick="togglePortalFreigabe('${d.id}')" style="flex-shrink:0;${frei?'color:var(--success);border-color:var(--success)':'color:var(--ink-40)'}"><i class="ti ${frei?'ti-world-share':'ti-world-off'}"></i></button>`;
+          })() : ''}
         <div style="display:flex;gap:5px;flex-shrink:0">
           ${isImg?`<button class="btn btn-sm" onclick="openFoto('${d.id}','dok')"><i class="ti ti-eye"></i></button>`:''}
           ${isHtmlDok?`<button class="btn btn-sm" onclick="openArchivDok('${d.id}')" title="Öffnen / Drucken / Weiterleiten"><i class="ti ti-eye"></i></button>`:''}
@@ -7979,6 +8068,29 @@ async function renderDokumente(el, objektId, mieterId) {
     });
   });
   el.innerHTML = h;
+}
+
+// Portal-Freigabe eines Einzeldokuments umschalten.
+// Zyklus: Typ-Standard → ausdrücklich freigegeben → ausdrücklich gesperrt → Typ-Standard
+async function togglePortalFreigabe(id){
+  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  const d = await idbGet('dokumente', id);
+  if(!d || !PORTAL_DOK_TYPEN.includes(d.typ)){ return; }
+  if(d.portalFreigabe === true)       d.portalFreigabe = false;
+  else if(d.portalFreigabe === false) d.portalFreigabe = null;
+  else                                d.portalFreigabe = true;
+  d.geaendert = now();
+  await idbPut('dokumente', d);
+  clearTimeout(window._syncTimer);
+  window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
+  const defs = await getPortalTypDefaults();
+  const eff = istPortalFreigegeben(d, defs);
+  if(d.portalFreigabe===true)       toast('Dokument für Mieterportal freigegeben');
+  else if(d.portalFreigabe===false) toast('Dokument gesperrt (auch wenn Typ freigegeben)');
+  else                              toast('Zurückgesetzt auf Typ-Standard: '+(eff?'freigegeben':'gesperrt'));
+  // Liste neu zeichnen
+  const el = document.getElementById('mieterDokEl') || document.getElementById('objTabContent');
+  if(el) await renderDokumente(el, d.objektId, d.mieterId||null);
 }
 
 function fmtBytes(b) {
@@ -10272,6 +10384,35 @@ function getBriefkopf(objektId) {
 }
 
 // Einstellungs-UI für die drei Gruppen-Briefköpfe
+const PORTAL_TYP_LABEL = {
+  vertrag:'Mietvertrag', nka:'Nebenkostenabrechnung', abrechnung:'Abrechnung',
+  wgb:'Wohnungsgeberbescheinigung', brief:'Schreiben / Briefe', mieterhoehung:'Mieterhöhung'
+};
+
+async function renderPortalFreigabe(){
+  const defs = await getPortalTypDefaults();
+  let h = '<div style="display:flex;flex-direction:column;gap:6px">';
+  PORTAL_DOK_TYPEN.forEach(typ=>{
+    const on = defs[typ]===true;
+    h += `<label style="display:flex;align-items:center;gap:10px;background:var(--white);border:1px solid var(--ink-10);border-radius:var(--radius);padding:10px 12px;cursor:pointer">
+      <input type="checkbox" ${on?'checked':''} onchange="onPortalTypToggle('${typ}',this.checked)" style="width:18px;height:18px;flex-shrink:0">
+      <span style="flex:1;font-size:13px;font-weight:600;color:var(--ink)">${PORTAL_TYP_LABEL[typ]||typ}</span>
+      <span style="font-size:11px;color:${on?'var(--success)':'var(--ink-40)'}">${on?'freigegeben':'gesperrt'}</span>
+    </label>`;
+  });
+  h += '</div>';
+  h += '<div style="font-size:11px;color:var(--ink-40);margin-top:8px;line-height:1.5"><i class="ti ti-info-circle"></i> Persönliche Schreiben und Mieterhöhungen sollten nur nach Prüfung im Einzelfall freigegeben werden. Eine generelle Freigabe gilt für alle Mieter und alle vorhandenen Dokumente dieses Typs.</div>';
+  return h;
+}
+
+async function onPortalTypToggle(typ, checked){
+  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  await setPortalTypDefault(typ, checked);
+  const pfEl=document.getElementById('portalFreigabeEl');
+  if(pfEl) pfEl.innerHTML=await renderPortalFreigabe();
+  toast(checked?('Typ freigegeben: '+(PORTAL_TYP_LABEL[typ]||typ)):('Typ gesperrt: '+(PORTAL_TYP_LABEL[typ]||typ)));
+}
+
 function renderBriefkopfConfig(){
   const gruppen=[
     {key:'dus', label:'Düsseldorf / Monheim (Nadig Pfau)'},
@@ -11088,14 +11229,7 @@ async function modalBrief(mieterId, objektId) {
     </div>
     <div class="f"><label>Betreff *</label>
       <input type="text" id="briefBetreff" placeholder="z. B. Information zur Hauswartung" spellcheck="true" lang="de"></div>
-    <div class="f"><label>Absender</label>
-      <select id="briefAbsender">
-        <option value="hausverwaltung">Hausverwaltung Nadig Pfau</option>
-        <option value="eigentuemer">Eigentümer Alexander-Roland Nadig und Anna-Alexandra Pfau</option>
-        <option value="hausmeister">Hausmeister</option>
-        <option value="roland">Roland B. Nadig</option>
-      </select>
-    </div>
+    <input type="hidden" id="briefAbsender" value="hausverwaltung">
     <div class="f"><label>Datum</label>
       <input type="date" id="briefDatum" value="${today()}"></div>
     <div class="f"><label>Anrede</label>
@@ -11104,6 +11238,9 @@ async function modalBrief(mieterId, objektId) {
       <textarea spellcheck="true" lang="de" id="briefText" style="min-height:140px" placeholder="Text des Schreibens..."></textarea></div>
     <div class="f"><label>Grußformel</label>
       <input type="text" id="briefGruss" value="Mit freundlichen Grüßen"></div>
+    <div class="f-section-title" style="margin-top:10px"><i class="ti ti-signature"></i> Unterschrift (optional)</div>
+    <div style="font-size:11px;color:var(--ink-40);margin-bottom:6px">Eine oder zwei hinterlegte Unterschriften (z. B. Alexander Nadig und Anna Pfau). Ohne Auswahl wird ohne Unterschriftsbild gedruckt.</div>
+    <div id="briefSigPick"></div>
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="druckeBrief('${mieterId||''}','${objektId||''}')">
         <i class="ti ti-printer"></i> Brief drucken
@@ -11113,6 +11250,46 @@ async function modalBrief(mieterId, objektId) {
 
   // Mieter-Daten für spätere Verwendung
   window._briefMieter = mieter;
+  // Unterschrift-Picker (wie NKA) befüllen
+  window._briefSigUserIds = [];
+  populateBriefSigPick();
+}
+
+// Unterschrift-Auswahl für den Brief (1 oder 2 Admins mit hinterlegter Signatur)
+window._briefSigUserIds = [];
+async function populateBriefSigPick(){
+  const wrap=document.getElementById('briefSigPick');
+  if(!wrap) return;
+  const users=await idbGetAll('users');
+  const admins=users.filter(u=>u.role==='admin'&&u.signatur);
+  if(!admins.length){
+    wrap.innerHTML='<div style="font-size:11px;color:var(--amber)">Keine hinterlegten Unterschriften gefunden. Unter „Mein Profil“ kann eine Unterschrift hinterlegt werden.</div>';
+    window._briefSigUserIds=[];
+    return;
+  }
+  if(!window._briefSigUserIds.length && admins.some(u=>u.id===CU?.id)) window._briefSigUserIds=[CU.id];
+  wrap.innerHTML=admins.map(u=>`
+    <label style="display:flex;align-items:center;gap:8px;font-size:13px;padding:4px 0;cursor:pointer">
+      <input type="checkbox" value="${u.id}" ${window._briefSigUserIds.includes(u.id)?'checked':''}
+        onchange="briefSigToggle('${u.id}',this.checked)" style="width:16px;height:16px">
+      <img src="${u.signatur}" style="max-height:34px;background:#fff;border:1px solid var(--ink-10);border-radius:4px">
+      <span>${esc(u.name)}${u.id===CU?.id?' (ich)':''}</span>
+    </label>`).join('');
+}
+function briefSigToggle(userId, checked){
+  const set=new Set(window._briefSigUserIds||[]);
+  if(checked){
+    if(set.size>=2){ toast('Maximal zwei Unterschriften');
+      const cb=document.querySelector('#briefSigPick input[value="'+userId+'"]'); if(cb) cb.checked=false; return; }
+    set.add(userId);
+  } else set.delete(userId);
+  window._briefSigUserIds=[...set];
+}
+async function briefGewaehlteSignaturen(){
+  const ids=(window._briefSigUserIds||[]).slice(0,2);
+  const out=[];
+  for(const id of ids){ const u=await idbGet('users',id).catch(()=>null); if(u&&u.signatur) out.push({name:u.name||'',signatur:u.signatur}); }
+  return out;
 }
 
 function updateBriefAnrede() {
@@ -11190,7 +11367,7 @@ async function druckeBrief(mieterId, objektId) {
 
   // Absender bestimmen
   const abs = {
-    hausverwaltung: {name:'Hausverwaltung Alexander-Roland Nadig und Anna-Alexandra Pfau', strasse:'Venloer Straße 20', ort:'40477 Düsseldorf', tel:'0177 / 2509710', email:'nadigpfau-hausverwaltung@gmx.de'},
+    hausverwaltung: {name:'Hausverwaltung Nadig Pfau', strasse:'Venloer Straße 20', ort:'40477 Düsseldorf', tel:'0177 / 2509710', email:'nadigpfau-hausverwaltung@gmx.de'},
     eigentuemer:    {name:'Alexander-Roland Nadig und Anna-Alexandra Pfau', strasse:'Venloer Straße 20', ort:'40477 Düsseldorf', tel:'0177 / 2509710', email:'nadigpfau-hausverwaltung@gmx.de'},
     hausmeister:    {name:CU?.name||'Hausmeister', strasse:'', ort:'', tel:'', email:''},
     roland:         {name:'Roland B. Nadig, Dipl.Ing. Architekt', strasse:'Zur Verlach 37', ort:'40723 Hilden', tel:'02103 2509710 · Mobil: 0157 50984524', email:'rolandnadig@gmx.de'},
@@ -11205,7 +11382,7 @@ async function druckeBrief(mieterId, objektId) {
   // festen mm-Spaltenbreiten im Kopf – das war die Ursache der leeren Seite auf
   // Samsung. Der zweispaltige Briefkopf wird über eine TABELLE gelöst, die in
   // jedem Druckkontext zuverlässig rendert.
-  const logoSvg = `<svg width="150" height="55" viewBox="0 0 1000 200" xmlns="http://www.w3.org/2000/svg">
+  const logoSvg = `<svg width="220" height="80" viewBox="0 0 1000 200" xmlns="http://www.w3.org/2000/svg">
     <line x1="50" y1="104" x2="50" y2="64" stroke="#0C447C" stroke-width="3.2" stroke-linecap="round" opacity="0.95"/>
     <line x1="50" y1="64" x2="73" y2="104" stroke="#0C447C" stroke-width="3.2" stroke-linecap="round" opacity="0.95"/>
     <line x1="73" y1="64" x2="73" y2="104" stroke="#0C447C" stroke-width="3.2" stroke-linecap="round" opacity="0.95"/>
@@ -11219,13 +11396,21 @@ async function druckeBrief(mieterId, objektId) {
   </svg>`;
   const absRueck = `${abs.name||''}${abs.strasse?' · '+abs.strasse:''}${abs.ort?' · '+abs.ort:''}`;
 
+  // Gewählte Unterschrift(en) laden (wie NKA)
+  const sigListe = await briefGewaehlteSignaturen();
+  const sigHTML = sigListe.length
+    ? sigListe.map(sg=>`<span style="display:inline-block;margin-right:14mm;text-align:left;vertical-align:bottom">
+        <img src="${sg.signatur}" style="max-height:60px;display:block;margin-bottom:1mm">
+        <span style="font-size:10px">${esc(sg.name)}</span></span>`).join('')
+    : '';
+
   function seiteFuer(m){
     const empfAnredeRoh = empfSel === 'all' ? getAnredeVertragNachname(m) : anrede;
     const empfAnrede = anredeMitKomma(empfAnredeRoh);
+    // Adressfeld OHNE Wohneinheit/Etage (Änderung 3): nur Objekt-Straße und Ort
     const anschrift = (m._vormieter && m.neueAdresse)
       ? esc(m.neueAdresse).replace(/\n/g,'<br>')
-      : `${esc(obj?.name||m.objekt||'')}<br>WE ${esc(String(m.weNr||''))}${m.etage?' · '+esc(m.etage):''}<br>${esc(obj?.ort||'')}`;
-    // Kopf als Tabelle: links Logo, rechts Absenderkontakt
+      : `${esc(obj?.name||m.objekt||'')}<br>${esc(obj?.ort||'')}`;
     return `<div class="brief-seite">
       <table class="bk-kopf"><tr>
         <td class="bk-l">${logoSvg}</td>
@@ -11238,6 +11423,7 @@ async function druckeBrief(mieterId, objektId) {
       <div class="bk-anrede">${esc(empfAnrede)}</div>
       <div class="bk-text">${esc(text)}</div>
       <div class="bk-gruss">${esc(gruss)}</div>
+      ${sigHTML?`<div class="bk-sigimg">${sigHTML}</div>`:''}
       <div class="bk-sig">${esc(abs.name||'')}</div>
     </div>`;
   }
@@ -11249,8 +11435,9 @@ async function druckeBrief(mieterId, objektId) {
     .brief-seite:last-child{page-break-after:auto}
     .bk-kopf{width:100%;border-collapse:collapse;margin-bottom:2mm}
     .bk-kopf td{vertical-align:top;padding:0}
-    .bk-kopf .bk-l{width:55%}
-    .bk-kopf .bk-r{width:45%;text-align:right;font-size:8px;color:#555}
+    .bk-kopf .bk-l{width:60%}
+    .bk-kopf .bk-r{width:40%;text-align:right;font-size:8px;color:#555}
+    .bk-sigimg{margin:2mm 0 4mm}
     .bk-abs{font-size:7px;color:#777;text-decoration:underline;margin:10mm 0 1mm}
     .bk-anschrift{font-size:12px;line-height:1.45;min-height:22mm}
     .bk-datum{text-align:right;font-size:11px;color:#333;margin:6mm 0 8mm}
@@ -13923,6 +14110,75 @@ const KAUTION_STATUS = [
 function kautionStatusInfo(v){ return KAUTION_STATUS.find(x=>x.val===v) || KAUTION_STATUS[0]; }
 function kautionArtInfo(v){ return KAUTION_ARTEN.find(x=>x.val===v) || KAUTION_ARTEN[0]; }
 
+// ════════════════════════════════════════════════════════════════
+// KAUTIONSZINSEN (v77)
+// Datengrundlage: Deutsche Bundesbank, Zinsstatistik (Stand 05.06.2026).
+// Reihe: Spareinlagen mit dreimonatiger Kündigungsfrist, Mindest-/
+// Grundverzinsung – UNTERER Streubreitenwert (N2) bis Juni 2003;
+// ab Juli 2003 Effektivzinssatz % p.a. der MFI-Zinsstatistik
+// (Einlagen privater Haushalte, vereinbarte Kündigungsfrist bis 3 Monate,
+// Reihe BBIM1.M.DE.B.L23.D.R.A.2250.EUR.N). Werte in % p.a.
+// Schlüssel "YYYY-MM" = Monatsendstand. Keine steuerlichen Abzüge.
+// HINWEIS: Die gesetzliche Verzinsungspflicht folgt aus § 551 Abs. 3 BGB
+// (Anlage zum für Spareinlagen mit dreimonatiger Kündigungsfrist üblichen Zinssatz).
+var KAUTION_ZINSREIHE = JSON.parse('{"1981-01":4.5,"1981-02":4.5,"1981-03":4.5,"1981-04":5.0,"1981-05":5.0,"1981-06":5.0,"1981-07":5.0,"1981-08":5.0,"1981-09":5.0,"1981-10":5.0,"1981-11":5.0,"1981-12":5.0,"1982-01":5.0,"1982-02":5.0,"1982-03":5.0,"1982-04":5.0,"1982-05":4.75,"1982-06":4.75,"1982-07":4.75,"1982-08":4.5,"1982-09":4.5,"1982-10":4.5,"1982-11":4.0,"1982-12":4.0,"1983-01":4.0,"1983-02":4.0,"1983-03":3.75,"1983-04":3.0,"1983-05":3.0,"1983-06":3.0,"1983-07":3.0,"1983-08":3.0,"1983-09":3.0,"1983-10":3.0,"1983-11":3.0,"1983-12":3.0,"1984-01":3.0,"1984-02":3.0,"1984-03":3.0,"1984-04":3.0,"1984-05":3.0,"1984-06":3.0,"1984-07":3.0,"1984-08":3.0,"1984-09":3.0,"1984-10":3.0,"1984-11":3.0,"1984-12":3.0,"1985-01":3.0,"1985-02":3.0,"1985-03":3.0,"1985-04":3.0,"1985-05":3.0,"1985-06":3.0,"1985-07":3.0,"1985-08":2.5,"1985-09":2.5,"1985-10":2.5,"1985-11":2.5,"1985-12":2.5,"1986-01":2.5,"1986-02":2.5,"1986-03":2.5,"1986-04":2.5,"1986-05":2.5,"1986-06":2.25,"1986-07":2.25,"1986-08":2.25,"1986-09":2.25,"1986-10":2.25,"1986-11":2.25,"1986-12":2.25,"1987-01":2.25,"1987-02":2.0,"1987-03":2.0,"1987-04":2.0,"1987-05":2.0,"1987-06":2.0,"1987-07":2.0,"1987-08":2.0,"1987-09":2.0,"1987-10":2.0,"1987-11":2.0,"1987-12":2.0,"1988-01":2.0,"1988-02":2.0,"1988-03":2.0,"1988-04":2.0,"1988-05":2.0,"1988-06":2.0,"1988-07":2.0,"1988-08":2.0,"1988-09":2.0,"1988-10":2.0,"1988-11":2.0,"1988-12":2.0,"1989-01":2.0,"1989-02":2.0,"1989-03":2.0,"1989-04":2.0,"1989-05":2.0,"1989-06":2.0,"1989-07":2.0,"1989-08":2.0,"1989-09":2.0,"1989-10":2.0,"1989-11":2.0,"1989-12":2.5,"1990-01":2.5,"1990-02":2.5,"1990-03":2.5,"1990-04":2.5,"1990-05":2.5,"1990-06":2.5,"1990-07":2.5,"1990-08":2.5,"1990-09":2.5,"1990-10":2.5,"1990-11":2.5,"1990-12":2.5,"1991-01":2.5,"1991-02":2.5,"1991-03":2.5,"1991-04":2.5,"1991-05":2.5,"1991-06":2.5,"1991-07":2.5,"1991-08":2.5,"1991-09":2.5,"1991-10":2.5,"1991-11":2.5,"1991-12":2.5,"1992-01":2.5,"1992-02":2.5,"1992-03":2.5,"1992-04":2.5,"1992-05":2.5,"1992-06":2.5,"1992-07":2.5,"1992-08":2.5,"1992-09":2.5,"1992-10":2.5,"1992-11":2.5,"1992-12":2.5,"1993-01":2.5,"1993-02":2.5,"1993-03":2.5,"1993-04":2.25,"1993-05":2.0,"1993-06":2.0,"1993-07":2.0,"1993-08":2.0,"1993-09":2.0,"1993-10":2.0,"1993-11":2.0,"1993-12":2.0,"1994-01":2.0,"1994-02":2.0,"1994-03":2.0,"1994-04":2.0,"1994-05":2.0,"1994-06":2.0,"1994-07":2.0,"1994-08":2.0,"1994-09":2.0,"1994-10":2.0,"1994-11":2.0,"1994-12":2.0,"1995-01":2.0,"1995-02":2.0,"1995-03":2.0,"1995-04":2.0,"1995-05":2.0,"1995-06":2.0,"1995-07":2.0,"1995-08":2.0,"1995-09":2.0,"1995-10":2.0,"1995-11":2.0,"1995-12":2.0,"1996-01":2.0,"1996-02":2.0,"1996-03":2.0,"1996-04":2.0,"1996-05":1.75,"1996-06":1.5,"1996-07":1.5,"1996-08":1.5,"1996-09":1.5,"1996-10":1.5,"1996-11":1.5,"1996-12":1.5,"1997-01":1.5,"1997-02":1.5,"1997-03":1.5,"1997-04":1.5,"1997-05":1.5,"1997-06":1.5,"1997-07":1.5,"1997-08":1.5,"1997-09":1.5,"1997-10":1.5,"1997-11":1.5,"1997-12":1.5,"1998-01":1.5,"1998-02":1.5,"1998-03":1.5,"1998-04":1.5,"1998-05":1.5,"1998-06":1.5,"1998-07":1.5,"1998-08":1.5,"1998-09":1.5,"1998-10":1.25,"1998-11":1.25,"1998-12":1.25,"1999-01":1.25,"1999-02":1.0,"1999-03":1.0,"1999-04":1.0,"1999-05":1.0,"1999-06":1.0,"1999-07":1.0,"1999-08":1.0,"1999-09":1.0,"1999-10":1.0,"1999-11":1.0,"1999-12":1.0,"2000-01":1.0,"2000-02":1.0,"2000-03":1.0,"2000-04":1.0,"2000-05":1.0,"2000-06":1.0,"2000-07":1.0,"2000-08":1.0,"2000-09":1.0,"2000-10":1.0,"2000-11":1.0,"2000-12":1.0,"2001-01":1.0,"2001-02":1.0,"2001-03":1.0,"2001-04":1.0,"2001-05":1.0,"2001-06":1.0,"2001-07":1.0,"2001-08":1.0,"2001-09":1.0,"2001-10":1.0,"2001-11":0.75,"2001-12":0.75,"2002-01":0.75,"2002-02":0.75,"2002-03":0.75,"2002-04":0.75,"2002-05":0.75,"2002-06":0.75,"2002-07":0.75,"2002-08":0.75,"2002-09":0.75,"2002-10":0.75,"2002-11":0.75,"2002-12":0.75,"2003-01":0.75,"2003-02":0.75,"2003-03":0.5,"2003-04":0.5,"2003-05":0.5,"2003-06":0.5,"2003-07":2.11,"2003-08":2.08,"2003-09":2.04,"2003-10":2.2,"2003-11":2.15,"2003-12":2.17,"2004-01":2.18,"2004-02":2.12,"2004-03":2.1,"2004-04":2.13,"2004-05":2.1,"2004-06":2.13,"2004-07":2.1,"2004-08":2.11,"2004-09":2.13,"2004-10":2.13,"2004-11":2.16,"2004-12":2.13,"2005-01":2.09,"2005-02":2.11,"2005-03":2.06,"2005-04":2.05,"2005-05":2.12,"2005-06":2.1,"2005-07":2.08,"2005-08":1.98,"2005-09":2.0,"2005-10":1.94,"2005-11":2.02,"2005-12":1.99,"2006-01":2.0,"2006-02":2.0,"2006-03":1.96,"2006-04":1.99,"2006-05":1.99,"2006-06":2.05,"2006-07":2.05,"2006-08":2.09,"2006-09":2.1,"2006-10":2.17,"2006-11":2.15,"2006-12":2.2,"2007-01":2.22,"2007-02":2.23,"2007-03":2.27,"2007-04":2.36,"2007-05":2.35,"2007-06":2.33,"2007-07":2.33,"2007-08":2.38,"2007-09":2.44,"2007-10":2.41,"2007-11":2.4,"2007-12":2.46,"2008-01":2.44,"2008-02":2.43,"2008-03":2.44,"2008-04":2.52,"2008-05":2.51,"2008-06":2.53,"2008-07":2.57,"2008-08":2.58,"2008-09":2.59,"2008-10":2.64,"2008-11":2.54,"2008-12":2.42,"2009-01":2.33,"2009-02":2.24,"2009-03":2.08,"2009-04":1.98,"2009-05":1.85,"2009-06":1.82,"2009-07":1.79,"2009-08":1.62,"2009-09":1.61,"2009-10":1.49,"2009-11":1.47,"2009-12":1.52,"2010-01":1.37,"2010-02":1.34,"2010-03":1.4,"2010-04":1.31,"2010-05":1.31,"2010-06":1.43,"2010-07":1.4,"2010-08":1.4,"2010-09":1.52,"2010-10":1.5,"2010-11":1.48,"2010-12":1.51,"2011-01":1.47,"2011-02":1.48,"2011-03":1.49,"2011-04":1.51,"2011-05":1.52,"2011-06":1.54,"2011-07":1.53,"2011-08":1.53,"2011-09":1.55,"2011-10":1.55,"2011-11":1.52,"2011-12":1.52,"2012-01":1.49,"2012-02":1.47,"2012-03":1.43,"2012-04":1.39,"2012-05":1.37,"2012-06":1.35,"2012-07":1.31,"2012-08":1.27,"2012-09":1.24,"2012-10":1.2,"2012-11":1.17,"2012-12":1.14,"2013-01":1.08,"2013-02":1.05,"2013-03":1.06,"2013-04":1.02,"2013-05":1.0,"2013-06":0.98,"2013-07":0.97,"2013-08":0.96,"2013-09":0.96,"2013-10":0.94,"2013-11":0.93,"2013-12":0.91,"2014-01":0.89,"2014-02":0.89,"2014-03":0.84,"2014-04":0.84,"2014-05":0.82,"2014-06":0.8,"2014-07":0.76,"2014-08":0.72,"2014-09":0.7,"2014-10":0.66,"2014-11":0.63,"2014-12":0.61,"2015-01":0.58,"2015-02":0.54,"2015-03":0.51,"2015-04":0.48,"2015-05":0.47,"2015-06":0.46,"2015-07":0.44,"2015-08":0.43,"2015-09":0.42,"2015-10":0.41,"2015-11":0.4,"2015-12":0.39,"2016-01":0.37,"2016-02":0.36,"2016-03":0.34,"2016-04":0.32,"2016-05":0.31,"2016-06":0.3,"2016-07":0.28,"2016-08":0.27,"2016-09":0.26,"2016-10":0.25,"2016-11":0.24,"2016-12":0.24,"2017-01":0.23,"2017-02":0.22,"2017-03":0.21,"2017-04":0.21,"2017-05":0.21,"2017-06":0.21,"2017-07":0.2,"2017-08":0.19,"2017-09":0.19,"2017-10":0.19,"2017-11":0.18,"2017-12":0.18,"2018-01":0.18,"2018-02":0.17,"2018-03":0.17,"2018-04":0.17,"2018-05":0.16,"2018-06":0.16,"2018-07":0.16,"2018-08":0.15,"2018-09":0.15,"2018-10":0.15,"2018-11":0.15,"2018-12":0.14,"2019-01":0.14,"2019-02":0.13,"2019-03":0.13,"2019-04":0.14,"2019-05":0.13,"2019-06":0.13,"2019-07":0.13,"2019-08":0.12,"2019-09":0.12,"2019-10":0.12,"2019-11":0.12,"2019-12":0.12,"2020-01":0.11,"2020-02":0.11,"2020-03":0.11,"2020-04":0.11,"2020-05":0.11,"2020-06":0.11,"2020-07":0.1,"2020-08":0.1,"2020-09":0.1,"2020-10":0.1,"2020-11":0.1,"2020-12":0.1,"2021-01":0.1,"2021-02":0.09,"2021-03":0.09,"2021-04":0.09,"2021-05":0.09,"2021-06":0.09,"2021-07":0.08,"2021-08":0.08,"2021-09":0.08,"2021-10":0.08,"2021-11":0.08,"2021-12":0.08,"2022-01":0.08,"2022-02":0.07,"2022-03":0.07,"2022-04":0.07,"2022-05":0.07,"2022-06":0.08,"2022-07":0.07,"2022-08":0.08,"2022-09":0.09,"2022-10":0.11,"2022-11":0.13,"2022-12":0.16,"2023-01":0.2,"2023-02":0.26,"2023-03":0.3,"2023-04":0.35,"2023-05":0.39,"2023-06":0.43,"2023-07":0.5,"2023-08":0.55,"2023-09":0.59,"2023-10":0.64,"2023-11":0.67,"2023-12":0.69,"2024-01":0.71,"2024-02":0.72,"2024-03":0.74,"2024-04":0.75,"2024-05":0.76,"2024-06":0.76,"2024-07":0.76,"2024-08":0.77,"2024-09":0.76,"2024-10":0.73,"2024-11":0.74,"2024-12":0.73,"2025-01":0.74,"2025-02":0.72,"2025-03":0.7,"2025-04":0.69,"2025-05":0.66,"2025-06":0.64,"2025-07":0.65,"2025-08":0.66,"2025-09":0.66,"2025-10":0.67,"2025-11":0.67,"2025-12":0.73,"2026-01":0.68,"2026-02":0.68,"2026-03":0.68,"2026-04":0.69}');
+
+// Letzter verfügbarer Monat der Zinsreihe
+function zinsReiheLetzterMonat(){
+  let max=null;
+  for(const k in KAUTION_ZINSREIHE){ if(!max||k>max) max=k; }
+  return max; // "YYYY-MM"
+}
+// Monatssatz (% p.a.) für ein Datum; fällt auf den letzten verfügbaren Monat zurück
+function zinsSatzFuer(jahr, monat){
+  const k=jahr+'-'+String(monat).padStart(2,'0');
+  if(KAUTION_ZINSREIHE[k]!=null) return KAUTION_ZINSREIHE[k];
+  // vor Reihenbeginn: ältester Wert; nach Reihenende: jüngster Wert
+  const keys=Object.keys(KAUTION_ZINSREIHE).sort();
+  if(k<keys[0]) return KAUTION_ZINSREIHE[keys[0]];
+  return KAUTION_ZINSREIHE[keys[keys.length-1]];
+}
+
+// Monatsgenaue Verzinsung eines Kapitals von Startdatum bis Enddatum.
+// modus: 'einfach' (lineare Zinsen auf das Anfangskapital) oder
+//        'zinseszins' (monatliche Kapitalisierung).
+// Liefert {endkapital, zinsen, perioden:[{jahr,monat,satz,tage,zinsBetrag,basis}]}.
+// Abrechnung monatsweise: je Kalendermonat anteilig nach Tagen (act/365).
+function kautionZinsBerechnung(kapital, startISO, endISO, modus){
+  const res={endkapital:kapital, zinsen:0, perioden:[]};
+  if(!kapital||kapital<=0||!startISO||!endISO) return res;
+  const start=new Date(startISO+'T00:00:00');
+  const end  =new Date(endISO+'T00:00:00');
+  if(end<=start) return res;
+
+  let basis=kapital;          // für Zinseszins wachsend, für einfach konstant
+  let zinsAkku=0;             // für 'einfach' gesammelte Zinsen separat
+  let cur=new Date(start);
+
+  while(cur<end){
+    const jahr=cur.getFullYear(), monat=cur.getMonth()+1;
+    // Monatsende bzw. Periodenende = min(Monatsletzter+1, end)
+    const naechsterMonat=new Date(jahr, monat, 1); // 1. des Folgemonats
+    const periodenEnde = naechsterMonat<end ? naechsterMonat : end;
+    const tage=Math.round((periodenEnde-cur)/86400000);
+    const satz=zinsSatzFuer(jahr, monat); // % p.a.
+    const zinsBasis = (modus==='zinseszins') ? basis : kapital;
+    const zinsBetrag = zinsBasis * (satz/100) * (tage/365);
+    res.perioden.push({jahr,monat,satz,tage,zinsBetrag,basis:zinsBasis});
+    if(modus==='zinseszins') basis += zinsBetrag;
+    else zinsAkku += zinsBetrag;
+    cur=periodenEnde;
+  }
+  if(modus==='zinseszins'){
+    res.endkapital=basis;
+    res.zinsen=basis-kapital;
+  } else {
+    res.zinsen=zinsAkku;
+    res.endkapital=kapital+zinsAkku;
+  }
+  return res;
+}
+
 // Migration: altes Einzelfeld m.kaution -> kautionDetail.betrag (ohne Datenverlust)
 function kautionDetailVon(m){
   const kd = m.kautionDetail ? {...m.kautionDetail} : {};
@@ -14035,6 +14291,10 @@ async function modalKaution(mieterId){
     <div class="f" style="margin-top:8px"><label>Bemerkung</label>
       <textarea spellcheck="true" lang="de" id="kdNotiz" style="min-height:44px">${esc(kd.notiz||'')}</textarea></div>
 
+    <div style="border-top:1px solid var(--ink-10);margin-top:8px;padding-top:8px">
+      <button class="btn btn-full" onclick="modalKautionZins('${mieterId}')"><i class="ti ti-percentage"></i> Zinsen berechnen (Bundesbank-Sparzins)</button>
+    </div>
+
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="saveKaution('${mieterId}')"><i class="ti ti-check"></i> Speichern</button>
       <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
@@ -14043,6 +14303,238 @@ async function modalKaution(mieterId){
   kautionArtChange();
   kautionRatenRender();
   kautionBewRender();
+}
+
+// ── Kautionszins-Rechner (v77) ──────────────────────────────────
+async function modalKautionZins(mieterId){
+  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  const m=await idbGet('mieter', mieterId);
+  if(!m) return;
+  const kd=kautionDetailVon(m);
+  window._kzMieterId=mieterId;
+  window._kzAbzuege=[]; // {datum, betrag, grund}
+  const heute=today();
+  const kautBetrag=parseBetrag(kd.betrag)||kautionRatenSumme(kd)||0;
+  const beginn=kd.eingang || m.einzugISO || (m.einzug&&m.einzug.includes('.')?m.einzug.split('.').reverse().join('-'):'') || '';
+  const letzterMonat=zinsReiheLetzterMonat();
+
+  showModal(`
+    <div class="m-title"><i class="ti ti-percentage"></i> Kautionszinsen – ${esc(m.mieter)}</div>
+    <div style="font-size:11px;color:var(--ink-40);margin-bottom:8px">Verzinsung nach § 551 Abs. 3 BGB · Bundesbank-Sparzins (3-monatige Kündigungsfrist). Datenstand bis ${esc(letzterMonat)}. Keine steuerlichen Abzüge.</div>
+
+    <div class="f-row">
+      <div class="f"><label>Kautionsbetrag (€)</label>
+        <input type="number" id="kzBetrag" value="${kautBetrag||''}" step="0.01"></div>
+      <div class="f"><label>NK-Sicherheitseinbehalt (€)</label>
+        <input type="number" id="kzNkEinbehalt" value="" step="0.01" placeholder="optional"></div>
+    </div>
+    <div class="f-row">
+      <div class="f"><label>Verzinst ab</label>
+        <input type="date" id="kzVon" value="${beginn}"></div>
+      <div class="f"><label>Verzinst bis</label>
+        <input type="date" id="kzBis" value="${heute}"></div>
+    </div>
+    <div class="f"><label>Zinsmethode</label>
+      <select id="kzModus">
+        <option value="zinseszins">Zinseszins (jährliche/monatliche Kapitalisierung)</option>
+        <option value="einfach">Einfacher Zins (linear auf Anfangskapital)</option>
+      </select></div>
+
+    <div style="border-top:1px solid var(--ink-10);margin-top:10px;padding-top:8px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+        <div style="font-size:12px;font-weight:600;color:var(--ink-60)"><i class="ti ti-cash-banknote"></i> Bereits ausgezahlte Beträge / Abzüge</div>
+        <button type="button" class="btn btn-sm" onclick="kzAbzugAdd()"><i class="ti ti-plus"></i></button>
+      </div>
+      <div style="font-size:11px;color:var(--ink-40);margin-bottom:6px">Ausgezahlte Teilbeträge mindern ab dem genannten Datum das verzinste Kapital.</div>
+      <div id="kzAbzugListe"></div>
+    </div>
+
+    <div class="f-row" style="margin-top:12px">
+      <button class="btn btn-copper btn-full" onclick="kzBerechnen('${mieterId}')"><i class="ti ti-calculator"></i> Berechnen</button>
+      <button class="btn btn-full" onclick="modalKaution('${mieterId}')">Zurück</button>
+    </div>
+    <div id="kzErgebnis" style="margin-top:12px"></div>`);
+  kzAbzugRender();
+}
+
+function kzAbzugAdd(){ (window._kzAbzuege=window._kzAbzuege||[]).push({datum:today(),betrag:'',grund:''}); kzAbzugRender(); }
+function kzAbzugDel(i){ window._kzAbzuege.splice(i,1); kzAbzugRender(); }
+function kzAbzugCollect(){
+  const out=[]; const list=window._kzAbzuege||[];
+  for(let i=0;i<list.length;i++){
+    const d=document.getElementById('kzAbzDat_'+i), b=document.getElementById('kzAbzBet_'+i), g=document.getElementById('kzAbzGrund_'+i);
+    if(!b) continue;
+    out.push({datum:d?.value||'', betrag:parseBetrag(b.value), grund:g?.value?.trim()||''});
+  }
+  return out;
+}
+function kzAbzugRender(){
+  const wrap=document.getElementById('kzAbzugListe'); if(!wrap) return;
+  const list=window._kzAbzuege||[];
+  if(!list.length){ wrap.innerHTML='<div style="font-size:11px;color:var(--ink-40);font-style:italic">Keine Abzüge erfasst.</div>'; return; }
+  wrap.innerHTML=list.map((a,i)=>`
+    <div class="f-row" style="align-items:flex-end;margin-bottom:4px">
+      <div class="f" style="flex:0 0 36%"><label style="font-size:10px">Datum</label>
+        <input type="date" id="kzAbzDat_${i}" value="${a.datum||''}"></div>
+      <div class="f" style="flex:0 0 28%"><label style="font-size:10px">Betrag (€)</label>
+        <input type="number" id="kzAbzBet_${i}" value="${a.betrag||''}" step="0.01"></div>
+      <div class="f"><label style="font-size:10px">Grund</label>
+        <input type="text" id="kzAbzGrund_${i}" value="${esc(a.grund||'')}" placeholder="z. B. Schadenersatz"></div>
+      <button type="button" class="btn btn-sm btn-danger" onclick="kzAbzugDel(${i})" style="margin-bottom:2px"><i class="ti ti-trash"></i></button>
+    </div>`).join('');
+}
+
+// Kapital + bereits ausgezahlte Abzüge in eine monatsgenaue Verzinsung mit
+// kapitalmindernden Auszahlungen umsetzen. Liefert dasselbe Format wie
+// kautionZinsBerechnung, berücksichtigt aber Abzüge zu ihrem Datum.
+function kzBerechnungMitAbzuegen(kapital, vonISO, bisISO, modus, abzuege){
+  // Termine sortieren: jede Auszahlung wird an ihrem Datum vom Kapital abgezogen.
+  const abz=(abzuege||[]).filter(a=>a.betrag>0 && a.datum).slice().sort((a,b)=>a.datum<b.datum?-1:1);
+  const segmente=[]; // {von,bis} mit konstantem Kapital
+  let kap=kapital, cur=vonISO;
+  for(const a of abz){
+    if(a.datum<=cur || a.datum>=bisISO){ if(a.datum<=cur) kap-=a.betrag; continue; }
+    segmente.push({von:cur, bis:a.datum, kapital:kap});
+    kap-=a.betrag; cur=a.datum;
+  }
+  segmente.push({von:cur, bis:bisISO, kapital:kap});
+
+  const gesamt={endkapital:0, zinsen:0, perioden:[], segmente:[]};
+  for(const seg of segmente){
+    if(seg.kapital<=0){ gesamt.segmente.push({...seg, zinsen:0}); continue; }
+    const r=kautionZinsBerechnung(seg.kapital, seg.von, seg.bis, modus);
+    gesamt.zinsen += r.zinsen;
+    gesamt.perioden.push(...r.perioden.map(p=>({...p, segVon:seg.von})));
+    gesamt.segmente.push({...seg, zinsen:r.zinsen});
+  }
+  gesamt.endkapital = kap + gesamt.zinsen; // Restkapital + aufgelaufene Zinsen
+  return gesamt;
+}
+
+async function kzBerechnen(mieterId){
+  const betrag=parseBetrag(document.getElementById('kzBetrag')?.value)||0;
+  const nkEinbehalt=parseBetrag(document.getElementById('kzNkEinbehalt')?.value)||0;
+  const von=document.getElementById('kzVon')?.value;
+  const bis=document.getElementById('kzBis')?.value;
+  const modus=document.getElementById('kzModus')?.value||'zinseszins';
+  const abzuege=kzAbzugCollect();
+  if(!von||!bis){ toast('Bitte Zeitraum angeben'); return; }
+  if(bis<=von){ toast('Das End-Datum muss nach dem Start liegen'); return; }
+  const gesamtKapital=betrag+nkEinbehalt; // NK-Einbehalt wird wie Kaution verzinst
+  if(gesamtKapital<=0){ toast('Bitte Kautionsbetrag eingeben'); return; }
+
+  const erg=kzBerechnungMitAbzuegen(gesamtKapital, von, bis, modus, abzuege);
+  const f2=v=>v.toFixed(2).replace('.',',');
+  const MONN=['','Jan.','Febr.','März','April','Mai','Juni','Juli','Aug.','Sept.','Okt.','Nov.','Dez.'];
+
+  // Periodentabelle nach Jahr gruppieren (kompakt)
+  let perRows='';
+  let aktJahr=null, jahrZins=0, jahrZeilen='';
+  function flushJahr(){
+    if(aktJahr===null) return;
+    perRows+=`<tr style="background:var(--ink-05)"><td colspan="4" style="font-weight:700;padding:3px 6px">${aktJahr} – Zinsen ${f2(jahrZins)} €</td></tr>`+jahrZeilen;
+    jahrZeilen=''; jahrZins=0;
+  }
+  for(const p of erg.perioden){
+    if(p.jahr!==aktJahr){ flushJahr(); aktJahr=p.jahr; }
+    jahrZins+=p.zinsBetrag;
+    jahrZeilen+=`<tr>
+      <td style="padding:2px 6px">${MONN[p.monat]} ${p.jahr}</td>
+      <td style="padding:2px 6px;text-align:right">${f2(p.basis)} €</td>
+      <td style="padding:2px 6px;text-align:right">${f2(p.satz).replace(',','.')} %</td>
+      <td style="padding:2px 6px;text-align:right">${f2(p.zinsBetrag)} €</td></tr>`;
+  }
+  flushJahr();
+
+  // Abzüge zusammenfassen
+  const abzGueltig=abzuege.filter(a=>a.betrag>0&&a.datum);
+  const abzHTML=abzGueltig.length
+    ? '<div style="margin-top:8px;font-size:12px"><strong>Berücksichtigte Auszahlungen:</strong><ul style="margin:4px 0 0 16px">'+
+      abzGueltig.map(a=>`<li>${fmtDate(a.datum)}: ${f2(a.betrag)} €${a.grund?' ('+esc(a.grund)+')':''}</li>`).join('')+'</ul></div>'
+    : '';
+
+  const out=document.getElementById('kzErgebnis');
+  out.innerHTML=`
+    <div style="background:var(--ink-05);border-radius:8px;padding:12px">
+      <div style="font-size:13px;line-height:1.7">
+        <div>Verzinstes Kapital: <strong>${f2(gesamtKapital)} €</strong>${nkEinbehalt>0?` <span style="color:var(--ink-40)">(Kaution ${f2(betrag)} € + NK-Einbehalt ${f2(nkEinbehalt)} €)</span>`:''}</div>
+        <div>Zeitraum: ${fmtDate(von)} – ${fmtDate(bis)} · Methode: ${modus==='zinseszins'?'Zinseszins':'einfacher Zins'}</div>
+        <div style="margin-top:4px">Aufgelaufene Zinsen: <strong style="color:var(--green)">${f2(erg.zinsen)} €</strong></div>
+        <div>Auszuzahlen (Restkapital + Zinsen): <strong>${f2(erg.endkapital)} €</strong></div>
+      </div>
+      ${abzHTML}
+      <details style="margin-top:10px"><summary style="cursor:pointer;font-size:12px;font-weight:600;color:var(--copper)">Detaillierte Periodenaufschlüsselung anzeigen</summary>
+        <table style="width:100%;border-collapse:collapse;font-size:11px;margin-top:6px">
+          <tr style="border-bottom:1px solid var(--ink-20)"><th style="text-align:left;padding:2px 6px">Monat</th><th style="text-align:right;padding:2px 6px">Basis</th><th style="text-align:right;padding:2px 6px">Satz p.a.</th><th style="text-align:right;padding:2px 6px">Zins</th></tr>
+          ${perRows}
+        </table>
+      </details>
+      <div class="f-row" style="margin-top:10px">
+        <button class="btn btn-copper btn-full" onclick="kzDrucken('${mieterId}')"><i class="ti ti-printer"></i> Aufstellung drucken / archivieren</button>
+      </div>
+    </div>`;
+
+  // Ergebnis für Druck zwischenspeichern
+  window._kzErgebnis={betrag,nkEinbehalt,von,bis,modus,abzuege:abzGueltig,erg,gesamtKapital};
+}
+
+async function kzDrucken(mieterId){
+  const d=window._kzErgebnis; if(!d){ toast('Bitte zuerst berechnen'); return; }
+  const m=await idbGet('mieter', mieterId); if(!m) return;
+  const obj=getObj(m.objektId);
+  const f2=v=>v.toFixed(2).replace('.',',');
+  const MONN=['','Jan.','Febr.','März','April','Mai','Juni','Juli','Aug.','Sept.','Okt.','Nov.','Dez.'];
+  const bk=(typeof getBriefkopf==='function')?getBriefkopf(m.objektId):{name:'Hausverwaltung Nadig Pfau'};
+  await (typeof ladeBriefkopfCache==='function'?ladeBriefkopfCache():Promise.resolve());
+
+  let perRows='', aktJahr=null, jahrZins=0, jahrZeilen='';
+  function flush(){ if(aktJahr===null) return;
+    perRows+=`<tr style="background:#eef2f7"><td colspan="4" style="font-weight:700;padding:3px 6px">${aktJahr} – Zinsen ${f2(jahrZins)} €</td></tr>`+jahrZeilen; jahrZeilen='';jahrZins=0; }
+  for(const p of d.erg.perioden){
+    if(p.jahr!==aktJahr){ flush(); aktJahr=p.jahr; }
+    jahrZins+=p.zinsBetrag;
+    jahrZeilen+=`<tr><td style="padding:2px 6px;border:1px solid #ddd">${MONN[p.monat]} ${p.jahr}</td><td style="padding:2px 6px;border:1px solid #ddd;text-align:right">${f2(p.basis)} €</td><td style="padding:2px 6px;border:1px solid #ddd;text-align:right">${String(p.satz).replace('.',',')} %</td><td style="padding:2px 6px;border:1px solid #ddd;text-align:right">${f2(p.zinsBetrag)} €</td></tr>`;
+  }
+  flush();
+  const abzHTML=d.abzuege.length
+    ? '<p style="margin-top:8px"><strong>Berücksichtigte Auszahlungen:</strong></p><ul style="margin:2px 0 0 18px">'+d.abzuege.map(a=>`<li>${fmtDate(a.datum)}: ${f2(a.betrag)} €${a.grund?' ('+esc(a.grund)+')':''}</li>`).join('')+'</ul>'
+    : '';
+
+  const style=`<style>
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{font-family:Arial,sans-serif;font-size:12px;color:#111;padding:18mm 16mm;max-width:210mm}
+    h1{font-size:17px;margin-bottom:4px}
+    .sub{font-size:11px;color:#555;margin-bottom:10px}
+    .box{background:#f4f6f9;border-radius:6px;padding:10px 12px;margin:8px 0;font-size:12px;line-height:1.7}
+    table{width:100%;border-collapse:collapse;font-size:11px;margin-top:8px}
+    th{text-align:left;padding:3px 6px;border:1px solid #999;background:#e8eef5}
+    .r{text-align:right}
+    .foot{margin-top:14px;font-size:10px;color:#555}
+    @page{margin:0;size:A4}@media print{body{padding:18mm 16mm;-webkit-print-color-adjust:exact}}
+  </style>`;
+  const html=`<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8"><title>Kautionszinsen – ${esc(m.mieter||'')}</title>${style}</head><body>
+    <h1>Aufstellung der Kautionszinsen</h1>
+    <div class="sub">${esc(bk.name||'Hausverwaltung Nadig Pfau')} · ${esc(obj?.name||'')}${obj?.ort?' · '+esc(obj.ort):''}</div>
+    <div class="sub">Mieter: <strong>${esc(m.mieter||'')}</strong> · WE ${esc(String(m.weNr||''))} · erstellt ${fmtDate(today())}</div>
+    <div class="box">
+      <div>Verzinstes Kapital: <strong>${f2(d.gesamtKapital)} €</strong>${d.nkEinbehalt>0?` (Kaution ${f2(d.betrag)} € + NK-Sicherheitseinbehalt ${f2(d.nkEinbehalt)} €)`:''}</div>
+      <div>Verzinsungszeitraum: ${fmtDate(d.von)} bis ${fmtDate(d.bis)}</div>
+      <div>Zinsmethode: ${d.modus==='zinseszins'?'Zinseszins (kapitalisiert)':'einfacher Zins (linear)'}</div>
+      <div>Aufgelaufene Zinsen: <strong>${f2(d.erg.zinsen)} €</strong></div>
+      <div>Auszuzahlen (Restkapital + Zinsen): <strong>${f2(d.erg.endkapital)} €</strong></div>
+      ${abzHTML}
+    </div>
+    <table>
+      <tr><th>Monat</th><th class="r">Kapitalbasis</th><th class="r">Satz p.a.</th><th class="r">Zins</th></tr>
+      ${perRows}
+    </table>
+    <p class="foot">Zinsgrundlage: Deutsche Bundesbank, Zinsstatistik – Spareinlagen mit dreimonatiger Kündigungsfrist (Mindest-/Grundverzinsung, unterer Streubreitenwert bis Juni 2003; ab Juli 2003 Effektivzinssatz der MFI-Zinsstatistik, Reihe für Einlagen mit vereinbarter Kündigungsfrist bis 3 Monate). Monatsgenaue Verzinsung (act/365). Verzinsungspflicht gem. § 551 Abs. 3 BGB. Ohne steuerliche Abzüge. Angaben ohne Gewähr.</p>
+    <scr`+`ipt>(function(){var p=function(){setTimeout(function(){window.focus();window.print();},500);};if(document.readyState==='complete'){p();}else{window.addEventListener('load',p);}})()</scr`+`ipt></body></html>`;
+  druckHTML(html);
+  // Archivieren beim Mieter
+  const archiv=html.replace(/<scr[\s\S]*?<\/scr.{0,3}ipt>/,'');
+  await archiviereMieterDokument({ mieterId:m.id, objektId:m.objektId, typ:'sonstiges', name:`Kautionszinsen (${fmtDate(today())})`, html:archiv });
+  toast('Aufstellung erstellt ✓');
 }
 
 function kautionArtChange(){
@@ -15597,6 +16089,14 @@ async function renderSettings(){
     </div>`:''}
 
     ${isAdmin?`<div class="settings-card" data-tab="objekte">
+      <div class="card-hdr"><i class="ti ti-world-share"></i> Mieterportal – Dokumentfreigabe</div>
+      <p style="font-size:13px;color:var(--ink-40);margin-bottom:12px;line-height:1.6">
+        Legt pro Dokumenttyp fest, ob er Mietern im Portal grundsätzlich zur Verfügung steht. Sicherheits-Standard: alles gesperrt. Einzelne Dokumente lassen sich beim jeweiligen Mieter individuell freigeben oder sperren. Der Abruf erfolgt erst nach Anmeldung mit einem per E-Mail versandten Zugangscode; es werden keine Dokumente auf der Website gespeichert.
+      </p>
+      <div id="portalFreigabeEl"></div>
+    </div>`:''}
+
+    ${isAdmin?`<div class="settings-card" data-tab="objekte">
       <div class="card-hdr"><i class="ti ti-mail-cog"></i> Briefkopf / Absenderadressen</div>
       <p style="font-size:13px;color:var(--ink-40);margin-bottom:12px;line-height:1.6">
         Absenderadresse je Objektgruppe für alle PDF-Dokumente. Änderungen werden über OneDrive synchronisiert.
@@ -15714,6 +16214,7 @@ async function renderSettings(){
   if(isAdmin) await renderUserList_();
   if(isAdmin){ const bkEl=document.getElementById('briefkopfConfigEl'); if(bkEl){ await ladeBriefkopfCache(); bkEl.innerHTML=renderBriefkopfConfig(); } }
   if(isAdmin){ const ivEl=document.getElementById('intervallConfigEl'); if(ivEl) ivEl.innerHTML=await renderIntervallConfig(); }
+  if(isAdmin){ const pfEl=document.getElementById('portalFreigabeEl'); if(pfEl) pfEl.innerHTML=await renderPortalFreigabe(); }
   if(isAdmin){ const ssEl=document.getElementById('syncSchutzEl'); if(ssEl) ssEl.innerHTML=await renderSyncSchutz(); }
   await renderMeineSignatur();
   // Niimbot-Druckdichte vorselektieren
