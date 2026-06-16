@@ -735,8 +735,8 @@ body.printing-active #printRoot{display:block!important}
 /* ═══════════════════════════════════════════════════════════
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
-const DB_NAME='immo_v2', DB_VER=20;
-const APP_VERSION = '2026-06-16-v79';
+const DB_NAME='immo_v2', DB_VER=21;
+const APP_VERSION = '2026-06-16-v82';
 let idb=null;
 
 function openIDB(){
@@ -749,7 +749,7 @@ function openIDB(){
     const req=indexedDB.open(DB_NAME,DB_VER);
     req.onupgradeneeded=e=>{
       const db=e.target.result;
-      ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','fotos','wartung','zaehler','zaehlerstaende','versorger','versorger_archiv','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','sync_log','mieter_snapshots','branchenbuch'].forEach(s=>{
+      ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','fotos','wartung','zaehler','zaehlerstaende','versorger','versorger_archiv','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','sync_log','mieter_snapshots','branchenbuch','interessenten'].forEach(s=>{
         if(!db.objectStoreNames.contains(s)){
           const store=db.createObjectStore(s,{keyPath:'id'});
           if(s==='mieter'){store.createIndex('objektId','objektId');store.createIndex('weNr','weNr')}
@@ -778,6 +778,7 @@ function openIDB(){
           if(s==='ventile'){store.createIndex('objektId','objektId')}
           if(s==='ventilpruefung'){store.createIndex('ventilId','ventilId')}
           if(s==='taetigkeit_log'){store.createIndex('userId','userId');store.createIndex('datum','datum')}
+          if(s==='interessenten'){store.createIndex('objektId','objektId');store.createIndex('status','status')}
         }
       });
     };
@@ -1362,6 +1363,7 @@ async function showObjekt(objId){
     <button class="tab-btn" onclick="objTab('maengel',this)">Mängel</button>
     <button class="tab-btn" onclick="objTab('zaehler',this)">Zähler</button>
     <button class="tab-btn" onclick="objTab('dokumente',this)">Dokumente</button>
+    ${CU?.role==='admin'?`<button class="tab-btn" onclick="objTab('interessenten',this)">Interessenten</button>`:''}
     ${CU?.role==='admin'?`<button class="tab-btn" onclick="objTab('versorger',this)">Versorger</button>`:''}
     ${CU?.role==='admin'&&!istPrivat?'<button class="tab-btn" onclick="objTab(\'nka\',this)">NKA-Archiv</button>':''}
   </div>
@@ -1386,6 +1388,300 @@ async function renderObjTab(t){
   if(t==='dokumente')  await renderDokumente(el, currentObjId, null);
   if(t==='versorger')  await renderObjVersorger(el);
   if(t==='nka')        await renderNKAArchiv(el, currentObjId);
+  if(t==='interessenten') await renderInteressenten(el, currentObjId);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   INTERESSENTEN / SELBSTAUSKUNFT / WARTELISTE (Punkt 6)
+   Zentrale Kandidatenliste, optional einer Wohnung zugeordnet.
+   Eingang später über Azure-Function (Website-Selbstauskunft);
+   bis dahin manuelle Erfassung. Übernahme zu Mieter via Teil B.
+   Datenschutz: Sozialleistungs-/Bonitätsangaben sind freiwillig.
+═══════════════════════════════════════════════════════════ */
+const INTERESSENT_STATUS = [
+  {val:'neu',        label:'Neu / unbearbeitet', farbe:'var(--copper)'},
+  {val:'warteliste', label:'Warteliste',          farbe:'var(--amber)'},
+  {val:'vorgemerkt', label:'Für Wohnung vorgemerkt',farbe:'var(--mid)'},
+  {val:'eingeladen', label:'Zur Besichtigung eingeladen',farbe:'var(--mid)'},
+  {val:'zusage',     label:'Zusage erteilt',       farbe:'var(--green)'},
+  {val:'uebernommen',label:'Als Mieter übernommen',farbe:'var(--green)'},
+  {val:'absage',     label:'Abgesagt / kein Interesse',farbe:'var(--ink-40)'},
+];
+function interessentStatusInfo(v){ return INTERESSENT_STATUS.find(x=>x.val===v) || INTERESSENT_STATUS[0]; }
+
+async function renderInteressenten(el, objektId){
+  if(CU?.role!=='admin'){ el.innerHTML='<div class="empty"><i class="ti ti-lock"></i><p>Nur für Administratoren.</p></div>'; return; }
+  let alle = await idbGetAll('interessenten').catch(()=>[]);
+  // Objektbezug: Kandidaten für dieses Objekt ODER allgemeine Warteliste ohne Objekt
+  let liste = objektId
+    ? alle.filter(k => k.objektId===objektId || (!k.objektId && k.status==='warteliste'))
+    : alle;
+  // Erledigte (übernommen/abgesagt) ans Ende, sonst nach Datum absteigend
+  const rang = k => (k.status==='uebernommen'||k.status==='absage') ? 1 : 0;
+  liste.sort((a,b)=> rang(a)-rang(b) || String(b.erstellt||'').localeCompare(String(a.erstellt||'')));
+
+  let h = `<div class="s-hdr" style="margin-bottom:12px">
+    <div class="s-title">Interessenten (${liste.filter(k=>k.status!=='uebernommen'&&k.status!=='absage').length} offen)</div>
+    <button class="btn btn-sm btn-copper" onclick="modalInteressentNeu('${objektId||''}')"><i class="ti ti-user-plus"></i> Erfassen</button>
+  </div>`;
+
+  if(!liste.length){
+    h += `<div class="empty"><i class="ti ti-users-group"></i><p>Noch keine Interessenten erfasst.</p></div>`;
+    el.innerHTML = h; return;
+  }
+
+  liste.forEach(k=>{
+    const si = interessentStatusInfo(k.status);
+    const wohnung = k.weNr ? `WE ${esc(String(k.weNr))}` : 'Warteliste';
+    const erledigt = (k.status==='uebernommen'||k.status==='absage');
+    h += `<div style="background:var(--white);border:1px solid var(--ink-10);border-radius:var(--radius);padding:12px;margin-bottom:8px;${erledigt?'opacity:.6':''}">
+      <div style="display:flex;align-items:flex-start;gap:10px">
+        <div style="flex:1;min-width:0">
+          <div style="font-size:14px;font-weight:600;color:var(--ink)">${esc(k.name||'(ohne Name)')}</div>
+          <div style="font-size:12px;color:var(--ink-40);margin-top:2px">
+            <i class="ti ti-home"></i> ${wohnung}${k.objektName?' · '+esc(k.objektName):''}
+            ${k.personen?` · ${esc(String(k.personen))} Pers.`:''}
+            ${k.mietbeginn?` · ab ${esc(k.mietbeginn)}`:''}
+          </div>
+          ${(k.telefon||k.email)?`<div style="font-size:12px;color:var(--ink-60);margin-top:3px">
+            ${k.telefon?`<i class="ti ti-phone"></i> <a href="tel:${esc(k.telefon)}">${esc(k.telefon)}</a>  `:''}
+            ${k.email?`<i class="ti ti-mail"></i> <a href="mailto:${esc(k.email)}">${esc(k.email)}</a>`:''}
+          </div>`:''}
+          <div style="margin-top:6px"><span class="chip" style="background:${si.farbe}22;color:${si.farbe};font-size:10px;padding:2px 8px">${si.label}</span></div>
+        </div>
+      </div>
+      <div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:8px">
+        <button class="btn btn-sm" onclick="modalInteressentDetail('${k.id}')"><i class="ti ti-eye"></i> Details</button>
+        <button class="btn btn-sm" onclick="modalInteressentNeu('${k.objektId||''}','${k.id}')"><i class="ti ti-pencil"></i> Bearbeiten</button>
+        ${k.status!=='uebernommen'?`<button class="btn btn-sm btn-copper" onclick="interessentZuMieter('${k.id}')"><i class="ti ti-user-check"></i> Als Mieter übernehmen</button>`:''}
+        <button class="btn btn-sm btn-danger" onclick="deleteInteressent('${k.id}')"><i class="ti ti-trash"></i></button>
+      </div>
+    </div>`;
+  });
+  el.innerHTML = h;
+}
+
+// Wohnungsauswahl-Optionen für ein Objekt (vorhandene WE-Nummern aus Mieterdaten)
+async function interessentWohnungsOptionen(objektId, selWe){
+  if(!objektId) return '';
+  const alle = (await idbGetAll('mieter','objektId',objektId)).filter(m=>!m._vormieter);
+  const weSet = [...new Set(alle.map(m=>String(m.weNr)).filter(x=>x&&x!=='undefined'))].sort((a,b)=>Number(a)-Number(b));
+  return weSet.map(w=>`<option value="${esc(w)}" ${String(selWe)===w?'selected':''}>WE ${esc(w)}</option>`).join('');
+}
+
+async function modalInteressentNeu(objektId, id){
+  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  const k = id ? (await idbGet('interessenten', id).catch(()=>null))||{} : {};
+  const objId = k.objektId || objektId || '';
+  const objOpts = OBJEKTE.filter(o=>!o.privat || o.sichtbarFuer?.includes(CU?.id))
+    .map(o=>`<option value="${o.id}" ${objId===o.id?'selected':''}>${esc(o.name)}</option>`).join('');
+  const weOpts = objId ? await interessentWohnungsOptionen(objId, k.weNr) : '';
+  showModal(`
+    <div class="m-title"><i class="ti ti-user-plus"></i> ${id?'Interessent bearbeiten':'Interessent erfassen'}</div>
+
+    <div class="f-section-title"><i class="ti ti-home"></i> Interesse</div>
+    <div class="f"><label>Objekt</label>
+      <select id="iObj" onchange="interessentObjChange()">
+        <option value="">– nur Warteliste (kein bestimmtes Objekt) –</option>
+        ${objOpts}
+      </select></div>
+    <div class="f" id="iWeWrap" style="display:${objId?'block':'none'}"><label>Wohnung (optional)</label>
+      <select id="iWe"><option value="">– egal / Warteliste fürs Objekt –</option>${weOpts}</select></div>
+
+    <div class="f-section-title"><i class="ti ti-user"></i> Kontakt</div>
+    <div class="f-row">
+      <div class="f" style="max-width:90px"><label>Anrede</label>
+        <select id="iAnrede">
+          <option value="Herr" ${k.anrede==='Herr'?'selected':''}>Herr</option>
+          <option value="Frau" ${k.anrede==='Frau'?'selected':''}>Frau</option>
+          <option value="Divers" ${k.anrede==='Divers'?'selected':''}>Divers</option>
+        </select></div>
+      <div class="f"><label>Name (Nachname, Vorname) *</label>
+        <input type="text" id="iName" value="${esc(k.name||'')}" spellcheck="true" lang="de" placeholder="Nachname, Vorname"></div>
+    </div>
+    <div class="f-row">
+      <div class="f"><label>Telefon</label><input type="tel" id="iTel" value="${esc(k.telefon||'')}"></div>
+      <div class="f"><label>E-Mail</label><input type="email" id="iMail" value="${esc(k.email||'')}"></div>
+    </div>
+    <div class="f"><label>Aktuelle Anschrift</label>
+      <input type="text" id="iAdresse" value="${esc(k.adresse||'')}" placeholder="Straße, PLZ Ort"></div>
+    <div class="f-row">
+      <div class="f"><label>Geburtsdatum</label><input type="date" id="iGeb" value="${k.geburtsdatum||''}"></div>
+      <div class="f"><label>Einziehende Personen</label><input type="number" id="iPers" value="${k.personen||''}" min="1" max="20"></div>
+    </div>
+
+    <div class="f-section-title"><i class="ti ti-briefcase"></i> Wirtschaftliches (Selbstauskunft)</div>
+    <div class="f-row">
+      <div class="f"><label>Beruf / Tätigkeit</label><input type="text" id="iBeruf" value="${esc(k.beruf||'')}"></div>
+      <div class="f"><label>Arbeitgeber</label><input type="text" id="iAG" value="${esc(k.arbeitgeber||'')}"></div>
+    </div>
+    <div class="f-row">
+      <div class="f"><label>Beschäftigung seit</label><input type="text" id="iBesSeit" value="${esc(k.beschaeftigtSeit||'')}" placeholder="z. B. 2021"></div>
+      <div class="f"><label>Netto-Haushaltseinkommen (€/Monat)</label><input type="number" id="iEink" value="${k.einkommen||''}" step="0.01"></div>
+    </div>
+    <div class="f"><label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px">
+      <input type="checkbox" id="iLeistung" ${k.sozialleistung?'checked':''} style="width:16px;height:16px">
+      Bezug von Sozialleistungen (freiwillige Angabe)</label></div>
+
+    <div class="f-section-title"><i class="ti ti-info-circle"></i> Weiteres</div>
+    <div class="f-row">
+      <div class="f"><label>Gewünschter Mietbeginn</label><input type="date" id="iBeginn" value="${k.mietbeginnISO||''}"></div>
+      <div class="f"><label>Status</label>
+        <select id="iStatus">
+          ${INTERESSENT_STATUS.filter(x=>x.val!=='uebernommen').map(x=>`<option value="${x.val}" ${(k.status||'neu')===x.val?'selected':''}>${x.label}</option>`).join('')}
+        </select></div>
+    </div>
+    <div class="f-row">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;flex:1">
+        <input type="checkbox" id="iTiere" ${k.haustiere?'checked':''} style="width:16px;height:16px"> Haustiere</label>
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;flex:1">
+        <input type="checkbox" id="iRaucher" ${k.raucher?'checked':''} style="width:16px;height:16px"> Raucher</label>
+    </div>
+    <div class="f"><label>Notiz</label>
+      <textarea id="iNotiz" spellcheck="true" lang="de" style="min-height:50px">${esc(k.notiz||'')}</textarea></div>
+
+    <div class="f-row" style="margin-top:12px">
+      <button class="btn btn-copper btn-full" onclick="saveInteressent('${id||''}')"><i class="ti ti-check"></i> Speichern</button>
+      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+    </div>`);
+}
+
+async function interessentObjChange(){
+  const objId = document.getElementById('iObj')?.value||'';
+  const wrap = document.getElementById('iWeWrap');
+  const weSel = document.getElementById('iWe');
+  if(!wrap||!weSel) return;
+  wrap.style.display = objId ? 'block' : 'none';
+  weSel.innerHTML = '<option value="">– egal / Warteliste fürs Objekt –</option>' + (objId ? await interessentWohnungsOptionen(objId, '') : '');
+}
+
+async function saveInteressent(id){
+  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  const name = document.getElementById('iName')?.value?.trim()||'';
+  if(!name){ toast('Bitte Namen angeben'); return; }
+  const objId = document.getElementById('iObj')?.value||'';
+  const beginnISO = document.getElementById('iBeginn')?.value||'';
+  const k = id ? (await idbGet('interessenten', id).catch(()=>null))||{} : {};
+  const rec = {
+    ...k,
+    id: id || ('i_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2,6)),
+    objektId: objId || null,
+    objektName: objId ? (getObj(objId)?.name||'') : '',
+    weNr: document.getElementById('iWe')?.value||'',
+    anrede: document.getElementById('iAnrede')?.value||'Herr',
+    name,
+    telefon: document.getElementById('iTel')?.value?.trim()||'',
+    email: document.getElementById('iMail')?.value?.trim()||'',
+    adresse: document.getElementById('iAdresse')?.value?.trim()||'',
+    geburtsdatum: document.getElementById('iGeb')?.value||'',
+    personen: parseInt(document.getElementById('iPers')?.value)||'',
+    beruf: document.getElementById('iBeruf')?.value?.trim()||'',
+    arbeitgeber: document.getElementById('iAG')?.value?.trim()||'',
+    beschaeftigtSeit: document.getElementById('iBesSeit')?.value?.trim()||'',
+    einkommen: parseFloat(document.getElementById('iEink')?.value)||'',
+    sozialleistung: document.getElementById('iLeistung')?.checked||false,
+    mietbeginnISO: beginnISO,
+    mietbeginn: beginnISO ? new Date(beginnISO).toLocaleDateString('de-DE') : '',
+    haustiere: document.getElementById('iTiere')?.checked||false,
+    raucher: document.getElementById('iRaucher')?.checked||false,
+    status: document.getElementById('iStatus')?.value||'neu',
+    notiz: document.getElementById('iNotiz')?.value?.trim()||'',
+    quelle: k.quelle||'manuell',
+    erstellt: k.erstellt||now(),
+    geaendert: nowIso(),
+  };
+  await idbPut('interessenten', rec);
+  closeModal();
+  clearTimeout(window._syncTimer);
+  window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
+  if(curPage==='objekt') await renderObjTab('interessenten');
+  toast('Interessent gespeichert ✓');
+}
+
+async function modalInteressentDetail(id){
+  const k = await idbGet('interessenten', id).catch(()=>null);
+  if(!k){ toast('Nicht gefunden'); return; }
+  const si = interessentStatusInfo(k.status);
+  const z = (label, val) => val ? `<div class="det-field"><label>${label}</label><span>${esc(String(val))}</span></div>` : '';
+  showModal(`
+    <div class="m-title"><i class="ti ti-user"></i> ${esc(k.name||'')}</div>
+    <div style="margin-bottom:10px"><span class="chip" style="background:${si.farbe}22;color:${si.farbe};font-size:11px;padding:3px 10px">${si.label}</span></div>
+    <div class="det-grid">
+      ${z('Objekt', k.objektName)}
+      ${z('Wohnung', k.weNr?('WE '+k.weNr):'Warteliste')}
+      ${z('Telefon', k.telefon)}
+      ${z('E-Mail', k.email)}
+      ${z('Anschrift', k.adresse)}
+      ${z('Geburtsdatum', k.geburtsdatum?fmtDate(k.geburtsdatum):'')}
+      ${z('Einziehende Personen', k.personen)}
+      ${z('Beruf', k.beruf)}
+      ${z('Arbeitgeber', k.arbeitgeber)}
+      ${z('Beschäftigt seit', k.beschaeftigtSeit)}
+      ${z('Netto-Einkommen', k.einkommen?fmtEur(k.einkommen):'')}
+      ${k.sozialleistung?'<div class="det-field"><label>Sozialleistungen</label><span>ja (freiwillige Angabe)</span></div>':''}
+      ${z('Mietbeginn-Wunsch', k.mietbeginn)}
+      ${z('Haustiere', k.haustiere?'ja':'')}
+      ${z('Raucher', k.raucher?'ja':'')}
+      ${z('Quelle', k.quelle)}
+    </div>
+    ${k.notiz?`<div style="margin-top:10px;background:var(--ink-05);border-radius:8px;padding:10px 12px;font-size:13px;color:var(--ink-60)">${esc(k.notiz)}</div>`:''}
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:14px">
+      <button class="btn btn-sm" onclick="modalInteressentNeu('${k.objektId||''}','${k.id}')"><i class="ti ti-pencil"></i> Bearbeiten</button>
+      ${k.status!=='uebernommen'?`<button class="btn btn-sm btn-copper" onclick="interessentZuMieter('${k.id}')"><i class="ti ti-user-check"></i> Als Mieter übernehmen</button>`:''}
+      <button class="btn btn-full" style="margin-top:4px" onclick="closeModal()">Schließen</button>
+    </div>`);
+}
+
+async function deleteInteressent(id){
+  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  const k = await idbGet('interessenten', id).catch(()=>null);
+  if(!k) return;
+  if(!confirm(`Interessent „${k.name||''}" wirklich löschen?`)) return;
+  // löscht und setzt Tombstone, damit der Eintrag beim Sync nicht zurückkehrt
+  await deleteMitTombstone('interessenten', id);
+  clearTimeout(window._syncTimer);
+  window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
+  if(curPage==='objekt') await renderObjTab('interessenten');
+  toast('Interessent gelöscht');
+}
+
+// Teil B: Kandidat als neuen Mieter übernehmen.
+// Öffnet die Neu-Mieter-Maske mit vorbefüllten Daten – der Admin ergänzt
+// Miete/Fläche und bestätigt. Nach dem Speichern wird der Kandidat auf
+// Status 'uebernommen' gesetzt (separat, da saveNewMieter den Kandidaten nicht kennt).
+async function interessentZuMieter(id){
+  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  const k = await idbGet('interessenten', id).catch(()=>null);
+  if(!k){ toast('Interessent nicht gefunden'); return; }
+  if(!k.objektId){
+    if(!confirm('Diesem Interessenten ist kein Objekt zugeordnet (nur Warteliste). Trotzdem übernehmen? Sie können das Objekt anschließend in der Maske wählen.')) return;
+  }
+  // merken, welcher Kandidat gerade übernommen wird (für Status-Update nach Speichern)
+  window._uebernahmeInteressentId = id;
+  await modalAddMieter(k.objektId || OBJEKTE.find(o=>!o.privat)?.id || '');
+  // Felder vorbefüllen (nach Render im DOM vorhanden)
+  setTimeout(()=>{
+    const set=(elId,val)=>{ const e=document.getElementById(elId); if(e&&val!=null&&val!=='') e.value=val; };
+    // WE vorwählen, falls vorhanden
+    const weSel=document.getElementById('mWeSelect');
+    if(weSel && k.weNr){
+      const opt=[...weSel.options].find(o=>o.value===String(k.weNr));
+      if(opt){ weSel.value=String(k.weNr); if(typeof onAddMieterWeChange==='function') onAddMieterWeChange(); }
+    }
+    // erste Personenzeile
+    set('pName_0', k.name);
+    const anr=document.getElementById('pAnr_0'); if(anr&&k.anrede) anr.value=k.anrede;
+    set('pGeb_0', k.geburtsdatum);
+    set('pTel_0', k.telefon);
+    set('pMail_0', k.email);
+    // Mieterebene-Fallbackfelder der Add-Maske
+    set('mAnrede', k.anrede);
+    set('mTel', k.telefon);
+    set('mEmail', k.email);
+    set('mPersonen', k.personen);
+    if(k.mietbeginnISO) set('mEinzug', k.mietbeginnISO);
+  }, 60);
+  toast('Daten übernommen – bitte prüfen und speichern');
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -6586,6 +6882,59 @@ function gebaeudeStatsHTML(stamm, personenGesamt, mieterAnzahl, istAdmin){
   </div>`;
 }
 
+// Schlüsseltypen (identisch zu den Keys im Übergabeprotokoll PD.schluessel)
+const SCHLUESSEL_TYPEN = [
+  {key:'wohnung', label:'Wohnungstürschlüssel'},
+  {key:'haus',    label:'Haustürschlüssel'},
+  {key:'bk',      label:'Briefkastenschlüssel'},
+  {key:'keller',  label:'Kellerschlüssel'},
+  {key:'garage',  label:'Garagen-/TG-Schlüssel'},
+  {key:'sonstige',label:'Sonstige Schlüssel'},
+];
+
+// Schlüssel-Sollbestand einer Wohnung (aus Wohnungsstamm), mit sicheren Defaults.
+async function getSchluesselSoll(objektId, weNr){
+  const w = await getWohnungStamm(objektId, weNr);
+  const sk = (w && w.schluessel) ? w.schluessel : {};
+  const out = {};
+  SCHLUESSEL_TYPEN.forEach(t => { out[t.key] = Number(sk[t.key])||0; });
+  return out;
+}
+
+async function modalSchluessel(objektId, weNr){
+  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  const obj = getObj(objektId);
+  const soll = await getSchluesselSoll(objektId, weNr);
+  const w = await getWohnungStamm(objektId, weNr);
+  showModal(`
+    <div class="m-title"><i class="ti ti-key"></i> Schlüssel – ${obj?.name||''} · WE ${esc(String(weNr))}</div>
+    <div style="font-size:12px;color:var(--ink-40);margin-bottom:10px;line-height:1.5">
+      Sollbestand der zur Wohnung gehörenden Schlüssel je Typ. Diese Werte werden beim Anlegen eines Übergabeprotokolls automatisch als Vorgabe übernommen und überdauern Mieterwechsel.
+    </div>
+    ${SCHLUESSEL_TYPEN.map(t=>`
+      <div class="f-row" style="align-items:center;margin-bottom:6px">
+        <div style="flex:1;font-size:13px;color:var(--ink)">${t.label}</div>
+        <div class="f" style="max-width:90px">
+          <input type="number" id="sk_${t.key}" value="${soll[t.key]}" min="0" step="1" style="font-size:13px;text-align:center"></div>
+      </div>`).join('')}
+    <div class="f" style="margin-top:8px"><label>Schließanlage / Bemerkung (optional)</label>
+      <textarea id="skNotiz" spellcheck="true" lang="de" style="min-height:44px" placeholder="z. B. Schließanlage Nr., Sicherungskarte beim Eigentümer">${esc(w?.schluesselNotiz||'')}</textarea></div>
+    <div class="f-row" style="margin-top:12px">
+      <button class="btn btn-copper btn-full" onclick="saveSchluessel('${objektId}','${esc(String(weNr))}')"><i class="ti ti-check"></i> Speichern</button>
+      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+    </div>`);
+}
+
+async function saveSchluessel(objektId, weNr){
+  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  const schluessel = {};
+  SCHLUESSEL_TYPEN.forEach(t => { schluessel[t.key] = Number(document.getElementById('sk_'+t.key)?.value)||0; });
+  const schluesselNotiz = document.getElementById('skNotiz')?.value?.trim()||'';
+  await saveWohnungStamm(objektId, weNr, {schluessel, schluesselNotiz});
+  closeModal();
+  toast('Schlüsselbestand gespeichert ✓');
+}
+
 async function modalGebaeudeStamm(objektId){
   if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
   const obj=getObj(objektId);
@@ -7046,10 +7395,11 @@ async function showMieter(id){
     <button class="btn btn-sm" onclick="showMieterDokumente('${m.id}')"><i class="ti ti-paperclip"></i> Archiv & Dokumente</button>
     <button class="btn btn-sm" onclick="modalWohnungGrundriss('${m.objektId}','${esc(String(m.weNr||''))}')"><i class="ti ti-map"></i> Grundriss</button>
     <button class="btn btn-sm" onclick="modalWohnungsbilder('${m.objektId}','${esc(String(m.weNr||''))}')"><i class="ti ti-photo-scan"></i> Bilder</button>
+    ${CU?.role==='admin'?`<button class="btn btn-sm" onclick="modalSchluessel('${m.objektId}','${esc(String(m.weNr||''))}')"><i class="ti ti-key"></i> Schlüssel</button>`:''}
     <button class="btn btn-sm" onclick="druckeWohnungsgeberBescheinigung('${m.id}')"><i class="ti ti-file-certificate"></i> WGB</button>
     ${CU?.role==='admin'?`<button class="btn btn-sm" onclick="modalMietbescheinigung('${m.id}')"><i class="ti ti-receipt-2"></i> Mietbescheinigung</button>`:''}
     <button class="btn btn-sm" onclick="modalBrief('${m.id}','${m.objektId}')"><i class="ti ti-mail"></i> Brief</button>
-    ${m._vormieterId?`<button class="btn btn-sm" onclick="zeigeVormieter('${m._vormieterId}')"><i class="ti ti-history"></i> Vormieter</button>`:''}
+    ${m._vormieterId?`<button class="btn btn-sm" onclick="zeigeVormieter('${m._vormieterId}')"><i class="ti ti-history"></i> Vormieter</button>`:(CU?.role==='admin'&&!m._vormieter&&!m._zukuenftig?`<button class="btn btn-sm" onclick="modalVormieterAnlegen('${m.id}')"><i class="ti ti-history"></i> Vormieter anlegen</button>`:'')}
     ${m._vormieter?`<button class="btn btn-sm" onclick="modalNeueAdresse('${m.id}')"><i class="ti ti-map-pin"></i> Neue Anschrift</button>`:''}
     <button class="btn btn-sm btn-danger" onclick="deleteMieterConfirm('${m.id}')"><i class="ti ti-trash"></i></button>
   </div>`;
@@ -11802,7 +12152,7 @@ async function modalGrundriss(objektId) {
     ${grundrisse.length
       ? grundrisse.map(g=>`<div style="margin-bottom:10px">
           <div style="font-size:13px;font-weight:600;margin-bottom:6px">${g.name}</div>
-          ${g.mimeType?.startsWith('image/')?`<img src="${g.data}" style="width:100%;border-radius:8px;cursor:pointer" onclick="openFoto('${g.data}','${g.name}')">`
+          ${g.mimeType?.startsWith('image/')?`<img src="${g.data}" style="width:100%;border-radius:8px;cursor:pointer" onclick="openFoto('${g.id}','dok')">`
             :`<button class="btn btn-sm" onclick="downloadDok('${g.id}')"><i class="ti ti-download"></i> ${g.name} herunterladen</button>`}
           <div style="display:flex;gap:6px;margin-top:6px">
             <button class="btn btn-sm btn-danger" onclick="deleteDok('${g.id}');closeModal()"><i class="ti ti-trash"></i></button>
@@ -13738,21 +14088,29 @@ async function saveNewMieter(objektId) {
   const miete = parseFloat(document.getElementById('mMiete')?.value)||'';
   const nk    = parseFloat(document.getElementById('mNk')?.value)||'';
 
+  // Konsistente Ableitung wie in saveEditMieter: ein Datenmodell, eine Quelle.
+  const lebend = persListe.filter(p=>!p.verstorben);
+  const vpListe = lebend.filter(p=>p.vertragspartner);
+  const haupt = vpListe[0] || lebend[0] || persListe[0] || {};
+  // Einzug als Vorbelegung für "dabei ab"
+  if(einzugRaw && /^\d{4}-\d{2}-\d{2}$/.test(einzugRaw)){
+    persListe.forEach(p=>{ if(!p.ab) p.ab=einzugRaw; });
+  }
   const neuerMieter = {
     id: 'm_' + objektId + '_' + weNr + '_' + name.replace(/\W/g,'').slice(0,10) + '_' + Date.now().toString(36),
     objektId, objekt: obj?.name||'',
     weNr, etage, flaeche,
-    mieter: name,
-    anrede: document.getElementById('mAnrede')?.value || 'Herr',
-    personen: parseInt(document.getElementById('mPersonen')?.value)||persListe.length||1,
+    mieter: hauptmieterNachnamen({personen_liste:persListe}) || name,
+    anrede: haupt.anrede || document.getElementById('mAnrede')?.value || 'Herr',
+    personen: parseInt(document.getElementById('mPersonen')?.value)||lebend.length||persListe.length||1,
     personen_liste: persListe,
     miete, nk,
     gesamt: (parseFloat(miete)||0)+(parseFloat(nk)||0) || '',
     einzug: einzugDate.toLocaleDateString('de-DE'),
     einzugISO: einzugRaw,
     kaution: parseFloat(document.getElementById('mKaution')?.value)||'',
-    telefon: document.getElementById('mTel')?.value||'',
-    email:   document.getElementById('mEmail')?.value||'',
+    telefon: haupt.telefon || document.getElementById('mTel')?.value||'',
+    email:   haupt.email   || document.getElementById('mEmail')?.value||'',
     tgNr:    document.getElementById('mTgNr')?.value||'',
     leerstand: false,
   };
@@ -13761,7 +14119,10 @@ async function saveNewMieter(objektId) {
     // Zukünftiger Mieter: noch nicht aktiv, alter Mieter bleibt vorerst sichtbar
     neuerMieter._zukuenftig = true;
     neuerMieter._ersetztMieterId = vorhanden.id;
+    neuerMieter._vormieterId = vorhanden.id;       // Vormieter-Bezug sofort sichtbar
     await idbPut('mieter', neuerMieter);
+    // Altmieter schon jetzt mit künftigem Nachmieter verknüpfen
+    try { vorhanden._nachmieterId = neuerMieter.id; await idbPut('mieter', vorhanden); } catch(_){}
     toast(`Zukünftiger Mieter erfasst – aktiv ab ${neuerMieter.einzug}`);
   } else {
     // Sofort aktiv: ggf. vorhandenen Mieter zum Vormieter machen
@@ -13775,6 +14136,14 @@ async function saveNewMieter(objektId) {
     toast('Mieter gespeichert ✓');
   }
 
+  // Kandidat-Übernahme abschließen: Status auf 'uebernommen' + Verknüpfung
+  if(window._uebernahmeInteressentId){
+    try{
+      const k=await idbGet('interessenten', window._uebernahmeInteressentId).catch(()=>null);
+      if(k){ k.status='uebernommen'; k.mieterId=neuerMieter.id; k.geaendert=nowIso(); await idbPut('interessenten',k); }
+    }catch(_){}
+    window._uebernahmeInteressentId=null;
+  }
   closeModal();
   clearTimeout(window._syncTimer);
   window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
@@ -13898,6 +14267,73 @@ async function deleteMieterConfirm(id) {
 }
 
 // Vormieter eines Mieters anzeigen (öffnet die Detailansicht des Vormieters)
+// Punkt 3: Historischen Vormieter manuell anlegen und mit aktuellem Mieter verknüpfen.
+async function modalVormieterAnlegen(mieterId){
+  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  const m = await idbGet('mieter', mieterId);
+  if(!m){ toast('Mieter nicht gefunden'); return; }
+  const obj = getObj(m.objektId);
+  showModal(`
+    <div class="m-title"><i class="ti ti-history"></i> Vormieter anlegen</div>
+    <div style="background:var(--ink-05);border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:13px;color:var(--ink-60)">
+      Historischer Vormieter zu <strong>${esc(m.mieter)}</strong> (WE ${esc(String(m.weNr||''))}, ${obj?.name||''}). Wird als ehemaliger Mieter gespeichert und mit dem aktuellen Mieter verknüpft. Er erscheint nicht in der aktiven Übersicht.
+    </div>
+    <div class="f"><label>Name (Nachname, Vorname) *</label>
+      <input type="text" id="vmName" spellcheck="true" lang="de" placeholder="Nachname, Vorname"></div>
+    <div class="f-row">
+      <div class="f"><label>Einzug (von)</label><input type="date" id="vmEinzug"></div>
+      <div class="f"><label>Auszug (bis)</label><input type="date" id="vmAuszug" value="${m.einzugISO||''}"></div>
+    </div>
+    <div class="f-row">
+      <div class="f"><label>Telefon (optional)</label><input type="tel" id="vmTel"></div>
+      <div class="f"><label>E-Mail (optional)</label><input type="email" id="vmMail"></div>
+    </div>
+    <div class="f"><label>Neue Anschrift (für NKA-Nachsendung, optional)</label>
+      <textarea id="vmAdresse" spellcheck="true" lang="de" style="min-height:44px"></textarea></div>
+    <div class="f-row" style="margin-top:12px">
+      <button class="btn btn-copper btn-full" onclick="saveVormieterAnlegen('${mieterId}')"><i class="ti ti-check"></i> Speichern</button>
+      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+    </div>`);
+}
+
+async function saveVormieterAnlegen(mieterId){
+  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  const m = await idbGet('mieter', mieterId);
+  if(!m) return;
+  const name = document.getElementById('vmName')?.value?.trim()||'';
+  if(!name){ toast('Bitte Namen des Vormieters angeben'); return; }
+  const einzugISO = document.getElementById('vmEinzug')?.value||'';
+  const auszugISO = document.getElementById('vmAuszug')?.value||'';
+  const obj = getObj(m.objektId);
+  const vm = {
+    id: 'm_' + m.objektId + '_' + (m.weNr||'') + '_VM_' + name.replace(/\W/g,'').slice(0,10) + '_' + Date.now().toString(36),
+    objektId: m.objektId, objekt: obj?.name||'',
+    weNr: m.weNr||'', etage: m.etage||'', flaeche: m.flaeche||'',
+    mieter: name,
+    personen_liste: [{name, anrede:'Herr', vertragspartner:true}],
+    personen: 1,
+    telefon: document.getElementById('vmTel')?.value?.trim()||'',
+    email:   document.getElementById('vmMail')?.value?.trim()||'',
+    einzug: einzugISO ? new Date(einzugISO).toLocaleDateString('de-DE') : '',
+    einzugISO,
+    auszug: auszugISO ? new Date(auszugISO).toLocaleDateString('de-DE') : '',
+    auszugISO,
+    neueAdresse: document.getElementById('vmAdresse')?.value?.trim()||'',
+    leerstand: false,
+    _vormieter: true,
+    _nachmieterId: m.id,
+  };
+  await idbPut('mieter', vm);
+  // aktuellen Mieter mit Vormieter verknüpfen
+  m._vormieterId = vm.id;
+  await idbPut('mieter', m);
+  closeModal();
+  clearTimeout(window._syncTimer);
+  window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
+  await showMieter(mieterId);
+  toast('Vormieter angelegt ✓');
+}
+
 async function zeigeVormieter(vormieterId) {
   const vm = await idbGet('mieter', vormieterId);
   if (!vm) { toast('Vormieter nicht gefunden'); return; }
@@ -13953,172 +14389,6 @@ function parseMieterNamen(roh){
 }
 
 async function modalMieterSplit(id){ return modalEditMieter(id); }
-async function _modalMieterSplit_alt(id){
-  const m=await idbGet('mieter',id);
-  if(!m) return;
-  // Einzugsdatum als ISO für die Vorbelegung von "Dabei ab"
-  const einzugISO = m.einzugISO || (m.einzug && m.einzug.includes('.') ? m.einzug.split('.').reverse().join('-').replace(/^(\d{4})-(\d)-/, '$1-0$2-').replace(/-(\d)$/, '-0$1') : (m.einzug||''));
-  // Vorhandene Personenliste hat Vorrang; sonst aus Namen parsen
-  let personen = (m.personen_liste && m.personen_liste.length)
-    ? m.personen_liste.map(p=>({name:p.name||'',geburtsdatum:p.geburtsdatum||'',anrede:p.anrede||'Herr',telefon:p.telefon||'',email:p.email||'',ab:p.ab||'',bis:p.bis||'',verstorben:!!p.verstorben,vertragspartner:p.vertragspartner!==undefined?!!p.vertragspartner:true}))
-    : parseMieterNamen(m.mieter).map((p,i)=>({...p,telefon:i===0?(m.telefon||''):'',email:i===0?(m.email||''):'',verstorben:false,vertragspartner:true}));
-  // Punkt 4: "Dabei ab" mit dem Einzug vorbelegen, wo es noch leer ist.
-  // Spätere abweichende Einzüge einzelner Personen werden manuell geändert.
-  if(einzugISO && /^\d{4}-\d{2}-\d{2}$/.test(einzugISO)){
-    personen.forEach(p=>{ if(!p.ab) p.ab=einzugISO; });
-  }
-  // Falls Personenzahl höher als erkannte Namen → Platzhalter ergänzen
-  const ziel = Math.max(parseInt(m.personen)||0, personen.length, 1);
-  while(personen.length<ziel) personen.push({name:'Kind '+(personen.length), geburtsdatum:'', anrede:'',telefon:'',email:'',ab:'',bis:'',verstorben:false,vertragspartner:false});
-  window._splitPersonen = personen;
-
-  showModal(`
-    <div class="m-title"><i class="ti ti-users-group"></i> Personen aufteilen</div>
-    <div style="background:var(--ink-05);border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:13px;color:var(--ink-60)">
-      Aktueller Eintrag: <strong>${esc(m.mieter)}</strong><br>
-      Bitte prüfen und anpassen. Jede Zeile = eine Person. „Dabei ab/bis" steuert, ab bzw. bis zu welchem Monat die Person in der NK-Abrechnung zählt (leer = ganzer Zeitraum). Maßgeblich ist der Monatserste.<br><br>
-      <strong>Vertragspartner</strong> markiert, wer im Mietvertrag als Mietpartei genannt ist. Nebenkostenabrechnung und Mieterhöhung müssen rechtlich an <strong>alle</strong> Vertragspartner gemeinsam gerichtet werden.
-    </div>
-    <div id="splitListe"></div>
-    <button class="btn btn-sm" style="margin:4px 0 12px" onclick="splitAddRow()"><i class="ti ti-user-plus"></i> Person hinzufügen</button>
-    <div style="font-size:11px;color:var(--ink-40);margin:2px 0 6px">
-      <i class="ti ti-info-circle"></i> In Übersicht und Listen erscheint automatisch der/die Nachname(n) der als <strong>Vertragspartner</strong> markierten Personen.
-    </div>
-    <div style="border-top:1px solid var(--ink-10);margin:12px 0 8px;padding-top:10px">
-      <div style="font-size:12px;font-weight:600;color:var(--ink-60);margin-bottom:6px"><i class="ti ti-heart-handshake"></i> Pflege-/Zusatzkontakt (optional)</div>
-      <div class="f-row" style="margin-bottom:6px">
-        <div class="f"><label style="font-size:10px">Name</label>
-          <input type="text" id="zkName" value="${esc(m.zusatzkontakt?.name||'')}" spellcheck="true" lang="de" style="font-size:12px" placeholder="z. B. Tochter, Betreuer"></div>
-        <div class="f" style="max-width:120px"><label style="font-size:10px">Rolle</label>
-          <input type="text" id="zkRolle" value="${esc(m.zusatzkontakt?.rolle||'')}" style="font-size:12px" placeholder="Pflegekontakt"></div>
-      </div>
-      <div class="f-row">
-        <div class="f"><label style="font-size:10px">Telefon</label>
-          <input type="tel" id="zkTel" value="${esc(m.zusatzkontakt?.telefon||'')}" style="font-size:12px"></div>
-        <div class="f"><label style="font-size:10px">E-Mail</label>
-          <input type="email" id="zkMail" value="${esc(m.zusatzkontakt?.email||'')}" style="font-size:12px"></div>
-      </div>
-    </div>
-    <div class="f-row" style="margin-top:12px">
-      <button class="btn btn-copper btn-full" onclick="saveMieterSplit('${id}')"><i class="ti ti-check"></i> Speichern</button>
-      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
-    </div>`);
-  renderSplitListe();
-}
-
-function renderSplitListe(){
-  const wrap=document.getElementById('splitListe');
-  if(!wrap) return;
-  const ps=window._splitPersonen||[];
-  wrap.innerHTML=ps.map((p,i)=>`
-    <div style="border:1px solid var(--ink-10);border-radius:8px;padding:10px;margin-bottom:8px;${p.verstorben?'opacity:.6':''}" id="splitRow_${i}">
-      <div class="f-row" style="align-items:flex-end;margin-bottom:6px">
-        <div class="f" style="max-width:78px"><label style="font-size:10px">Anrede</label>
-          <select id="splitAnr_${i}" style="font-size:12px;padding:8px 4px">
-            <option value="" ${!p.anrede?'selected':''}>–</option>
-            <option value="Herr" ${p.anrede==='Herr'?'selected':''}>Herr</option>
-            <option value="Frau" ${p.anrede==='Frau'?'selected':''}>Frau</option>
-          </select></div>
-        <div class="f"><label style="font-size:10px">Name</label>
-          <input type="text" id="splitName_${i}" value="${esc(p.name||'')}" spellcheck="true" lang="de" style="font-size:13px"></div>
-        ${i>0?`<button class="btn btn-sm btn-danger" onclick="splitRemoveRow(${i})" style="flex-shrink:0"><i class="ti ti-trash"></i></button>`:'<div style="width:0"></div>'}
-      </div>
-      <div class="f-row" style="margin-bottom:6px">
-        <div class="f"><label style="font-size:10px">Geburtsdatum</label>
-          <input type="date" id="splitGeb_${i}" value="${p.geburtsdatum||''}" style="font-size:12px"></div>
-        <div class="f"><label style="font-size:10px">Telefon</label>
-          <input type="tel" id="splitTel_${i}" value="${esc(p.telefon||'')}" style="font-size:12px" placeholder="optional"></div>
-      </div>
-      <div class="f" style="margin-bottom:6px"><label style="font-size:10px">E-Mail</label>
-        <input type="email" id="splitMail_${i}" value="${esc(p.email||'')}" style="font-size:12px" placeholder="optional"></div>
-      <div class="f-row" style="margin-bottom:6px">
-        <div class="f"><label style="font-size:10px">Dabei ab (NK-Wirkung)</label>
-          <input type="date" id="splitAb_${i}" value="${p.ab||''}" style="font-size:12px" title="Ab diesem Monat zählt die Person in der NK-Abrechnung"></div>
-        <div class="f"><label style="font-size:10px">Dabei bis</label>
-          <input type="date" id="splitBis_${i}" value="${p.bis||''}" style="font-size:12px" title="Letzter Monat, in dem die Person zählt (leer = unbefristet)"></div>
-      </div>
-      <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
-        <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-size:12px;color:${p.vertragspartner?'var(--copper)':'var(--ink-40)'};font-weight:${p.vertragspartner?'600':'400'}" title="Im Mietvertrag als Mietpartei genannt – erhält NKA und Mieterhöhung">
-          <input type="checkbox" id="splitVp_${i}" ${p.vertragspartner?'checked':''} onchange="splitToggleVp(${i})" style="width:15px;height:15px"> <i class="ti ti-file-signature" style="font-size:13px"></i> Vertragspartner
-        </label>
-        <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-size:12px;color:${p.verstorben?'var(--ink)':'var(--ink-40)'}">
-          <input type="checkbox" id="splitTot_${i}" ${p.verstorben?'checked':''} onchange="splitToggleTot(${i})" style="width:15px;height:15px"> verstorben
-        </label>
-      </div>
-    </div>`).join('');
-}
-function splitToggleTot(i){ window._splitPersonen=splitCollect(); renderSplitListe(); }
-function splitToggleVp(i){ window._splitPersonen=splitCollect(); renderSplitListe(); }
-function splitCollect(){
-  const ps=window._splitPersonen||[];
-  const out=[];
-  for(let i=0;i<ps.length;i++){
-    const nameEl=document.getElementById('splitName_'+i);
-    if(!nameEl) continue;
-    out.push({
-      name:nameEl.value.trim(),
-      geburtsdatum:document.getElementById('splitGeb_'+i)?.value||'',
-      anrede:document.getElementById('splitAnr_'+i)?.value||'',
-      telefon:document.getElementById('splitTel_'+i)?.value.trim()||'',
-      email:document.getElementById('splitMail_'+i)?.value.trim()||'',
-      ab:document.getElementById('splitAb_'+i)?.value||'',
-      bis:document.getElementById('splitBis_'+i)?.value||'',
-      verstorben:document.getElementById('splitTot_'+i)?.checked||false,
-      vertragspartner:document.getElementById('splitVp_'+i)?.checked||false,
-    });
-  }
-  return out;
-}
-function splitAddRow(){
-  window._splitPersonen=splitCollect();
-  window._splitPersonen.push({name:'',geburtsdatum:'',anrede:'',telefon:'',email:'',ab:'',bis:'',verstorben:false});
-  renderSplitListe();
-}
-function splitRemoveRow(idx){
-  window._splitPersonen=splitCollect().filter((_,i)=>i!==idx);
-  renderSplitListe();
-}
-async function saveMieterSplit(id){
-  const m=await idbGet('mieter',id);
-  if(!m) return;
-  const personen=splitCollect().filter(p=>p.name);
-  if(!personen.length){ toast('Mindestens eine Person mit Namen erforderlich'); return; }
-  m.personen_liste=personen;
-  // Personenzahl = lebende Personen
-  const lebend=personen.filter(p=>!p.verstorben);
-  m.personen=lebend.length||personen.length;
-  // Anzeigename = Nachname(n) der Vertragspartner (Punkt 1/6). Immer automatisch,
-  // damit Übersicht und Listen konsistent bleiben. Volle Namen stehen in personen_liste.
-  m.mieter = hauptmieterNachnamen(m) || (lebend[0]||personen[0]).name;
-  // Anrede der ersten Vertragspartei (für Altfunktionen)
-  const vpListe = lebend.filter(p=>p.vertragspartner);
-  const ersterVp = vpListe[0] || lebend[0] || personen[0];
-  if(ersterVp?.anrede) m.anrede=ersterVp.anrede;
-  // Kontaktdaten des Mieters auf erste Vertragspartei/erste lebende Person spiegeln
-  const haupt=ersterVp;
-  if(haupt?.telefon) m.telefon=haupt.telefon;
-  if(haupt?.email) m.email=haupt.email;
-  // Pflege-/Zusatzkontakt
-  const zkName=document.getElementById('zkName')?.value.trim()||'';
-  if(zkName){
-    m.zusatzkontakt={
-      name:zkName,
-      rolle:document.getElementById('zkRolle')?.value.trim()||'Zusatzkontakt',
-      telefon:document.getElementById('zkTel')?.value.trim()||'',
-      email:document.getElementById('zkMail')?.value.trim()||'',
-    };
-  } else {
-    delete m.zusatzkontakt;
-  }
-  m.geaendert=now();
-  await idbPut('mieter',m);
-  closeModal();
-  clearTimeout(window._syncTimer);
-  window._syncTimer=setTimeout(()=>syncToOneDrive(),3000);
-  await showMieter(id);
-  toast(`${personen.length} ${personen.length===1?'Person':'Personen'} gespeichert ✓`);
-}
-
 async function modalNeueAdresse(mieterId) {
   const m = await idbGet('mieter', mieterId);
   if (!m) return;
@@ -14250,8 +14520,17 @@ function kautionDetailVon(m){
   return kd;
 }
 
-// Summe eingegangener Raten
-function kautionRatenSumme(kd){ return (kd.raten||[]).reduce((s,r)=>s+parseBetrag(r.betrag),0); }
+// Gilt eine Rate als tatsächlich erhalten?
+// Neu: explizites Feld r.erhalten. Altdaten ohne Feld: erhalten, wenn Datum gesetzt.
+function rateIstErhalten(r){
+  if(r.erhalten===true) return true;
+  if(r.erhalten===false) return false;
+  return !!(r.erhaltenAm || r.datum); // Altdaten-Fallback
+}
+// Summe TATSÄCHLICH eingegangener Raten (für Saldo)
+function kautionRatenSumme(kd){ return (kd.raten||[]).filter(rateIstErhalten).reduce((s,r)=>s+parseBetrag(r.betrag),0); }
+// Summe ALLER vereinbarten Raten (für Soll-/Vollständigkeitsanzeige)
+function kautionRatenVereinbart(kd){ return (kd.raten||[]).reduce((s,r)=>s+parseBetrag(r.betrag),0); }
 // Summe Zinsgutschriften
 function kautionZinsSumme(kd){ return (kd.bewegungen||[]).filter(b=>b.art==='zins').reduce((s,b)=>s+parseBetrag(b.betrag),0); }
 // Summe Verrechnungen + Auszahlungen (Abgänge)
@@ -14610,33 +14889,59 @@ function kautionRatenCollect(){
   const out=[]; const list=window._kautionRaten||[];
   for(let i=0;i<list.length;i++){
     const d=document.getElementById('kdRatenDat_'+i), b=document.getElementById('kdRatenBet_'+i), n=document.getElementById('kdRatenNot_'+i);
+    const erh=document.getElementById('kdRatenErh_'+i), erhAm=document.getElementById('kdRatenErhAm_'+i);
     if(!b) continue;
-    out.push({datum:d?.value||'', betrag:parseBetrag(b.value), notiz:n?.value?.trim()||''});
+    out.push({
+      datum:d?.value||'',
+      betrag:parseBetrag(b.value),
+      notiz:n?.value?.trim()||'',
+      erhalten: erh ? !!erh.checked : undefined,
+      erhaltenAm: erhAm?.value||''
+    });
   }
   return out;
+}
+// Haken "erhalten" umschalten: setzt bei Aktivierung das Eingangsdatum auf heute, falls leer.
+function kautionRatenToggleErhalten(i){
+  window._kautionRaten = kautionRatenCollect();
+  const r = window._kautionRaten[i];
+  if(r && r.erhalten && !r.erhaltenAm) r.erhaltenAm = today();
+  kautionRatenRender();
 }
 function kautionRatenRender(){
   window._kautionRaten = kautionRatenCollect().length?kautionRatenCollect():window._kautionRaten;
   const wrap=document.getElementById('kdRatenListe'); if(!wrap) return;
   const ps=window._kautionRaten||[];
-  wrap.innerHTML = ps.map((r,i)=>`
-    <div class="f-row" style="margin-bottom:5px;align-items:flex-end">
-      <div class="f" style="max-width:130px"><label style="font-size:9px">Datum</label>
-        <input type="date" id="kdRatenDat_${i}" value="${r.datum||''}" style="font-size:12px"></div>
-      <div class="f"><label style="font-size:9px">Betrag (€)</label>
-        <input type="number" id="kdRatenBet_${i}" value="${r.betrag||''}" step="0.01" style="font-size:12px"></div>
-      <div class="f"><label style="font-size:9px">Notiz</label>
-        <input type="text" id="kdRatenNot_${i}" value="${esc(r.notiz||'')}" style="font-size:12px"></div>
-      <button class="btn btn-sm btn-danger" onclick="kautionRatenRemove(${i})" style="flex-shrink:0"><i class="ti ti-trash"></i></button>
-    </div>`).join('') || '<div style="font-size:11px;color:var(--ink-40)">Noch keine Raten erfasst.</div>';
-  const sum=ps.reduce((s,r)=>s+parseBetrag(r.betrag),0);
-  const sumEl=document.getElementById('kdRatenSumme'); if(sumEl) sumEl.textContent='Summe Raten: '+fmtEur(sum);
+  wrap.innerHTML = ps.map((r,i)=>{
+    const erhalten = rateIstErhalten(r);
+    return `
+    <div style="border:1px solid var(--ink-10);border-radius:8px;padding:8px;margin-bottom:6px;${erhalten?'background:var(--green-l,rgba(46,160,67,.07))':''}">
+      <div class="f-row" style="align-items:flex-end;margin-bottom:5px">
+        <div class="f" style="max-width:130px"><label style="font-size:9px">Fällig am</label>
+          <input type="date" id="kdRatenDat_${i}" value="${r.datum||''}" style="font-size:12px"></div>
+        <div class="f"><label style="font-size:9px">Betrag (€)</label>
+          <input type="number" id="kdRatenBet_${i}" value="${r.betrag||''}" step="0.01" style="font-size:12px"></div>
+        <button type="button" class="btn btn-sm btn-danger" onclick="kautionRatenRemove(${i})" style="flex-shrink:0"><i class="ti ti-trash"></i></button>
+      </div>
+      <div class="f-row" style="align-items:flex-end">
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;font-weight:${erhalten?'600':'400'};color:${erhalten?'var(--green)':'var(--ink-40)'};flex-shrink:0;padding-bottom:8px">
+          <input type="checkbox" id="kdRatenErh_${i}" ${erhalten?'checked':''} onchange="kautionRatenToggleErhalten(${i})" style="width:16px;height:16px"> erhalten
+        </label>
+        <div class="f" style="max-width:130px"><label style="font-size:9px">erhalten am</label>
+          <input type="date" id="kdRatenErhAm_${i}" value="${r.erhaltenAm||''}" style="font-size:12px"></div>
+        <div class="f"><label style="font-size:9px">Notiz</label>
+          <input type="text" id="kdRatenNot_${i}" value="${esc(r.notiz||'')}" style="font-size:12px"></div>
+      </div>
+    </div>`;}).join('') || '<div style="font-size:11px;color:var(--ink-40)">Noch keine Raten erfasst.</div>';
+  const vereinbart=ps.reduce((s,r)=>s+parseBetrag(r.betrag),0);
+  const erhalten=ps.filter(rateIstErhalten).reduce((s,r)=>s+parseBetrag(r.betrag),0);
+  const sumEl=document.getElementById('kdRatenSumme'); if(sumEl) sumEl.textContent=`Erhalten: ${fmtEur(erhalten)} von ${fmtEur(vereinbart)} vereinbart`;
   kautionSaldoRender();
 }
 function kautionRatenAdd(){
   window._kautionRaten=kautionRatenCollect();
   if(window._kautionRaten.length>=3){ toast('Höchstens 3 Raten nach § 551 Abs. 2 BGB'); return; }
-  window._kautionRaten.push({datum:'',betrag:'',notiz:''});
+  window._kautionRaten.push({datum:'',betrag:'',notiz:'',erhalten:false,erhaltenAm:''});
   kautionRatenRender();
 }
 function kautionRatenRemove(i){ window._kautionRaten=kautionRatenCollect().filter((_,x)=>x!==i); kautionRatenRender(); }
@@ -15088,7 +15393,7 @@ async function buildPD(objId,mietId,art){
     raeume:Object.fromEntries(ROOMS.map(r=>[r,{conditions:{},notes:'',photos:[]}])),
     zaehler:[{typ:'Stromzähler',nr:'',stand:'',einheit:'kWh'},{typ:'Gaszähler',nr:'',stand:'',einheit:'m³'},
              {typ:'Wasserzähler kalt',nr:'',stand:'',einheit:'m³'},{typ:'Wasserzähler warm',nr:'',stand:'',einheit:'m³'}],
-    schluessel:{wohnung:2,haus:1,bk:1,keller:0,garage:0,sonstige:0},
+    schluessel:(await getSchluesselSoll(objId, m?.weNr).catch(()=>null)) || {wohnung:2,haus:1,bk:1,keller:0,garage:0,sonstige:0},
     schluesselHinweis:'',
     tgNr:m?.tgNr||'',tgMiete:tg?.miete||'',
     schoenheit:'Nicht erforderlich',
@@ -16595,7 +16900,7 @@ async function delUser(id){
 async function exportBackup(){
   if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
   const backup={};
-  for(const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch']){
+  for(const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten']){
     backup[s]=await idbGetAll(s);
   }
   backup.exportedAt=now();backup.version=2;
@@ -16708,7 +17013,7 @@ async function importBackup(input){
       const backup=JSON.parse(e.target.result);
       await erstelleMieterSnapshot('import');
       const modus = confirm('Importmodus wählen:\n\nOK = Zusammenführen (empfohlen): neuere Daten gewinnen, nichts geht verloren.\nAbbrechen = Vollständig ersetzen (alter Modus): lokale Daten werden komplett überschrieben.');
-      const alleStores=['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch'];
+      const alleStores=['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten'];
       if(!modus){
         // Vollständig ersetzen (alter Modus)
         for(const s of alleStores){
@@ -16950,7 +17255,7 @@ async function syncToOneDrive() {
     } catch(e){ /* offline o. 404: normaler Upload-Weg unten */ }
 
     const backup = {};
-    for (const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','versorger_archiv','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch','sync_log']) {
+    for (const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','versorger_archiv','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch','sync_log','interessenten']) {
       backup[s] = await idbGetAll(s);
     }
     backup.updatedAt = new Date().toISOString();
@@ -17045,7 +17350,7 @@ async function syncFromOneDrive() {
       await idbPut('settings', { id:'tombstones', value: mergedTomb });
 
       // Merge: ID-basiert, nur übernehmen wenn remote neuer oder lokal fehlt
-      const mergeStores = ['protokolle','aufgaben','maengel','reparaturen','dokumente','nka_archiv','einkaufsliste','wartung','termine','zaehler','zaehlerstaende','versorger','versorger_archiv','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch','sync_log'];
+      const mergeStores = ['protokolle','aufgaben','maengel','reparaturen','dokumente','nka_archiv','einkaufsliste','wartung','termine','zaehler','zaehlerstaende','versorger','versorger_archiv','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch','sync_log','interessenten'];
       for (const s of mergeStores) {
         if (!backup[s]) continue;
         const tombS = mergedTomb[s] || {};
