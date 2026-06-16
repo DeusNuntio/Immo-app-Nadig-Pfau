@@ -736,7 +736,7 @@ body.printing-active #printRoot{display:block!important}
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=20;
-const APP_VERSION = '2026-06-15-v73';
+const APP_VERSION = '2026-06-16-v74';
 let idb=null;
 
 function openIDB(){
@@ -16730,19 +16730,28 @@ function druckHTML(html){
     body = body.replace(/<scr(?:ipt|.)*?>[\s\S]*?window\.print\(\)[\s\S]*?<\/scr.{0,3}ipt>/gi, '')
                .replace(/<scr(?:ipt|.)*?>[\s\S]*?<\/scr.{0,3}ipt>/gi, '');
 
-    // @page- und @media-Regeln dürfen NICHT in @media print verschachtelt werden
-    // (Browser ignorieren das teils). Daher separat ausgeben, den Rest in @media print.
+    // @page-/@media-Regeln aus der Vorlage herauslösen und separat (nicht
+    // verschachtelt) ausgeben. @page muss auf oberster Ebene stehen; @media print
+    // der Vorlage darf nicht in einen weiteren @media print-Block geschachtelt werden.
     let atRules = '';
     let rest = styles;
     rest = rest.replace(/@media[^{]*\{[\s\S]*?\}\s*\}/gi, m => { atRules += m + '\n'; return ''; });
     rest = rest.replace(/@page[^{]*\{[\s\S]*?\}/gi, m => { atRules += m + '\n'; return ''; });
-    // body-Regeln der Vorlage auf #printRoot umlenken, sonst wirken sie beim Druck
-    // auf die App-Seite (falsche Ränder). 'body' am Selektor-Anfang -> '#printRoot'.
-    rest = rest.replace(/(^|,|\})\s*body\b/gi, '$1 #printRoot');
 
-    // Styles der Vorlage NUR im Druckmodus wirksam machen, damit globale Regeln
-    // (z. B. *{margin:0} oder body{...}) die App-Oberfläche nicht zerschießen.
-    root.innerHTML = '<style>'+atRules+'\n@media print{'+rest+'}</style>'+body;
+    // Alle 'body'-Selektoren der Vorlage auf '#printRoot' umlenken – sowohl im
+    // normalen Regelteil ALS AUCH in den herausgelösten @media/@page-Regeln,
+    // sonst wirken Vorlagen-body-Regeln beim Druck auf die App-Seite.
+    const bodyToRoot = css => css.replace(/(^|,|\}|\{)\s*body\b/gi, '$1 #printRoot');
+    rest    = bodyToRoot(rest);
+    atRules = bodyToRoot(atRules);
+
+    // WICHTIG (Fix weiße Seite/PDF auf Samsung-PWA): Die Layout-Styles der Vorlage
+    // (.page, .bk-box, Spaltenbreiten …) müssen IMMER auf #printRoot wirken, nicht
+    // nur in @media print. Samsung-WebView wertet in @media print verschachtelte
+    // Klassenregeln beim PDF-/Vorschau-Rendering unzuverlässig aus -> leere Seite.
+    // Da #printRoot außerhalb des Drucks ohnehin display:none ist (siehe globales
+    // CSS), beeinflussen diese Regeln die App-Oberfläche nicht.
+    root.innerHTML = '<style>'+atRules+'\n'+rest+'</style>'+body;
 
     document.body.classList.add('printing-active');
 
