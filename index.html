@@ -736,7 +736,7 @@ body.printing-active #printRoot{display:block!important}
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=20;
-const APP_VERSION = '2026-06-15-v71';
+const APP_VERSION = '2026-06-15-v73';
 let idb=null;
 
 function openIDB(){
@@ -8730,7 +8730,7 @@ async function modalNKA(objektId) {
 
   // Abrechnungsjahre ab 2025 (P9)
   const cy = new Date().getFullYear();
-  let jahrOpts=''; for(let y=cy;y>=2025;y--) jahrOpts+='<option value="'+y+'">'+y+'</option>';
+  let jahrOpts=''; for(let y=cy;y>=2024;y--) jahrOpts+='<option value="'+y+'">'+y+'</option>';
 
   showModal(`
     <div class="m-title"><i class="ti ti-receipt"></i> Nebenkostenabrechnung</div>
@@ -8738,7 +8738,7 @@ async function modalNKA(objektId) {
     <div id="nkaFormWrap">
     <div class="f-row">
       <div class="f"><label>Abrechnungsjahr</label>
-        <select id="nkaJahr">${jahrOpts}</select>
+        <select id="nkaJahr" onchange="if(window._nkaSetPeriode)window._nkaSetPeriode(this.value)">${jahrOpts}</select>
       </div>
       <div class="f"><label>Abrechnungszeitraum</label>
         <div style="display:flex;gap:6px;align-items:center">
@@ -8779,8 +8779,11 @@ async function modalNKA(objektId) {
     j = parseInt(j);
     document.getElementById('nkaVon').value = j + zt.von.slice(4);
     document.getElementById('nkaBis').value = (j + span) + zt.bis.slice(4);
+    // bei manueller Jahreswahl: Live-Anzeige der Wohnmonate aktualisieren
+    if(typeof nkaUpdateWohnmonate==='function'){ try{ nkaUpdateWohnmonate(mieter); }catch(_){} }
   };
-  let defJahr = Math.max(2025, parseInt(zt.von.slice(0,4)));
+  window._nkaSetPeriode = setPeriode; // für onchange am Jahr-Dropdown
+  let defJahr = Math.max(2024, parseInt(zt.von.slice(0,4)));
   if (defJahr > cy) defJahr = cy;
   document.getElementById('nkaJahr').value = String(defJahr);
   setPeriode(defJahr);
@@ -9191,8 +9194,12 @@ async function erstelleNKA(objektId, korrektur) {
       ${ex.bem?`<div class="bemerkung"><strong>Hinweis:</strong> ${ex.bem}</div>`:''}
 
       <p class="abschluss">${diffPos
-        ? 'Bitte überweisen Sie den Nachzahlungsbetrag innerhalb von 4 Wochen auf unser Konto.'
-        : 'Das Guthaben wird mit der kommenden Mietzahlung verrechnet bzw. ausgezahlt.'
+        ? ((m.zahlweise==='sepa'||m.sepaMandat)
+            ? 'Der Nachzahlungsbetrag wird im kommenden Monat per SEPA-Lastschrift von Ihrem Konto eingezogen. Bitte sorgen Sie für ausreichende Deckung.'
+            : 'Bitte überweisen Sie den Nachzahlungsbetrag innerhalb von 4 Wochen auf unser Konto.')
+        : ((m.zahlweise==='sepa'||m.sepaMandat)
+            ? 'Das Guthaben wird Ihnen auf das uns bekannte Konto erstattet bzw. mit der kommenden Mietzahlung verrechnet.'
+            : 'Das Guthaben wird mit der kommenden Mietzahlung verrechnet bzw. ausgezahlt.')
       }</p>
 
       ${grussHTML}
@@ -9503,7 +9510,7 @@ async function modalNKALiegenschaft(lgId){
       <input type="text" inputmode="decimal" id="nkaLg_${k.id}" placeholder="0,00">${hint}</div>`;
   }).join('');
 
-  let jahrOpts=''; for(let y=cy;y>=2025;y--) jahrOpts+='<option value="'+y+'" '+(y===defJahr?'selected':'')+'>'+y+'</option>';
+  let jahrOpts=''; for(let y=cy;y>=2024;y--) jahrOpts+='<option value="'+y+'" '+(y===defJahr?'selected':'')+'>'+y+'</option>';
 
   showModal(`
     <div class="m-title"><i class="ti ti-receipt"></i> Nebenkostenabrechnung – Liegenschaft</div>
@@ -9866,7 +9873,13 @@ async function erstelleNKALiegenschaft(lgId, korrektur){
         <tr class="${diffPos?'nachzahl':'gutschr'}"><td>${diffPos?'Nachzahlung':'Guthaben'}</td><td>${fmtEur(diffAbs)}</td></tr>
       </table>
       ${ex.bem?`<div class="bemerkung"><strong>Hinweis:</strong> ${ex.bem}</div>`:''}
-      <p class="abschluss">${diffPos?'Bitte überweisen Sie den Nachzahlungsbetrag innerhalb von 4 Wochen auf unser Konto.':'Das Guthaben wird mit der kommenden Mietzahlung verrechnet bzw. ausgezahlt.'}</p>
+      <p class="abschluss">${diffPos
+        ? ((m.zahlweise==='sepa'||m.sepaMandat)
+            ? 'Der Nachzahlungsbetrag wird im kommenden Monat per SEPA-Lastschrift von Ihrem Konto eingezogen. Bitte sorgen Sie für ausreichende Deckung.'
+            : 'Bitte überweisen Sie den Nachzahlungsbetrag innerhalb von 4 Wochen auf unser Konto.')
+        : ((m.zahlweise==='sepa'||m.sepaMandat)
+            ? 'Das Guthaben wird Ihnen auf das uns bekannte Konto erstattet bzw. mit der kommenden Mietzahlung verrechnet.'
+            : 'Das Guthaben wird mit der kommenden Mietzahlung verrechnet bzw. ausgezahlt.')}</p>
       ${grussHTML}
     </div>`;
   });
@@ -16733,8 +16746,24 @@ function druckHTML(html){
 
     document.body.classList.add('printing-active');
 
+    // ROBUST: Alle direkten Body-Kinder außer #printRoot per Inline-Style ausblenden.
+    // Inline-Styles haben höchste Spezifität und schlagen jede @media print-Regel
+    // (z. B. .page{display:block!important}), die sonst Login-/App-Screen mitdruckt.
+    const hidden = [];
+    Array.from(document.body.children).forEach(el => {
+      if(el === root) return;
+      hidden.push([el, el.style.display]);
+      el.style.setProperty('display','none','important');
+    });
+
+    let cleaned = false;
     const cleanup = () => {
+      if(cleaned) return; cleaned = true;
       document.body.classList.remove('printing-active');
+      hidden.forEach(([el, prev]) => {
+        if(prev) el.style.setProperty('display', prev);
+        else el.style.removeProperty('display');
+      });
       root.innerHTML = '';
       window.onafterprint = null;
     };
@@ -16745,7 +16774,7 @@ function druckHTML(html){
       try{ window.focus(); window.print(); }
       catch(e){ console.warn('window.print:', e); }
       // Sicherheits-Cleanup, falls onafterprint nicht feuert
-      setTimeout(cleanup, 1500);
+      setTimeout(cleanup, 2000);
     }, 350);
     return true;
   }catch(e){
