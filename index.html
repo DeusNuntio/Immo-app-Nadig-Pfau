@@ -6534,6 +6534,34 @@ async function aktiviereFaelligeMieterwechsel() {
 ═══════════════════════════════════════════════════════════ */
 const HEIZUNG_ARTEN=['Gas-Zentralheizung','Öl-Zentralheizung','Fernwärme','Wärmepumpe','Gasetagenheizung','Nachtspeicher (Strom)','Pellet/Holz','Sonstige'];
 
+// €/m² (Kaltmiete) eines Mieters + Ampelvergleich zum Mietspiegel.
+// Mietspiegel = ortsübliche Vergleichsmiete (netto kalt) je m² laut objekt_stamm.
+// Toleranz ±3 %: darunter rot, innerhalb grau (≈ ortsüblich), darüber grün.
+function mieteProQm(m){
+  const miete=parseFloat(m&&m.miete)||0;
+  const fl=parseFloat(m&&m.flaeche)||0;
+  if(miete<=0||fl<=0) return null;
+  return miete/fl;
+}
+function mietspiegelAmpel(proQm, mietspiegel){
+  const ms=parseFloat(mietspiegel)||0;
+  if(!proQm||ms<=0) return null;
+  const abw=(proQm-ms)/ms; // relative Abweichung
+  if(abw < -0.03) return {farbe:'#C0392B', label:'unter Mietspiegel', cls:'unter'};   // rot
+  if(abw >  0.03) return {farbe:'#2E7D52', label:'über Mietspiegel',  cls:'ueber'};   // grün
+  return {farbe:'#888780', label:'ortsüblich', cls:'gleich'};                          // grau
+}
+// Kompakte €/m²-Anzeige mit optionaler Ampel (für Übersicht & Detailseite)
+function mieteProQmHTML(m, mietspiegel){
+  const pq=mieteProQm(m);
+  if(pq===null) return '';
+  const f2=v=>v.toFixed(2).replace('.',',');
+  const amp=mietspiegelAmpel(pq, mietspiegel);
+  const dot=amp?`<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${amp.farbe};margin-right:3px" title="${amp.label}"></span>`:'';
+  const col=amp?amp.farbe:'var(--ink-60)';
+  return `<span style="color:${col};font-weight:600">${dot}${f2(pq)} €/m²</span>`;
+}
+
 function gebaeudeStatsHTML(stamm, personenGesamt, mieterAnzahl, istAdmin){
   const s=stamm||{};
   const feld=(icon,label,wert)=>`<div style="flex:1;min-width:120px;background:var(--ink-05);border-radius:8px;padding:8px 10px">
@@ -6552,6 +6580,7 @@ function gebaeudeStatsHTML(stamm, personenGesamt, mieterAnzahl, istAdmin){
       ${feld('ti-users','Bewohner', String(personenGesamt))}
       ${feld('ti-flame','Heizung', s.heizung?esc(String(s.heizung)):'')}
       ${s.wohneinheiten?feld('ti-home','Wohneinheiten', esc(String(s.wohneinheiten))):''}
+      ${s.mietspiegel?feld('ti-chart-bar','Mietspiegel', esc(String(s.mietspiegel))+' €/m²'):''}
     </div>
     ${s.notiz?`<div style="font-size:12px;color:var(--ink-60);margin-top:8px;font-style:italic">${esc(s.notiz)}</div>`:''}
   </div>`;
@@ -6575,6 +6604,9 @@ async function modalGebaeudeStamm(objektId){
       <div class="f"><label>Letzte Modernisierung</label>
         <input type="text" id="gsModern" value="${s.modernisiert||''}" placeholder="z. B. 2019"></div>
     </div>
+    <div class="f"><label>Mietspiegel – ortsübliche Vergleichsmiete (€/m² kalt)</label>
+      <input type="number" id="gsMietspiegel" step="0.01" value="${s.mietspiegel||''}" placeholder="z. B. 7,80">
+      <div style="font-size:10px;color:var(--ink-40);margin-top:2px">Netto-Kaltmiete je m² laut Mietspiegel. Basis für den €/m²-Vergleich in der Wohnungsübersicht.</div></div>
     <div class="f"><label>Heizungsart</label>
       <select id="gsHeizung">
         <option value="">– bitte wählen –</option>
@@ -6597,6 +6629,7 @@ async function saveGebaeudeStamm(objektId){
     baujahr:document.getElementById('gsBaujahr')?.value?.trim()||'',
     modernisiert:document.getElementById('gsModern')?.value?.trim()||'',
     heizung:document.getElementById('gsHeizung')?.value||'',
+    mietspiegel:parseFloat(String(document.getElementById('gsMietspiegel')?.value||'').replace(',','.'))||'',
     notiz:document.getElementById('gsNotiz')?.value?.trim()||'',
     geaendert:now(),
   };
@@ -6775,6 +6808,7 @@ async function renderObjMieter(el){
       <div class="m-body">
         <div class="m-name">${m.leerstand?'<span class="chip chip-warn" style="font-size:10px;margin-right:4px"><i class="ti ti-home-off" style="font-size:9px"></i> Leerstand</span>':''}${alleVerstorben?'<span class="chip" style="font-size:10px;margin-right:4px;background:var(--ink-10);color:var(--ink-40)"><i class="ti ti-grave" style="font-size:9px"></i> verstorben</span>':''} ${esc(anzeigeName)}</div>
         <div class="m-sub">${m.etage||''} · Einzug: ${m.einzug||'–'}${m.leerstand?'':` · <i class="ti ti-users" style="font-size:11px"></i> ${pers} ${pers===1?'Person':'Personen'}`}</div>
+        ${istAdmin && !m.leerstand && mieteProQm(m)!==null?`<div class="m-sub" style="margin-top:2px"><i class="ti ti-square-rounded-percentage" style="font-size:11px"></i> ${mieteProQmHTML(m, stamm&&stamm.mietspiegel)}${stamm&&stamm.mietspiegel?` <span style="color:var(--ink-40);font-size:11px">(Mietspiegel ${String(stamm.mietspiegel).replace('.',',')} €/m²)</span>`:''}</div>`:''}
         <div class="m-sub" style="display:flex;gap:8px;flex-wrap:wrap">
           ${m.telefon?`<span><i class="ti ti-phone" style="font-size:11px"></i> ${m.telefon}</span>`:''}
           ${m.email?`<span><i class="ti ti-mail" style="font-size:11px"></i> ${m.email}</span>`:''}
@@ -6917,6 +6951,7 @@ async function showMieter(id){
   if(!m) return;
   await ladeMieterWeCache();
   const obj=getObj(m.objektId);
+  const _stamm=(await idbGet('objekt_stamm',m.objektId).catch(()=>null))||{};
   const aufgaben=(await idbGetAll('aufgaben')).filter(a=>a.mieterId===id&&a.status!=='erledigt');
   const maengel=(await idbGetAll('maengel')).filter(x=>x.mieterId===id&&x.status!=='behoben');
   const prots=(await idbGetAll('protokolle')).filter(p=>p.mieterId===id);
@@ -6942,6 +6977,7 @@ async function showMieter(id){
       <div class="det-field"><label>NK-Vorauszahlung</label><span>${fmtEur(m.nk)}</span></div>
       <div class="det-field"><label>Gesamtmiete</label><span>${fmtEur(m.gesamt)}</span></div>`:''}
       <div class="det-field"><label>Wohnfläche</label><span>${m.flaeche?m.flaeche+' m²':'–'}</span></div>
+      ${CU?.role==='admin'&&mieteProQm(m)!==null?`<div class="det-field"><label>Kaltmiete je m²</label><span>${mieteProQmHTML(m,_stamm.mietspiegel)}${_stamm.mietspiegel?(()=>{const a=mietspiegelAmpel(mieteProQm(m),_stamm.mietspiegel);return a?` <span style="font-size:10px;color:${a.farbe}">· ${a.label} (MS ${String(_stamm.mietspiegel).replace('.',',')} €/m²)</span>`:'';})():' <span style="font-size:10px;color:var(--ink-40)">· kein Mietspiegel hinterlegt</span>'}</span></div>`:''}
       <div class="det-field"><label>Einzug</label><span>${m.einzug||'–'}</span></div>
       ${CU?.role==='admin'?(()=>{ const _kd=kautionDetailVon(m); const _si=kautionStatusInfo(_kd.status); const _ai=kautionArtInfo(_kd.art); return `<div class="det-field"><label>Kaution</label><span>${fmtEur(kautionSaldo(_kd))} <span style="font-size:10px;color:${_si.farbe}">· ${_ai.label.split(' (')[0]} · ${_si.label}</span></span></div>`; })():''}
       ${m.telefon?`<div class="det-field"><label>Telefon</label><span><a href="tel:${m.telefon}">${m.telefon}</a></span></div>`:''}
@@ -13536,8 +13572,13 @@ async function saveEditMieter(id) {
   if(document.getElementById('vzHistChk')?.checked){ const vh=vzHistCollect(); if(vh.length) m.vzHistorie=vh; else delete m.vzHistorie; } else { delete m.vzHistorie; }
   m.gesamt  = (parseFloat(document.getElementById('mMiete').value)||0) +
               (parseFloat(document.getElementById('mNk').value)||0) || m.gesamt||'';
-  m.einzug  = einzug ? new Date(einzug).toLocaleDateString('de-DE') : m.einzug;
-  m.auszug  = auszug ? new Date(auszug).toLocaleDateString('de-DE') : '';
+  // Einzug/Auszug: sowohl Anzeige- (de-DE) als auch ISO-Feld pflegen.
+  // Übersicht und Berechnungen lesen einzugISO mit Vorrang – ohne diese Zeile
+  // wurde die Änderung beim nächsten Laden/Sync vom alten einzugISO überschrieben.
+  if(einzug){ m.einzug = new Date(einzug).toLocaleDateString('de-DE'); m.einzugISO = einzug; }
+  else { m.einzug = ''; m.einzugISO = ''; }
+  if(auszug){ m.auszug = new Date(auszug).toLocaleDateString('de-DE'); m.auszugISO = auszug; }
+  else { m.auszug = ''; m.auszugISO = ''; }
   m.kaution = parseFloat(document.getElementById('mKaution').value)||m.kaution||'';
   m.telefon = document.getElementById('mTel').value;
   m.email   = document.getElementById('mEmail').value;
@@ -16738,19 +16779,17 @@ function druckHTML(html){
     rest = rest.replace(/@media[^{]*\{[\s\S]*?\}\s*\}/gi, m => { atRules += m + '\n'; return ''; });
     rest = rest.replace(/@page[^{]*\{[\s\S]*?\}/gi, m => { atRules += m + '\n'; return ''; });
 
-    // Alle 'body'-Selektoren der Vorlage auf '#printRoot' umlenken – sowohl im
-    // normalen Regelteil ALS AUCH in den herausgelösten @media/@page-Regeln,
-    // sonst wirken Vorlagen-body-Regeln beim Druck auf die App-Seite.
+    // Alle 'body'-Selektoren der Vorlage auf '#printRoot' umlenken – im normalen
+    // Regelteil UND in den herausgelösten @media/@page-Regeln (auch direkt nach '{').
     const bodyToRoot = css => css.replace(/(^|,|\}|\{)\s*body\b/gi, '$1 #printRoot');
     rest    = bodyToRoot(rest);
     atRules = bodyToRoot(atRules);
 
-    // WICHTIG (Fix weiße Seite/PDF auf Samsung-PWA): Die Layout-Styles der Vorlage
-    // (.page, .bk-box, Spaltenbreiten …) müssen IMMER auf #printRoot wirken, nicht
-    // nur in @media print. Samsung-WebView wertet in @media print verschachtelte
-    // Klassenregeln beim PDF-/Vorschau-Rendering unzuverlässig aus -> leere Seite.
-    // Da #printRoot außerhalb des Drucks ohnehin display:none ist (siehe globales
-    // CSS), beeinflussen diese Regeln die App-Oberfläche nicht.
+    // Fix weiße Seite/PDF (Samsung-PWA): Layout-Styles der Vorlage (.page, .bk-box,
+    // Spaltenbreiten …) IMMER auf #printRoot wirken lassen, nicht nur in @media print.
+    // Samsung-WebView wertet in @media print verschachtelte Klassenregeln beim
+    // PDF-/Vorschau-Rendering unzuverlässig aus -> leere Seite. #printRoot ist
+    // außerhalb des Drucks ohnehin display:none, beeinflusst die App also nicht.
     root.innerHTML = '<style>'+atRules+'\n'+rest+'</style>'+body;
 
     document.body.classList.add('printing-active');
