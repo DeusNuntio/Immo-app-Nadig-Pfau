@@ -736,7 +736,7 @@ body.printing-active #printRoot{display:block!important}
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=21;
-const APP_VERSION = '2026-06-16-v83';
+const APP_VERSION = '2026-06-17-v84';
 let idb=null;
 
 function openIDB(){
@@ -898,6 +898,95 @@ const OBJ_MAP={
 };
 const getObj=id=>OBJEKTE.find(o=>o.id===id);
 const GRUPPE_LABEL={duesseldorf:'Düsseldorf',mg:'Mönchengladbach',krefeld:'Krefeld',monheim:'Monheim am Rhein'};
+
+/* ═══════════════════════════════════════════════════════════
+   MIETVERTRAG-GENERATOR – Datenbasis (v84)
+   Heizungsvarianten (§6) und NK-Verteilerschlüssel (§3).
+   Werte werden je Wohnung in objekt_stamm (wohnungen_<objektId>)
+   vorbelegt, sind aber im MV-Formular und in den Wohnungs-
+   Stammdaten übersteuerbar. KEIN neuer Store – DB_VER bleibt 21.
+═══════════════════════════════════════════════════════════ */
+// Heizungsvariante:
+//  A = Heizung + Warmwasser zentral            (Krefeld)
+//  B = Heizung zentral, Warmwasser dezentral   (RT, MIN, MG-Standard)
+//  C = Heizung + Warmwasser dezentral          (MG WE 8, WE 13)
+const MV_HEIZ_VARIANTEN = {
+  A: {key:'A', label:'A – Heizung & Warmwasser zentral',         block:'HEIZ_ZENTRAL_VOLL', heizVorschuss:true},
+  B: {key:'B', label:'B – Heizung zentral, Warmwasser dezentral', block:'HEIZ_ZENTRAL_DLE',  heizVorschuss:true},
+  C: {key:'C', label:'C – Heizung & Warmwasser dezentral',        block:'HEIZ_DEZENTRAL',    heizVorschuss:false},
+};
+// Standard-Heizungsvariante je Objekt (Gruppe). Sonderfälle je WE überschreiben.
+function mvHeizVarianteStandard(objektId, weNr){
+  const obj = getObj(objektId);
+  const g = (obj?.gruppe||'').toLowerCase();
+  // MG-Sonderfälle: WE 8 und WE 13 = Variante C (Etagentherme + Durchlauferhitzer)
+  if(g==='mg'){
+    const we = String(weNr||'').trim();
+    if(we==='8' || we==='13') return 'C';
+    return 'B';
+  }
+  if(g==='krefeld') return 'A';
+  // duesseldorf (RT/MIN), monheim u. a. -> Variante B
+  return 'B';
+}
+
+// NK-Verteilerschlüssel je Objektgruppe. Pro Kostenart ein Schlüssel.
+// Schlüssel-Codes: 'personen' | 'we' | 'm2' | 'hkvo'
+const MV_NK_SCHLUESSEL_LABEL = {
+  personen:'nach Personen',
+  we:'je Wohneinheit',
+  m2:'nach Wohnfläche (m²)',
+  hkvo:'nach Heizkostenverordnung',
+};
+const MV_NK_KOSTENARTEN = [
+  {key:'wasser',  label:'Wasser / Abwasser'},
+  {key:'muell',   label:'Müllbeseitigung'},
+  {key:'treppe',  label:'Treppenhausreinigung'},
+  {key:'heizung', label:'Heizung / Warmwasser'},
+  {key:'rest',    label:'Übrige Betriebskosten'},
+];
+// Vorbelegung je Gruppe (finaler Stand laut Vorgabe).
+const MV_NK_STANDARD = {
+  // RT / Mindener / MG: Wasser+Müll nach Personen, Treppe je WE, Rest m²
+  duesseldorf:{wasser:'personen', muell:'personen', treppe:'we', heizung:'hkvo', rest:'m2'},
+  mg:         {wasser:'personen', muell:'personen', treppe:'we', heizung:'hkvo', rest:'m2'},
+  // Krefeld: alles m², Heizung HKVO
+  krefeld:    {wasser:'m2',       muell:'m2',       treppe:'m2', heizung:'hkvo', rest:'m2'},
+  // Monheim u. a. -> wie Düsseldorf
+  monheim:    {wasser:'personen', muell:'personen', treppe:'we', heizung:'hkvo', rest:'m2'},
+};
+function mvNkSchluesselStandard(objektId){
+  const obj = getObj(objektId);
+  const g = (obj?.gruppe||'').toLowerCase();
+  return {...(MV_NK_STANDARD[g] || MV_NK_STANDARD['duesseldorf'])};
+}
+// NK-Schlüssel einer Wohnung ermitteln: gespeicherter Wohnungswert > Objektstandard
+async function mvNkSchluesselFuer(objektId, weNr){
+  const std = mvNkSchluesselStandard(objektId);
+  try{
+    const w = await getWohnungStamm(objektId, weNr);
+    if(w && w.nkSchluessel && typeof w.nkSchluessel==='object'){
+      return {...std, ...w.nkSchluessel};
+    }
+  }catch(_){}
+  return std;
+}
+// Heizungsvariante einer Wohnung: gespeicherter Wohnungswert > Standard
+async function mvHeizVarianteFuer(objektId, weNr){
+  try{
+    const w = await getWohnungStamm(objektId, weNr);
+    if(w && (w.heizVariante==='A'||w.heizVariante==='B'||w.heizVariante==='C')) return w.heizVariante;
+  }catch(_){}
+  return mvHeizVarianteStandard(objektId, weNr);
+}
+// NK-Schlüssel-Objekt -> Vertragssatz für {{NK_VERTEILUNG}}
+function mvNkVerteilungSatz(schl){
+  return MV_NK_KOSTENARTEN.map(ka=>{
+    const code = schl[ka.key] || 'm2';
+    return ka.label + ' ' + (MV_NK_SCHLUESSEL_LABEL[code]||code);
+  }).join('; ') + '.';
+}
+
 
 /* ═══════════════════════════════════════════════════════════
    AUTH STATE
@@ -1454,6 +1543,7 @@ async function renderInteressenten(el, objektId){
         <button class="btn btn-sm" onclick="modalInteressentDetail('${k.id}')"><i class="ti ti-eye"></i> Details</button>
         <button class="btn btn-sm" onclick="modalInteressentNeu('${k.objektId||''}','${k.id}')"><i class="ti ti-pencil"></i> Bearbeiten</button>
         ${k.status!=='uebernommen'?`<button class="btn btn-sm btn-copper" onclick="interessentZuMieter('${k.id}')"><i class="ti ti-user-check"></i> Als Mieter übernehmen</button>`:''}
+      ${k.status!=='uebernommen'?`<button class="btn btn-sm btn-copper" onclick="mvStartAusInteressent('${k.id}')"><i class="ti ti-file-text"></i> Mietvertrag erstellen</button>`:''}
         <button class="btn btn-sm btn-danger" onclick="deleteInteressent('${k.id}')"><i class="ti ti-trash"></i></button>
       </div>
     </div>`;
@@ -1628,6 +1718,7 @@ async function modalInteressentDetail(id){
     <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:14px">
       <button class="btn btn-sm" onclick="modalInteressentNeu('${k.objektId||''}','${k.id}')"><i class="ti ti-pencil"></i> Bearbeiten</button>
       ${k.status!=='uebernommen'?`<button class="btn btn-sm btn-copper" onclick="interessentZuMieter('${k.id}')"><i class="ti ti-user-check"></i> Als Mieter übernehmen</button>`:''}
+      ${k.status!=='uebernommen'?`<button class="btn btn-sm btn-copper" onclick="mvStartAusInteressent('${k.id}')"><i class="ti ti-file-text"></i> Mietvertrag erstellen</button>`:''}
       <button class="btn btn-full" style="margin-top:4px" onclick="closeModal()">Schließen</button>
     </div>`);
 }
@@ -7396,6 +7487,7 @@ async function showMieter(id){
     <button class="btn btn-sm" onclick="modalWohnungGrundriss('${m.objektId}','${esc(String(m.weNr||''))}')"><i class="ti ti-map"></i> Grundriss</button>
     <button class="btn btn-sm" onclick="modalWohnungsbilder('${m.objektId}','${esc(String(m.weNr||''))}')"><i class="ti ti-photo-scan"></i> Bilder</button>
     ${CU?.role==='admin'?`<button class="btn btn-sm" onclick="modalSchluessel('${m.objektId}','${esc(String(m.weNr||''))}')"><i class="ti ti-key"></i> Schlüssel</button>`:''}
+    ${CU?.role==='admin'?`<button class="btn btn-sm" onclick="modalWohnungHeizNk('${m.objektId}','${esc(String(m.weNr||''))}')"><i class="ti ti-temperature"></i> Heizung & NK</button>`:''}
     <button class="btn btn-sm" onclick="druckeWohnungsgeberBescheinigung('${m.id}')"><i class="ti ti-file-certificate"></i> WGB</button>
     ${CU?.role==='admin'?`<button class="btn btn-sm" onclick="modalMietbescheinigung('${m.id}')"><i class="ti ti-receipt-2"></i> Mietbescheinigung</button>`:''}
     <button class="btn btn-sm" onclick="modalBrief('${m.id}','${m.objektId}')"><i class="ti ti-mail"></i> Brief</button>
@@ -10834,6 +10926,872 @@ async function saveWohnungStamm(objektId, weNr, daten){
   await idbPut('objekt_stamm',rec);
   clearTimeout(window._syncTimer);
   window._syncTimer=setTimeout(()=>syncToOneDrive(),2500);
+}
+
+/* ── Wohnungs-Stammdaten: Heizungsvariante (§6) & NK-Schlüssel (§3) ──
+   Diese Daten überdauern Mieterwechsel und liefern die Vorbelegung
+   für den Mietvertrag-Generator. Standard kommt aus dem Code-Mapping,
+   gespeicherte Werte überschreiben ihn je Wohnung. */
+async function modalWohnungHeizNk(objektId, weNr){
+  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  const obj = getObj(objektId);
+  const w   = await getWohnungStamm(objektId, weNr);
+  const stdHeiz = mvHeizVarianteStandard(objektId, weNr);
+  const curHeiz = (w.heizVariante==='A'||w.heizVariante==='B'||w.heizVariante==='C') ? w.heizVariante : '';
+  const stdNk   = mvNkSchluesselStandard(objektId);
+  const curNk   = (w.nkSchluessel && typeof w.nkSchluessel==='object') ? w.nkSchluessel : {};
+
+  const heizOpts = Object.values(MV_HEIZ_VARIANTEN).map(v=>
+    `<option value="${v.key}" ${curHeiz===v.key?'selected':''}>${v.label}</option>`).join('');
+
+  const nkRows = MV_NK_KOSTENARTEN.map(ka=>{
+    const eff = curNk[ka.key] || stdNk[ka.key];
+    const opts = Object.keys(MV_NK_SCHLUESSEL_LABEL).map(code=>
+      `<option value="${code}" ${eff===code?'selected':''}>${MV_NK_SCHLUESSEL_LABEL[code]}</option>`).join('');
+    return `<div class="f-row" style="align-items:center;margin-bottom:4px">
+      <div style="flex:1;font-size:12px;color:var(--ink-60)">${ka.label}</div>
+      <div class="f" style="flex:1;margin:0"><select id="whnk_${ka.key}">${opts}</select></div>
+    </div>`;
+  }).join('');
+
+  showModal(`
+    <div class="m-title"><i class="ti ti-temperature"></i> Heizung & NK – ${esc(obj?.name||'')} · WE ${esc(String(weNr||''))}</div>
+    <div style="font-size:11px;color:var(--ink-40);margin-bottom:10px;line-height:1.5">
+      Diese Angaben gelten dauerhaft für die Wohnung und liefern die Vorbelegung für den Mietvertrag.
+      Leer = Objektstandard wird verwendet.</div>
+
+    <div class="f-section-title"><i class="ti ti-flame"></i> Heizungsvariante (§ 6)</div>
+    <div class="f"><label>Variante (Standard für ${esc(obj?.name||'')}: ${MV_HEIZ_VARIANTEN[stdHeiz].label})</label>
+      <select id="whHeiz">
+        <option value="">– Objektstandard (${stdHeiz}) –</option>
+        ${heizOpts}
+      </select>
+      <div style="font-size:10px;color:var(--ink-40);margin-top:3px">Bei Variante C (voll dezentral) entfällt die Heizkostenvorschuss-Zeile im Vertrag.</div>
+    </div>
+
+    <div class="f-section-title" style="margin-top:12px"><i class="ti ti-receipt"></i> NK-Verteilerschlüssel (§ 3)</div>
+    ${nkRows}
+
+    <div class="f-row" style="margin-top:14px">
+      <button class="btn btn-copper btn-full" onclick="saveWohnungHeizNk('${objektId}','${esc(String(weNr||''))}')"><i class="ti ti-check"></i> Speichern</button>
+      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+    </div>`);
+}
+
+async function saveWohnungHeizNk(objektId, weNr){
+  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  const heiz = document.getElementById('whHeiz')?.value || '';
+  const nk = {};
+  MV_NK_KOSTENARTEN.forEach(ka=>{
+    const v = document.getElementById('whnk_'+ka.key)?.value || '';
+    if(v) nk[ka.key]=v;
+  });
+  const daten = { nkSchluessel: nk };
+  if(heiz==='A'||heiz==='B'||heiz==='C') daten.heizVariante = heiz;
+  else daten.heizVariante = '';   // zurück auf Standard
+  await saveWohnungStamm(objektId, weNr, daten);
+  closeModal();
+  toast('Wohnungsdaten gespeichert ✓');
+}
+
+// ═══════════════════════════════════════════════════════════
+//  MIETVERTRAG-GENERATOR – Vertrags-HTML (v84)
+//  Erzeugt den druckbaren Wohnraum-Mietvertrag (3 Seiten, A4).
+//  WICHTIG: § 126 BGB – KEINE digitale/gescannte Unterschrift.
+//  Es werden ausschließlich leere Unterschriftslinien gedruckt.
+// ═══════════════════════════════════════════════════════════
+function mvEsc(s){ return esc(String(s==null?'':s)); }
+function mvEur(v){
+  const n = parseFloat(String(v==null?'':v).toString().replace(',','.'));
+  if(!isFinite(n) || v==='' || v==null) return '__________';
+  return n.toLocaleString('de-DE',{minimumFractionDigits:2, maximumFractionDigits:2});
+}
+function mvLine(v, len){ const s=(v==null?'':String(v)).trim(); return s? mvEsc(s) : '_'.repeat(len||24); }
+
+// d = vollständig aufbereitetes Datenobjekt (siehe mvSammleDaten)
+function mvVertragHTML(d){
+  const heizVar = MV_HEIZ_VARIANTEN[d.heizVariante] || MV_HEIZ_VARIANTEN.B;
+  const zeigeHeizVorschuss = heizVar.heizVorschuss !== false;
+
+  // § 2 Kündigungsverzicht (optional)
+  const kuendBlock = d.kuendigungsverzicht && d.kuendigungsverzichtText
+    ? '<p>' + mvEsc(d.kuendigungsverzichtText) + '</p>' : '';
+
+  // § 3 Vorschusszeilen + Gesamt
+  let zeilenMiete = '';
+  zeilenMiete += '<div class="mv-row"><span>Nettokaltmiete (ohne Betriebskosten, Heizung, Warmwasser):</span><b>' + mvEur(d.kaltmiete) + ' EUR</b></div>';
+  zeilenMiete += '<div class="mv-row"><span>Betriebskostenvorauszahlung (§ 556 Abs. 2 BGB):</span><b>' + mvEur(d.nkVorschuss) + ' EUR</b></div>';
+  if(zeigeHeizVorschuss){
+    zeilenMiete += '<div class="mv-row"><span>Vorauszahlung Heizung/Warmwasser (§ 6):</span><b>' + mvEur(d.heizVorschuss) + ' EUR</b></div>';
+  }
+  zeilenMiete += '<div class="mv-row mv-sum"><span>Monatliche Gesamtzahlung zurzeit:</span><b>' + mvEur(d.gesamtMiete) + ' EUR</b></div>';
+
+  // § 6 Heizungstext nach Variante
+  let heizText = '';
+  if(d.heizVariante==='A'){
+    heizText =
+      '<p>1. Die vorhandene Sammelheizung wird in der Heizperiode (mindestens 1.10.–30.4.) betrieben, soweit die Außentemperatur es erfordert; Richtwert sind 20–22 °C in der Zeit von 7 bis 22 Uhr. Außerhalb der Heizperiode wird nach Bedarf geheizt; Wartungsarbeiten in den Sommermonaten sind möglich.</p>'
+      + '<p>2. Die zentrale Warmwasserversorgung hält an den Zapfstellen eine Durchschnittstemperatur von mindestens 40 °C ein. Vom Vermieter nicht zu vertretende Betriebsunterbrechungen begründen keine Schadensersatzansprüche.</p>'
+      + '<p>3. Die Kosten von Heizung und Warmwasser werden nach der Heizkostenverordnung abgerechnet; der verbrauchsabhängige Anteil beträgt 70 v. H. Vorauszahlungen werden nach Schluss der Heizperiode abgerechnet.</p>';
+  } else if(d.heizVariante==='C'){
+    heizText =
+      '<p>1. Heizung und Warmwasser werden dezentral in der Wohnung erzeugt: die Beheizung über eine Etagentherme (Gasthermenheizung), die Warmwasserbereitung über einen Durchlauferhitzer.</p>'
+      + '<p>2. Sämtliche Betriebs-, Verbrauchs-, Wartungs- und Reinigungskosten dieser Geräte trägt der Mieter unmittelbar. Die Wartung ist jährlich auf Kosten des Mieters durch eine Fachfirma durchzuführen und dem Vermieter auf Verlangen nachzuweisen. Eine zentrale Heizkostenabrechnung erfolgt nicht.</p>'
+      + '<p>3. Der Mieter hält die Geräte in betriebssicherem Zustand und sorgt während der Heizperiode für ausreichenden Frostschutz. Vom Vermieter nicht zu vertretende Betriebsunterbrechungen begründen keine Schadensersatzansprüche.</p>';
+  } else { // B
+    heizText =
+      '<p>1. Die vorhandene Sammelheizung wird in der Heizperiode (mindestens 1.10.–30.4.) betrieben, soweit die Außentemperatur es erfordert; Richtwert sind 20–22 °C in der Zeit von 7 bis 22 Uhr. Die Heizkosten werden nach der Heizkostenverordnung abgerechnet (verbrauchsabhängiger Anteil 70 v. H.).</p>'
+      + '<p>2. Die Warmwasserbereitung erfolgt dezentral über einen Durchlauferhitzer in der Wohnung. Die Kosten des hierfür verbrauchten Stroms bzw. Gases sowie die Wartung und Reinigung des Geräts trägt der Mieter unmittelbar; eine Umlage über die Betriebskosten findet insoweit nicht statt.</p>';
+  }
+
+  // § 7 Schönheitsreparaturen nach Zustand
+  let srText = '';
+  if(d.uebergabeModus==='renoviert'){
+    srText = '<p>2. Die Wohnung wird renoviert übergeben. Die während der Mietzeit erforderlich werdenden Schönheitsreparaturen (Streichen von Wänden, Decken und Innentüren, Lackieren von Heizkörpern und Holzteilen) übernimmt der Mieter fachgerecht nach dem tatsächlichen Bedarf; starre Fristen bestehen nicht. Eine Verpflichtung zur Endrenovierung unabhängig vom Abnutzungsgrad besteht nicht.</p>';
+  } else if(d.uebergabeModus==='unren_ausgleich'){
+    srText = '<p>2. Die Wohnung wird unrenoviert übergeben. Als angemessener Ausgleich für die Übernahme der Schönheitsreparaturen wird vereinbart: ' + mvEsc(d.ausgleichText||'__________') + '. Gegen diesen Ausgleich übernimmt der Mieter die nach dem tatsächlichen Bedarf erforderlichen Schönheitsreparaturen fachgerecht; starre Fristen und eine Endrenovierungspflicht bestehen nicht.</p>';
+  } else { // unren_ohne (Default sicherheitshalber)
+    srText = '<p>2. Die Wohnung wird unrenoviert übergeben. Schönheitsreparaturen werden nicht auf den Mieter übertragen; sie verbleiben gemäß § 535 Abs. 1 BGB beim Vermieter. Bei Auszug ist die Wohnung lediglich besenrein und im vertragsgemäßen Gebrauchszustand zurückzugeben.</p>';
+  }
+
+  // § 14 Mietanpassung (optional)
+  let para14 = '';
+  if(d.mietanpassung==='staffel'){
+    para14 = '<h3>§ 14 Mietanpassung</h3><p>Es wird eine Staffelmiete vereinbart: ' + mvEsc(d.staffelText||'__________') + '. Die jeweilige Miete gilt jeweils mindestens ein Jahr. Eine Erhöhung nach § 558 BGB ist während der Staffelung ausgeschlossen.</p>';
+  } else if(d.mietanpassung==='index'){
+    para14 = '<h3>§ 14 Mietanpassung</h3><p>Die Miete wird als Indexmiete vereinbart und durch den vom Statistischen Bundesamt ermittelten Verbraucherpreisindex für Deutschland bestimmt. Die Miete bleibt jeweils mindestens ein Jahr unverändert. Eine Erhöhung nach § 558 BGB ist ausgeschlossen; die Kappungsgrenze gilt nicht. Anpassungen macht der Vermieter in Textform unter Angabe der Indexänderung und des neuen Betrags geltend.</p>';
+  }
+
+  // § 15 Mietpreisbremse (optional)
+  let para15 = '';
+  if(d.mietpreisbremse){
+    para15 = '<h3>§ 15 Vormieten- und Ausnahmeauskunft (Mietpreisbremse)</h3><p>Die Wohnung liegt in einem Gebiet mit Mietpreisbegrenzung (§§ 556d ff. BGB). Auskunft des Vermieters: ' + mvEsc(d.mpbAuskunft||'__________') + '.</p>';
+  }
+
+  // § 16 Sonstige Vereinbarungen
+  let para16 = '<h3>§ 16 Sonstige Vereinbarungen</h3>';
+  let nrS = 1;
+  if(d.garten){ para16 += '<p>'+(nrS++)+'. Gartennutzung: ' + mvEsc(d.gartenText||'zur alleinigen Nutzung') + '. Die Pflege obliegt den nutzenden Mietern.</p>'; }
+  if(d.dielen){ para16 += '<p>'+(nrS++)+'. Der originale Holzdielen-/Parkettboden sowie originale Türen werden im vorhandenen Zustand übernommen und berechtigen nicht zu Reklamationen.</p>'; }
+  if(d.sonstigesText){ para16 += '<p>'+(nrS++)+'. Weitere Vereinbarungen: ' + mvEsc(d.sonstigesText) + '.</p>'; }
+  if(nrS===1){ para16 += '<p>1. Weitere Vereinbarungen wurden nicht getroffen.</p>'; }
+
+  // Mieterzeile zusammensetzen
+  const mieter2 = d.mieter2Name ? ('sowie ' + mvEsc(d.mieter2Name)) : '';
+  const mieterWeitere = d.mieterWeitere ? (' ' + mvEsc(d.mieterWeitere)) : '';
+
+  // Anlagen-Checkboxen
+  const anl = d.anlagen || {};
+  const cb = (on,label)=> '<div class="mv-anl">' + (on?'☑':'☐') + ' ' + label + '</div>';
+
+  const STYLE = `
+    <style>
+      @page { size:A4; margin:14mm 15mm; }
+      * { box-sizing:border-box; }
+      body { font-family:'Segoe UI',Arial,sans-serif; font-size:9.3pt; line-height:1.34; color:#1a1a1a; margin:0; }
+      .mv-kopf { font-size:8pt; color:#444; border-bottom:2px solid #1F4E79; padding-bottom:5px; margin-bottom:10px; }
+      .mv-kopf b { color:#1F4E79; font-size:9pt; }
+      h1 { font-size:15pt; color:#1F4E79; text-align:center; margin:4px 0 2px; letter-spacing:.5px; }
+      .mv-hint { font-size:7.6pt; color:#666; text-align:center; font-style:italic; margin-bottom:8px; }
+      h2 { font-size:10.5pt; color:#1F4E79; margin:9px 0 3px; border-bottom:1px solid #c8d4e0; padding-bottom:1px; }
+      h3 { font-size:9.6pt; color:#23476b; margin:7px 0 2px; }
+      p { margin:2px 0; text-align:justify; }
+      .mv-row { display:flex; justify-content:space-between; gap:10px; margin:1px 0; }
+      .mv-row b { white-space:nowrap; }
+      .mv-sum { border-top:1px solid #999; margin-top:3px; padding-top:2px; font-weight:600; }
+      .mv-anl { margin:1px 0; font-size:9pt; }
+      .mv-foot { position:fixed; bottom:6mm; left:0; right:0; text-align:center; font-size:7.4pt; color:#888; }
+      .mv-sig { margin-top:16px; }
+      .mv-sigrow { display:flex; gap:40px; margin-top:26px; }
+      .mv-sigline { flex:1; border-top:1px solid #333; padding-top:3px; font-size:8pt; color:#555; }
+      .mv-pb { page-break-before:always; }
+      .mv-box { background:#f4f7fb; border:1px solid #d4e0ec; border-radius:4px; padding:6px 9px; margin:4px 0; }
+    </style>`;
+
+  let h = '<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8"><title>Wohnraum-Mietvertrag</title>' + STYLE + '</head><body>';
+
+  // Briefkopf
+  h += '<div class="mv-kopf"><b>' + mvEsc(d.briefkopfName) + '</b><br>' + mvEsc(d.briefkopfAnschrift) + '<br>' + mvEsc(d.briefkopfKontakt) + '</div>';
+  h += '<h1>WOHNRAUM-MIETVERTRAG</h1>';
+  h += '<div class="mv-hint">Nichtzutreffende Teile sind zu streichen, freie Stellen auszufüllen. Alle aufgeführten Mietparteien unterzeichnen eigenhändig.</div>';
+
+  // Vertragsparteien
+  h += '<h2>Vertragsparteien</h2>';
+  h += '<p>Zwischen <b>' + mvEsc(d.vermieterName) + '</b>, ' + mvEsc(d.vermieterAnschrift) + ' – nachfolgend „Vermieter" –'
+     + (d.vermieterVertreter ? ', vertreten durch ' + mvEsc(d.vermieterVertreter) : '') + '</p>';
+  h += '<p>und <b>' + mvEsc(d.mieter1Name) + '</b>, geb. ' + mvLine(d.mieter1Gebdat,12) + ', derzeit wohnhaft ' + mvLine(d.mieter1Anschrift,30)
+     + ' ' + mieter2 + mieterWeitere + ' – nachfolgend gemeinsam „Mieter" –</p>';
+  h += '<p>wird folgender Mietvertrag geschlossen:</p>';
+
+  // § 1
+  h += '<h2>§ 1 Mieträume</h2>';
+  h += '<p>1. Vermietet werden im Haus ' + mvEsc(d.objektAnschrift) + ', ' + mvEsc(d.weBezeichnung) + ' (' + mvEsc(d.etageLage) + '). Räume: ' + mvEsc(d.raeume||'__________') + '. Wohnfläche: ca. ' + mvEsc(d.wohnflaeche||'____') + ' m². Die Flächenangabe dient wegen möglicher Messtoleranzen nicht der Festlegung des Mietgegenstandes; maßgeblich ist der Umfang der vermieteten Räume.</p>';
+  h += '<p>2. Mitbenutzung: ' + mvEsc(d.mitbenutzung||'gemeinschaftliche Flächen nach Maßgabe der Hausordnung') + '. Zur Wohnung gehört ' + mvEsc(d.kellerBoden||'ein Kellerabteil') + '.</p>';
+  h += '<p>3. Bei Übergabe ausgehändigte Schlüssel: ' + mvEsc(d.schluessel||'__________') + '. Weitere Schlüssel nur mit Einwilligung des Vermieters; die Anfertigung erfolgt auf Kosten des Mieters.</p>';
+  h += '<p>4. Die Mieträume dienen ausschließlich Wohnzwecken. Anzahl einziehender Personen: ' + mvEsc(d.personenzahl||'__') + '. Der Mieter erfüllt seine Meldepflicht (§ 19 BMG); eine Wohnungsgeberbestätigung wird gesondert ausgestellt.</p>';
+
+  // § 2
+  h += '<h2>§ 2 Mietzeit und Kündigung</h2>';
+  h += '<p>1. Das Mietverhältnis beginnt am <b>' + mvLine(d.mietbeginn,12) + '</b> und läuft auf unbestimmte Zeit.</p>';
+  h += kuendBlock;
+  h += '<p>2. Die Kündigung bedarf der Schriftform (§ 568 BGB). Die gesetzlichen Kündigungsfristen des § 573c BGB gelten: für den Mieter drei Monate; für den Vermieter verlängert sich die Frist nach fünf bzw. acht Jahren der Überlassung auf sechs bzw. neun Monate, jeweils zum Monatsende. Die Kündigung des Vermieters ist zu begründen.</p>';
+  h += '<p>3. Das Recht zur außerordentlichen fristlosen Kündigung aus wichtigem Grund (§§ 543, 569 BGB) bleibt unberührt.</p>';
+
+  // § 3
+  h += '<h2>§ 3 Miete und Betriebskostenvorauszahlung</h2>';
+  h += '<div class="mv-box">' + zeilenMiete + '</div>';
+  h += '<p>2. Über die Betriebskosten wird jährlich in Textform abgerechnet. Umlagefähig sind die Kosten im Sinne des § 2 BetrKV, insbesondere: öffentliche Lasten, Wasserversorgung und Entwässerung, Straßenreinigung und Müllbeseitigung, Gebäudereinigung und Ungezieferbekämpfung, Gartenpflege, Beleuchtung, Schornsteinreinigung, Sach- und Haftpflichtversicherung, Hauswart, Aufzug (soweit vorhanden), Wäschepflegeeinrichtungen sowie sonstige Betriebskosten (Wartung und Prüfung technischer Anlagen, Rauchwarnmelder, Blitzschutz, Pumpen, Rückstausicherung, Allgemeinstrom, Dachrinnenreinigung u. Ä.).</p>';
+  h += '<p>3. Verteilerschlüssel: ' + mvEsc(d.nkVerteilung) + '</p>';
+  h += '<p>4. Erhöhen sich Betriebskosten oder entstehen neue, kann der Vermieter die Vorauszahlung nach den gesetzlichen Vorschriften anpassen und dies dem Mieter in Textform mitteilen; ein Saldo ist mit der nächsten Miete auszugleichen.</p>';
+  h += '<p>5. Hinweis: Entgelte für einen Breitband-/Kabelfernsehanschluss sind nicht Bestandteil der Betriebskosten und werden nicht umgelegt (Wegfall des Nebenkostenprivilegs, § 2 Nr. 15 BetrKV, seit 01.07.2024). Der Mieter schließt einen etwaigen TV-/Internetvertrag selbst ab.</p>';
+
+  // § 4
+  h += '<h2>§ 4 Zahlung</h2>';
+  h += '<p>1. Miete und Vorauszahlungen sind monatlich im Voraus, spätestens am dritten Werktag des Monats, kostenfrei auf das nachstehende Konto zu zahlen. Für die Rechtzeitigkeit kommt es auf den Zahlungseingang an.</p>';
+  h += '<div class="mv-box">Zahlungsempfänger / Konto: ' + mvEsc(d.bankZeile||'__________') + '</div>';
+  h += '<p>2. Der Mieter wird gebeten, ein SEPA-Lastschriftmandat zu erteilen. Bei Kontowechsel ist ein neues Mandat zu erteilen.</p>';
+
+  // § 5
+  h += '<h2>§ 5 Kaution</h2>';
+  h += '<p>1. Der Mieter leistet eine Mietsicherheit von <b>' + mvEur(d.kautionBetrag) + ' EUR</b> (höchstens drei Nettokaltmieten, § 551 BGB).</p>';
+  h += '<p>2. Die Sicherheit kann in bis zu drei gleichen Monatsraten erbracht werden; die erste Rate ist zu Mietbeginn fällig. Der Vermieter legt die Kaution insolvenzfest und getrennt vom eigenen Vermögen zum üblichen Zinssatz an; die Zinsen stehen dem Mieter zu.</p>';
+  h += '<p>3. Der Mieter weist innerhalb von vier Wochen nach Einzug eine Privathaftpflichtversicherung nach.</p>';
+
+  // § 6
+  h += '<h2>§ 6 Heizung und Warmwasser</h2>' + heizText;
+
+  // Seitenumbruch vor § 7 (analog Vorlage)
+  h += '<div class="mv-pb"></div>';
+
+  // § 7
+  h += '<h2>§ 7 Zustand, Übergabe und Schönheitsreparaturen</h2>';
+  h += '<p>1. Übergabezustand: ' + mvEsc(d.uebergabeLabel) + '. Der Zustand wird in einem Übergabeprotokoll dokumentiert.</p>';
+  h += srText;
+  h += '<p>3. Die Haftung des Vermieters für Mängel richtet sich nach den gesetzlichen Vorschriften (§§ 536 ff. BGB).</p>';
+  h += '<p>4. Die Übergabe erfolgt, sofern nichts anderes vereinbart ist, bei Zahlung der ersten Miete.</p>';
+
+  // § 8
+  h += '<h2>§ 8 Nutzung, Untervermietung, Tierhaltung</h2>';
+  h += '<p>1. Eine andere als die Wohnnutzung sowie die Untervermietung oder Gebrauchsüberlassung an Dritte (auch kurzzeitig, etwa über Vermietungsplattformen) bedarf der vorherigen Erlaubnis des Vermieters. § 553 BGB bleibt unberührt.</p>';
+  h += '<p>2. Kleintierhaltung (z. B. Zierfische, Ziervögel, Hamster) ist erlaubt. Die Haltung sonstiger Tiere bedarf der Zustimmung des Vermieters, die nur aus sachlichem Grund verweigert wird. Der vorübergehende Aufenthalt von Tieren bis ' + mvEsc(d.tierTage||'3') + ' Tagen ist zustimmungsfrei. Der Mieter haftet für Tierschäden.</p>';
+  h += '<p>3. Das dauerhafte oder vorübergehende Abstellen von Gegenständen außerhalb der Mieträume, insbesondere in Fluren und im Treppenhaus, ist aus Brandschutzgründen unzulässig.</p>';
+
+  // § 9
+  h += '<h2>§ 9 Instandhaltung und Kleinreparaturen</h2>';
+  h += '<p>1. Mängel oder Gefahren sind dem Vermieter unverzüglich anzuzeigen. Der Mieter behandelt die Einrichtungen pfleglich und haftet für schuldhaft verursachte Schäden, auch durch Haushaltsangehörige, Besucher und Beauftragte.</p>';
+  h += '<p>2. Kleinreparaturen an Gegenständen des häufigen Zugriffs (Elektrik, Wasser, Heizung, Fenster, Türen) trägt der Mieter, wenn der Aufwand im Einzelfall <b>' + mvEur(d.krEinzel) + ' EUR</b> nicht übersteigt. Die jährliche Gesamtbelastung ist auf <b>' + mvEsc(d.krJahr||'7,5') + ' %</b> der Jahresnettokaltmiete begrenzt. Übersteigt eine Reparatur den Einzelbetrag, trägt der Vermieter die gesamten Kosten.</p>';
+  h += '<p>3. Ungezieferbefall ist unverzüglich anzuzeigen; die Kosten der Beseitigung trägt der Mieter nur, soweit er ihn zu vertreten hat.</p>';
+
+  // § 10
+  h += '<h2>§ 10 Bauliche Maßnahmen</h2>';
+  h += '<p>1. Erhaltungs- und notwendige Modernisierungsmaßnahmen hat der Mieter nach Maßgabe der §§ 555a ff. BGB zu dulden; Modernisierungen werden in Textform angekündigt.</p>';
+  h += '<p>2. Bauliche Veränderungen durch den Mieter (Installationen, Markisen, Außenjalousien, Feuerstätten) bedürfen der vorherigen Zustimmung des Vermieters; etwa erforderliche behördliche Genehmigungen holt der Mieter ein. Dem Vermieter dürfen keine Kosten entstehen.</p>';
+
+  // § 11
+  h += '<h2>§ 11 Rauchwarnmelder, Versorgung, Betreten</h2>';
+  h += '<p>1. Die Wohnung ist mit Rauchwarnmeldern ausgestattet (§ 47 BauO NRW). Wartung und Funktionsprüfung sind zu dulden; vom Mieter angebrachte Gegenstände dürfen die Funktion nicht beeinträchtigen.</p>';
+  h += '<p>2. Bei Störungen an Versorgungsleitungen sorgt der Mieter für sofortige Abschaltung und benachrichtigt den Vermieter. Wasser ist nur für den eigenen Bedarf zu entnehmen.</p>';
+  h += '<p>3. Der Vermieter darf die Räume nach rechtzeitiger Ankündigung zu angemessener Tageszeit besichtigen; bei Gefahr im Verzug ist der Zutritt jederzeit gestattet. Bei Verkaufs- oder Wiedervermietungsabsicht ist die Besichtigung mit Interessenten in angemessenem Umfang zu dulden.</p>';
+
+  // § 12
+  h += '<h2>§ 12 Rückgabe</h2>';
+  h += '<p>Bei Beendigung sind die Räume mit allen Schlüsseln – auch selbst beschafften – in vertragsgemäßem Zustand zurückzugeben. Vom Mieter eingebrachte Tapeten und Bodenbeläge sind nur zu entfernen, soweit dies die Weitervermietung erheblich beeinträchtigen würde. Werden nicht alle Schlüssel zurückgegeben, haftet der Mieter für den erforderlichen Austausch von Schließanlagen, es sei denn, er hat den Verlust nicht zu vertreten.</p>';
+
+  // § 13
+  h += '<h2>§ 13 Mehrere Personen</h2>';
+  h += '<p>Mehrere Mieter haften als Gesamtschuldner. Erklärungen des Vermieters gegenüber einem Mieter wirken für und gegen alle; die Mieter bevollmächtigen sich insoweit gegenseitig. Entsprechendes gilt für mehrere Vermieter.</p>';
+
+  // § 14 / 15 (optional)
+  h += para14;
+  h += para15;
+
+  // § 16
+  h += para16;
+  h += '<p>4. Sollte eine Bestimmung unwirksam sein, bleibt der Vertrag im Übrigen wirksam; an die Stelle der unwirksamen Bestimmung treten die gesetzlichen Vorschriften.</p>';
+  h += '<p>5. Vertragsänderungen bedürfen der Schriftform. Eine darüber hinausgehende Form für sonstige Erklärungen wird nicht verlangt; hierfür genügt die Textform (§ 126b BGB).</p>';
+
+  // Seitenumbruch vor Anlagen/Unterschriften
+  h += '<div class="mv-pb"></div>';
+
+  // Anlagen
+  h += '<h2>Anlagen und Hinweise</h2>';
+  h += '<p>Folgende Anlagen sind Bestandteil dieses Vertrages (Zutreffendes ist angekreuzt):</p>';
+  h += cb(anl.hausordnung, 'Hausordnung');
+  h += cb(anl.merkblatt,   'Merkblatt „Richtig heizen und lüften"');
+  h += cb(anl.wgb,         'Wohnungsgeberbestätigung (§ 19 BMG)');
+  h += cb(anl.dsgvo,       'Datenschutzhinweis nach Art. 13 DSGVO');
+  h += cb(anl.energie,     'Energieausweis bzw. Pflichtangaben (§ 80 GEG)');
+  h += cb(anl.sepa,        'SEPA-Lastschriftmandat');
+  h += '<p style="margin-top:6px">Energieausweis vorgelegt: ' + mvEsc(d.energieausweis||'nein') + ' (' + mvEsc(d.energieKennwerte||'Kennwerte siehe Anlage') + ').</p>';
+  h += '<p>Das Übergabeprotokoll wird bei Wohnungsübergabe gesondert erstellt und unterzeichnet.</p>';
+
+  // Unterschriften – KEINE digitale Signatur
+  h += '<div class="mv-sig"><p><b>Dieser Vertrag wird in Schriftform geschlossen und von allen Parteien eigenhändig unterzeichnet. Eine digitale Unterzeichnung erfolgt nicht.</b></p>';
+  h += '<div class="mv-sigrow"><div class="mv-sigline">Ort, Datum / Vermieter</div><div class="mv-sigline">Mieter</div></div>';
+  h += '<div class="mv-sigrow"><div class="mv-sigline">weiterer Mieter</div><div class="mv-sigline">weiterer Mieter</div></div></div>';
+
+  h += '<div class="mv-foot">Hausverwaltung Nadig / Pfau · Wohnraum-Mietvertrag</div>';
+
+  // Auto-Druck
+  h += '<scr'+'ipt>(function(){var p=function(){setTimeout(function(){window.focus();window.print();},600);};if(document.readyState===\'complete\'){p();}else{window.addEventListener(\'load\',p);}})()</scr'+'ipt>';
+  h += '</body></html>';
+  return h;
+}
+
+// ═══════════════════════════════════════════════════════════
+//  MIETVERTRAG-GENERATOR – Workflow (v84)
+//  Regulierte Gebiete (Mietpreisbremse): Krefeld, Düsseldorf, Monheim.
+// ═══════════════════════════════════════════════════════════
+function mvObjektReguliert(objektId){
+  const g=(getObj(objektId)?.gruppe||'').toLowerCase();
+  return ['krefeld','kr','duesseldorf','dus','monheim'].includes(g);
+}
+
+// Laufender Entwurf des MV-Generators (im Speicher, nicht persistiert bis "Erzeugen")
+let MV_DRAFT = null;
+
+// Schritt 1: Generator aus einem Interessenten/Kandidaten heraus öffnen.
+async function mvStartAusInteressent(interessentId){
+  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  const k = await idbGet('interessenten', interessentId).catch(()=>null);
+  if(!k){ toast('Interessent nicht gefunden'); return; }
+  await mvOeffneGenerator({ quelleInteressentId:interessentId, vorbefuellung:k });
+}
+
+// Generator auch ohne Interessent öffnen (manuell).
+async function mvOeffneGenerator(opts){
+  opts = opts || {};
+  const k = opts.vorbefuellung || {};
+  // Mieterdaten aus Kandidat übernehmen (alle Felder änderbar)
+  MV_DRAFT = {
+    quelleInteressentId: opts.quelleInteressentId || null,
+    // Person 1
+    anrede: k.anrede || 'Herr',
+    mieter1Name: k.name || '',
+    mieter1Gebdat: k.geburtsdatum || '',
+    mieter1Anschrift: k.adresse || '',
+    telefon: k.telefon || '',
+    email: k.email || '',
+    personenzahl: k.personen || '',
+    beruf: k.beruf || '',
+    arbeitgeber: k.arbeitgeber || '',
+    haustiere: !!k.haustiere,
+    raucher: !!k.raucher,
+    // Person 2 / weitere
+    mieter2Name: '',
+    mieterWeitere: '',
+    // Objekt/Wohnung
+    objektId: k.objektId || '',
+    weNr: k.weNr || '',
+    // Defaults
+    mietbeginn: k.mietbeginnISO || '',
+  };
+  await mvRenderGeneratorModal();
+}
+
+// Optionen für WE-Auswahl eines Objekts (aus vorhandenen Mietern + Wohnungsstamm)
+async function mvWeOptionen(objektId, selWe){
+  if(!objektId) return '<option value="">– zuerst Objekt wählen –</option>';
+  const stamm = await ladeWohnungsStamm(objektId).catch(()=>({}));
+  const mieter = await idbGetAll('mieter','objektId',objektId).catch(()=>[]);
+  const set = new Set();
+  Object.keys(stamm||{}).forEach(w=>set.add(String(w)));
+  mieter.forEach(m=>{ if(m.weNr) set.add(String(m.weNr)); });
+  const arr = [...set].filter(x=>x&&x!=='undefined').sort((a,b)=>{
+    const na=Number(a), nb=Number(b);
+    if(isFinite(na)&&isFinite(nb)) return na-nb;
+    return String(a).localeCompare(String(b));
+  });
+  let h = '<option value="">– WE wählen –</option>';
+  arr.forEach(w=>{ h += `<option value="${esc(w)}" ${String(selWe)===String(w)?'selected':''}>WE ${esc(w)}</option>`; });
+  h += `<option value="__neu" ${selWe==='__neu'?'selected':''}>+ neue WE-Nummer</option>`;
+  return h;
+}
+
+// Objektauswahl für Generator (nur sichtbare Objekte)
+function mvObjektOptionen(selId){
+  return OBJEKTE
+    .filter(o=>!o.privat || (o.sichtbarFuer||[]).includes(CU?.id))
+    .map(o=>`<option value="${o.id}" ${selId===o.id?'selected':''}>${esc(o.name)} (${esc(GRUPPE_LABEL[o.gruppe]||o.gruppe)})</option>`)
+    .join('');
+}
+
+async function mvRenderGeneratorModal(){
+  const d = MV_DRAFT;
+  const objOpts = mvObjektOptionen(d.objektId);
+  const weOpts  = await mvWeOptionen(d.objektId, d.weNr);
+  const reguliert = mvObjektReguliert(d.objektId);
+  // Heizungsvariante (auto, übersteuerbar)
+  const heizAuto = d.objektId ? await mvHeizVarianteFuer(d.objektId, d.weNr) : 'B';
+  const heizSel  = d.heizVariante || '';
+  const heizOpts = Object.values(MV_HEIZ_VARIANTEN).map(v=>
+    `<option value="${v.key}" ${heizSel===v.key?'selected':''}>${v.label}</option>`).join('');
+
+  showModal(`
+    <div class="m-title"><i class="ti ti-file-text"></i> Mietvertrag erstellen</div>
+    <div style="font-size:11px;color:var(--ink-40);margin-bottom:8px;line-height:1.5">
+      Alle Felder sind änderbar. Es wird ein PDF zur Prüfung erzeugt und beim Mieter abgelegt.
+      <b>Unterschrift erfolgt ausschließlich handschriftlich auf Papier</b> (§ 126 BGB).
+    </div>
+    <div style="max-height:64vh;overflow-y:auto;padding-right:4px">
+
+      <div class="f-section-title"><i class="ti ti-user"></i> Mieter 1</div>
+      <div class="f-row">
+        <div class="f" style="flex:0 0 90px"><label>Anrede</label>
+          <select id="mvAnrede">
+            ${['Herr','Frau','Divers','Eheleute','Herr und Frau'].map(a=>`<option ${d.anrede===a?'selected':''}>${a}</option>`).join('')}
+          </select></div>
+        <div class="f"><label>Name (Vor- und Nachname)</label>
+          <input type="text" id="mvName1" value="${esc(d.mieter1Name)}"></div>
+      </div>
+      <div class="f-row">
+        <div class="f"><label>Geburtsdatum</label><input type="date" id="mvGeb1" value="${esc(d.mieter1Gebdat)}"></div>
+        <div class="f"><label>Telefon</label><input type="text" id="mvTel" value="${esc(d.telefon)}"></div>
+      </div>
+      <div class="f"><label>Derzeitige Anschrift</label><input type="text" id="mvAnschrift1" value="${esc(d.mieter1Anschrift)}"></div>
+      <div class="f-row">
+        <div class="f"><label>E-Mail</label><input type="text" id="mvMail" value="${esc(d.email)}"></div>
+        <div class="f" style="flex:0 0 120px"><label>Einziehende Personen</label><input type="number" id="mvPersZ" min="1" value="${esc(d.personenzahl)}"></div>
+      </div>
+      <div class="f-row">
+        <div class="f"><label>Beruf</label><input type="text" id="mvBeruf" value="${esc(d.beruf)}"></div>
+        <div class="f"><label>Arbeitgeber</label><input type="text" id="mvAG" value="${esc(d.arbeitgeber)}"></div>
+      </div>
+      <div style="display:flex;gap:16px;margin:4px 0 6px">
+        <label style="font-size:12px"><input type="checkbox" id="mvTiere" ${d.haustiere?'checked':''}> Haustiere</label>
+        <label style="font-size:12px"><input type="checkbox" id="mvRaucher" ${d.raucher?'checked':''}> Raucher</label>
+      </div>
+
+      <div class="f-section-title" style="margin-top:8px"><i class="ti ti-users"></i> Weitere Mietpartei (optional)</div>
+      <div class="f"><label>Mieter 2 (Name, geb.)</label><input type="text" id="mvName2" value="${esc(d.mieter2Name)}" placeholder="z. B. Erika Muster, geb. 12.03.1985"></div>
+      <div class="f"><label>Weitere Mieter (Freitext)</label><input type="text" id="mvWeitere" value="${esc(d.mieterWeitere)}" placeholder="optional"></div>
+
+      <div class="f-section-title" style="margin-top:8px"><i class="ti ti-building"></i> Objekt &amp; Wohnung</div>
+      <div class="f"><label>Objekt / Standort</label>
+        <select id="mvObjekt" onchange="mvOnObjektChange()">
+          <option value="">– Objekt wählen –</option>${objOpts}
+        </select></div>
+      <div class="f-row">
+        <div class="f"><label>Wohneinheit (WE)</label>
+          <select id="mvWe" onchange="mvOnWeChange()">${weOpts}</select></div>
+        <div class="f" id="mvWeNeuWrap" style="display:${d.weNr==='__neu'?'block':'none'}"><label>neue WE-Nr.</label>
+          <input type="text" id="mvWeNeu" value=""></div>
+      </div>
+      <div class="f-row">
+        <div class="f"><label>Etage</label><input type="text" id="mvEtage" value="${esc(d.etage||'')}"></div>
+        <div class="f"><label>Lage</label><input type="text" id="mvLage" value="${esc(d.lage||'')}" placeholder="z. B. vorne links"></div>
+      </div>
+      <div class="f-row">
+        <div class="f"><label>Räume</label><input type="text" id="mvRaeume" value="${esc(d.raeume||'')}" placeholder="z. B. 3 Zimmer, Küche, Bad"></div>
+        <div class="f" style="flex:0 0 120px"><label>Wohnfläche m²</label><input type="number" id="mvFlaeche" step="0.01" value="${esc(d.wohnflaeche||'')}"></div>
+      </div>
+      <div class="f"><label>Bei Übergabe ausgehändigte Schlüssel</label><input type="text" id="mvSchluessel" value="${esc(d.schluessel||'')}" placeholder="z. B. 2 Haustür, 2 Wohnung, 1 Keller"></div>
+      <div class="f"><label>Mitbenutzung / Keller-Boden</label><input type="text" id="mvMitbenutzung" value="${esc(d.mitbenutzung||'gemeinschaftliche Einrichtungen')}"></div>
+
+      <div class="f-section-title" style="margin-top:8px"><i class="ti ti-calendar"></i> Mietzeit</div>
+      <div class="f-row">
+        <div class="f"><label>Mietbeginn</label><input type="date" id="mvBeginn" value="${esc(d.mietbeginn)}"></div>
+      </div>
+      <label style="font-size:12px;display:block;margin:4px 0"><input type="checkbox" id="mvKuendVerzicht" onchange="mvToggle('mvKuendWrap',this.checked)" ${d.kuendigungsverzicht?'checked':''}> Kündigungsverzicht / Mindestlaufzeit</label>
+      <div class="f" id="mvKuendWrap" style="display:${d.kuendigungsverzicht?'block':'none'}"><label>Text (Schriftform § 550 BGB)</label>
+        <textarea id="mvKuendText" style="min-height:46px">${esc(d.kuendigungsverzichtText||'Beide Parteien verzichten wechselseitig für die Dauer von ____ Monaten ab Mietbeginn auf das Recht zur ordentlichen Kündigung.')}</textarea></div>
+
+      <div class="f-section-title" style="margin-top:8px"><i class="ti ti-cash"></i> Miete &amp; Vorauszahlungen</div>
+      <div class="f-row">
+        <div class="f"><label>Nettokaltmiete (EUR)</label><input type="number" id="mvKalt" step="0.01" value="${esc(d.kaltmiete||'')}" oninput="mvBerechneGesamt()"></div>
+        <div class="f"><label>NK-Vorschuss (EUR)</label><input type="number" id="mvNkV" step="0.01" value="${esc(d.nkVorschuss||'')}" oninput="mvBerechneGesamt()"></div>
+      </div>
+      <div class="f-row">
+        <div class="f" id="mvHeizVWrap"><label>Heizkosten-Vorschuss (EUR)</label><input type="number" id="mvHeizV" step="0.01" value="${esc(d.heizVorschuss||'')}" oninput="mvBerechneGesamt()"></div>
+        <div class="f"><label>Gesamt (autom.)</label><input type="text" id="mvGesamt" value="" readonly style="background:var(--ink-05)"></div>
+      </div>
+
+      <div class="f-section-title" style="margin-top:8px"><i class="ti ti-lock-dollar"></i> Kaution</div>
+      <div class="f-row">
+        <div class="f"><label>Kautionsbetrag (EUR)</label><input type="number" id="mvKaution" step="0.01" value="${esc(d.kautionBetrag||'')}" placeholder="autom. 3× Kaltmiete"></div>
+        <div class="f" style="flex:0 0 150px"><label>Zahlart</label>
+          <select id="mvKautionArt">
+            <option value="einmal" ${d.kautionArt==='einmal'?'selected':''}>Einmalzahlung</option>
+            <option value="raten" ${d.kautionArt!=='einmal'?'selected':''}>bis 3 Raten</option>
+          </select></div>
+      </div>
+      <div style="font-size:10px;color:var(--ink-40);margin-top:-2px">Leer = automatisch 3× Nettokaltmiete (Höchstgrenze § 551 BGB).</div>
+
+      <div class="f-section-title" style="margin-top:8px"><i class="ti ti-flame"></i> Heizung / Warmwasser (§ 6)</div>
+      <div class="f"><label>Variante</label>
+        <select id="mvHeizVar" onchange="mvOnHeizVarChange()">
+          <option value="">– automatisch: ${MV_HEIZ_VARIANTEN[heizAuto]?.label||heizAuto} –</option>
+          ${heizOpts}
+        </select>
+        <div style="font-size:10px;color:var(--ink-40);margin-top:2px">Bei Variante C entfällt der Heizkosten-Vorschuss.</div></div>
+
+      <div class="f-section-title" style="margin-top:8px"><i class="ti ti-home-cog"></i> Übergabezustand (§ 7)</div>
+      <div class="f"><label>Zustand</label>
+        <select id="mvUebergabe" onchange="mvOnUebergabeChange()">
+          <option value="renoviert" ${d.uebergabeModus==='renoviert'?'selected':''}>1 – renoviert</option>
+          <option value="unren_ohne" ${(!d.uebergabeModus||d.uebergabeModus==='unren_ohne')?'selected':''}>2 – unrenoviert ohne Ausgleich</option>
+          <option value="unren_ausgleich" ${d.uebergabeModus==='unren_ausgleich'?'selected':''}>3 – unrenoviert mit Ausgleich</option>
+        </select></div>
+      <div id="mvAusgleichWrap" style="display:${d.uebergabeModus==='unren_ausgleich'?'block':'none'}">
+        <div class="f"><label>Ausgleich (in den Vertrag)</label>
+          <textarea id="mvAusgleichText" style="min-height:42px" placeholder="z. B. zwei mietfreie Monate / Materialkostenzuschuss von ___ EUR">${esc(d.ausgleichText||'')}</textarea></div>
+        <div class="f"><label style="color:var(--amber)"><i class="ti ti-alert-triangle"></i> Interner Hinweis zur Angemessenheit (NICHT im Vertrag)</label>
+          <textarea id="mvAusgleichIntern" style="min-height:38px" placeholder="Begründung, warum der Ausgleich angemessen ist – nur intern dokumentiert.">${esc(d.ausgleichIntern||'')}</textarea></div>
+      </div>
+
+      <div class="f-section-title" style="margin-top:8px"><i class="ti ti-tools"></i> Kleinreparaturen (§ 9)</div>
+      <div class="f-row">
+        <div class="f"><label>Einzelbetrag (EUR)</label><input type="number" id="mvKrEinzel" step="1" value="${esc(d.krEinzel!=null&&d.krEinzel!==''?d.krEinzel:100)}" oninput="mvWarnKr()"></div>
+        <div class="f"><label>Jahresanteil (%)</label><input type="number" id="mvKrJahr" step="0.1" value="${esc(d.krJahr!=null&&d.krJahr!==''?d.krJahr:7.5)}"></div>
+      </div>
+      <div id="mvKrWarn" style="display:none;font-size:11px;color:var(--amber);margin-top:-2px"><i class="ti ti-alert-triangle"></i> Einzelbetrag über 100 € gilt häufig als unangemessen (Risiko der Unwirksamkeit der Klausel).</div>
+
+      <div class="f-section-title" style="margin-top:8px"><i class="ti ti-trending-up"></i> Mietanpassung (§ 14)</div>
+      <div class="f"><label>Art</label>
+        <select id="mvMietanpassung" onchange="mvOnMietanpassungChange()">
+          <option value="keine" ${(!d.mietanpassung||d.mietanpassung==='keine')?'selected':''}>keine</option>
+          <option value="staffel" ${d.mietanpassung==='staffel'?'selected':''}>Staffelmiete (§ 557a)</option>
+          <option value="index" ${d.mietanpassung==='index'?'selected':''}>Indexmiete (§ 557b)</option>
+        </select></div>
+      <div class="f" id="mvStaffelWrap" style="display:${d.mietanpassung==='staffel'?'block':'none'}"><label>Staffeltext</label>
+        <textarea id="mvStaffelText" style="min-height:42px" placeholder="z. B. ab dem 13. Monat 520 EUR, ab dem 25. Monat 540 EUR ...">${esc(d.staffelText||'')}</textarea></div>
+
+      <div class="f-section-title" style="margin-top:8px"><i class="ti ti-scale"></i> Mietpreisbremse (§ 15)</div>
+      <div id="mvMpbInfo" style="font-size:11px;color:${reguliert?'var(--copper)':'var(--ink-40)'};margin-bottom:4px">
+        ${reguliert?'<i class="ti ti-info-circle"></i> Objekt liegt in einem regulierten Gebiet – Auskunft empfohlen.':'Objekt nicht reguliert – § 15 wird nicht aufgenommen.'}
+      </div>
+      <label style="font-size:12px;display:block"><input type="checkbox" id="mvMpb" ${d.mietpreisbremse||reguliert?'checked':''} ${reguliert?'':'disabled'}> § 15 aufnehmen</label>
+      <div class="f" id="mvMpbWrap" style="display:${(d.mietpreisbremse||reguliert)?'block':'none'}"><label>Auskunft (Vormiete / Ausnahmegrund, Textform)</label>
+        <textarea id="mvMpbText" style="min-height:42px" placeholder="z. B. Vormiete betrug ___ EUR; oder: Ausnahme nach umfassender Modernisierung">${esc(d.mpbAuskunft||'')}</textarea></div>
+
+      <div class="f-section-title" style="margin-top:8px"><i class="ti ti-paw"></i> Sonstiges</div>
+      <div class="f-row">
+        <div class="f" style="flex:0 0 150px"><label>Tier-Karenztage</label><input type="number" id="mvTierTage" value="${esc(d.tierTage!=null&&d.tierTage!==''?d.tierTage:3)}"></div>
+      </div>
+      <div style="display:flex;gap:16px;margin:4px 0">
+        <label style="font-size:12px"><input type="checkbox" id="mvGarten" onchange="mvToggle('mvGartenWrap',this.checked)" ${d.garten?'checked':''}> Garten</label>
+        <label style="font-size:12px"><input type="checkbox" id="mvDielen" ${d.dielen?'checked':''}> Originaldielen/-türen</label>
+      </div>
+      <div class="f" id="mvGartenWrap" style="display:${d.garten?'block':'none'}"><label>Gartennutzung</label><input type="text" id="mvGartenText" value="${esc(d.gartenText||'zur alleinigen Nutzung')}"></div>
+      <div class="f"><label>Weitere Vereinbarungen</label><textarea id="mvSonstiges" style="min-height:38px">${esc(d.sonstigesText||'')}</textarea></div>
+
+      <div class="f-section-title" style="margin-top:8px"><i class="ti ti-certificate"></i> Energieausweis</div>
+      <div class="f-row">
+        <div class="f" style="flex:0 0 140px"><label>Vorgelegt</label>
+          <select id="mvEnergie"><option value="ja" ${d.energieausweis==='ja'?'selected':''}>ja</option><option value="nein" ${d.energieausweis!=='ja'?'selected':''}>nein</option></select></div>
+        <div class="f"><label>Kennwerte</label><input type="text" id="mvEnergieKw" value="${esc(d.energieKennwerte||'')}" placeholder="z. B. Endenergie 120 kWh/(m²·a), Gas"></div>
+      </div>
+
+      <div class="f-section-title" style="margin-top:8px"><i class="ti ti-paperclip"></i> Anlagen (Bestandteil des Vertrags)</div>
+      <div style="display:flex;flex-direction:column;gap:3px">
+        <label style="font-size:12px"><input type="checkbox" id="mvAnlHausordnung" checked> Hausordnung</label>
+        <label style="font-size:12px"><input type="checkbox" id="mvAnlMerkblatt" checked> Merkblatt „Richtig heizen und lüften“</label>
+        <label style="font-size:12px"><input type="checkbox" id="mvAnlWgb" checked> Wohnungsgeberbestätigung (§ 19 BMG)</label>
+        <label style="font-size:12px"><input type="checkbox" id="mvAnlDsgvo" checked> Datenschutzhinweis (Art. 13 DSGVO)</label>
+        <label style="font-size:12px"><input type="checkbox" id="mvAnlEnergie" ${d.energieausweis==='ja'?'checked':''}> Energieausweis / Pflichtangaben (§ 80 GEG)</label>
+        <label style="font-size:12px"><input type="checkbox" id="mvAnlSepa" checked> SEPA-Lastschriftmandat</label>
+      </div>
+
+      <div style="background:var(--ink-05);border-radius:8px;padding:8px 10px;margin-top:10px;font-size:11px;color:var(--ink-60);line-height:1.5">
+        <i class="ti ti-info-circle"></i> Nicht im Wohnraummietvertrag: Stellplatz/Garage (separater Vertrag) und Kabel-TV als Betriebskostenposition (seit 01.07.2024 unzulässig). Das Übergabeprotokoll entsteht erst bei der Übergabe.
+      </div>
+    </div>
+
+    <div class="f-row" style="margin-top:12px">
+      <button class="btn btn-copper btn-full" onclick="mvErzeugen()"><i class="ti ti-file-download"></i> PDF erzeugen &amp; beim Mieter ablegen</button>
+      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+    </div>`);
+
+  setTimeout(()=>{ mvBerechneGesamt(); mvWarnKr(); mvOnHeizVarChange(); }, 50);
+}
+
+// ── Live-UI-Helfer ──
+function mvToggle(id, show){ const e=document.getElementById(id); if(e) e.style.display=show?'block':'none'; }
+function mvBerechneGesamt(){
+  const num=id=>parseFloat(String(document.getElementById(id)?.value||'').replace(',','.'))||0;
+  const heizSichtbar = document.getElementById('mvHeizVWrap')?.style.display !== 'none';
+  const g = num('mvKalt') + num('mvNkV') + (heizSichtbar?num('mvHeizV'):0);
+  const out=document.getElementById('mvGesamt'); if(out) out.value = g? g.toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:2})+' EUR' : '';
+}
+function mvWarnKr(){
+  const v=parseFloat(String(document.getElementById('mvKrEinzel')?.value||'').replace(',','.'))||0;
+  mvToggle('mvKrWarn', v>100);
+}
+function mvOnHeizVarChange(){
+  const sel=document.getElementById('mvHeizVar')?.value||'';
+  // Auto-Variante bestimmen, wenn nichts gewählt
+  let eff = sel;
+  if(!eff){ eff = MV_DRAFT?._heizAuto || 'B'; }
+  const istC = (eff==='C');
+  mvToggle('mvHeizVWrap', !istC);
+  mvBerechneGesamt();
+}
+function mvOnUebergabeChange(){
+  const v=document.getElementById('mvUebergabe')?.value;
+  mvToggle('mvAusgleichWrap', v==='unren_ausgleich');
+}
+function mvOnMietanpassungChange(){
+  const v=document.getElementById('mvMietanpassung')?.value;
+  mvToggle('mvStaffelWrap', v==='staffel');
+}
+async function mvOnObjektChange(){
+  mvSammleAusFormular();           // bisherige Eingaben sichern
+  MV_DRAFT.objektId = document.getElementById('mvObjekt')?.value||'';
+  MV_DRAFT.weNr = '';
+  // WE-Optionen neu laden + abhängige Felder neu rendern
+  await mvRenderGeneratorModal();
+}
+async function mvOnWeChange(){
+  const we = document.getElementById('mvWe')?.value||'';
+  mvToggle('mvWeNeuWrap', we==='__neu');
+  if(we && we!=='__neu'){
+    MV_DRAFT.weNr = we;
+    // Wohnungsstamm-Daten ziehen (Fläche, Etage, Lage) und Felder vorbelegen, falls leer
+    const w = await getWohnungStamm(MV_DRAFT.objektId, we).catch(()=>({}));
+    const set=(id,val)=>{ const e=document.getElementById(id); if(e && (!e.value||e.value==='') && val) e.value=val; };
+    set('mvFlaeche', w.flaeche||w.wohnflaeche||'');
+    set('mvEtage', w.etage||'');
+    set('mvLage', w.lage? (w.lage+(w.lage2?(' '+w.lage2):'')) : '');
+    set('mvRaeume', w.zimmer? (w.zimmer+' Zimmer') : '');
+    // Heizungsvariante-Auto aktualisieren
+    MV_DRAFT._heizAuto = await mvHeizVarianteFuer(MV_DRAFT.objektId, we);
+    mvOnHeizVarChange();
+  }
+}
+
+// Formularwerte in MV_DRAFT übernehmen (ohne zu erzeugen)
+function mvSammleAusFormular(){
+  if(!MV_DRAFT) MV_DRAFT={};
+  const v=id=>document.getElementById(id)?.value;
+  const c=id=>!!document.getElementById(id)?.checked;
+  const D=MV_DRAFT;
+  D.anrede=v('mvAnrede')||D.anrede; D.mieter1Name=v('mvName1')??D.mieter1Name;
+  D.mieter1Gebdat=v('mvGeb1')??D.mieter1Gebdat; D.mieter1Anschrift=v('mvAnschrift1')??D.mieter1Anschrift;
+  D.telefon=v('mvTel')??D.telefon; D.email=v('mvMail')??D.email; D.personenzahl=v('mvPersZ')??D.personenzahl;
+  D.beruf=v('mvBeruf')??D.beruf; D.arbeitgeber=v('mvAG')??D.arbeitgeber;
+  D.haustiere=c('mvTiere'); D.raucher=c('mvRaucher');
+  D.mieter2Name=v('mvName2')??D.mieter2Name; D.mieterWeitere=v('mvWeitere')??D.mieterWeitere;
+  D.etage=v('mvEtage')??D.etage; D.lage=v('mvLage')??D.lage; D.raeume=v('mvRaeume')??D.raeume;
+  D.wohnflaeche=v('mvFlaeche')??D.wohnflaeche; D.schluessel=v('mvSchluessel')??D.schluessel;
+  D.mitbenutzung=v('mvMitbenutzung')??D.mitbenutzung;
+  D.mietbeginn=v('mvBeginn')??D.mietbeginn;
+  D.kuendigungsverzicht=c('mvKuendVerzicht'); D.kuendigungsverzichtText=v('mvKuendText')??D.kuendigungsverzichtText;
+  D.kaltmiete=v('mvKalt')??D.kaltmiete; D.nkVorschuss=v('mvNkV')??D.nkVorschuss; D.heizVorschuss=v('mvHeizV')??D.heizVorschuss;
+  D.kautionBetrag=v('mvKaution')??D.kautionBetrag; D.kautionArt=v('mvKautionArt')??D.kautionArt;
+  D.heizVariante=v('mvHeizVar')||'';
+  D.uebergabeModus=v('mvUebergabe')||'unren_ohne'; D.ausgleichText=v('mvAusgleichText')??D.ausgleichText; D.ausgleichIntern=v('mvAusgleichIntern')??D.ausgleichIntern;
+  D.krEinzel=v('mvKrEinzel')??D.krEinzel; D.krJahr=v('mvKrJahr')??D.krJahr;
+  D.mietanpassung=v('mvMietanpassung')||'keine'; D.staffelText=v('mvStaffelText')??D.staffelText;
+  D.mietpreisbremse=c('mvMpb'); D.mpbAuskunft=v('mvMpbText')??D.mpbAuskunft;
+  D.tierTage=v('mvTierTage')??D.tierTage;
+  D.garten=c('mvGarten'); D.gartenText=v('mvGartenText')??D.gartenText; D.dielen=c('mvDielen');
+  D.sonstigesText=v('mvSonstiges')??D.sonstigesText;
+  D.energieausweis=v('mvEnergie')||'nein'; D.energieKennwerte=v('mvEnergieKw')??D.energieKennwerte;
+  D.anlagen={
+    hausordnung:c('mvAnlHausordnung'), merkblatt:c('mvAnlMerkblatt'), wgb:c('mvAnlWgb'),
+    dsgvo:c('mvAnlDsgvo'), energie:c('mvAnlEnergie'), sepa:c('mvAnlSepa'),
+  };
+  // neue WE-Nr.
+  const weSel=document.getElementById('mvWe')?.value;
+  if(weSel==='__neu'){ const neu=document.getElementById('mvWeNeu')?.value?.trim(); if(neu) D.weNr=neu; }
+  else if(weSel) D.weNr=weSel;
+}
+
+// ── Daten final für den Renderer aufbereiten ──
+async function mvBaueRenderdaten(){
+  mvSammleAusFormular();
+  const D = MV_DRAFT;
+  const obj = getObj(D.objektId);
+  const bk  = getBriefkopf(D.objektId);
+  const gs  = (await idbGet('objekt_stamm', D.objektId).catch(()=>null)) || {};
+
+  // Heizungsvariante effektiv (gewählt > auto)
+  const heizVariante = (D.heizVariante==='A'||D.heizVariante==='B'||D.heizVariante==='C')
+    ? D.heizVariante
+    : await mvHeizVarianteFuer(D.objektId, D.weNr);
+  const zeigeHeiz = MV_HEIZ_VARIANTEN[heizVariante]?.heizVorschuss !== false;
+
+  // NK-Verteilerschlüssel
+  const schl = await mvNkSchluesselFuer(D.objektId, D.weNr);
+  const nkVerteilung = mvNkVerteilungSatz(schl);
+
+  // Beträge
+  const kalt = parseFloat(String(D.kaltmiete||'').replace(',','.'))||0;
+  const nkV  = parseFloat(String(D.nkVorschuss||'').replace(',','.'))||0;
+  const heizV= zeigeHeiz ? (parseFloat(String(D.heizVorschuss||'').replace(',','.'))||0) : 0;
+  const gesamt = kalt + nkV + heizV;
+  // Kaution: leer => 3× Kaltmiete
+  let kaution = parseFloat(String(D.kautionBetrag||'').replace(',','.'));
+  if(!isFinite(kaution) || kaution<=0) kaution = kalt*3;
+
+  // Briefkopf-Platzhalter
+  const briefkopfName = bk.name || '';
+  const briefkopfAnschrift = [bk.strasse, bk.ort].filter(Boolean).join(', ');
+  const briefkopfKontakt = [bk.tel? ('Tel: '+bk.tel):'', bk.email].filter(Boolean).join(' · ');
+
+  // Bankzeile aus Objekt-Stammdaten
+  const bankZeile = gs.ktoInhaber
+    ? [gs.ktoInhaber, gs.ktoIban?('IBAN '+gs.ktoIban):'', gs.ktoBic?('BIC '+gs.ktoBic):'', gs.ktoBank].filter(Boolean).join(', ')
+    : '__________________________ (Bankverbindung in den Gebäudedaten hinterlegen)';
+
+  // Etage/Lage zusammenfassen
+  const etageLage = [D.etage, D.lage].filter(Boolean).join(', ') || '__________';
+
+  return {
+    // Briefkopf / Vermieter
+    briefkopfName, briefkopfAnschrift, briefkopfKontakt,
+    vermieterName: bk.name || '',
+    vermieterAnschrift: briefkopfAnschrift,
+    vermieterVertreter: CU?.name || '',
+    bankZeile,
+    // Mieter
+    mieter1Name: D.mieter1Name||'', mieter1Gebdat: D.mieter1Gebdat? fmtDate(D.mieter1Gebdat):'',
+    mieter1Anschrift: D.mieter1Anschrift||'',
+    mieter2Name: D.mieter2Name||'', mieterWeitere: D.mieterWeitere||'',
+    // § 1
+    objektAnschrift: [obj?.name, obj?.ort].filter(Boolean).join(', '),
+    weBezeichnung: D.weNr? ('Wohneinheit Nr. '+D.weNr):'die Wohnung',
+    etageLage,
+    raeume: D.raeume||'__________',
+    wohnflaeche: D.wohnflaeche||'____',
+    mitbenutzung: D.mitbenutzung||'gemeinschaftliche Einrichtungen',
+    kellerBoden: D.kellerBoden||'ein Kellerraum',
+    schluessel: D.schluessel||'__________',
+    personenzahl: D.personenzahl||'____',
+    // § 2
+    mietbeginn: D.mietbeginn? fmtDate(D.mietbeginn):'__________',
+    kuendigungsverzicht: !!D.kuendigungsverzicht,
+    kuendigungsverzichtText: D.kuendigungsverzichtText||'',
+    // § 3
+    kaltmiete: kalt, nkVorschuss: nkV, heizVorschuss: heizV, gesamtMiete: gesamt,
+    nkVerteilung,
+    // § 5
+    kautionBetrag: kaution,
+    // § 6
+    heizVariante,
+    // § 7
+    uebergabeModus: D.uebergabeModus||'unren_ohne',
+    uebergabeLabel: ({renoviert:'renoviert',unren_ohne:'unrenoviert',unren_ausgleich:'unrenoviert (mit Ausgleich)'})[D.uebergabeModus||'unren_ohne'],
+    ausgleichText: D.ausgleichText||'',
+    // § 8 / § 9
+    tierTage: (D.tierTage!=null&&D.tierTage!=='')?D.tierTage:3,
+    krEinzel: (D.krEinzel!=null&&D.krEinzel!=='')?D.krEinzel:100,
+    krJahr: (D.krJahr!=null&&D.krJahr!=='')?D.krJahr:7.5,
+    // § 14 / § 15
+    mietanpassung: D.mietanpassung||'keine', staffelText: D.staffelText||'',
+    mietpreisbremse: !!D.mietpreisbremse, mpbAuskunft: D.mpbAuskunft||'',
+    // § 16
+    garten: !!D.garten, gartenText: D.gartenText||'', dielen: !!D.dielen, sonstigesText: D.sonstigesText||'',
+    // Anlagen / Energie
+    energieausweis: D.energieausweis||'nein', energieKennwerte: D.energieKennwerte||'',
+    anlagen: D.anlagen||{},
+  };
+}
+
+// ── Hauptaktion: PDF erzeugen, beim Mieter ablegen, Mieter-Datensatz anlegen ──
+async function mvErzeugen(){
+  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  mvSammleAusFormular();
+  const D = MV_DRAFT;
+  // Pflichtprüfungen
+  if(!D.mieter1Name?.trim()){ toast('Name des Mieters ist Pflicht'); return; }
+  if(!D.objektId){ toast('Bitte Objekt wählen'); return; }
+  if(!D.weNr){ toast('Bitte Wohneinheit wählen'); return; }
+  if(!D.mietbeginn){ toast('Bitte Mietbeginn angeben'); return; }
+
+  const rd = await mvBaueRenderdaten();
+  const html = mvVertragHTML(rd);
+
+  // 1) Neuen Mieter-Datensatz anlegen (Status zukünftig/Entwurf)
+  const mieterId = await mvLegeMieterAn(D, rd);
+
+  // 2) Vertrag als druckbares Dokument beim Mieter archivieren (-> Mieterportal)
+  let dokId = null;
+  if(mieterId){
+    dokId = await archiviereMieterDokument({
+      mieterId, objektId: D.objektId, typ:'vertrag',
+      name:'Wohnraum-Mietvertrag (Entwurf zur Prüfung)', html, mimeType:'text/html',
+    });
+  }
+
+  // 3) Interner Angemessenheits-Hinweis (nur falls Ausgleich) am Mieter vermerken
+  if(mieterId && D.uebergabeModus==='unren_ausgleich' && D.ausgleichIntern?.trim()){
+    try{
+      const m = await idbGet('mieter', mieterId);
+      if(m){ m.mvAusgleichIntern = D.ausgleichIntern.trim(); m.updatedAt=new Date().toISOString(); await idbPut('mieter', m); }
+    }catch(_){}
+  }
+
+  // 4) Kandidat auf 'uebernommen' setzen
+  if(D.quelleInteressentId){
+    try{
+      const k = await idbGet('interessenten', D.quelleInteressentId);
+      if(k){ k.status='uebernommen'; k.geaendert=nowIso(); await idbPut('interessenten', k); }
+    }catch(_){}
+  }
+
+  closeModal();
+  clearTimeout(window._syncTimer);
+  window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
+
+  // 5) Vertrag drucken / als PDF speichern (In-Page-Druck, Samsung-tauglich)
+  druckHTML(html);
+  toast('Mietvertrag erzeugt – beim Mieter abgelegt. Bitte ausdrucken und handschriftlich unterschreiben.');
+  MV_DRAFT = null;
+}
+
+// Mieter-Datensatz aus MV-Entwurf anlegen (kompatibel zur vorhandenen Mieter-Struktur)
+async function mvLegeMieterAn(D, rd){
+  try{
+    const obj = getObj(D.objektId);
+    const beginnISO = D.mietbeginn;
+    const beginnDate = beginnISO ? new Date(beginnISO) : null;
+    const heute = new Date(); heute.setHours(0,0,0,0);
+    const istZukunft = beginnDate && beginnDate > heute;
+
+    // Personenliste aufbauen (Person 1 ist Vertragspartner)
+    const personen = [{
+      anrede: D.anrede||'Herr', name: D.mieter1Name||'',
+      geburtsdatum: D.mieter1Gebdat||'', telefon: D.telefon||'', email: D.email||'',
+      vertragspartner:true, ab: beginnISO||'',
+    }];
+    if(D.mieter2Name && D.mieter2Name.trim()){
+      personen.push({ anrede:'', name: D.mieter2Name.trim(), vertragspartner:true, ab: beginnISO||'' });
+    }
+
+    const nachname = (typeof hauptmieterNachnamen==='function')
+      ? (hauptmieterNachnamen({personen_liste:personen}) || D.mieter1Name)
+      : D.mieter1Name;
+
+    const m = {
+      id: 'm_' + D.objektId + '_' + D.weNr + '_' + (D.mieter1Name||'').replace(/\W/g,'').slice(0,10) + '_' + Date.now().toString(36),
+      objektId: D.objektId, objekt: obj?.name||'',
+      weNr: D.weNr, etage: D.etage||'', flaeche: D.wohnflaeche||'',
+      mieter: nachname || D.mieter1Name,
+      anrede: D.anrede||'Herr',
+      personen: parseInt(D.personenzahl)||personen.length||1,
+      personen_liste: personen,
+      miete: rd.kaltmiete||'', nk: (rd.nkVorschuss||0)+(rd.heizVorschuss||0) || '',
+      gesamt: rd.gesamtMiete||'',
+      einzug: beginnDate ? beginnDate.toLocaleDateString('de-DE') : '',
+      einzugISO: beginnISO||'',
+      kaution: rd.kautionBetrag||'',
+      kautionZahlart: D.kautionArt||'raten',
+      telefon: D.telefon||'', email: D.email||'',
+      leerstand:false,
+      mvHeizVariante: rd.heizVariante,
+      mvStatus:'entwurf',
+      updatedAt: new Date().toISOString(),
+    };
+    if(istZukunft) m._zukuenftig = true;
+
+    await idbPut('mieter', m);
+    return m.id;
+  }catch(e){
+    console.warn('Mieteranlage fehlgeschlagen:', e);
+    toast('Hinweis: Mieter-Datensatz konnte nicht angelegt werden – Vertrag wird dennoch erzeugt.');
+    return null;
+  }
 }
 
 // Brennstoff- und Lage-Optionen fürs Formular
