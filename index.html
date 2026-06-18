@@ -735,8 +735,46 @@ body.printing-active #printRoot{display:block!important}
 /* ═══════════════════════════════════════════════════════════
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
-const DB_NAME='immo_v2', DB_VER=21;
-const APP_VERSION = '2026-06-18-v88';
+const DB_NAME='immo_v2', DB_VER=23;
+const APP_VERSION = '2026-06-18-v91';
+/* v91 (18.06.2026): Paket 3c – OneDrive Datei-Ordnerbaum (bidirektional).
+   - Neuer Store 'od_dateien' (Metadaten je Datei: Pfad, Standort, weNr, eTag,
+     odItemId, Groesse). An allen 6 Pflichtstellen registriert (DB-Schema/Index,
+     Sync-Pull, Snapshot/alleStores, Sync-Push, mergeStores).
+   - Ordnerbaum unter /NadigPfau/Objekte/<Standort>/{Allgemein | WE n}.
+     Standorte ohne Haus-Unterteilung (KR, RT/Duesseldorf, MG, Monheim);
+     Wohneinheiten aus den Mieterdaten (weNr) abgeleitet.
+   - Bidirektional: Datei im OneDrive-Ordner -> erscheint in der App (Metadaten
+     via Graph children-API, eTag-Abgleich); in der App hochgeladen -> landet im
+     Zielordner (PUT /content). Inhalte werden NICHT in IndexedDB dupliziert
+     (Quota/Datenverlust-Schutz), nur Metadaten; Oeffnen via kurzlebigem
+     Graph-Download-Link.
+   - Konflikt (gleicher Name, beide Seiten geaendert): beide behalten – die
+     hochgeladene Datei erhaelt Suffix "(Konflikt <Geraet> <JJJJ-MM-TT>)".
+   - UI: Settings -> OneDrive -> "Dateien (Ordnerbaum)": Standort -> Knoten ->
+     Dateiliste mit Upload/Oeffnen. Auto-Sync bindet stillen Dateibaum-Abgleich
+     nach dem JSON-Sync ein.
+   - Bugfix: Store 'versicherungen' fehlte im Sync-Push-Backup (v90) und wurde
+     daher nie hochgeladen; jetzt enthalten. 'versorger_archiv' im Pull/Snapshot
+     ergaenzt.
+   Neuer Store -> DB_VER 22 -> 23. */
+/* v90 (18.06.2026): Paket 3a + 3b.
+   3a Versicherungs-Stammdaten je Objekt (neuer Store 'versicherungen', Index objektId):
+      Haftpflicht-, Gebaeude-, Leitungswasser- und weitere Versicherungen mit Gesellschaft,
+      Versicherungsschein-Nr., Ansprechpartner, Schaden-Meldeweg (E-Mail/Tel) und Notiz.
+      Verwaltung ueber Button "Versicherungen" in der Gebaeudedaten-Karte der Objektansicht.
+   3b Schadensmeldung -> E-Mail-Entwurf: Button "An Versicherung melden" in der Mangel-Detailseite.
+      Auswahl der passenden Objekt-Versicherung; erzeugt Betreff + vorausgefuellten Text
+      (Objekt, WE, Schein-Nr., Schadenbeschreibung, Datum) als mailto-Entwurf + Kopierfunktion.
+   Neuer Store -> DB_VER 21 -> 22. Offen: 3c OneDrive-Ordnerbaum (separat). */
+/* v89 (18.06.2026): Versionsstand bestaetigt. Enthaltene Funktionen (zuvor in v88 umgesetzt):
+   1.1 Eigentuemer/Vermieter je Objekt aenderbar (Auswahl aus Liste oder Neueintrag, in objekt_stamm; Verwalter-Briefkopf bleibt unveraendert)
+   2.1 Mietbescheinigung auf eine A4-Seite reduziert (kein Seitenumbruch)
+   2.2 Unterschriften-Auswahl bei Mietbescheinigung (max. 2 hinterlegte Admin-Signaturen, analog WGB)
+   4.  Kautionsvorschlag 3x Nettokaltmiete (Paragraph 551 BGB) bei Neuanlage, frei aenderbar
+   5.  Hauptmieter als "Nachname, Vorname" in Objekt- und Mieteransicht
+   6.  Wohnflaeche (m2) neben EUR/m2 in der Objektansicht
+   Keine neuen Stores -> DB_VER bleibt 21. Naechstes Paket: OneDrive-Ordnerbaum / Versicherungen / Schadensmeldung. */
 let idb=null;
 
 function openIDB(){
@@ -749,7 +787,7 @@ function openIDB(){
     const req=indexedDB.open(DB_NAME,DB_VER);
     req.onupgradeneeded=e=>{
       const db=e.target.result;
-      ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','fotos','wartung','zaehler','zaehlerstaende','versorger','versorger_archiv','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','sync_log','mieter_snapshots','branchenbuch','interessenten'].forEach(s=>{
+      ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','fotos','wartung','zaehler','zaehlerstaende','versorger','versorger_archiv','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','sync_log','mieter_snapshots','branchenbuch','interessenten','od_dateien'].forEach(s=>{
         if(!db.objectStoreNames.contains(s)){
           const store=db.createObjectStore(s,{keyPath:'id'});
           if(s==='mieter'){store.createIndex('objektId','objektId');store.createIndex('weNr','weNr')}
@@ -766,6 +804,7 @@ function openIDB(){
           if(s==='zaehler'){store.createIndex('objektId','objektId')}
           if(s==='zaehlerstaende'){store.createIndex('objektId','objektId');store.createIndex('zaehlerId','zaehlerId')}
           if(s==='versorger'){store.createIndex('objektId','objektId')}
+          if(s==='versicherungen'){store.createIndex('objektId','objektId')}
           if(s==='versorger_archiv'){store.createIndex('objektId','objektId');store.createIndex('versorgerId','versorgerId')}
           if(s==='branchenbuch'){store.createIndex('kategorie','kategorie')}
           if(s==='lager'){store.createIndex('objektId','objektId');store.createIndex('kategorie','kategorie')}
@@ -779,6 +818,7 @@ function openIDB(){
           if(s==='ventilpruefung'){store.createIndex('ventilId','ventilId')}
           if(s==='taetigkeit_log'){store.createIndex('userId','userId');store.createIndex('datum','datum')}
           if(s==='interessenten'){store.createIndex('objektId','objektId');store.createIndex('status','status')}
+          if(s==='od_dateien'){store.createIndex('objektId','objektId');store.createIndex('pfad','pfad')}
         }
       });
     };
@@ -5588,7 +5628,7 @@ async function rundgangWegpunktDefekt(segId, lgName, nr){
     <button class="btn btn-full" onclick="closeModal()">Schließen</button>`);
 }
 
-function syncSoon(){ clearTimeout(window._syncTimer); window._syncTimer=setTimeout(()=>syncToOneDrive(),3000); }
+function syncSoon(){ clearTimeout(window._syncTimer); window._syncTimer=setTimeout(()=>{ syncToOneDrive().then(()=>{ if(typeof syncDateibaum==='function') syncDateibaum(true); }); },3000); }
 
 /* ═══════════════════════════════════════════════════════════
    ABSPERRVENTILE KELLER – QR-Prüfung pro Strang
@@ -7185,7 +7225,10 @@ function gebaeudeStatsHTML(stamm, personenGesamt, mieterAnzahl, istAdmin){
   return `<div class="card" style="margin-bottom:12px">
     <div class="card-hdr" style="display:flex;align-items:center;justify-content:space-between">
       <span><i class="ti ti-building"></i> Gebäudedaten</span>
-      ${istAdmin?`<button class="btn btn-sm" onclick="modalGebaeudeStamm('${currentObjId}')"><i class="ti ti-pencil"></i> Bearbeiten</button>`:''}
+      ${istAdmin?`<div style="display:flex;gap:6px">
+        <button class="btn btn-sm" onclick="modalVersicherungen('${currentObjId}')"><i class="ti ti-shield-half"></i> Versicherungen</button>
+        <button class="btn btn-sm" onclick="modalGebaeudeStamm('${currentObjId}')"><i class="ti ti-pencil"></i> Bearbeiten</button>
+      </div>`:''}
     </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap">
       ${feld('ti-ruler-2','Wohnfläche', s.wohnflaeche?esc(String(s.wohnflaeche))+' m²':'')}
@@ -7196,6 +7239,7 @@ function gebaeudeStatsHTML(stamm, personenGesamt, mieterAnzahl, istAdmin){
       ${s.wohneinheiten?feld('ti-home','Wohneinheiten', esc(String(s.wohneinheiten))):''}
       ${s.mietspiegel?feld('ti-chart-bar','Mietspiegel', esc(String(s.mietspiegel))+' €/m²'):''}
     </div>
+    ${s.eigentuemerName?`<div style="font-size:12px;color:var(--ink-60);margin-top:8px"><i class="ti ti-user-cog" style="font-size:12px"></i> <strong>Eigentümer:</strong> ${esc(s.eigentuemerName)}${s.eigentuemerAnschrift?` · ${esc(s.eigentuemerAnschrift)}`:''}</div>`:''}
     ${s.notiz?`<div style="font-size:12px;color:var(--ink-60);margin-top:8px;font-style:italic">${esc(s.notiz)}</div>`:''}
   </div>`;
 }
@@ -7257,8 +7301,26 @@ async function modalGebaeudeStamm(objektId){
   if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
   const obj=getObj(objektId);
   const s=(await idbGet('objekt_stamm',objektId).catch(()=>null))||{};
+  // Punkt 1.1: Eigentümerliste + aktuelle Zuordnung laden
+  const eigListe=await getEigentuemerListe();
+  const eigAktuell=await getEigentuemerFuerObjekt(objektId);
+  window._eigListeCache=eigListe;
+  const eigOpts=eigListe.map(e=>`<option value="${esc(e.id)}" ${eigAktuell.id===e.id?'selected':''}>${esc(e.name)}</option>`).join('');
   showModal(`
     <div class="m-title"><i class="ti ti-building"></i> Gebäudedaten – ${obj?.name||''}</div>
+    <div class="f-section-title"><i class="ti ti-user-cog"></i> Eigentümer / Vermieter</div>
+    <div style="font-size:11px;color:var(--ink-40);margin:-4px 0 8px;line-height:1.4">Eigentümer dieses Objekts. Auswahl aus vorhandenen Eigentümern oder neu eintragen. Steuert nicht den Verwalter-Briefkopf.</div>
+    <div class="f"><label>Eigentümer wählen</label>
+      <select id="gsEigSelect" onchange="onEigSelectChange()">
+        ${eigOpts}
+        <option value="__neu">+ Neuen Eigentümer eintragen</option>
+      </select></div>
+    <div id="gsEigNeuWrap" style="display:none">
+      <div class="f"><label>Name des Eigentümers *</label>
+        <input type="text" id="gsEigNeuName" placeholder="z. B. Roland B. Nadig"></div>
+      <div class="f"><label>Anschrift</label>
+        <input type="text" id="gsEigNeuAnschrift" placeholder="Straße Nr., PLZ Ort"></div>
+    </div>
     <div class="f-row">
       <div class="f"><label>Wohnfläche gesamt (m²)</label>
         <input type="number" id="gsFlaeche" step="0.01" value="${s.wohnflaeche||''}" placeholder="z. B. 540"></div>
@@ -7302,10 +7364,35 @@ async function modalGebaeudeStamm(objektId){
     </div>`);
 }
 
+async function onEigSelectChange(){
+  const sel=document.getElementById('gsEigSelect');
+  const wrap=document.getElementById('gsEigNeuWrap');
+  if(!sel||!wrap) return;
+  wrap.style.display = sel.value==='__neu' ? 'block' : 'none';
+}
 async function saveGebaeudeStamm(objektId){
   if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  // Punkt 1.1: Eigentümer ermitteln (Auswahl oder Neueintrag)
+  let eigId='', eigName='', eigAnschrift='';
+  const eigSel=document.getElementById('gsEigSelect')?.value||'';
+  const liste=(window._eigListeCache||await getEigentuemerListe()).slice();
+  if(eigSel==='__neu'){
+    eigName=document.getElementById('gsEigNeuName')?.value?.trim()||'';
+    eigAnschrift=document.getElementById('gsEigNeuAnschrift')?.value?.trim()||'';
+    if(eigName){
+      eigId='eig_'+eigName.replace(/\W/g,'').slice(0,16).toLowerCase()+'_'+Date.now().toString(36);
+      liste.push({id:eigId, name:eigName, anschrift:eigAnschrift});
+      await saveEigentuemerListe(liste);
+    }
+  }else if(eigSel){
+    const e=liste.find(x=>x.id===eigSel);
+    if(e){ eigId=e.id; eigName=e.name; eigAnschrift=e.anschrift||''; }
+  }
   const rec={
     id:objektId,
+    eigentuemerId:eigId,
+    eigentuemerName:eigName,
+    eigentuemerAnschrift:eigAnschrift,
     wohnflaeche:document.getElementById('gsFlaeche')?.value?.trim()||'',
     wohneinheiten:document.getElementById('gsWE')?.value?.trim()||'',
     baujahr:document.getElementById('gsBaujahr')?.value?.trim()||'',
@@ -7327,6 +7414,243 @@ async function saveGebaeudeStamm(objektId){
   const tabEl=document.getElementById('objTabContent');
   if(tabEl) await renderObjMieter(tabEl);
   toast('Gebäudedaten gespeichert ✓');
+}
+
+/* ═══════════════════════════════════════════════════════════
+   VERSICHERUNGEN je Objekt (Paket 3a) + Schadensmeldung (3b)
+   Store: 'versicherungen' (keyPath id, Index objektId)
+═══════════════════════════════════════════════════════════ */
+const VERS_ARTEN = [
+  {key:'haftpflicht',   label:'Haus- und Grundbesitzerhaftpflicht'},
+  {key:'gebaeude',      label:'Wohngebäudeversicherung'},
+  {key:'leitungswasser',label:'Leitungswasserversicherung'},
+  {key:'feuer',         label:'Feuerversicherung'},
+  {key:'elementar',     label:'Elementarschadenversicherung'},
+  {key:'glas',          label:'Glasversicherung'},
+  {key:'sonstige',      label:'Sonstige Versicherung'},
+];
+function versArtLabel(v){
+  if(!v) return '';
+  if(v.art==='sonstige') return (v.artText||'').trim()||'Sonstige Versicherung';
+  const a=VERS_ARTEN.find(x=>x.key===v.art);
+  return a?a.label:(v.artText||v.art||'');
+}
+async function getVersicherungenFuerObjekt(objektId){
+  const list=await idbGetAll('versicherungen','objektId',objektId).catch(()=>[]);
+  return (list||[]).sort((a,b)=>(a.art||'').localeCompare(b.art||''));
+}
+
+// Verwaltungs-Modal: alle Versicherungen eines Objekts
+async function modalVersicherungen(objektId){
+  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  const obj=getObj(objektId);
+  const list=await getVersicherungenFuerObjekt(objektId);
+  const zeilen = list.length
+    ? list.map(v=>`
+        <div style="border:1px solid var(--ink-10);border-radius:8px;padding:10px 12px;margin-bottom:8px">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+            <div style="flex:1">
+              <div style="font-weight:600;font-size:13px;color:var(--ink)"><i class="ti ti-shield-half" style="font-size:12px;color:var(--copper)"></i> ${esc(versArtLabel(v))}</div>
+              ${v.gesellschaft?`<div style="font-size:12px;color:var(--ink-60);margin-top:2px">${esc(v.gesellschaft)}</div>`:''}
+              ${v.scheinNr?`<div style="font-size:11px;color:var(--ink-40);margin-top:1px">VS-Nr.: ${esc(v.scheinNr)}</div>`:''}
+              ${v.schadenEmail?`<div style="font-size:11px;color:var(--ink-40)"><i class="ti ti-mail" style="font-size:10px"></i> ${esc(v.schadenEmail)}</div>`:''}
+              ${v.schadenTel?`<div style="font-size:11px;color:var(--ink-40)"><i class="ti ti-phone" style="font-size:10px"></i> ${esc(v.schadenTel)}</div>`:''}
+            </div>
+            <div style="display:flex;gap:4px;flex-shrink:0">
+              <button class="btn btn-sm" onclick="modalVersicherungEdit('${objektId}','${v.id}')"><i class="ti ti-pencil"></i></button>
+              <button class="btn btn-sm btn-danger" onclick="versicherungLoeschen('${objektId}','${v.id}')"><i class="ti ti-trash"></i></button>
+            </div>
+          </div>
+        </div>`).join('')
+    : '<div style="font-size:13px;color:var(--ink-40);padding:8px 0">Noch keine Versicherungen hinterlegt.</div>';
+  showModal(`
+    <div class="m-title"><i class="ti ti-shield-half"></i> Versicherungen – ${obj?.name||''}</div>
+    <div style="font-size:11px;color:var(--ink-40);margin-bottom:10px;line-height:1.4">Objektbezogene Versicherungen. Werden bei der Schadensmeldung zur Auswahl angeboten.</div>
+    <div style="max-height:55vh;overflow-y:auto;padding-right:4px">${zeilen}</div>
+    <div class="f-row" style="margin-top:12px">
+      <button class="btn btn-copper btn-full" onclick="modalVersicherungEdit('${objektId}','')"><i class="ti ti-plus"></i> Versicherung hinzufügen</button>
+      <button class="btn btn-full" onclick="closeModal()">Schließen</button>
+    </div>`);
+}
+
+// Anlage/Bearbeitung einer einzelnen Versicherung
+async function modalVersicherungEdit(objektId, versId){
+  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  const obj=getObj(objektId);
+  let v={id:'',objektId,art:'haftpflicht',artText:'',gesellschaft:'',scheinNr:'',ansprechpartner:'',schadenEmail:'',schadenTel:'',notiz:''};
+  if(versId){ const ex=await idbGet('versicherungen',versId).catch(()=>null); if(ex) v=ex; }
+  const artOpts=VERS_ARTEN.map(a=>`<option value="${a.key}" ${v.art===a.key?'selected':''}>${esc(a.label)}</option>`).join('');
+  showModal(`
+    <div class="m-title"><i class="ti ti-shield-half"></i> ${versId?'Versicherung bearbeiten':'Versicherung hinzufügen'}</div>
+    <div style="font-size:12px;color:var(--ink-40);margin-bottom:10px">${obj?.name||''}</div>
+    <div style="max-height:60vh;overflow-y:auto;padding-right:4px">
+      <div class="f"><label>Art der Versicherung</label>
+        <select id="vsArt" onchange="onVsArtChange()">${artOpts}</select></div>
+      <div class="f" id="vsArtTextWrap" style="display:${v.art==='sonstige'?'block':'none'}">
+        <label>Bezeichnung (bei „Sonstige“)</label>
+        <input type="text" id="vsArtText" value="${esc(v.artText||'')}" placeholder="z. B. Öltank-Versicherung"></div>
+      <div class="f"><label>Versicherungsgesellschaft</label>
+        <input type="text" id="vsGesellschaft" value="${esc(v.gesellschaft||'')}" placeholder="z. B. Provinzial Rheinland"></div>
+      <div class="f"><label>Versicherungsschein-Nr.</label>
+        <input type="text" id="vsScheinNr" value="${esc(v.scheinNr||'')}" placeholder="z. B. 12-345678-90"></div>
+      <div class="f"><label>Ansprechpartner (optional)</label>
+        <input type="text" id="vsAnsprech" value="${esc(v.ansprechpartner||'')}" placeholder="Name / Agentur"></div>
+      <div class="f-row">
+        <div class="f"><label>Schaden-E-Mail</label>
+          <input type="email" id="vsEmail" value="${esc(v.schadenEmail||'')}" placeholder="schaden@versicherer.de" autocomplete="off"></div>
+        <div class="f"><label>Schaden-Telefon</label>
+          <input type="tel" id="vsTel" value="${esc(v.schadenTel||'')}" placeholder="optional"></div>
+      </div>
+      <div class="f"><label>Notiz (optional)</label>
+        <textarea id="vsNotiz" spellcheck="true" lang="de" style="min-height:44px" placeholder="z. B. Selbstbeteiligung 250 €">${esc(v.notiz||'')}</textarea></div>
+    </div>
+    <div class="f-row" style="margin-top:12px">
+      <button class="btn btn-copper btn-full" onclick="saveVersicherung('${objektId}','${versId}')"><i class="ti ti-check"></i> Speichern</button>
+      <button class="btn btn-full" onclick="modalVersicherungen('${objektId}')">Zurück</button>
+    </div>`);
+}
+function onVsArtChange(){
+  const sel=document.getElementById('vsArt');
+  const wrap=document.getElementById('vsArtTextWrap');
+  if(sel&&wrap) wrap.style.display = sel.value==='sonstige' ? 'block' : 'none';
+}
+async function saveVersicherung(objektId, versId){
+  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  const g=id=>document.getElementById(id)?.value?.trim()||'';
+  const art=document.getElementById('vsArt')?.value||'haftpflicht';
+  const rec={
+    id: versId || ('vers_'+objektId+'_'+Date.now().toString(36)),
+    objektId,
+    art,
+    artText: art==='sonstige' ? g('vsArtText') : '',
+    gesellschaft:g('vsGesellschaft'),
+    scheinNr:g('vsScheinNr'),
+    ansprechpartner:g('vsAnsprech'),
+    schadenEmail:g('vsEmail'),
+    schadenTel:g('vsTel'),
+    notiz:g('vsNotiz'),
+    geaendert:now(),
+    updatedAt:nowIso(),
+  };
+  await idbPut('versicherungen',rec);
+  clearTimeout(window._syncTimer);
+  window._syncTimer=setTimeout(()=>syncToOneDrive(),2000);
+  toast('Versicherung gespeichert ✓');
+  await modalVersicherungen(objektId);
+}
+async function versicherungLoeschen(objektId, versId){
+  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  if(!confirm('Diese Versicherung wirklich löschen?')) return;
+  await idbDelete('versicherungen',versId);
+  clearTimeout(window._syncTimer);
+  window._syncTimer=setTimeout(()=>syncToOneDrive(),2000);
+  toast('Versicherung gelöscht');
+  await modalVersicherungen(objektId);
+}
+
+/* ── Schadensmeldung an Versicherung (Paket 3b) ── */
+async function modalSchadenMelden(mangelId, store='maengel'){
+  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  const m=await idbGet(store,mangelId).catch(()=>null);
+  if(!m){ toast('Vorgang nicht gefunden'); return; }
+  const obj=getObj(m.objektId);
+  const list=await getVersicherungenFuerObjekt(m.objektId);
+  if(!list.length){
+    showModal(`
+      <div class="m-title"><i class="ti ti-shield-x"></i> Keine Versicherung hinterlegt</div>
+      <div style="font-size:13px;color:var(--ink-60);line-height:1.6;margin-bottom:12px">
+        Für ${obj?.name||'dieses Objekt'} ist noch keine Versicherung erfasst.
+        Bitte zuerst unter „Gebäudedaten → Versicherungen“ eine Versicherung anlegen.
+      </div>
+      <div class="f-row">
+        <button class="btn btn-copper btn-full" onclick="modalVersicherungen('${m.objektId}')"><i class="ti ti-plus"></i> Versicherung anlegen</button>
+        <button class="btn btn-full" onclick="closeModal()">Schließen</button>
+      </div>`);
+    return;
+  }
+  const opts=list.map((v,i)=>`<option value="${v.id}" ${i===0?'selected':''}>${esc(versArtLabel(v))}${v.gesellschaft?' – '+esc(v.gesellschaft):''}</option>`).join('');
+  let mieterZeile='';
+  if(m.mieterId){ const mt=await idbGet('mieter',m.mieterId).catch(()=>null); if(mt) mieterZeile=`${mt.mieter} · WE ${mt.weNr||''}`; }
+  showModal(`
+    <div class="m-title"><i class="ti ti-shield-check"></i> Schaden an Versicherung melden</div>
+    <div style="font-size:12px;color:var(--ink-40);margin-bottom:10px">${esc((m.nummer?m.nummer+' · ':'')+m.titel)} · ${obj?.name||''}</div>
+    <div class="f"><label>Versicherung wählen</label>
+      <select id="smVers">${opts}</select></div>
+    <div class="f"><label>Schadendatum</label>
+      <input type="date" id="smDatum" value="${(m.datum && /^\d{4}-\d{2}-\d{2}/.test(m.datum))?m.datum.slice(0,10):today()}"></div>
+    <div class="f"><label>Schadenbeschreibung</label>
+      <textarea id="smBeschr" spellcheck="true" lang="de" style="min-height:90px">${esc(m.beschreibung||m.titel||'')}</textarea></div>
+    <div style="font-size:11px;color:var(--ink-40);margin-bottom:10px;line-height:1.4">
+      <i class="ti ti-info-circle"></i> Es wird ein E-Mail-Entwurf erstellt. Versand und endgültige Prüfung erfolgen durch Sie im Mailprogramm.
+    </div>
+    <div class="f-row">
+      <button class="btn btn-copper btn-full" onclick="schadenMailOeffnen('${mangelId}','${store}','${esc(mieterZeile)}')"><i class="ti ti-mail-forward"></i> E-Mail öffnen</button>
+      <button class="btn btn-full" onclick="schadenMailKopieren('${mangelId}','${store}','${esc(mieterZeile)}')"><i class="ti ti-copy"></i> Text kopieren</button>
+    </div>
+    <button class="btn btn-full" style="margin-top:8px" onclick="closeModal()">Abbrechen</button>`);
+}
+async function _schadenTextBauen(mangelId, store, mieterZeile){
+  const m=await idbGet(store,mangelId).catch(()=>null);
+  if(!m) return null;
+  const obj=getObj(m.objektId);
+  const versId=document.getElementById('smVers')?.value||'';
+  const v=await idbGet('versicherungen',versId).catch(()=>null);
+  const datumRaw=document.getElementById('smDatum')?.value||'';
+  const datum=datumRaw?new Date(datumRaw).toLocaleDateString('de-DE'):'';
+  const beschr=document.getElementById('smBeschr')?.value?.trim()||m.beschreibung||m.titel||'';
+  const eig=await getEigentuemerFuerObjekt(m.objektId).catch(()=>null);
+  const objAdr=obj?`${obj.name||''}${obj.ort?', '+obj.ort:''}`:'';
+  const betreff=`Schadenmeldung – ${versArtLabel(v)||'Versicherung'}${v&&v.scheinNr?' · VS-Nr. '+v.scheinNr:''} – ${obj?.name||''}`;
+  const zeilen=[];
+  zeilen.push('Sehr geehrte Damen und Herren,');
+  zeilen.push('');
+  zeilen.push('hiermit zeigen wir Ihnen einen Schaden an folgendem versicherten Objekt an und bitten um Bearbeitung:');
+  zeilen.push('');
+  if(v&&v.scheinNr) zeilen.push('Versicherungsschein-Nr.: '+v.scheinNr);
+  if(v) zeilen.push('Versicherungsart: '+versArtLabel(v));
+  zeilen.push('Objekt / Schadenort: '+objAdr);
+  if(mieterZeile) zeilen.push('Betroffene Wohneinheit: '+mieterZeile);
+  if(datum) zeilen.push('Schadendatum: '+datum);
+  zeilen.push('');
+  zeilen.push('Schadenbeschreibung:');
+  zeilen.push(beschr);
+  zeilen.push('');
+  zeilen.push('Für Rückfragen stehen wir Ihnen gern zur Verfügung. Um eine Eingangsbestätigung sowie die Schadennummer wird gebeten.');
+  zeilen.push('');
+  zeilen.push('Mit freundlichen Grüßen');
+  const bk=getBriefkopf(m.objektId);
+  zeilen.push(bk?.name||'Hausverwaltung Nadig Pfau');
+  if(eig&&eig.name) zeilen.push('für den Eigentümer: '+eig.name);
+  return {betreff, body:zeilen.join('\n'), email:(v&&v.schadenEmail)||''};
+}
+async function schadenMailOeffnen(mangelId, store, mieterZeile){
+  const t=await _schadenTextBauen(mangelId, store, mieterZeile);
+  if(!t) return;
+  if(!t.email){
+    toast('Keine Schaden-E-Mail hinterlegt – bitte Text kopieren');
+    await schadenMailKopieren(mangelId, store, mieterZeile, true);
+    return;
+  }
+  const url='mailto:'+encodeURIComponent(t.email)+'?subject='+encodeURIComponent(t.betreff)+'&body='+encodeURIComponent(t.body);
+  // Kommentar am Vorgang protokollieren
+  try{ const m=await idbGet(store,mangelId); if(m){ if(!m.kommentare)m.kommentare=[]; m.kommentare.push({autor:CU?.name||'–',datum:now(),text:'Schaden an Versicherung gemeldet (E-Mail-Entwurf erstellt).'}); await idbPut(store,m);} }catch(e){}
+  window.location.href=url;
+  closeModal();
+  toast('E-Mail-Entwurf geöffnet ✓');
+}
+async function schadenMailKopieren(mangelId, store, mieterZeile, _still){
+  const t=await _schadenTextBauen(mangelId, store, mieterZeile);
+  if(!t) return;
+  const text=(t.email?('An: '+t.email+'\n'):'')+'Betreff: '+t.betreff+'\n\n'+t.body;
+  try{
+    await navigator.clipboard.writeText(text);
+    toast('Schadenmeldung in Zwischenablage kopiert ✓');
+  }catch(e){
+    // Fallback: Textfeld zur manuellen Kopie
+    showModal(`<div class="m-title"><i class="ti ti-copy"></i> Schadenmeldung</div>
+      <textarea readonly style="width:100%;min-height:300px;font-size:12px;font-family:monospace" onclick="this.select()">${esc(text)}</textarea>
+      <button class="btn btn-full" style="margin-top:10px" onclick="closeModal()">Schließen</button>`);
+  }
 }
 
 /* ── Personen-Helfer (personen_liste mit verstorben-Status) ── */
@@ -7486,17 +7810,17 @@ async function renderObjMieter(el){
     const alleVerstorben=!m.leerstand && personen.length>0 && personen.every(p=>p.verstorben);
     // Anzeigename (Punkt 6): Nachname(n) der Vertragspartner. Fallback auf bisherige
     // Logik (erste zwei Personen), falls keine Vertragspartner markiert sind.
-    const vpNachnamen = hauptmieterNachnamen(m);
+    const vpName = hauptmieterNameVoll(m);
     const namen=ersteZweiNamen(m);
-    const anzeigeName = vpNachnamen
-      ? vpNachnamen
+    const anzeigeName = vpName
+      ? vpName
       : (namen.length>1 ? namen.join(' · ') : (namen[0]||m.mieter));
     h+=`<div class="mieter-row${alleVerstorben?' mieter-verstorben':''}" onclick="showMieter('${m.id}')">
       <div class="m-avatar">${ini}</div>
       <div class="m-body">
         <div class="m-name">${m.leerstand?'<span class="chip chip-warn" style="font-size:10px;margin-right:4px"><i class="ti ti-home-off" style="font-size:9px"></i> Leerstand</span>':''}${alleVerstorben?'<span class="chip" style="font-size:10px;margin-right:4px;background:var(--ink-10);color:var(--ink-40)"><i class="ti ti-grave" style="font-size:9px"></i> verstorben</span>':''} ${esc(anzeigeName)}</div>
         <div class="m-sub">${m.etage||''} · Einzug: ${m.einzug||'–'}${m.leerstand?'':` · <i class="ti ti-users" style="font-size:11px"></i> ${pers} ${pers===1?'Person':'Personen'}`}</div>
-        ${istAdmin && !m.leerstand && mieteProQm(m)!==null?`<div class="m-sub" style="margin-top:2px"><i class="ti ti-square-rounded-percentage" style="font-size:11px"></i> ${mieteProQmHTML(m, stamm&&stamm.mietspiegel)}${stamm&&stamm.mietspiegel?` <span style="color:var(--ink-40);font-size:11px">(Mietspiegel ${String(stamm.mietspiegel).replace('.',',')} €/m²)</span>`:''}</div>`:''}
+        ${istAdmin && !m.leerstand && mieteProQm(m)!==null?`<div class="m-sub" style="margin-top:2px"><i class="ti ti-square-rounded-percentage" style="font-size:11px"></i> ${mieteProQmHTML(m, stamm&&stamm.mietspiegel)}${m.flaeche?` <span style="color:var(--ink-40);font-size:11px">· ${String(m.flaeche).replace('.',',')} m²</span>`:''}${stamm&&stamm.mietspiegel?` <span style="color:var(--ink-40);font-size:11px">(Mietspiegel ${String(stamm.mietspiegel).replace('.',',')} €/m²)</span>`:''}</div>`:''}
         <div class="m-sub" style="display:flex;gap:8px;flex-wrap:wrap">
           ${m.telefon?`<span><i class="ti ti-phone" style="font-size:11px"></i> ${m.telefon}</span>`:''}
           ${m.email?`<span><i class="ti ti-mail" style="font-size:11px"></i> ${m.email}</span>`:''}
@@ -7650,7 +7974,7 @@ async function showMieter(id){
   let h=`<div class="det-hdr">
     <div class="det-av-row">
       <div class="det-av">${ini}</div>
-      <div><div class="det-name">${esc(hauptmieterNachnamen(m)||m.mieter)}</div>
+      <div><div class="det-name">${esc(hauptmieterNameVoll(m)||m.mieter)}</div>
         <div class="det-we">${obj?.name||''} · WE ${m.weNr} · ${m.etage||''}${m.leerstand?' · \u26A0 LEERSTAND':''}</div>
       </div>
     </div>
@@ -10994,6 +11318,37 @@ const BRIEFKOPF_DEFAULTS = {
     tel:'0177 / 2509710', email:'nadigpfau-hausverwaltung@gmx.de',
   },
 };
+// ── Eigentümer-/Vermieter-Stammdaten (Punkt 1.1) ─────────────────
+// Zentrale, editierbare Eigentümerliste in settings (id 'eigentuemer_liste').
+// Pro Objekt wird in objekt_stamm nur die Zuordnung (eigentuemerId + Name/Anschrift
+// als Kopie) gespeichert. Wirkt als Stammdatum; ändert NICHT automatisch den
+// Verwalter-Briefkopf (dieser bleibt 'Hausverwaltung Nadig Pfau').
+const EIGENTUEMER_DEFAULTS = [
+  {id:'eig_nadig_pfau', name:'Alexander-Roland Nadig und Anna-Alexandra Pfau', anschrift:'Venloer Straße 20, 40477 Düsseldorf'},
+  {id:'eig_roland',     name:'Roland B. Nadig',                                 anschrift:'Zur Verlach 37, 40723 Hilden'},
+];
+async function getEigentuemerListe(){
+  try{
+    const e=await idbGet('settings','eigentuemer_liste');
+    if(e&&Array.isArray(e.value)&&e.value.length) return e.value;
+  }catch(_){}
+  return EIGENTUEMER_DEFAULTS.slice();
+}
+async function saveEigentuemerListe(liste){
+  await idbPut('settings',{id:'eigentuemer_liste', value:liste, geaendert:nowIso()});
+  clearTimeout(window._syncTimer);
+  window._syncTimer=setTimeout(()=>syncToOneDrive(),2000);
+}
+// Eigentümer eines Objekts (aus objekt_stamm); Fallback per Gruppe.
+async function getEigentuemerFuerObjekt(objektId){
+  const s=(await idbGet('objekt_stamm',objektId).catch(()=>null))||{};
+  if(s.eigentuemerName) return {id:s.eigentuemerId||'', name:s.eigentuemerName, anschrift:s.eigentuemerAnschrift||''};
+  // Fallback: MG -> Roland, sonst Nadig Pfau
+  const obj=getObj(objektId);
+  const def=((obj?.gruppe||'').toLowerCase()==='mg') ? EIGENTUEMER_DEFAULTS[1] : EIGENTUEMER_DEFAULTS[0];
+  return {...def};
+}
+
 // Gruppe eines Objekts auf einen der drei Briefkopf-Schlüssel abbilden
 function briefkopfGruppe(obj){
   const g=(obj?.gruppe||'').toLowerCase();
@@ -12123,6 +12478,18 @@ async function modalMietbescheinigung(mieterId){
   const obj=getObj(m.objektId);
   const w=await getWohnungStamm(m.objektId, m.weNr);   // dauerhafte Wohnungsdaten
   const gs=(await idbGet('objekt_stamm',m.objektId).catch(()=>null))||{};
+  // Punkt 2.2: Unterschriften-Auswahl wie bei der WGB (max. 2 hinterlegte Admin-Signaturen)
+  const _users=await idbGetAll('users').catch(()=>[]);
+  const _admins=_users.filter(u=>u.role==='admin' && u.signatur);
+  window._mbSigUserIds=(_admins.some(u=>u.id===CU?.id))?[CU.id]:[];
+  const mbSigListe=_admins.length
+    ? _admins.map(u=>`
+        <label style="display:flex;align-items:center;gap:8px;padding:6px 8px;border:1px solid var(--ink-10);border-radius:8px;margin-bottom:6px;cursor:pointer">
+          <input type="checkbox" value="${u.id}" ${window._mbSigUserIds.includes(u.id)?'checked':''} onchange="mbSigToggle('${u.id}')" style="width:16px;height:16px">
+          <img src="${u.signatur}" style="max-height:34px;background:#fff;border:1px solid var(--ink-10);border-radius:4px">
+          <span style="font-size:13px">${esc(u.name||'')}</span>
+        </label>`).join('')
+    : '<div style="font-size:12px;color:var(--amber)">Keine hinterlegten Unterschriften. Unter „Mein Profil“ kann eine Unterschrift hinterlegt werden. Ohne Auswahl wird ein leeres Unterschriftsfeld gedruckt.</div>';
   const kalt=parseBetrag(m.miete)||0;
   const nkGes=parseBetrag(m.nk)||0;
   const cb=(id,val)=>`<input type="checkbox" id="${id}" ${val?'checked':''} style="width:15px;height:15px">`;
@@ -12206,6 +12573,10 @@ async function modalMietbescheinigung(mieterId){
     <div class="f"><label>Mietschulden derzeit (€)</label>
       <input type="text" inputmode="decimal" id="mbSchulden" value="0" placeholder="0,00"></div>
 
+    <div class="f-section-title" style="margin-top:10px"><i class="ti ti-signature"></i> Unterschrift(en)</div>
+    <div style="font-size:11px;color:var(--ink-40);margin-bottom:6px">Eine oder zwei hinterlegte Unterschriften wählen (z. B. Alexander Nadig und Anna Pfau).</div>
+    <div id="mbSigPick">${mbSigListe}</div>
+
     </div>
     <div class="f-row" style="margin-top:14px">
       <button class="btn btn-copper btn-full" onclick="erstelleMietbescheinigung('${mieterId}')">
@@ -12223,12 +12594,31 @@ function mbRechneNK(){
   if(el) el.value=rest.toFixed(2).replace('.',',');
 }
 
+// Punkt 2.2: Unterschriften-Auswahl der Mietbescheinigung (max. 2)
+function mbSigToggle(userId){
+  const set=new Set(window._mbSigUserIds||[]);
+  if(set.has(userId)) set.delete(userId);
+  else{
+    if(set.size>=2){ toast('Maximal zwei Unterschriften'); const cb=document.querySelector('#mbSigPick input[value="'+userId+'"]'); if(cb) cb.checked=false; return; }
+    set.add(userId);
+  }
+  window._mbSigUserIds=[...set];
+}
+async function mbGewaehlteSignaturen(){
+  const ids=(window._mbSigUserIds||[]).slice(0,2);
+  const out=[];
+  for(const id of ids){ const u=await idbGet('users',id).catch(()=>null); if(u&&u.signatur) out.push({name:u.name||'', signatur:u.signatur}); }
+  return out;
+}
+
 async function erstelleMietbescheinigung(mieterId){
   const m=await idbGet('mieter',mieterId); if(!m) return;
   const obj=getObj(m.objektId);
-  const bk=getBriefkopf(m.objektId);
   await ladeBriefkopfCache();
-  let meineSig=''; try{ const u=await idbGet('users',CU?.id); meineSig=u?.signatur||CU?.signatur||''; }catch(e){}
+  const bk=getBriefkopf(m.objektId);
+  // Punkt 2.2: gewählte Unterschrift(en); Fallback eigene, dann leer
+  let sigListe=await mbGewaehlteSignaturen();
+  if(!sigListe.length){ try{ const u=await idbGet('users',CU?.id); const sg=u?.signatur||CU?.signatur||''; if(sg) sigListe=[{name:u?.name||bk.name, signatur:sg}]; }catch(e){} }
 
   const v=id=>document.getElementById(id);
   const val=id=>v(id)?.value||'';
@@ -12287,7 +12677,6 @@ async function erstelleMietbescheinigung(mieterId){
 
   const seite2=`
     <div class="mb-h2">Miete</div>
-    <p class="mb-sub"><em>Grundmiete, Heiz- und Nebenkosten bitte getrennt aufführen!</em></p>
     <table class="mb-t">
       <tr><td class="l">Gesamtfläche der Wohnung</td><td>${m.flaeche||''} m²</td></tr>
       <tr><td class="l">Monatliche Gesamtmiete seit ${mieteSeit||m.einzug||''}</td><td><strong>${eur(gesamt)}</strong></td></tr>
@@ -12310,36 +12699,36 @@ async function erstelleMietbescheinigung(mieterId){
     <div class="mb-row">Es bestehen derzeit Mietschulden in Höhe von: <strong>${eur(schulden)||'0,– €'}</strong></div>
 
     <div class="mb-vermieter">
-      <div style="font-weight:700;margin-bottom:2px">Vermieter:</div>
-      <div>${esc(bk.name||'')}</div>
-      <div style="font-size:10px;color:#444">${esc(bk.strasse||'')} · ${esc(bk.ort||'')} · ${esc(bk.tel||'')}</div>
+      <span style="font-weight:700">Vermieter:</span> ${esc(bk.name||'')}
+      <span style="font-size:9px;color:#444"> · ${esc(bk.strasse||'')} · ${esc(bk.ort||'')} · ${esc(bk.tel||'')}</span>
     </div>
     <div class="mb-sig">
       <div>${esc(bk.ort?bk.ort.replace(/^\d+\s*/,''):'')}, den ${heute}</div>
-      <div class="mb-sig-line">
-        ${meineSig?`<img src="${meineSig}" style="max-height:55px;display:block;margin-bottom:2px">`:''}
-        <div style="border-top:1px solid #333;padding-top:3px;font-size:10px;color:#555">Unterschrift / Stempel</div>
+      <div class="mb-sig-wrap">
+        ${sigListe.length
+          ? sigListe.map(sg=>`<div class="mb-sig-line"><img src="${sg.signatur}" style="max-height:42px;display:block;margin:0 auto 1px"><div style="border-top:1px solid #333;padding-top:2px;font-size:9px;color:#555">${esc(sg.name||'Unterschrift / Stempel')}</div></div>`).join('')
+          : `<div class="mb-sig-line"><div style="border-top:1px solid #333;padding-top:2px;font-size:9px;color:#555">Unterschrift / Stempel</div></div>`}
       </div>
     </div>`;
 
   const style=`<style>
     *{margin:0;padding:0;box-sizing:border-box}
-    body{font-family:Arial,sans-serif;font-size:12px;color:#111;padding:18mm 16mm;max-width:210mm}
-    .mb-h{font-size:18px;font-weight:700;text-align:center;margin-bottom:6px}
-    .mb-h2{font-size:15px;font-weight:700;margin:4px 0 6px;border-bottom:2px solid #333;padding-bottom:3px}
-    .mb-sub{font-size:10px;color:#444;margin-bottom:10px;line-height:1.5}
-    .mb-t{width:100%;border-collapse:collapse;margin:6px 0}
-    .mb-t td{border:1px solid #999;padding:5px 7px;font-size:12px}
+    body{font-family:Arial,sans-serif;font-size:10px;color:#111;padding:11mm 14mm;max-width:210mm;line-height:1.25}
+    .mb-h{font-size:15px;font-weight:700;text-align:center;margin-bottom:3px}
+    .mb-h2{font-size:12px;font-weight:700;margin:7px 0 3px;border-bottom:1.5px solid #333;padding-bottom:2px}
+    .mb-sub{font-size:9px;color:#444;margin-bottom:5px;line-height:1.35}
+    .mb-t{width:100%;border-collapse:collapse;margin:3px 0}
+    .mb-t td{border:1px solid #999;padding:2px 6px;font-size:10px}
     .mb-t td.l{background:#f4f4f4;width:58%;color:#333}
-    .mb-row{font-size:12px;margin:7px 0;line-height:1.7}
-    .mb-vermieter{margin-top:24px;border:1px solid #999;padding:8px 10px}
-    .mb-sig{margin-top:28px;display:flex;justify-content:space-between;align-items:flex-end}
-    .mb-sig-line{width:55%;text-align:center}
-    .page-break{page-break-before:always}
-    @page{margin:0;size:A4}@media print{body{padding:18mm 16mm;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+    .mb-row{font-size:10px;margin:3px 0;line-height:1.45}
+    .mb-vermieter{margin-top:10px;border:1px solid #999;padding:4px 8px;font-size:10px}
+    .mb-sig{margin-top:14px;display:flex;justify-content:space-between;align-items:flex-end;gap:16px}
+    .mb-sig-wrap{display:flex;gap:18px;align-items:flex-end}
+    .mb-sig-line{min-width:150px;text-align:center}
+    @page{margin:0;size:A4}@media print{body{padding:11mm 14mm;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
   </style>`;
   const html=`<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8"><title>Mietbescheinigung – ${esc(m.mieter||'')}</title>${style}</head>
-    <body>${seite1}<div class="page-break"></div>${seite2}
+    <body>${seite1}${seite2}
     <scr`+`ipt>(function(){var p=function(){setTimeout(function(){window.focus();window.print();},500);};if(document.readyState==='complete'){p();}else{window.addEventListener('load',p);}})()</scr`+`ipt></body></html>`;
 
   druckHTML(html);
@@ -12791,6 +13180,42 @@ function hauptmieterNachnamen(m){
   if(namen.length<=1) return namen[0]||'';
   if(namen.length===2) return namen.join(' und ');
   return namen.slice(0,-1).join(', ')+' und '+namen[namen.length-1];
+}
+
+// Anzeigename "Nachname, Vorname" der Vertragspartner (Punkt 5).
+// Mehrere Vertragspartner mit gleichem Nachnamen -> "Müller, Anna & Max".
+// Verschiedene Nachnamen -> "Müller, Anna · Schmidt, Peter". Fallback: m.mieter.
+function nameNachnameVorname(name){
+  let n=(name||'').trim();
+  if(!n) return '';
+  if(n.includes(',')) return n.replace(/\s*,\s*/, ', ');
+  const teile=n.split(/\s+/);
+  if(teile.length<2) return n;
+  const nach=teile[teile.length-1];
+  const vor=teile.slice(0,-1).join(' ');
+  return nach+', '+vor;
+}
+function hauptmieterNameVoll(m){
+  const lebend=(m.personen_liste||[]).filter(p=>p && p.name && !p.verstorben);
+  const vp=lebend.filter(p=>p.vertragspartner);
+  const basis = vp.length ? vp : (lebend.length ? [lebend[0]] : []);
+  if(!basis.length) return nameNachnameVorname(m.mieter) || (m.mieter||'');
+  // Nach Nachname gruppieren, damit Eheleute kompakt erscheinen
+  const grp={};
+  basis.forEach(p=>{
+    const nn=nachnameAus(p.name);
+    const teile=(p.name||'').trim().split(/\s+/);
+    let vor='';
+    if((p.name||'').includes(',')) vor=(p.name.split(',')[1]||'').trim();
+    else if(teile.length>1) vor=teile.slice(0,-1).join(' ');
+    if(!grp[nn]) grp[nn]=[];
+    if(vor) grp[nn].push(vor);
+  });
+  const teile=Object.keys(grp).map(nn=>{
+    const vornamen=grp[nn].filter(Boolean);
+    return vornamen.length ? nn+', '+vornamen.join(' & ') : nn;
+  });
+  return teile.join(' · ');
 }
 
 // Brief-Anrede mit NACHNAMEN der Vertragspartner (Punkt 4):
@@ -15280,12 +15705,13 @@ async function modalAddMieter(objektId) {
 
     <div class="f-section-title"><i class="ti ti-cash"></i> Mietkonditionen</div>
     <div class="f-row">
-      <div class="f"><label>Miete (€)</label><input type="number" id="mMiete" step="0.01"></div>
+      <div class="f"><label>Miete (€)</label><input type="number" id="mMiete" step="0.01" oninput="vorschlagKaution()"></div>
       <div class="f"><label>NK-Vorauszahlung (€/Monat)</label><input type="number" id="mNk" step="0.01"></div>
     </div>
     <div class="f-row">
       <div class="f"><label>Mietbeginn *</label><input type="date" id="mEinzug" value="${today()}"></div>
-      <div class="f"><label>Kaution (€)</label><input type="number" id="mKaution" step="0.01"></div>
+      <div class="f"><label>Kaution (€)</label><input type="number" id="mKaution" step="0.01" oninput="this.dataset.manuell='1'">
+        <div style="font-size:10px;color:var(--ink-40);margin-top:2px">Vorschlag: 3× Nettokaltmiete (§ 551 BGB). Bei Eingabe der Miete automatisch gesetzt, frei änderbar.</div></div>
     </div>
     <div class="f-row">
       <div class="f"><label>Telefon</label><input type="tel" id="mTel" placeholder="+49 ..."></div>
@@ -15299,6 +15725,17 @@ async function modalAddMieter(objektId) {
       </button>
       <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
     </div>`);
+}
+
+// Punkt 4: Kautionsvorschlag = 3× Nettokaltmiete (§ 551 Abs. 1 BGB).
+// Setzt das Kautionsfeld nur, solange der Nutzer es nicht selbst geändert hat.
+function vorschlagKaution(){
+  const km=document.getElementById('mMiete');
+  const ka=document.getElementById('mKaution');
+  if(!km||!ka) return;
+  if(ka.dataset.manuell==='1') return;           // Nutzer hat manuell eingetragen
+  const kalt=parseFloat(String(km.value).replace(',','.'))||0;
+  if(kalt>0){ ka.value=(kalt*3).toFixed(2); }
 }
 
 // Reaktion auf WE-Auswahl: Daten übernehmen + Hinweis zu Mieterwechsel
@@ -17872,6 +18309,7 @@ async function renderSettings(){
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn btn-copper" onclick="syncFromOneDrive()"><i class="ti ti-refresh"></i> Jetzt synchronisieren</button>
         <button class="btn btn-sm" onclick="syncFromOneDriveForce()"><i class="ti ti-cloud-download"></i> Vom Server laden (erzwingen)</button>
+        <button class="btn btn-sm" onclick="odBrowserOeffnen()"><i class="ti ti-folders"></i> Dateien (Ordnerbaum)</button>
         <button class="btn btn-sm btn-danger" onclick="msalLogout()"><i class="ti ti-logout"></i> Microsoft-Konto abmelden</button>
       </div>` : `
       <p style="font-size:13px;color:var(--ink-40);margin-bottom:12px;line-height:1.6">
@@ -18208,7 +18646,7 @@ async function delUser(id){
 async function exportBackup(){
   if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
   const backup={};
-  for(const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten']){
+  for(const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','versicherungen','versorger_archiv','od_dateien']){
     backup[s]=await idbGetAll(s);
   }
   backup.exportedAt=now();backup.version=2;
@@ -18321,7 +18759,7 @@ async function importBackup(input){
       const backup=JSON.parse(e.target.result);
       await erstelleMieterSnapshot('import');
       const modus = confirm('Importmodus wählen:\n\nOK = Zusammenführen (empfohlen): neuere Daten gewinnen, nichts geht verloren.\nAbbrechen = Vollständig ersetzen (alter Modus): lokale Daten werden komplett überschrieben.');
-      const alleStores=['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten'];
+      const alleStores=['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','versorger_archiv','od_dateien'];
       if(!modus){
         // Vollständig ersetzen (alter Modus)
         for(const s of alleStores){
@@ -18563,7 +19001,7 @@ async function syncToOneDrive() {
     } catch(e){ /* offline o. 404: normaler Upload-Weg unten */ }
 
     const backup = {};
-    for (const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','versorger_archiv','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch','sync_log','interessenten']) {
+    for (const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','versorger_archiv','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch','sync_log','interessenten','versicherungen','od_dateien']) {
       backup[s] = await idbGetAll(s);
     }
     backup.updatedAt = new Date().toISOString();
@@ -18658,7 +19096,7 @@ async function syncFromOneDrive() {
       await idbPut('settings', { id:'tombstones', value: mergedTomb });
 
       // Merge: ID-basiert, nur übernehmen wenn remote neuer oder lokal fehlt
-      const mergeStores = ['protokolle','aufgaben','maengel','reparaturen','dokumente','nka_archiv','einkaufsliste','wartung','termine','zaehler','zaehlerstaende','versorger','versorger_archiv','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch','sync_log','interessenten'];
+      const mergeStores = ['protokolle','aufgaben','maengel','reparaturen','dokumente','nka_archiv','einkaufsliste','wartung','termine','zaehler','zaehlerstaende','versorger','versorger_archiv','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch','sync_log','interessenten','od_dateien'];
       for (const s of mergeStores) {
         if (!backup[s]) continue;
         const tombS = mergedTomb[s] || {};
@@ -18733,6 +19171,389 @@ function initMSAL() {
     setSyncStatus('offline');
   }
 };
+
+/* ═══════════════════════════════════════════════════════════
+   PAKET 3c – ONEDRIVE DATEI-ORDNERBAUM (bidirektional)
+   ───────────────────────────────────────────────────────────
+   Synchronisiert ECHTE Dateien (PDF/Foto/Scan) in einem
+   Ordnerbaum unter /NadigPfau/Objekte/.  Datei im OneDrive-
+   Ordner  ->  erscheint in der App;  in App hochgeladen  ->
+   landet im OneDrive-Ordner.  Konflikt (gleicher Name, beide
+   Seiten geaendert)  ->  beide behalten, Kopie mit Suffix.
+
+   WICHTIG: Dateiinhalte werden NICHT in IndexedDB dupliziert
+   (Quota/Datenverlust-Risiko).  Gespeichert werden nur
+   Metadaten im Store 'od_dateien'; Inhalte werden bei Bedarf
+   ueber einen kurzlebigen Graph-Download-Link geladen.
+   Struktur:
+     /NadigPfau/Objekte/<Standort>/Allgemein/
+     /NadigPfau/Objekte/<Standort>/WE <n>/
+   Standorte ohne Haus-Unterteilung (KR, MG, RT, Min, Monheim).
+═══════════════════════════════════════════════════════════ */
+
+const OD_BASE          = 'NadigPfau/Objekte';
+const OD_GRAPH         = 'https://graph.microsoft.com/v1.0';
+let   odBaumSyncLauft  = false;
+
+/* Standort-Definition fuer den Ordnerbaum.
+   key = Ordnername auf OneDrive; objektIds = zugehoerige Objekte. */
+function odStandorte(){
+  const byGruppe={};
+  for(const o of OBJEKTE){
+    (byGruppe[o.gruppe] = byGruppe[o.gruppe]||[]).push(o.id);
+  }
+  // Label fuer den Ordnernamen (knapp, dateisystemtauglich)
+  const LABEL={
+    krefeld:'KR Krefeld', duesseldorf:'RT Duesseldorf',
+    mg:'MG Moenchengladbach', monheim:'Monheim',
+  };
+  const out=[];
+  for(const g in byGruppe){
+    out.push({ gruppe:g, ordner:(LABEL[g]||g), objektIds:byGruppe[g] });
+  }
+  return out;
+}
+
+/* Wohneinheiten je Standort aus den Mieterdaten ableiten (weNr distinct). */
+async function odWohneinheiten(objektIds){
+  const set=new Set();
+  try{
+    const alle=await idbGetAll('mieter');
+    for(const m of alle){
+      if(!m || m._vormieter) continue;
+      if(objektIds.includes(m.objektId)){
+        const w=String(m.weNr||'').trim();
+        if(w) set.add(w);
+      }
+    }
+  }catch(e){}
+  return [...set].sort((a,b)=>{
+    const na=Number(a), nb=Number(b);
+    if(!isNaN(na)&&!isNaN(nb)) return na-nb;
+    return String(a).localeCompare(String(b),'de');
+  });
+}
+
+/* Dateisystem-taugliche Namen (keine \\ / : * ? " < > | ). */
+function odSafeName(s){
+  return String(s||'').replace(/[\\\/:*?"<>|]/g,'-').replace(/\s+/g,' ').trim();
+}
+
+/* ── Graph-Helper ───────────────────────────────────────── */
+async function odGraph(path, opts={}){
+  const token=await odGetToken();
+  if(!token) throw new Error('Nicht angemeldet');
+  const url = path.startsWith('http') ? path : OD_GRAPH+path;
+  const r=await fetch(url, {
+    ...opts,
+    headers:{ 'Authorization':'Bearer '+token, ...(opts.headers||{}) },
+  });
+  if(r.status===404) return {__notfound:true};
+  if(!r.ok){
+    let det=''; try{ det=(await r.json())?.error?.message||''; }catch(e){}
+    throw new Error('Graph '+r.status+(det?' – '+det:''));
+  }
+  const ct=r.headers.get('content-type')||'';
+  return ct.includes('application/json') ? r.json() : r;
+}
+
+/* Ordner anlegen (idempotent). pfad relativ zu drive root, ohne fuehrenden /. */
+async function odEnsureFolder(pfad){
+  // Pruefen, ob schon vorhanden
+  const enc=encodeURI(pfad);
+  const ex=await odGraph(`/me/drive/root:/${enc}`).catch(()=>({__notfound:true}));
+  if(ex && !ex.__notfound && ex.id) return ex;
+  // Eltern + Name trennen, dann anlegen
+  const parts=pfad.split('/');
+  const name=parts.pop();
+  const parent=parts.join('/');
+  const parentRef = parent
+    ? `/me/drive/root:/${encodeURI(parent)}:/children`
+    : `/me/drive/root/children`;
+  return odGraph(parentRef, {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ name, folder:{}, '@microsoft.graph.conflictBehavior':'replace' }),
+  });
+}
+
+/* Kompletten Soll-Ordnerbaum auf OneDrive anlegen. */
+async function odBaumAnlegen(){
+  await odEnsureFolder('NadigPfau');
+  await odEnsureFolder(OD_BASE);
+  const stand=odStandorte();
+  for(const st of stand){
+    const base=`${OD_BASE}/${odSafeName(st.ordner)}`;
+    await odEnsureFolder(base);
+    await odEnsureFolder(`${base}/Allgemein`);
+    const wes=await odWohneinheiten(st.objektIds);
+    for(const w of wes){
+      await odEnsureFolder(`${base}/WE ${odSafeName(w)}`);
+    }
+  }
+  return stand.length;
+}
+
+/* Alle Dateien (nicht Ordner) eines OneDrive-Ordners auflisten. */
+async function odListFiles(pfad){
+  const enc=encodeURI(pfad);
+  let url=`/me/drive/root:/${enc}:/children?$select=id,name,size,eTag,lastModifiedDateTime,file,folder,parentReference&$top=200`;
+  const out=[];
+  while(url){
+    const res=await odGraph(url).catch(e=>({__notfound:true}));
+    if(!res || res.__notfound) break;
+    for(const it of (res.value||[])){
+      if(it.file) out.push(it);   // nur Dateien, keine Unterordner
+    }
+    url=res['@odata.nextLink']||null;
+  }
+  return out;
+}
+
+/* Pfad eines Knotens (Standort/WE/Allgemein) bauen. */
+function odKnotenPfad(standortOrdner, knoten){
+  return `${OD_BASE}/${odSafeName(standortOrdner)}/${knoten}`;
+}
+
+/* ── Bidirektionaler Datei-Sync ─────────────────────────────
+   1. Soll-Ordnerbaum sicherstellen.
+   2. Pro Knoten: Remote-Dateien listen -> Metadaten mit lokalem
+      Store 'od_dateien' abgleichen.
+   3. Lokal als 'neu hochzuladen' markierte Dateien (pendingUpload)
+      in den Zielordner schieben; Namenskonflikt -> Suffix.
+   Inhalte bleiben in OneDrive; lokal nur Metadaten. */
+async function syncDateibaum(silent){
+  if(odBaumSyncLauft){ return; }
+  const token=await odGetToken();
+  if(!token){ if(!silent) toast('Bitte zuerst mit OneDrive anmelden'); return; }
+  odBaumSyncLauft=true;
+  if(!silent) setSyncStatus('pending');
+  let neu=0, hoch=0, konflikte=0;
+  try{
+    await odBaumAnlegen();
+    const stand=odStandorte();
+
+    // bereits bekannte Metadaten (pfad -> record)
+    const bekannt={};
+    for(const rec of await idbGetAll('od_dateien')){
+      if(rec && rec.pfad) bekannt[rec.pfad]=rec;
+    }
+
+    for(const st of stand){
+      const wes=await odWohneinheiten(st.objektIds);
+      const knoten=['Allgemein', ...wes.map(w=>'WE '+odSafeName(w))];
+      for(const kn of knoten){
+        const ordnerPfad=odKnotenPfad(st.ordner, kn);
+        const weNr = kn.startsWith('WE ') ? kn.slice(3) : '';
+        const kategorie = kn==='Allgemein' ? 'allgemein' : 'wohneinheit';
+
+        // (a) Remote -> App: neue/aktualisierte Dateien als Metadaten erfassen
+        const remoteFiles=await odListFiles(ordnerPfad);
+        const remoteByPfad={};
+        for(const f of remoteFiles){
+          const pfad=ordnerPfad+'/'+f.name;
+          remoteByPfad[pfad]=f;
+          const vorher=bekannt[pfad];
+          if(!vorher || vorher.eTag!==f.eTag){
+            const rec={
+              id: vorher?.id || ('od_'+uid()),
+              pfad,
+              name: f.name,
+              ordner: ordnerPfad,
+              gruppe: st.gruppe,
+              standort: st.ordner,
+              weNr, kategorie,
+              groesse: f.size||0,
+              eTag: f.eTag||'',
+              odItemId: f.id||'',
+              lastModified: f.lastModifiedDateTime||'',
+              quelle:'onedrive',
+              geloescht:false,
+            };
+            await idbPut('od_dateien', rec, {keepStamp:true});
+            bekannt[pfad]=rec;
+            if(!vorher) neu++;
+          }
+        }
+
+        // (b) App -> Remote: lokal hochzuladende Dateien dieses Knotens
+        const pending=(await idbGetAll('od_dateien')).filter(r=>
+          r && r.pendingUpload && r.ordner===ordnerPfad && r._blobB64);
+        for(const rec of pending){
+          let zielName=rec.name;
+          // Konflikt: Datei gleichen Namens existiert remote, aber anderes eTag/unbekannt
+          const kollision=remoteByPfad[ordnerPfad+'/'+zielName];
+          if(kollision && rec.eTag && kollision.eTag!==rec.eTag){
+            const dev=odSafeName((odTokens?.user_name||'Geraet').split(' ')[0]);
+            const dat=new Date().toISOString().slice(0,10);
+            const dot=zielName.lastIndexOf('.');
+            const stem=dot>0?zielName.slice(0,dot):zielName;
+            const ext =dot>0?zielName.slice(dot):'';
+            zielName=`${stem} (Konflikt ${dev} ${dat})${ext}`;
+            konflikte++;
+          }
+          const zielPfad=ordnerPfad+'/'+zielName;
+          const bytes=Uint8Array.from(atob(rec._blobB64), c=>c.charCodeAt(0));
+          const up=await odGraph(
+            `/me/drive/root:/${encodeURI(zielPfad)}:/content`,
+            { method:'PUT',
+              headers:{'Content-Type': rec.mime||'application/octet-stream'},
+              body: bytes });
+          const upd={ ...rec,
+            name:zielName, pfad:zielPfad,
+            eTag:up.eTag||'', odItemId:up.id||'',
+            groesse:up.size||rec.groesse||0,
+            lastModified:up.lastModifiedDateTime||new Date().toISOString(),
+            pendingUpload:false, _blobB64:undefined, quelle:'app', geloescht:false };
+          await idbPut('od_dateien', upd, {keepStamp:true});
+          bekannt[zielPfad]=upd;
+          hoch++;
+        }
+      }
+    }
+    if(!silent){
+      setSyncStatus('ok');
+      toast(`✓ Dateien synchronisiert · ${neu} neu, ${hoch} hochgeladen`+
+            (konflikte?`, ${konflikte} Konflikt-Kopie(n)`:''));
+    }
+  }catch(e){
+    console.warn('Dateibaum-Sync:', e);
+    if(!silent){ setSyncStatus('offline'); toast('Datei-Sync fehlgeschlagen: '+e.message); }
+  }finally{
+    odBaumSyncLauft=false;
+  }
+}
+
+/* Download-Inhalt einer OneDrive-Datei (kurzlebiger Link, kein Cache). */
+async function odDateiOeffnen(recId){
+  try{
+    const rec=await idbGet('od_dateien', recId);
+    if(!rec){ toast('Datei nicht gefunden'); return; }
+    if(rec.odItemId){
+      const meta=await odGraph(`/me/drive/items/${rec.odItemId}?$select=@microsoft.graph.downloadUrl,name`);
+      const url=meta && meta['@microsoft.graph.downloadUrl'];
+      if(url){ window.open(url,'_blank'); return; }
+    }
+    // Fallback ueber Pfad
+    const meta=await odGraph(`/me/drive/root:/${encodeURI(rec.pfad)}:/?$select=@microsoft.graph.downloadUrl`);
+    const url=meta && meta['@microsoft.graph.downloadUrl'];
+    if(url) window.open(url,'_blank');
+    else toast('Download-Link nicht verfuegbar');
+  }catch(e){ toast('Oeffnen fehlgeschlagen: '+e.message); }
+}
+
+/* Datei aus der App in einen Ordnerbaum-Knoten hochladen.
+   standortGruppe + knoten ('Allgemein' oder 'WE n'); file = File-Objekt. */
+async function odDateiHochladen(gruppe, knoten, file){
+  if(!file){ return; }
+  const st=odStandorte().find(s=>s.gruppe===gruppe);
+  if(!st){ toast('Standort unbekannt'); return; }
+  const ordnerPfad=odKnotenPfad(st.ordner, knoten);
+  const b64=await new Promise((res,rej)=>{
+    const fr=new FileReader();
+    fr.onload=()=>res(String(fr.result).split(',')[1]||'');
+    fr.onerror=()=>rej(new Error('Lesefehler'));
+    fr.readAsDataURL(file);
+  });
+  const rec={
+    id:'od_'+uid(),
+    pfad: ordnerPfad+'/'+odSafeName(file.name),
+    name: odSafeName(file.name),
+    ordner: ordnerPfad,
+    gruppe: st.gruppe, standort: st.ordner,
+    weNr: knoten.startsWith('WE ')?knoten.slice(3):'',
+    kategorie: knoten==='Allgemein'?'allgemein':'wohneinheit',
+    groesse: file.size||0, mime: file.type||'application/octet-stream',
+    eTag:'', odItemId:'', lastModified:new Date().toISOString(),
+    quelle:'app', geloescht:false,
+    pendingUpload:true, _blobB64:b64,
+  };
+  await idbPut('od_dateien', rec, {keepStamp:true});
+  toast('Wird hochgeladen …');
+  await syncDateibaum(false);
+}
+
+/* ── Datei-Ordnerbaum: UI-Browser ──────────────────────────
+   Modal mit Standort -> Knoten (Allgemein / WE n) -> Dateien.
+   Upload per Datei-Input, Oeffnen per Download-Link. */
+let _odBrowserState = { gruppe:null, knoten:null };
+
+async function odBrowserOeffnen(gruppe, knoten){
+  if(!odTokens){ toast('Bitte zuerst mit OneDrive anmelden'); return; }
+  const stand=odStandorte();
+  // Ebene 1: Standortauswahl
+  if(!gruppe){
+    const items=stand.map(st=>
+      `<button class="btn btn-full" style="justify-content:flex-start;margin-bottom:6px"
+         onclick="odBrowserOeffnen('${st.gruppe}')">
+         <i class="ti ti-folder"></i> ${esc(st.ordner)}</button>`).join('');
+    showModal(`
+      <div class="m-title"><i class="ti ti-folders"></i> Dateien · Standort wählen</div>
+      <div style="margin:10px 0">${items}</div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px">
+        <button class="btn btn-copper btn-sm" onclick="syncDateibaum(false)"><i class="ti ti-refresh"></i> Synchronisieren</button>
+        <button class="btn btn-sm" onclick="closeModal()">Schließen</button>
+      </div>`);
+    return;
+  }
+  const st=stand.find(s=>s.gruppe===gruppe);
+  if(!st){ toast('Standort unbekannt'); return; }
+  // Ebene 2: Knotenauswahl (Allgemein + WEs)
+  if(!knoten){
+    const wes=await odWohneinheiten(st.objektIds);
+    const knoten=['Allgemein', ...wes.map(w=>'WE '+odSafeName(w))];
+    const items=knoten.map(kn=>
+      `<button class="btn btn-full" style="justify-content:flex-start;margin-bottom:6px"
+         onclick="odBrowserOeffnen('${gruppe}','${esc(kn)}')">
+         <i class="ti ${kn==='Allgemein'?'ti-archive':'ti-door'}"></i> ${esc(kn)}</button>`).join('');
+    showModal(`
+      <div class="m-title"><i class="ti ti-folder"></i> ${esc(st.ordner)}</div>
+      <div style="margin:10px 0;max-height:50vh;overflow:auto">${items}</div>
+      <div style="display:flex;gap:8px;justify-content:space-between;margin-top:8px">
+        <button class="btn btn-sm" onclick="odBrowserOeffnen()"><i class="ti ti-arrow-left"></i> Zurück</button>
+        <button class="btn btn-sm" onclick="closeModal()">Schließen</button>
+      </div>`);
+    return;
+  }
+  // Ebene 3: Dateiliste eines Knotens
+  _odBrowserState={ gruppe, knoten };
+  const ordnerPfad=odKnotenPfad(st.ordner, knoten);
+  const alle=(await idbGetAll('od_dateien')).filter(r=>r && r.ordner===ordnerPfad && !r.geloescht);
+  alle.sort((a,b)=>String(a.name).localeCompare(String(b.name),'de'));
+  const liste = alle.length ? alle.map(r=>{
+    const kb=r.groesse?Math.max(1,Math.round(r.groesse/1024)):0;
+    const pend=r.pendingUpload?' <span style="color:var(--copper);font-size:11px">· wird hochgeladen</span>':'';
+    return `<div style="display:flex;align-items:center;gap:8px;padding:8px;border-bottom:1px solid var(--line)">
+      <i class="ti ti-file" style="color:var(--ink-40)"></i>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:13px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.name)}${pend}</div>
+        <div style="font-size:11px;color:var(--ink-40)">${kb?kb+' KB · ':''}${esc((r.lastModified||'').slice(0,10))}</div>
+      </div>
+      ${r.pendingUpload?'':`<button class="btn btn-sm btn-copper" onclick="odDateiOeffnen('${r.id}')"><i class="ti ti-download"></i></button>`}
+    </div>`;
+  }).join('') : '<div style="padding:18px;text-align:center;color:var(--ink-40);font-size:13px">Noch keine Dateien. Über „Synchronisieren“ werden auf OneDrive abgelegte Dateien geladen.</div>';
+
+  showModal(`
+    <div class="m-title"><i class="ti ti-folder-open"></i> ${esc(st.ordner)} · ${esc(knoten)}</div>
+    <div style="max-height:46vh;overflow:auto;margin:8px 0;border:1px solid var(--line);border-radius:8px">${liste}</div>
+    <input type="file" id="odUploadInput" style="display:none"
+       onchange="odBrowserUpload(this)">
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+      <button class="btn btn-primary btn-sm" onclick="document.getElementById('odUploadInput').click()"><i class="ti ti-upload"></i> Datei hochladen</button>
+      <button class="btn btn-copper btn-sm" onclick="syncDateibaum(false).then(()=>odBrowserOeffnen('${gruppe}','${esc(knoten)}'))"><i class="ti ti-refresh"></i> Synchronisieren</button>
+      <button class="btn btn-sm" onclick="odBrowserOeffnen('${gruppe}')"><i class="ti ti-arrow-left"></i> Zurück</button>
+    </div>`);
+}
+
+async function odBrowserUpload(input){
+  const file=input.files && input.files[0];
+  if(!file) return;
+  const {gruppe, knoten}=_odBrowserState;
+  await odDateiHochladen(gruppe, knoten, file);
+  odBrowserOeffnen(gruppe, knoten);
+}
+
+
 
 function setSyncStatus(status){
   const dot=document.getElementById('syncDot');
@@ -20096,6 +20917,7 @@ async function showMangelDetail(id, store='maengel') {
       </button>
       <button class="btn btn-sm" onclick="editMangel('${id}','${store}')"><i class="ti ti-pencil"></i> Bearbeiten</button>
       <button class="btn btn-sm" onclick="materialFuerMangel('${id}','${store}')"><i class="ti ti-package"></i> Material</button>
+      <button class="btn btn-sm" onclick="modalSchadenMelden('${id}','${store}')"><i class="ti ti-shield-check"></i> An Versicherung melden</button>
       <button class="btn btn-sm" onclick="modalAddEinkauf('${id}','Mangel','',{objektId:'${m.objektId||''}',weNr:'${esc(m.weNr||'')}',bezugText:'${esc((m.nummer?m.nummer+' · ':'')+m.titel)}'})"><i class="ti ti-shopping-cart"></i></button>
       <button class="btn btn-sm btn-danger" onclick="deleteMangelConfirm('${id}','${store}')"><i class="ti ti-trash"></i></button>
     </div>`);
