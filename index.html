@@ -736,7 +736,7 @@ body.printing-active #printRoot{display:block!important}
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=21;
-const APP_VERSION = '2026-06-17-v86';
+const APP_VERSION = '2026-06-18-v88';
 let idb=null;
 
 function openIDB(){
@@ -3222,6 +3222,148 @@ async function wohnungsQrAlleNiimbot(objektId){
     await niimbotDruckeEtikett(wohnungsPortalUrl(objektId,we), 'WE '+we, obj?.name||objektId, 'Mieterportal');
   }
   toast(weListe.length+' Etikett(en) gedruckt');
+}
+
+/* ═══════════════════════════════════════════════════════════
+   WOHNUNGSEXPORT für das Azure-Backend (Mieterportal).
+   Sammelt belegte Wohneinheiten objektübergreifend und liefert sie
+   im Format der Table "wohnungen". Nur portalrelevante Felder.
+═══════════════════════════════════════════════════════════ */
+const BACKEND_BASIS = 'https://api.nadigpfau.de';
+
+async function sammleWohnungen(){
+  const alle=(await idbGetAll('mieter')).filter(m=>!m._vormieter && !m._zukuenftig && !m.leerstand);
+  // pro Objekt+WE genau ein Eintrag (erste belegte Person)
+  const proSchluessel={};
+  alle.forEach(m=>{
+    const objektId=String(m.objektId||'').trim();
+    const we=String(m.weNr||'').trim();
+    if(!objektId||!we||we==='undefined') return;
+    const key=objektId+'-WE'+we;
+    if(!proSchluessel[key]) proSchluessel[key]={m,objektId,we,key};
+  });
+  return Object.values(proSchluessel).map(({m,objektId,we,key})=>{
+    const obj=getObj(objektId)||{};
+    const adresse=[obj.name, 'WE '+we, obj.ort].filter(Boolean).join(', ');
+    return {
+      partitionKey: objektId,
+      rowKey: key,
+      weNr: we,
+      adresse,
+      flaeche: m.flaeche||'',
+      zimmer: m.zimmer||'',
+      etage: m.etage||'',
+      kontaktName: m.mieter||m.name||'',
+      kontaktEmail: (m.email||'').trim(),
+      kontaktTelefon: (m.telefon||'').trim(),
+      aktiv: true
+    };
+  }).sort((a,b)=> a.rowKey<b.rowKey?-1:1);
+}
+
+async function wohnungenExportInfo(){
+  const liste=await sammleWohnungen();
+  const ohneMail=liste.filter(w=>!w.kontaktEmail).length;
+  const el=document.getElementById('wohnungsExportInfo');
+  if(el) el.innerHTML=`${liste.length} belegte Wohneinheit(en)`+(ohneMail?` · <span style="color:var(--amber-d,#9a6b00)">${ohneMail} ohne E-Mail (kein Zugangscode möglich)</span>`:'');
+  return liste;
+}
+
+async function wohnungenExportJson(){
+  const liste=await sammleWohnungen();
+  if(!liste.length){ toast('Keine belegten Wohnungen'); return; }
+  const inhalt=JSON.stringify({ stand:new Date().toISOString(), anzahl:liste.length, wohnungen:liste }, null, 2);
+  const blob=new Blob([inhalt],{type:'application/json'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url; a.download='wohnungen_export.json';
+  document.body.appendChild(a); a.click();
+  setTimeout(()=>{ document.body.removeChild(a); URL.revokeObjectURL(url); },1500);
+  const ohneMail=liste.filter(w=>!w.kontaktEmail).length;
+  const st=document.getElementById('wohnungsExportStatus');
+  if(st) st.innerHTML=`<div style="font-size:12px;color:var(--green)"><i class="ti ti-circle-check"></i> ${liste.length} Wohnungen exportiert.${ohneMail?` ${ohneMail} ohne E-Mail.`:''}</div>`;
+  toast('Export gespeichert: wohnungen_export.json');
+}
+
+async function wohnungenExportPush(){
+  const liste=await sammleWohnungen();
+  if(!liste.length){ toast('Keine belegten Wohnungen'); return; }
+  const key=(await idbGet('settings','backendKey').catch(()=>null))?.value;
+  const st=document.getElementById('wohnungsExportStatus');
+  if(!key){
+    if(st) st.innerHTML=`<div style="font-size:12px;color:var(--ink-40)">Kein Backend-Schlüssel hinterlegt. Bitte zunächst unter „System“ den Function-Key speichern, oder JSON exportieren und manuell importieren.</div>`;
+    toast('Kein Backend-Schlüssel hinterlegt');
+    return;
+  }
+  if(st) st.innerHTML=`<div style="font-size:12px;color:var(--ink-40)">Übertrage ${liste.length} Wohnungen …</div>`;
+  try{
+    const res=await fetch(BACKEND_BASIS+'/api/admin/wohnungen-import',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-functions-key':key},
+      body:JSON.stringify({ wohnungen:liste })
+    });
+    const j=await res.json().catch(()=>({}));
+    if(res.ok && j.ok){
+      if(st) st.innerHTML=`<div style="font-size:12px;color:var(--green)"><i class="ti ti-circle-check"></i> ${j.uebernommen||liste.length} Wohnungen übertragen.</div>`;
+      toast('Backend aktualisiert');
+    }else{
+      if(st) st.innerHTML=`<div style="font-size:12px;color:var(--red,#c0392b)">Fehler ${res.status}. Übertragung nicht möglich.</div>`;
+    }
+  }catch(e){
+    if(st) st.innerHTML=`<div style="font-size:12px;color:var(--red,#c0392b)">Backend nicht erreichbar. Bitte JSON exportieren und manuell importieren.</div>`;
+  }
+}
+
+/* ── Function-Key-Verwaltung (Settings → System) ── */
+async function backendKeyLaden(){
+  const rec=await idbGet('settings','backendKey').catch(()=>null);
+  const inp=document.getElementById('backendKeyIn');
+  const del=document.getElementById('backendKeyDelBtn');
+  if(inp && rec?.value){ inp.value=rec.value; if(del) del.style.display=''; }
+  else if(del){ del.style.display='none'; }
+}
+function backendKeyToggle(){
+  const inp=document.getElementById('backendKeyIn');
+  const eye=document.getElementById('backendKeyEye');
+  if(!inp) return;
+  if(inp.type==='password'){ inp.type='text'; eye?.classList.replace('ti-eye','ti-eye-off'); }
+  else { inp.type='password'; eye?.classList.replace('ti-eye-off','ti-eye'); }
+}
+async function backendKeySpeichern(){
+  const val=(document.getElementById('backendKeyIn')?.value||'').trim();
+  const st=document.getElementById('backendKeyStatus');
+  if(!val){ if(st) st.innerHTML='<div style="font-size:12px;color:var(--ink-40)">Bitte einen Schlüssel eingeben.</div>'; return; }
+  await idbPut('settings', { id:'backendKey', value:val, geaendert:nowIso() });
+  const del=document.getElementById('backendKeyDelBtn'); if(del) del.style.display='';
+  if(st) st.innerHTML='<div style="font-size:12px;color:var(--green,#2E7D52)"><i class="ti ti-circle-check"></i> Schlüssel gespeichert (nur auf diesem Gerät).</div>';
+  toast('Backend-Schlüssel gespeichert');
+}
+async function backendKeyLoeschen(){
+  await idbDelete('settings','backendKey').catch(()=>{});
+  const inp=document.getElementById('backendKeyIn'); if(inp) inp.value='';
+  const del=document.getElementById('backendKeyDelBtn'); if(del) del.style.display='none';
+  const st=document.getElementById('backendKeyStatus');
+  if(st) st.innerHTML='<div style="font-size:12px;color:var(--ink-40)">Schlüssel entfernt.</div>';
+  toast('Schlüssel entfernt');
+}
+async function backendKeyTesten(){
+  const val=(document.getElementById('backendKeyIn')?.value||'').trim();
+  const st=document.getElementById('backendKeyStatus');
+  if(!val){ if(st) st.innerHTML='<div style="font-size:12px;color:var(--ink-40)">Bitte zuerst einen Schlüssel eingeben.</div>'; return; }
+  if(st) st.innerHTML='<div style="font-size:12px;color:var(--ink-40)">Verbindung wird geprüft …</div>';
+  try{
+    // leichter, key-geschützter Aufruf (verändert nichts)
+    const res=await fetch(BACKEND_BASIS+'/api/inbox',{ headers:{'x-functions-key':val} });
+    if(res.ok){
+      if(st) st.innerHTML='<div style="font-size:12px;color:var(--green,#2E7D52)"><i class="ti ti-circle-check"></i> Verbindung erfolgreich. Schlüssel ist gültig.</div>';
+    }else if(res.status===401){
+      if(st) st.innerHTML='<div style="font-size:12px;color:var(--red,#c0392b)">Schlüssel ungültig (401).</div>';
+    }else{
+      if(st) st.innerHTML='<div style="font-size:12px;color:var(--red,#c0392b)">Unerwartete Antwort ('+res.status+').</div>';
+    }
+  }catch(e){
+    if(st) st.innerHTML='<div style="font-size:12px;color:var(--red,#c0392b)">Backend nicht erreichbar. URL/Deploy prüfen.</div>';
+  }
 }
 
 async function druckeLagerortEtikett(ortId){
@@ -17580,12 +17722,41 @@ async function renderSettings(){
       <div id="importStatus" style="margin-top:10px"></div>
     </div>`:''}
 
+    ${isAdmin?`<div class="settings-card" data-tab="daten">
+      <div class="card-hdr"><i class="ti ti-cloud-upload"></i> Website-Backend – Wohnungsexport</div>
+      <p style="font-size:13px;color:var(--ink-40);margin-bottom:12px;line-height:1.6">
+        Erzeugt die Liste der belegten Wohneinheiten für das Azure-Backend (Mieterportal). Übertragen werden nur die zum Portal-Login nötigen Daten: Kennung, Adresse, Eckdaten und die hinterlegte Kontakt-E-Mail (für den Zugangscode). Es werden keine Verträge, Beträge oder Dokumente exportiert. Datei als JSON speichern und im Backend importieren – oder bei eingerichteter Verbindung direkt übertragen.
+      </p>
+      <div id="wohnungsExportInfo" style="font-size:12px;color:var(--ink-40);margin-bottom:10px"></div>
+      <button class="btn btn-primary btn-full" style="margin-bottom:8px" onclick="wohnungenExportJson()"><i class="ti ti-download"></i> Als JSON speichern</button>
+      <button class="btn btn-full" onclick="wohnungenExportPush()"><i class="ti ti-cloud-up"></i> Direkt ans Backend senden</button>
+      <div id="wohnungsExportStatus" style="margin-top:10px"></div>
+    </div>`:''}
+
     ${isAdmin?`<div class="settings-card" data-tab="system">
       <div class="card-hdr"><i class="ti ti-shield"></i> Benutzerverwaltung</div>
       <div id="userListEl"></div>
       <button class="btn btn-primary btn-full" style="margin-top:10px" onclick="modalAddUser()">
         <i class="ti ti-user-plus"></i> Benutzer hinzufügen
       </button>
+    </div>`:''}
+
+    ${isAdmin?`<div class="settings-card" data-tab="system">
+      <div class="card-hdr"><i class="ti ti-plug-connected"></i> Website-Backend (Azure)</div>
+      <p style="font-size:13px;color:var(--ink-40);margin-bottom:12px;line-height:1.6">
+        Für die direkte Übertragung des Wohnungsexports an das Mieterportal-Backend. Den Function-Key (Host-Schlüssel der Azure Function) hier hinterlegen. Er wird nur lokal auf diesem Gerät gespeichert und ausschließlich für Aufrufe an <code>${esc(BACKEND_BASIS)}</code> verwendet. Ohne Schlüssel funktioniert der JSON-Export weiterhin.
+      </p>
+      <label style="font-size:12px;color:var(--ink-40);display:block;margin-bottom:4px">Function-Key</label>
+      <div style="display:flex;gap:8px;align-items:center">
+        <input type="password" id="backendKeyIn" placeholder="Schlüssel einfügen …" style="flex:1;min-width:0" autocomplete="off">
+        <button class="btn btn-sm" type="button" onclick="backendKeyToggle()" title="Anzeigen/Verbergen"><i class="ti ti-eye" id="backendKeyEye"></i></button>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+        <button class="btn btn-primary" onclick="backendKeySpeichern()"><i class="ti ti-device-floppy"></i> Speichern</button>
+        <button class="btn" onclick="backendKeyTesten()"><i class="ti ti-plug"></i> Verbindung testen</button>
+        <button class="btn btn-danger btn-sm" id="backendKeyDelBtn" onclick="backendKeyLoeschen()" style="display:none"><i class="ti ti-trash"></i> Entfernen</button>
+      </div>
+      <div id="backendKeyStatus" style="margin-top:10px"></div>
     </div>`:''}
 
     ${isAdmin?`<div class="settings-card" data-tab="objekte">
@@ -17716,6 +17887,8 @@ async function renderSettings(){
   if(isAdmin){ const ivEl=document.getElementById('intervallConfigEl'); if(ivEl) ivEl.innerHTML=await renderIntervallConfig(); }
   if(isAdmin){ const pfEl=document.getElementById('portalFreigabeEl'); if(pfEl) pfEl.innerHTML=await renderPortalFreigabe(); }
   if(isAdmin){ const ssEl=document.getElementById('syncSchutzEl'); if(ssEl) ssEl.innerHTML=await renderSyncSchutz(); }
+  if(isAdmin){ try{ await wohnungenExportInfo(); }catch(e){} }
+  if(isAdmin){ try{ await backendKeyLaden(); }catch(e){} }
   await renderMeineSignatur();
   // Niimbot-Druckdichte vorselektieren
   try{
