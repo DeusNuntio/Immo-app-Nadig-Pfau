@@ -205,8 +205,9 @@ button.chip.chip-active{background:var(--ink);color:#fff;border-color:var(--ink)
 .btn-lg{padding:13px 22px;font-size:15px;border-radius:12px}
 
 /* ── TABS ── */
-.tab-bar{display:flex;gap:4px;background:var(--ink-05);border-radius:10px;padding:4px;margin-bottom:14px}
-.tab-btn{flex:1;padding:8px 6px;border:none;border-radius:8px;background:transparent;color:var(--ink-40);font-size:12px;font-weight:500;cursor:pointer;font-family:var(--font);transition:all .15s;white-space:nowrap;text-align:center}
+.tab-bar{display:flex;gap:4px;background:var(--ink-05);border-radius:10px;padding:4px;margin-bottom:14px;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;scroll-snap-type:x proximity}
+.tab-bar::-webkit-scrollbar{display:none}
+.tab-btn{flex:0 0 auto;min-width:max-content;padding:8px 14px;border:none;border-radius:8px;background:transparent;color:var(--ink-40);font-size:12px;font-weight:500;cursor:pointer;font-family:var(--font);transition:background .15s,color .15s;white-space:nowrap;text-align:center;scroll-snap-align:start}
 .tab-btn.active{background:#fff;color:var(--ink);box-shadow:var(--shadow)}
 
 /* ── TASK ITEMS ── */
@@ -736,7 +737,19 @@ body.printing-active #printRoot{display:block!important}
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=23;
-const APP_VERSION = '2026-06-19-v92';
+const APP_VERSION = '2026-06-19-v93';
+/* v93 (19.06.2026): MV-Button für bestehende Mieter + Tab-Leiste/Header-Layout.
+   - Mieter-Detailansicht: "Mietvertrag erstellen" jetzt auch für bestehende Mieter
+     ohne Entwurf (typisch zukünftige Mieter). mvStartFuerMieter() füllt den
+     Generator aus den vorhandenen Mieterdaten vor und setzt mieterId, sodass beim
+     Erzeugen genau dieser Mieter aktualisiert wird (kein Duplikat). Mit Entwurf
+     erscheint weiterhin "MV-Entwurf bearbeiten"; Vormieter erhalten keinen Button.
+   - CSS .tab-bar jetzt horizontal scrollbar (overflow-x:auto, Scrollbar versteckt,
+     scroll-snap); .tab-btn von flex:1 auf flex:0 0 auto/min-width:max-content –
+     Tabs werden nicht mehr gequetscht/rechts abgeschnitten, man kann seitlich wischen.
+   - Gebäudedaten-Kopfzeile: flex-wrap, damit "Versicherungen"/"Bearbeiten" auf
+     schmalen Displays umbrechen statt abgeschnitten zu werden.
+   DB_VER bleibt 23 (keine neuen Stores). */
 /* v92 (19.06.2026): Datenschutz Mieter/Wohnung + Sync-Wiederherstellung + OneDrive im Archiv.
    PAKET A – Mieter-/Wohnungsschutz (kein DB-Sprung):
    - deleteMieterConfirm zeigt jetzt einen Auswahldialog statt sofortiger Loeschung:
@@ -7250,9 +7263,9 @@ function gebaeudeStatsHTML(stamm, personenGesamt, mieterAnzahl, istAdmin){
     <div style="font-size:14px;font-weight:600;color:var(--ink)">${wert||'<span style="color:var(--ink-40);font-weight:400">–</span>'}</div>
   </div>`;
   return `<div class="card" style="margin-bottom:12px">
-    <div class="card-hdr" style="display:flex;align-items:center;justify-content:space-between">
+    <div class="card-hdr" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
       <span><i class="ti ti-building"></i> Gebäudedaten</span>
-      ${istAdmin?`<div style="display:flex;gap:6px">
+      ${istAdmin?`<div style="display:flex;gap:6px;flex-wrap:wrap">
         <button class="btn btn-sm" onclick="modalVersicherungen('${currentObjId}')"><i class="ti ti-shield-half"></i> Versicherungen</button>
         <button class="btn btn-sm" onclick="modalGebaeudeStamm('${currentObjId}')"><i class="ti ti-pencil"></i> Bearbeiten</button>
       </div>`:''}
@@ -8104,7 +8117,10 @@ async function showMieter(id){
     ${CU?.role==='admin'?`<button class="btn btn-sm btn-copper" onclick="modalMieterhoehung('${m.id}')"><i class="ti ti-trending-up"></i> Mieterhöhung</button>`:''}
     ${CU?.role==='admin'?`<button class="btn btn-sm" onclick="modalKaution('${m.id}')"><i class="ti ti-lock-dollar"></i> Kaution</button>`:''}
     <button class="btn btn-sm" onclick="showMieterDokumente('${m.id}')"><i class="ti ti-paperclip"></i> Archiv & Dokumente</button>
-    ${CU?.role==='admin'&&m.mvEntwurf?`<button class="btn btn-sm btn-copper" onclick="mvBearbeiteEntwurf('${m.id}')"><i class="ti ti-file-text"></i> MV-Entwurf bearbeiten</button>`:''}
+    ${CU?.role==='admin'?(m.mvEntwurf
+      ? `<button class="btn btn-sm btn-copper" onclick="mvBearbeiteEntwurf('${m.id}')"><i class="ti ti-file-text"></i> MV-Entwurf bearbeiten</button>`
+      : (!m._vormieter ? `<button class="btn btn-sm btn-copper" onclick="mvStartFuerMieter('${m.id}')"><i class="ti ti-file-text"></i> Mietvertrag erstellen</button>` : '')
+    ):''}
     <button class="btn btn-sm" onclick="modalWohnungGrundriss('${m.objektId}','${esc(String(m.weNr||''))}')"><i class="ti ti-map"></i> Grundriss</button>
     <button class="btn btn-sm" onclick="modalWohnungsbilder('${m.objektId}','${esc(String(m.weNr||''))}')"><i class="ti ti-photo-scan"></i> Bilder</button>
     ${CU?.role==='admin'?`<button class="btn btn-sm" onclick="modalSchluessel('${m.objektId}','${esc(String(m.weNr||''))}')"><i class="ti ti-key"></i> Schlüssel</button>`:''}
@@ -12016,6 +12032,49 @@ async function mvBearbeiteEntwurf(mieterId){
   if(!m){ toast('Mieter nicht gefunden'); return; }
   if(!m.mvEntwurf){ toast('Für diesen Mieter ist kein Vertragsentwurf gespeichert.'); return; }
   MV_DRAFT = Object.assign({}, m.mvEntwurf, { mieterId: m.id });
+  await mvRenderGeneratorModal();
+}
+
+// Mietvertrag-Generator für einen BESTEHENDEN Mieter öffnen (typisch: zukünftiger
+// Mieter, für den noch kein Entwurf existiert). Bereits vorhandene Mieterdaten
+// werden vorbefüllt; mieterId wird gesetzt, damit beim Erzeugen genau dieser
+// Mieter aktualisiert wird (kein Duplikat) und ein evtl. Entwurf wieder geöffnet wird.
+async function mvStartFuerMieter(mieterId){
+  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  const m = await idbGet('mieter', mieterId).catch(()=>null);
+  if(!m){ toast('Mieter nicht gefunden'); return; }
+  // Falls bereits ein Entwurf existiert: diesen weiterbearbeiten.
+  if(m.mvEntwurf){ MV_DRAFT = Object.assign({}, m.mvEntwurf, { mieterId: m.id }); await mvRenderGeneratorModal(); return; }
+  // Sonst aus den vorhandenen Mieterdaten vorbefüllen.
+  const personen = (typeof personenVon==='function') ? personenVon(m) : [{name:m.mieter||''}];
+  const einzugISO = m.einzugISO || (m.einzug&&m.einzug.includes('.')?m.einzug.split('.').reverse().join('-'):m.einzug) || '';
+  MV_DRAFT = {
+    quelleInteressentId: null,
+    mieterId: m.id,
+    anrede: m.anrede || (personen[0]?.anrede) || 'Herr',
+    mieter1Name: personen[0]?.name || m.mieter || '',
+    mieter1Gebdat: personen[0]?.geburtsdatum || m.geburtsdatum || '',
+    mieter1Anschrift: m.anschrift || m.adresse || '',
+    telefon: m.telefon || personen[0]?.telefon || '',
+    email: m.email || personen[0]?.email || '',
+    personenzahl: personen.length || m.personenzahl || '',
+    beruf: m.beruf || '',
+    arbeitgeber: m.arbeitgeber || '',
+    haustiere: !!m.haustiere,
+    raucher: !!m.raucher,
+    mieter2Name: personen[1]?.name || '',
+    mieterWeitere: personen.slice(2).map(pp=>pp.name).filter(Boolean).join(', '),
+    objektId: m.objektId || '',
+    weNr: m.weNr || '',
+    mietbeginn: einzugISO,
+    // Beträge, falls am Mieter vorhanden (im Generator überschreibbar)
+    nettomiete: (m.miete!=null&&m.miete!=='')?String(m.miete):'',
+    nkVoraus: (m.nkVoraus!=null&&m.nkVoraus!=='')?String(m.nkVoraus):'',
+    // Bankdaten
+    iban: m.iban || '',
+    bic: m.bic || '',
+    zahlweise: m.zahlweise || '',
+  };
   await mvRenderGeneratorModal();
 }
 
