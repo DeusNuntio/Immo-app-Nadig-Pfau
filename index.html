@@ -737,7 +737,17 @@ body.printing-active #printRoot{display:block!important}
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=23;
-const APP_VERSION = '2026-06-19-v93';
+const APP_VERSION = '2026-06-19-v94';
+/* v94 (19.06.2026): Etappe 1 – Lokale Benachrichtigungen erweitert (Termine + Maengel).
+   - checkFaelligeAufgaben() prueft jetzt zusaetzlich:
+     a) Termin-Erinnerungen: Termine mit gesetztem Erinnerungs-Vorlauf (1/2/7 Tage)
+        bzw. ohne Vorlauf am Termintag selbst; nur eigene Objekte, Status offen.
+     b) Neue Maengel: seit dem letzten Check angelegte offene Maengel (Zeitstempel in
+        localStorage 'notif_lastMangelCheck'); verhindert Mehrfachmeldung desselben Mangels.
+     Bestehende Aufgaben-Logik unveraendert. Reine Client-Loesung ohne Server – greift
+     bei App-Start und alle 4 h, solange die App geoeffnet/aktiv ist. Echter Hintergrund-
+     Push (auch bei geschlossener App) folgt mit der Azure-Schicht (Etappe 3).
+   DB_VER bleibt 23 (keine neuen Stores; nutzt vorhandene Stores 'termine' und 'maengel'). */
 /* v93 (19.06.2026): MV-Button für bestehende Mieter + Tab-Leiste/Header-Layout.
    - Mieter-Detailansicht: "Mietvertrag erstellen" jetzt auch für bestehende Mieter
      ohne Entwurf (typisch zukünftige Mieter). mvStartFuerMieter() füllt den
@@ -8904,6 +8914,63 @@ async function checkFaelligeAufgaben() {
   }
 }
 
+/* Termin-Erinnerungen + neue Maengel (Etappe 1, v94).
+   Wird im selben Rhythmus wie checkFaelligeAufgaben ausgeloest. */
+async function checkFaelligeTermine() {
+  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  const myObj = await getMyObjekte();
+  const myIds = myObj.map(o=>o.id);
+  const heute = today();
+
+  const termine = (await idbGetAll('termine'))
+    .filter(t => t && t.datum && t.status==='offen'
+              && (!t.objektId || myIds.includes(t.objektId)));
+
+  // Faellig, wenn (Termindatum minus Erinnerungsvorlauf) <= heute <= Termindatum.
+  // Ohne Vorlauf: nur am Termintag selbst.
+  const faellig = termine.filter(t => {
+    if (t.datum < heute) return false;            // bereits vorbei
+    const vorlauf = parseInt(t.erinnerung||'0',10) || 0;
+    const d = new Date(t.datum+'T12:00:00');
+    d.setDate(d.getDate() - vorlauf);
+    const ab = d.toISOString().split('T')[0];     // ab diesem Tag erinnern
+    return ab <= heute;
+  });
+
+  // Mehrfachmeldung vermeiden: pro Termin-ID einmal pro Tag.
+  let gemeldet = {};
+  try { gemeldet = JSON.parse(localStorage.getItem('notif_termine')||'{}'); } catch(e){}
+  const offen = faellig.filter(t => gemeldet[t.id] !== heute);
+  if (offen.length) {
+    const ico = 'data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' viewBox=\'0 0 192 192\'%3E%3Crect width=\'192\' height=\'192\' rx=\'32\' fill=\'%230D1F2D\'/%3E%3Crect x=\'46\' y=\'64\' width=\'100\' height=\'84\' rx=\'6\' fill=\'%23C97B3A\'/%3E%3C/svg%3E';
+    new Notification('📅 Nadig Pfau – Termin-Erinnerung', {
+      body: offen.length === 1
+        ? `„${offen[0].titel}“ am ${new Date(offen[0].datum+'T12:00:00').toLocaleDateString('de-DE')}`
+        : `${offen.length} anstehende Termine`,
+      icon: ico, tag: 'termine',
+    });
+    offen.forEach(t => gemeldet[t.id] = heute);
+    try { localStorage.setItem('notif_termine', JSON.stringify(gemeldet)); } catch(e){}
+  }
+
+  // Neue offene Maengel seit dem letzten Check.
+  const last = localStorage.getItem('notif_lastMangelCheck') || '';
+  const maengel = (await idbGetAll('maengel'))
+    .filter(m => m && myIds.includes(m.objektId)
+              && m.status!=='behoben' && m.status!=='erledigt'
+              && m.erstellt && (!last || m.erstellt > last));
+  if (maengel.length) {
+    const ico = 'data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' viewBox=\'0 0 192 192\'%3E%3Crect width=\'192\' height=\'192\' rx=\'32\' fill=\'%230D1F2D\'/%3E%3Cpath d=\'M96 44 L150 140 H42 Z\' fill=\'%23C97B3A\'/%3E%3Crect x=\'90\' y=\'84\' width=\'12\' height=\'30\' fill=\'%230D1F2D\'/%3E%3Crect x=\'90\' y=\'120\' width=\'12\' height=\'12\' fill=\'%230D1F2D\'/%3E%3C/svg%3E';
+    new Notification('⚠️ Nadig Pfau – Neuer Mangel', {
+      body: maengel.length === 1
+        ? `„${maengel[0].titel}“${maengel[0].nummer?` (Nr. ${maengel[0].nummer})`:''}`
+        : `${maengel.length} neue Mängel gemeldet`,
+      icon: ico, tag: 'maengel-neu',
+    });
+  }
+  localStorage.setItem('notif_lastMangelCheck', nowIso());
+}
+
 function showFaelligBanner(anzahl) {
   let banner = document.getElementById('faelligBanner');
   if (!banner) {
@@ -8932,6 +8999,7 @@ async function requestNotificationPermission() {
   if (perm === 'granted') {
     toast('✓ Benachrichtigungen aktiviert');
     await checkFaelligeAufgaben();
+    await checkFaelligeTermine();
     // Tägliche Prüfung einrichten
     localStorage.setItem('notif_enabled', '1');
   } else {
@@ -8944,8 +9012,9 @@ function initNotifications() {
   if (!('Notification' in window)) return;
   if (Notification.permission === 'granted') {
     checkFaelligeAufgaben();
+    checkFaelligeTermine();
     // Alle 4 Stunden prüfen
-    setInterval(checkFaelligeAufgaben, 4 * 60 * 60 * 1000);
+    setInterval(() => { checkFaelligeAufgaben(); checkFaelligeTermine(); }, 4 * 60 * 60 * 1000);
   } else {
     // Nach kurzer Verzögerung Banner zeigen
     setTimeout(async () => {
