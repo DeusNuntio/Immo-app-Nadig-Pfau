@@ -736,7 +736,34 @@ body.printing-active #printRoot{display:block!important}
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=23;
-const APP_VERSION = '2026-06-18-v91';
+const APP_VERSION = '2026-06-19-v92';
+/* v92 (19.06.2026): Datenschutz Mieter/Wohnung + Sync-Wiederherstellung + OneDrive im Archiv.
+   PAKET A – Mieter-/Wohnungsschutz (kein DB-Sprung):
+   - deleteMieterConfirm zeigt jetzt einen Auswahldialog statt sofortiger Loeschung:
+     "Nur von Wohnung trennen" (Default, Mieter -> Vormieter, WE wird Leerstand),
+     "Mieterdatensatz endgueltig loeschen" (mit Snapshot davor). Eine Wohnung
+     (objekt_stamm/wohnungen_<id>) wird durch KEINE Option geloescht.
+   - Neue Funktionen mieterVonWohnungTrennen, mieterEndgueltigLoeschen.
+   - "Als aktuellen Mieter reaktivieren" bei Vormietern (mieterReaktivieren /
+     mieterReaktivierenAusfuehren): macht den Mieterwechsel rueckgaengig; ein
+     faelschlich angelegter Nachmieter kann geloescht oder zum Vormieter gemacht
+     werden. Setzt _vormieter/_nachmieterId/auszug sauber zurueck.
+   - renderObjMieter zeigt WE ohne aktiven Mieter als Leerstand-Zeile (aus
+     objekt_stamm + Vormietern abgeleitet), statt sie verschwinden zu lassen.
+     modalLeerstandWE bietet Reaktivieren / neuen Mieter / Vormieter ansehen.
+   PAKET B – Sync-Wiederherstellung (kein DB-Sprung):
+   - importBackup: dritter Modus "Wiederherstellen (setzt sich ueberall durch)" –
+     importierte Datensaetze erhalten frischen updatedAt und gewinnen beim naechsten
+     Sync auf allen Geraeten (behebt: lokale Wiederherstellung wurde vom falschen
+     neueren Stand des anderen Geraets ueberschrieben). Modi jetzt per Dialog.
+   - Konfliktprotokoll: "Details / loesen" je Eintrag (syncKonfliktLoesen /
+     syncKonfliktUebernehmen) – zeigt lokalen vs. Cloud-Stand feldweise und erlaubt
+     "lokalen Stand behalten" bzw. "Cloud-Stand uebernehmen" (frischer Stempel).
+   PAKET C – OneDrive-Dateien im Wohnungsarchiv (kein DB-Sprung, nutzt 3c-Store):
+   - showMieterDokumente und modalLeerstandWE zeigen zusaetzlich die OneDrive-Dateien
+     der Wohnung (renderODArchivFuerWE, gefiltert nach gruppe + weNr). Nur
+     Referenzen/Metadaten, Oeffnen via kurzlebigem Link – keine Duplikate.
+   DB_VER bleibt 23 (keine neuen Stores). */
 /* v91 (18.06.2026): Paket 3c – OneDrive Datei-Ordnerbaum (bidirektional).
    - Neuer Store 'od_dateien' (Metadaten je Datei: Pfad, Standort, weNr, eTag,
      odItemId, Groesse). An allen 6 Pflichtstellen registriert (DB-Schema/Index,
@@ -7830,6 +7857,47 @@ async function renderObjMieter(el){
       <div class="m-we">WE ${m.weNr}</div>
     </div>`;
   });
+
+  // ── Leerstand sichtbar machen ──────────────────────────────────────────
+  // WE-Nummern mit Stammdaten oder mit einem Vormieter, aber OHNE aktiven Mieter,
+  // werden als Leerstand-Zeile gezeigt – so verschwindet keine Wohnung mehr aus
+  // der Liste, nur weil ihr aktueller Mieter entfernt/getrennt wurde.
+  try{
+    const aktiveWE = new Set(mieter.map(m=>String(m.weNr)));
+    const zukWE    = new Set(zukuenftig.map(m=>String(m.weNr)));
+    const vormieter = all.filter(m=>m._vormieter);
+    const vormieterProWE = {};
+    vormieter.forEach(v=>{
+      const k=String(v.weNr);
+      const prev=vormieterProWE[k];
+      // jüngsten Vormieter je WE behalten (nach Auszug bzw. Stempel)
+      if(!prev || new Date(v.auszugISO||v.updatedAt||0) > new Date(prev.auszugISO||prev.updatedAt||0)) vormieterProWE[k]=v;
+    });
+    const stammWohnungen = await ladeWohnungsStamm(currentObjId);
+    // Kandidaten-WE: aus Stammdaten + aus Vormietern
+    const kandidatWE = new Set([...Object.keys(stammWohnungen||{}), ...Object.keys(vormieterProWE)]);
+    const leerWE = [...kandidatWE].filter(we=> we!=='' && we!=null && !aktiveWE.has(String(we)) && !zukWE.has(String(we)));
+    leerWE.sort((a,b)=>Number(a)-Number(b));
+    if(leerWE.length){
+      h+=`<div class="card-hdr" style="margin:16px 0 8px"><i class="ti ti-home-off"></i> Leerstand (${leerWE.length})</div>`;
+      for(const we of leerWE){
+        const stamm=stammWohnungen[String(we)]||{};
+        const vm=vormieterProWE[String(we)];
+        const etage=stamm.etage||vm?.etage||'';
+        const flaeche=stamm.flaeche||vm?.flaeche||'';
+        const sub=[etage?('Etage '+esc(String(etage))):'', flaeche?(esc(String(flaeche))+' m²'):''].filter(Boolean).join(' · ');
+        h+=`<div class="mieter-row" style="border-style:dashed;background:var(--ink-02)" onclick="modalLeerstandWE('${currentObjId}','${esc(String(we))}','${vm?vm.id:''}')">
+          <div class="m-avatar" style="background:var(--ink-10);color:var(--ink-40)"><i class="ti ti-home-off"></i></div>
+          <div class="m-body">
+            <div class="m-name">Leerstand${sub?`<span style="font-weight:400;color:var(--ink-40);font-size:12px"> · ${sub}</span>`:''}</div>
+            <div style="font-size:11px;color:var(--ink-40)">${vm?('Letzter Mieter: '+esc(vm.mieter||'')+(vm.auszug?' (Auszug '+esc(vm.auszug)+')':'')):'Keine aktuellen Mieterdaten'}</div>
+          </div>
+          <div class="m-we">WE ${esc(String(we))}</div>
+        </div>`;
+      }
+    }
+  }catch(e){ console.warn('Leerstand-Anzeige:', e); }
+
   // Zukünftige Mieter unten als eigener Abschnitt
   if(zukuenftig.length){
     h+=`<div class="card-hdr" style="margin:16px 0 8px"><i class="ti ti-user-clock"></i> Zukünftige Mieter (${zukuenftig.length})</div>`;
@@ -8046,6 +8114,7 @@ async function showMieter(id){
     <button class="btn btn-sm" onclick="modalBrief('${m.id}','${m.objektId}')"><i class="ti ti-mail"></i> Brief</button>
     ${m._vormieterId?`<button class="btn btn-sm" onclick="zeigeVormieter('${m._vormieterId}')"><i class="ti ti-history"></i> Vormieter</button>`:(CU?.role==='admin'&&!m._vormieter&&!m._zukuenftig?`<button class="btn btn-sm" onclick="modalVormieterAnlegen('${m.id}')"><i class="ti ti-history"></i> Vormieter anlegen</button>`:'')}
     ${m._vormieter?`<button class="btn btn-sm" onclick="modalNeueAdresse('${m.id}')"><i class="ti ti-map-pin"></i> Neue Anschrift</button>`:''}
+    ${(m._vormieter&&CU?.role==='admin')?`<button class="btn btn-sm btn-copper" onclick="mieterReaktivieren('${m.id}')"><i class="ti ti-rotate-2"></i> Als aktuellen Mieter reaktivieren</button>`:''}
     <button class="btn btn-sm btn-danger" onclick="deleteMieterConfirm('${m.id}')"><i class="ti ti-trash"></i></button>
   </div>`;
 
@@ -9096,11 +9165,72 @@ function fmtBytes(b) {
 async function showMieterDokumente(mieterId) {
   const m = await idbGet('mieter', mieterId);
   if (!m) return;
+  const obj = getObj(m.objektId);
   showModal(`
-    <div class="m-title"><i class="ti ti-paperclip"></i> Dokumente – ${m.mieter}</div>
+    <div class="m-title"><i class="ti ti-paperclip"></i> Archiv & Dokumente – ${m.mieter}</div>
     <div id="mieterDokEl"></div>
+    <div id="mieterODEl" style="margin-top:14px"></div>
     <button class="btn btn-full" style="margin-top:10px" onclick="closeModal()">Schließen</button>`);
   await renderDokumente(document.getElementById('mieterDokEl'), m.objektId, mieterId);
+  // OneDrive-Dateien dieser Wohnung (separater Block, nur Referenzen – keine Duplikate)
+  await renderODArchivFuerWE(document.getElementById('mieterODEl'), obj?.gruppe, m.weNr);
+}
+
+// Zeigt die im OneDrive-Ordnerbaum abgelegten Dateien einer Wohnung (gruppe + WE)
+// an. Inhalte bleiben in OneDrive; hier werden nur Metadaten referenziert und über
+// einen kurzlebigen Link geöffnet. Erzeugt keine Duplikate in der App.
+function odDateiIcon(name){
+  const n=String(name||'').toLowerCase();
+  if(/\.(pdf)$/.test(n)) return 'ti-file-type-pdf';
+  if(/\.(jpe?g|png|gif|webp|heic|bmp)$/.test(n)) return 'ti-photo';
+  if(/\.(docx?|odt)$/.test(n)) return 'ti-file-type-doc';
+  if(/\.(xlsx?|csv|ods)$/.test(n)) return 'ti-file-type-xls';
+  return 'ti-file';
+}
+async function renderODArchivFuerWE(el, gruppe, weNr){
+  if(!el) return;
+  if(!gruppe || weNr==null || weNr===''){ el.innerHTML=''; return; }
+  let dateien=[];
+  try{
+    const weKey = odSafeName(String(weNr));   // konsistent zur Ordnerbenennung
+    dateien=(await idbGetAll('od_dateien')).filter(r=>
+      r && !r.geloescht && r.gruppe===gruppe && String(r.weNr)===weKey);
+    dateien.sort((a,b)=> new Date(b.lastModified||0)-new Date(a.lastModified||0));
+  }catch(e){ console.warn('OD-Archiv:', e); }
+  const odAngemeldet = (typeof odTokens!=='undefined' && odTokens);
+  let h=`<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px">
+    <div style="font-weight:600;font-size:13px"><i class="ti ti-brand-onedrive"></i> OneDrive-Dateien (WE ${esc(String(weNr))})</div>
+    ${odAngemeldet?`<button class="btn btn-sm" onclick="odArchivAktualisieren('${esc(String(gruppe))}','${esc(String(weNr))}')"><i class="ti ti-refresh"></i></button>`:''}
+  </div>`;
+  if(!odAngemeldet){
+    h+='<div style="font-size:12px;color:var(--ink-40)">Nicht mit OneDrive verbunden. Verbindung unter „System → OneDrive".</div>';
+    el.innerHTML=h; return;
+  }
+  if(!dateien.length){
+    h+=`<div style="font-size:12px;color:var(--ink-40)">Noch keine OneDrive-Dateien für diese Wohnung. Lege Dateien am PC im Ordner <em>${esc(odGruppeOrdner(gruppe))} / WE ${esc(String(weNr))}</em> ab und tippe auf <i class="ti ti-refresh"></i>.</div>`;
+    el.innerHTML=h; return;
+  }
+  h+=dateien.map(d=>`<div style="display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--ink-10);cursor:pointer" onclick="odDateiOeffnen('${d.id}')">
+    <i class="ti ${odDateiIcon(d.name)}" style="font-size:20px;color:var(--copper,#b87333)"></i>
+    <div style="flex:1;min-width:0">
+      <div style="font-size:13px;font-weight:500;word-break:break-word">${esc(d.name||'')}</div>
+      <div style="font-size:11px;color:var(--ink-40)">${d.groesse?fmtBytes(d.groesse):''}${d.lastModified?' · '+new Date(d.lastModified).toLocaleDateString('de-DE'):''}${d.quelle==='app'?' · aus App':''}</div>
+    </div>
+    <i class="ti ti-external-link" style="color:var(--ink-30)"></i>
+  </div>`).join('');
+  el.innerHTML=h;
+}
+// Ordnerlabel je Gruppe (für den Hinweistext).
+function odGruppeOrdner(gruppe){
+  const st=(typeof odStandorte==='function'?odStandorte():[]).find(x=>x.gruppe===gruppe);
+  return st?st.ordner:String(gruppe||'');
+}
+// Aktualisiert den Dateibaum und rendert den WE-Block neu.
+async function odArchivAktualisieren(gruppe, weNr){
+  const el=document.getElementById('mieterODEl');
+  if(el) el.innerHTML='<div style="font-size:12px;color:var(--ink-40)"><i class="ti ti-loader"></i> Synchronisiere OneDrive …</div>';
+  try{ if(typeof syncDateibaum==='function') await syncDateibaum(true); }catch(_){}
+  await renderODArchivFuerWE(el, gruppe, weNr);
 }
 
 function modalUploadDok(objektId, mieterId) {
@@ -15969,13 +16099,67 @@ async function saveEditMieter(id) {
 async function deleteMieterConfirm(id) {
   const m = await idbGet('mieter', id);
   if (!m) return;
-  if (!confirm(`Mieter „${m.mieter}" wirklich löschen? Alle zugehörigen Aufgaben und Mängel bleiben erhalten.`)) return;
-  await idbDelete('mieter', id);
+  const obj = getObj(m.objektId);
+  // Sicherheits-Auswahl statt sofortiger Löschung. Eine Wohnung (WE-Stammdaten in
+  // objekt_stamm) wird durch keine dieser Optionen gelöscht – nur der Mieterdatensatz.
+  const istVor = !!m._vormieter, istZuk = !!m._zukuenftig;
+  showModal(`
+    <div class="m-title"><i class="ti ti-user-minus"></i> Mieter entfernen</div>
+    <div style="background:var(--ink-05);border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:13px;color:var(--ink-60)">
+      <strong>${esc(m.mieter||'')}</strong>${m.weNr?` · WE ${esc(String(m.weNr))}`:''}${obj?.name?` · ${esc(obj.name)}`:''}<br>
+      Die Wohnung und ihre Stammdaten (Fläche, Etage, Ventile, Dokumente) bleiben in jedem Fall erhalten. Bitte wähle, was mit dem Mieterdatensatz geschehen soll.
+    </div>
+    ${(!istVor && !istZuk) ? `
+    <button class="btn btn-copper btn-full" style="margin-bottom:8px" onclick="mieterVonWohnungTrennen('${m.id}')">
+      <i class="ti ti-home-off"></i> Nur von Wohnung trennen <span style="opacity:.7;font-size:11px">(empfohlen)</span>
+    </button>
+    <div style="font-size:11px;color:var(--ink-40);margin:-4px 0 12px 2px">Wohnung wird zu Leerstand, Mieterdaten bleiben als Vormieter erhalten und sind wiederherstellbar.</div>
+    ` : ''}
+    <button class="btn btn-full btn-danger" onclick="mieterEndgueltigLoeschen('${m.id}')">
+      <i class="ti ti-trash"></i> Mieterdatensatz endgültig löschen
+    </button>
+    <div style="font-size:11px;color:var(--ink-40);margin:6px 0 12px 2px">Nur den Mieter löschen. Aufgaben, Mängel und Wohnungs-Stammdaten bleiben erhalten. Vorher wird automatisch eine lokale Sicherung angelegt.</div>
+    <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>`);
+}
+
+// Mieter aus der Wohnung lösen, ohne Daten zu verlieren: wird zum Vormieter,
+// die WE erscheint danach als Leerstand und ist über „reaktivieren" rücksetzbar.
+async function mieterVonWohnungTrennen(id){
+  const m = await idbGet('mieter', id);
+  if(!m) return;
+  if(m._vormieter){ toast('Bereits als Vormieter geführt'); closeModal(); return; }
+  m._vormieter = true;
+  // Auszugsdatum auf heute, konsistent zur Bestandslogik (auszug=DE, auszugISO=ISO).
+  if(!m.auszugISO){
+    const iso = today();                          // today() liefert YYYY-MM-DD
+    m.auszugISO = iso;
+    m.auszug = new Date(iso).toLocaleDateString('de-DE');
+  }
+  m._getrenntVon = CU?.name||'';
+  m._getrenntAm = nowIso();
+  m.updatedAt = nowIso();
+  await idbPut('mieter', m, {keepStamp:true});
+  closeModal();
   clearTimeout(window._syncTimer);
   window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
   await renderDash();
   goBack();
-  toast('Mieter gelöscht');
+  toast('Mieter von Wohnung getrennt – Wohnung ist jetzt Leerstand');
+}
+
+// Endgültiges Löschen NUR des Mieterdatensatzes. Vorher Snapshot (Wiederherstellung).
+async function mieterEndgueltigLoeschen(id){
+  const m = await idbGet('mieter', id);
+  if(!m) return;
+  if(!confirm(`Mieterdatensatz „${m.mieter||''}" endgültig löschen?\n\nDie Wohnung und ihre Stammdaten bleiben erhalten. Diese Aktion betrifft nur den Mieterdatensatz. Eine lokale Sicherung wird automatisch angelegt.`)) return;
+  await erstelleMieterSnapshot('vor Löschung '+(m.mieter||m.id));
+  await idbDelete('mieter', id);
+  clearTimeout(window._syncTimer);
+  window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
+  closeModal();
+  await renderDash();
+  goBack();
+  toast('Mieterdatensatz gelöscht (Wohnung erhalten, Sicherung angelegt)');
 }
 
 // Vormieter eines Mieters anzeigen (öffnet die Detailansicht des Vormieters)
@@ -16044,6 +16228,118 @@ async function saveVormieterAnlegen(mieterId){
   window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
   await showMieter(mieterId);
   toast('Vormieter angelegt ✓');
+}
+
+// Optionen für eine leere Wohnung (Leerstand-Zeile angeklickt). Zeigt Stammdaten,
+// erlaubt Reaktivierung des letzten Mieters oder das Anlegen eines neuen Mieters.
+async function modalLeerstandWE(objektId, weNr, vormieterId){
+  const obj = getObj(objektId);
+  const stamm = await getWohnungStamm(objektId, weNr);
+  const vm = vormieterId ? await idbGet('mieter', vormieterId).catch(()=>null) : null;
+  const zeile=[];
+  if(stamm.etage)   zeile.push('Etage: '+esc(String(stamm.etage)));
+  if(stamm.flaeche) zeile.push('Fläche: '+esc(String(stamm.flaeche))+' m²');
+  if(stamm.zimmer)  zeile.push('Zimmer: '+esc(String(stamm.zimmer)));
+  showModal(`
+    <div class="m-title"><i class="ti ti-home-off"></i> Wohnung WE ${esc(String(weNr))} · Leerstand</div>
+    <div style="background:var(--ink-05);border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:13px;color:var(--ink-60)">
+      ${obj?.name?esc(obj.name)+'<br>':''}
+      ${zeile.length?zeile.join(' · ')+'<br>':''}
+      ${vm?`Letzter Mieter: <strong>${esc(vm.mieter||'')}</strong>${vm.auszug?' (Auszug '+esc(vm.auszug)+')':''}`:'Keine früheren Mieterdaten hinterlegt.'}
+      <br><br>Die Wohnung ist vorhanden – nur derzeit nicht vermietet. Ihre Stammdaten bleiben dauerhaft erhalten.
+    </div>
+    ${(vm&&CU?.role==='admin')?`
+      <button class="btn btn-copper btn-full" style="margin-bottom:8px" onclick="closeModal();mieterReaktivieren('${vm.id}')">
+        <i class="ti ti-rotate-2"></i> „${esc((vm.mieter||'').slice(0,20))}" wieder als aktuellen Mieter
+      </button>` : ''}
+    <button class="btn btn-full" style="margin-bottom:8px" onclick="closeModal();modalAddMieter('${objektId}')">
+      <i class="ti ti-user-plus"></i> Neuen Mieter für diese Wohnung anlegen
+    </button>
+    ${vm?`<button class="btn btn-full" style="margin-bottom:8px" onclick="closeModal();showMieter('${vm.id}')">
+      <i class="ti ti-history"></i> Letzten Mieter (Vormieter) ansehen
+    </button>`:''}
+    <div id="leerstandODEl" style="margin-top:12px"></div>
+    <button class="btn btn-full" style="margin-top:8px" onclick="closeModal()">Schließen</button>`);
+  // OneDrive-Dateien dieser Wohnung auch im Leerstand sichtbar machen
+  await renderODArchivFuerWE(document.getElementById('leerstandODEl'), obj?.gruppe, weNr);
+}
+
+// Mieterwechsel rückgängig: einen Vormieter wieder zum aktuellen Mieter machen.
+// Behebt das typische Fehlerszenario (versehentlich neuen Mieter angelegt -> alter
+// wurde zum Vormieter). Ein fälschlich angelegter Nachmieter kann dabei entfernt
+// oder selbst zum Vormieter gemacht werden. Wohnungs-Stammdaten bleiben unberührt.
+async function mieterReaktivieren(vormieterId){
+  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  const vm = await idbGet('mieter', vormieterId);
+  if(!vm){ toast('Mieter nicht gefunden'); return; }
+  if(!vm._vormieter){ toast('Dieser Mieter ist bereits aktiv'); return; }
+
+  // Aktiven Mieter auf derselben WE finden (der „falsche" Nachmieter)
+  const aufWE = (await idbGetAll('mieter','objektId',vm.objektId))
+    .filter(x=>String(x.weNr)===String(vm.weNr) && !x._vormieter && !x._zukuenftig && x.id!==vm.id);
+  const nachmieter = aufWE[0] || (vm._nachmieterId ? await idbGet('mieter', vm._nachmieterId).catch(()=>null) : null);
+
+  showModal(`
+    <div class="m-title"><i class="ti ti-rotate-2"></i> Mieter reaktivieren</div>
+    <div style="background:var(--ink-05);border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:13px;color:var(--ink-60)">
+      <strong>${esc(vm.mieter||'')}</strong> wird wieder als <strong>aktueller Mieter</strong> der WE ${esc(String(vm.weNr||''))} eingesetzt.
+      ${nachmieter ? `<br><br>Auf dieser Wohnung ist derzeit <strong>${esc(nachmieter.mieter||'')}</strong> als aktueller Mieter eingetragen. Bitte wähle, was damit geschehen soll.` : '<br><br>Es ist kein anderer aktueller Mieter auf dieser Wohnung eingetragen.'}
+    </div>
+    ${nachmieter ? `
+      <button class="btn btn-danger btn-full" style="margin-bottom:8px" onclick="mieterReaktivierenAusfuehren('${vm.id}','${nachmieter.id}','loeschen')">
+        <i class="ti ti-trash"></i> Falschen Mieter löschen & „${esc((vm.mieter||'').slice(0,18))}" reaktivieren
+      </button>
+      <div style="font-size:11px;color:var(--ink-40);margin:-4px 0 10px 2px">Der fälschlich angelegte Mieterdatensatz wird gelöscht (vorher Sicherung). Empfohlen, wenn er versehentlich entstand.</div>
+      <button class="btn btn-full" style="margin-bottom:8px" onclick="mieterReaktivierenAusfuehren('${vm.id}','${nachmieter.id}','vormieter')">
+        <i class="ti ti-history"></i> Aktuellen Mieter zum Vormieter machen & reaktivieren
+      </button>
+      <div style="font-size:11px;color:var(--ink-40);margin:-4px 0 12px 2px">Beide Datensätze bleiben erhalten; nur die Rollen werden getauscht.</div>
+    ` : `
+      <button class="btn btn-copper btn-full" style="margin-bottom:12px" onclick="mieterReaktivierenAusfuehren('${vm.id}','','')">
+        <i class="ti ti-check"></i> Jetzt reaktivieren
+      </button>
+    `}
+    <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>`);
+}
+
+async function mieterReaktivierenAusfuehren(vormieterId, nachmieterId, modus){
+  const vm = await idbGet('mieter', vormieterId);
+  if(!vm) return;
+  // Optionalen Nachmieter behandeln
+  if(nachmieterId){
+    const nm = await idbGet('mieter', nachmieterId).catch(()=>null);
+    if(nm){
+      if(modus==='loeschen'){
+        await erstelleMieterSnapshot('Reaktivierung: lösche '+(nm.mieter||nm.id));
+        await idbDelete('mieter', nachmieterId);
+      } else if(modus==='vormieter'){
+        nm._vormieter = true;
+        if(!nm.auszugISO){ const iso=today(); nm.auszugISO=iso; nm.auszug=new Date(iso).toLocaleDateString('de-DE'); }
+        nm._vormieterId = vm.id;
+        nm.updatedAt = nowIso();
+        await idbPut('mieter', nm, {keepStamp:true});
+      }
+    }
+  }
+  // Vormieter -> aktiv: Vormieter-Marker und Auszugsfelder sauber zurücksetzen
+  delete vm._vormieter;
+  delete vm._nachmieterId;
+  delete vm._getrenntVon;
+  delete vm._getrenntAm;
+  vm.auszug = '';
+  vm.auszugISO = '';
+  vm.leerstand = false;
+  vm.updatedAt = nowIso();
+  await idbPut('mieter', vm, {keepStamp:true});
+
+  closeModal();
+  clearTimeout(window._syncTimer);
+  window._syncTimer = setTimeout(()=>syncToOneDrive(), 2000);
+  await renderDash();
+  // Zur (jetzt aktiven) Mieteransicht
+  if(typeof showMieter==='function'){ await showMieter(vm.id); }
+  else { goBack(); }
+  toast(`✓ „${vm.mieter||''}" ist wieder aktueller Mieter`);
 }
 
 async function zeigeVormieter(vormieterId) {
@@ -18060,14 +18356,17 @@ async function renderSyncSchutz(){
   if(!log.length){
     h+='<div style="font-size:12px;color:var(--ink-40);margin-bottom:12px">Keine Sync-Konflikte protokolliert.</div>';
   } else {
-    h+=log.map(e=>`<div style="padding:7px 0;border-bottom:1px solid var(--ink-10);font-size:12px">
+    h+=log.map(e=>{
+      const loesbar = !!(e.snapshotLokal && e.snapshotRemote);
+      return `<div style="padding:7px 0;border-bottom:1px solid var(--ink-10);font-size:12px">
       <div style="font-weight:600;color:var(--ink);word-break:break-word">${esc(String(e.name||e.recId||''))} <span style="font-weight:400;color:var(--ink-40)">(${e.store})</span></div>
       <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:3px;color:var(--ink-40)">
         <span style="white-space:nowrap">${new Date(e.erstellt).toLocaleString('de-DE',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}</span>
         <span class="chip chip-${e.aktion&&e.aktion.startsWith('lokal')?'ok':'warn'}" style="font-size:10px;padding:1px 6px;white-space:nowrap">${esc(e.aktion||'')}</span>
         ${e.von?`<span style="white-space:nowrap">· ${esc(String(e.von))}</span>`:''}
+        ${loesbar?`<button class="btn btn-sm" style="padding:1px 8px;font-size:11px" onclick="syncKonfliktLoesen('${e.id}')"><i class="ti ti-adjustments"></i> Details / lösen</button>`:''}
       </div>
-    </div>`).join('');
+    </div>`;}).join('');
   }
   // Snapshots
   const snaps=(await idbGetAll('mieter_snapshots').catch(()=>[]))
@@ -18693,6 +18992,67 @@ async function restoreMieterSnapshot(id){
   await renderDash();
 }
 
+// Manuelle Konfliktlösung aus dem Protokoll: zeigt lokalen und Cloud-Stand und
+// erlaubt die bewusste Entscheidung "lokalen Stand behalten" oder "Cloud übernehmen".
+async function syncKonfliktLoesen(logId){
+  const e = await idbGet('sync_log', logId).catch(()=>null);
+  if(!e || !e.snapshotLokal || !e.snapshotRemote){ toast('Keine vergleichbaren Stände gespeichert'); return; }
+  // Felder ermitteln, die sich unterscheiden
+  const L=e.snapshotLokal, R=e.snapshotRemote;
+  const keys=[...new Set([...Object.keys(L||{}),...Object.keys(R||{})])]
+    .filter(k=>!k.startsWith('_') && k!=='updatedAt' && k!=='geaendert' && k!=='erstellt');
+  const fmt=v=>{ if(v===undefined||v===null||v==='') return '<span style="color:var(--ink-30)">–</span>'; if(typeof v==='object') return esc(JSON.stringify(v).slice(0,60)); return esc(String(v)); };
+  const diffRows=keys.filter(k=>JSON.stringify(L?.[k])!==JSON.stringify(R?.[k])).map(k=>`
+    <tr><td style="padding:3px 6px;color:var(--ink-40);vertical-align:top">${esc(k)}</td>
+        <td style="padding:3px 6px;vertical-align:top">${fmt(L?.[k])}</td>
+        <td style="padding:3px 6px;vertical-align:top">${fmt(R?.[k])}</td></tr>`).join('');
+  showModal(`
+    <div class="m-title"><i class="ti ti-adjustments"></i> Konflikt lösen</div>
+    <div style="background:var(--ink-05);border-radius:8px;padding:10px 12px;margin-bottom:10px;font-size:12px;color:var(--ink-60)">
+      <strong>${esc(String(e.name||e.recId||''))}</strong> (${esc(e.store)})<br>
+      Lokal: ${L.updatedAt?new Date(L.updatedAt).toLocaleString('de-DE'):'ohne Zeitstempel'} ·
+      Cloud: ${R.updatedAt?new Date(R.updatedAt).toLocaleString('de-DE'):'ohne Zeitstempel'} (von ${esc(String(e.von||'?'))})
+    </div>
+    <div style="max-height:240px;overflow:auto;border:1px solid var(--ink-10);border-radius:8px;margin-bottom:12px">
+      <table style="width:100%;border-collapse:collapse;font-size:11px">
+        <thead><tr style="position:sticky;top:0;background:var(--bg,#fff)">
+          <th style="text-align:left;padding:4px 6px;color:var(--ink-40)">Feld</th>
+          <th style="text-align:left;padding:4px 6px;color:var(--ink-40)">Lokal</th>
+          <th style="text-align:left;padding:4px 6px;color:var(--ink-40)">Cloud</th>
+        </tr></thead>
+        <tbody>${diffRows||'<tr><td colspan="3" style="padding:8px;text-align:center;color:var(--ink-40)">Keine Feldunterschiede mehr (bereits zusammengeführt).</td></tr>'}</tbody>
+      </table>
+    </div>
+    <button class="btn btn-copper btn-full" style="margin-bottom:8px" onclick="syncKonfliktUebernehmen('${logId}','lokal')">
+      <i class="ti ti-device-laptop"></i> Lokalen Stand behalten <span style="opacity:.7;font-size:11px">(gewinnt überall)</span>
+    </button>
+    <button class="btn btn-full" style="margin-bottom:8px" onclick="syncKonfliktUebernehmen('${logId}','cloud')">
+      <i class="ti ti-cloud"></i> Cloud-Stand übernehmen <span style="opacity:.7;font-size:11px">(gewinnt überall)</span>
+    </button>
+    <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>`);
+}
+
+async function syncKonfliktUebernehmen(logId, wahl){
+  const e = await idbGet('sync_log', logId).catch(()=>null);
+  if(!e){ toast('Eintrag nicht gefunden'); return; }
+  const quelle = wahl==='lokal' ? e.snapshotLokal : e.snapshotRemote;
+  if(!quelle || !quelle.id){ toast('Stand nicht verfügbar'); return; }
+  if(e.store==='mieter') await erstelleMieterSnapshot('Konfliktlösung '+(quelle.mieter||quelle.id));
+  // Frischer Zeitstempel: der gewählte Stand setzt sich beim Sync auf allen Geräten durch.
+  const rec={...quelle, updatedAt:nowIso()};
+  await idbPut(e.store, rec, {keepStamp:true});
+  // Eintrag als gelöst markieren
+  e.aktion = wahl==='lokal' ? 'manuell: lokal behalten' : 'manuell: Cloud übernommen';
+  e.geaendert = nowIso();
+  await idbPut('sync_log', e);
+  closeModal();
+  clearTimeout(window._syncTimer);
+  window._syncTimer=setTimeout(()=>syncToOneDrive(),2000);
+  if(curPage==='settings') renderSettings();
+  await renderDash();
+  toast('✓ Konflikt gelöst – Auswahl wird synchronisiert');
+}
+
 // Konfliktprotokoll: dokumentiert, wenn beim Sync ein vorhandener Datensatz
 // überschrieben oder bewusst behalten wurde. Wird synchronisiert, damit der
 // Admin geräteübergreifend sieht, was passiert ist.
@@ -18752,40 +19112,86 @@ function mergeRecord(local, remote){
 async function importBackup(input){
   if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
   const file=input.files[0]; if(!file) return;
-  if(!confirm('Backup-Datei importieren? Im nächsten Schritt wählst du den Importmodus.')) return;
   const reader=new FileReader();
-  reader.onload=async function(e){
+  reader.onload=function(e){
     try{
       const backup=JSON.parse(e.target.result);
-      await erstelleMieterSnapshot('import');
-      const modus = confirm('Importmodus wählen:\n\nOK = Zusammenführen (empfohlen): neuere Daten gewinnen, nichts geht verloren.\nAbbrechen = Vollständig ersetzen (alter Modus): lokale Daten werden komplett überschrieben.');
-      const alleStores=['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','versorger_archiv','od_dateien'];
-      if(!modus){
-        // Vollständig ersetzen (alter Modus)
-        for(const s of alleStores){
-          if(backup[s]){ await idbClear(s); for(const item of backup[s]) await idbPut(s,item); }
-        }
-      } else {
-        // Zusammenführen: pro Datensatz nur übernehmen, wenn remote neuer oder lokal fehlt
-        for(const s of alleStores){
-          if(!backup[s]) continue;
-          for(const item of backup[s]){
-            if(!item||!item.id){ continue; }
-            const local=await idbGet(s,item.id).catch(()=>null);
-            const {merged}=mergeRecord(local, item);
-            await idbPut(s,merged,{keepStamp:true});
-          }
-        }
-      }
-      // Nach Import lokalen Stand hochladen, damit alle Geräte ihn ziehen
-      try{ await idbDelete('settings','lastSync'); }catch(_){}
-      toast(modus?'Backup zusammengeführt ✓':'Backup importiert ✓');
-      await initApp();
-      clearTimeout(window._syncTimer);
-      window._syncTimer=setTimeout(()=>syncToOneDrive(),2000);
-    }catch(err){toast('Fehler beim Import: '+err.message);}
+      // Datei zwischenspeichern, Modus per Dialog wählen (drei klare Optionen).
+      window._pendingBackup = backup;
+      const datInfo = backup.exportedAt ? ('vom '+backup.exportedAt) : '';
+      const anzM = Array.isArray(backup.mieter) ? backup.mieter.length : 0;
+      showModal(`
+        <div class="m-title"><i class="ti ti-database-import"></i> Backup importieren</div>
+        <div style="background:var(--ink-05);border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:13px;color:var(--ink-60)">
+          Sicherung ${esc(datInfo)}${anzM?` · ${anzM} Mieter`:''}. Bitte wähle, wie der Stand übernommen wird. Vor dem Import wird automatisch eine lokale Sicherung des aktuellen Standes angelegt.
+        </div>
+        <button class="btn btn-copper btn-full" style="margin-bottom:8px" onclick="importBackupAusfuehren('wiederherstellen')">
+          <i class="ti ti-rotate-2"></i> Wiederherstellen <span style="opacity:.7;font-size:11px">(setzt sich überall durch)</span>
+        </button>
+        <div style="font-size:11px;color:var(--ink-40);margin:-4px 0 12px 2px">Empfohlen nach einem Fehler: Die Daten aus der Sicherung erhalten einen frischen Zeitstempel und gewinnen beim nächsten Sync auf allen Geräten – auch gegen einen falschen neueren Stand auf einem anderen Gerät.</div>
+        <button class="btn btn-full" style="margin-bottom:8px" onclick="importBackupAusfuehren('zusammenfuehren')">
+          <i class="ti ti-arrows-join"></i> Zusammenführen
+        </button>
+        <div style="font-size:11px;color:var(--ink-40);margin:-4px 0 12px 2px">Pro Datensatz gewinnt der jüngere Zeitstempel; gefüllte Felder werden nie durch leere überschrieben. Sinnvoll, wenn beide Stände gültige Teildaten enthalten.</div>
+        <button class="btn btn-full btn-danger" style="margin-bottom:8px" onclick="importBackupAusfuehren('ersetzen')">
+          <i class="ti ti-replace"></i> Vollständig ersetzen
+        </button>
+        <div style="font-size:11px;color:var(--ink-40);margin:-4px 0 12px 2px">Lokale Daten werden komplett durch die Sicherung überschrieben. Nur verwenden, wenn der lokale Stand sicher verworfen werden soll.</div>
+        <button class="btn btn-full" onclick="window._pendingBackup=null;closeModal()">Abbrechen</button>`);
+    }catch(err){ toast('Fehler beim Lesen: '+err.message); }
   };
   reader.readAsText(file);
+  input.value=''; // erlaubt erneuten Import derselben Datei
+}
+
+// Führt den gewählten Import-Modus auf der zwischengespeicherten Backup-Datei aus.
+async function importBackupAusfuehren(modus){
+  const backup = window._pendingBackup;
+  if(!backup){ toast('Keine Backup-Datei geladen'); closeModal(); return; }
+  closeModal();
+  const alleStores=['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','versorger_archiv','od_dateien'];
+  try{
+    await erstelleMieterSnapshot('vor Import ('+modus+')');
+    if(modus==='ersetzen'){
+      for(const s of alleStores){
+        if(backup[s]){ await idbClear(s); for(const item of backup[s]) await idbPut(s,item); }
+      }
+    } else if(modus==='wiederherstellen'){
+      // Frischer Zeitstempel: der wiederhergestellte Stand gewinnt beim Sync überall.
+      const NOW=nowIso();
+      for(const s of alleStores){
+        if(!backup[s]) continue;
+        for(const item of backup[s]){
+          if(!item||!item.id) continue;
+          const rec={...item};
+          // settings haben keinen Stempel-Bedarf; alle anderen Stores bekommen frischen updatedAt
+          if(s!=='settings'){ rec.updatedAt=NOW; }
+          await idbPut(s, rec, {keepStamp:true});
+        }
+      }
+    } else {
+      // Zusammenführen: jüngerer Zeitstempel gewinnt, kein Feldverlust
+      for(const s of alleStores){
+        if(!backup[s]) continue;
+        for(const item of backup[s]){
+          if(!item||!item.id) continue;
+          const local=await idbGet(s,item.id).catch(()=>null);
+          const {merged}=mergeRecord(local, item);
+          await idbPut(s,merged,{keepStamp:true});
+        }
+      }
+    }
+    window._pendingBackup=null;
+    // Nach Import lokalen Stand hochladen, damit alle Geräte ihn ziehen
+    try{ await idbDelete('settings','lastSync'); }catch(_){}
+    const txt = modus==='wiederherstellen' ? 'Backup wiederhergestellt ✓ – wird auf allen Geräten übernommen'
+              : modus==='ersetzen' ? 'Backup vollständig übernommen ✓'
+              : 'Backup zusammengeführt ✓';
+    toast(txt);
+    await initApp();
+    clearTimeout(window._syncTimer);
+    window._syncTimer=setTimeout(()=>syncToOneDrive(),2000);
+  }catch(err){ toast('Fehler beim Import: '+err.message); }
 }
 
 async function confirmReset(){
