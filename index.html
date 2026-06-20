@@ -736,8 +736,8 @@ body.printing-active #printRoot{display:block!important}
 /* ═══════════════════════════════════════════════════════════
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
-const DB_NAME='immo_v2', DB_VER=24;
-const APP_VERSION = '2026-06-20-v99';
+const DB_NAME='immo_v2', DB_VER=25;
+const APP_VERSION = '2026-06-20-v100';
 /* v94 (19.06.2026): Etappe 1 – Lokale Benachrichtigungen erweitert (Termine + Maengel).
    - checkFaelligeAufgaben() prueft jetzt zusaetzlich:
      a) Termin-Erinnerungen: Termine mit gesetztem Erinnerungs-Vorlauf (1/2/7 Tage)
@@ -1948,11 +1948,18 @@ async function ensureZaehler(objektId){
 async function renderObjZaehler(el){
   const zaehler = (await ensureZaehler(currentObjId)).sort((a,b)=>a.name.localeCompare(b.name));
   const alleStaende = await idbGetAll('zaehlerstaende','objektId',currentObjId);
+  const alleVersorger = (CU?.role==='admin') ? await idbGetAll('versorger','objektId',currentObjId) : [];
+  const vMap = Object.fromEntries(alleVersorger.map(v=>[v.id,v]));
+  // Dubletten-Erkennung: gleiche Art + gleiche (normalisierte) Bezeichnung im selben Objekt
+  const norm = t => (t||'').toLowerCase().replace(/\s+/g,' ').trim();
+  const dubCount = {};
+  zaehler.forEach(z=>{ const k=z.art+'|'+norm(z.name); dubCount[k]=(dubCount[k]||0)+1; });
   let h=`<div class="s-hdr"><div class="s-title"><i class="ti ti-gauge"></i> Zähler (${zaehler.length})</div>
     ${CU?.role==='admin'?`<button class="btn btn-sm" onclick="modalNeuerZaehler('${currentObjId}')"><i class="ti ti-plus"></i> Zähler</button>`:''}
   </div>`;
 
   for(const z of zaehler){
+    const istDub = dubCount[z.art+'|'+norm(z.name)] > 1;
     const staende = alleStaende.filter(s=>s.zaehlerId===z.id)
       .sort((a,b)=>new Date(b.datumISO||0)-new Date(a.datumISO||0));
     const letzter = staende[0];
@@ -1964,18 +1971,28 @@ async function renderObjZaehler(el){
       const tage = Math.max(1,Math.round((new Date(letzter.datumISO)-new Date(vorletzter.datumISO))/86400000));
       verbrauchTxt = `<span style="color:var(--ink-60)">Verbrauch seit letzter Ablesung: <strong>${diff.toFixed(2)} ${z.einheit}</strong> (${tage} Tage)</span>`;
     }
-    h+=`<div class="card" style="margin-bottom:10px">
+    const vLink = z.versorgerId ? vMap[z.versorgerId] : null;
+    const vLinkTxt = vLink
+      ? `<span style="color:var(--copper)"><i class="ti ti-link"></i> ${vLink.anbieter||getSparte(vLink.sparte).label}</span>`
+      : (CU?.role==='admin' ? `<span style="color:var(--ink-40)"><i class="ti ti-link-off"></i> kein Versorger</span>` : '');
+    h+=`<div class="card" style="margin-bottom:10px${istDub?';border:1px solid #E6A23C':''}">
+      ${istDub?`<div style="font-size:11px;color:#B8860B;margin-bottom:6px"><i class="ti ti-alert-triangle"></i> Möglicher doppelter Zähler (gleiche Art &amp; Bezeichnung) – ggf. einen löschen.</div>`:''}
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
         <div style="width:38px;height:38px;border-radius:8px;background:var(--ink-05);display:flex;align-items:center;justify-content:center;font-size:18px;color:var(--copper)">
           <i class="ti ${ZAEHLER_ICON[z.art]||'ti-gauge'}"></i>
         </div>
         <div style="flex:1">
           <div style="font-weight:600;font-size:14px">${z.name}</div>
+          ${z.zaehlernummer?`<div style="font-size:12px;color:var(--ink-60)"><i class="ti ti-hash"></i> ${z.zaehlernummer}</div>`:''}
           <div style="font-size:12px;color:var(--ink-40)">
             ${letzter?`Letzter Stand: <strong>${letzter.wert} ${z.einheit}</strong> · ${letzter.datum}`:'Noch keine Ablesung'}
           </div>
+          ${vLinkTxt?`<div style="font-size:12px;margin-top:2px">${vLinkTxt}</div>`:''}
         </div>
-        <button class="btn btn-sm btn-copper" onclick="modalZaehlerstand('${z.id}')"><i class="ti ti-camera"></i> Ablesen</button>
+        <div style="display:flex;flex-direction:column;gap:4px">
+          <button class="btn btn-sm btn-copper" onclick="modalZaehlerstand('${z.id}')"><i class="ti ti-camera"></i> Ablesen</button>
+          ${CU?.role==='admin'?`<button class="btn btn-sm" onclick="modalNeuerZaehler('${currentObjId}','${z.id}')"><i class="ti ti-pencil"></i> Bearbeiten</button>`:''}
+        </div>
       </div>
       ${verbrauchTxt?`<div style="font-size:12px;margin-bottom:6px">${verbrauchTxt}</div>`:''}
       ${staende.length?`<button class="btn btn-sm" style="width:100%" onclick="zeigeZaehlerVerlauf('${z.id}')"><i class="ti ti-chart-line"></i> Verlauf & Verbrauch (${staende.length})</button>`:''}
@@ -2188,45 +2205,118 @@ async function saveZaehlerstandEdit(id, zaehlerId){
 }
 
 // Zusätzlichen Zähler anlegen (Admin)
-async function modalNeuerZaehler(objektId){
+async function modalNeuerZaehler(objektId, zaehlerId){
+  const z = zaehlerId ? (await idbGet('zaehler', zaehlerId)) : {};
+  const isEdit = !!zaehlerId;
+  const arten=[['strom','Strom'],['gas','Gas'],['wasser','Wasser'],['heizung','Heizung'],['tiefgarage','Tiefgarage'],['sonstige','Sonstige']];
+  // Versorger desselben Objekts für die Zuordnung laden
+  const versorger=(await idbGetAll('versorger','objektId',objektId)).sort((a,b)=>(a.sparte||'').localeCompare(b.sparte||''));
+  const vsOpts=['<option value="">— kein Versorger —</option>']
+    .concat(versorger.map(v=>{
+      const sp=getSparte(v.sparte);
+      return `<option value="${v.id}" ${z.versorgerId===v.id?'selected':''}>${(v.anbieter||sp.label)} (${sp.label})</option>`;
+    })).join('');
   showModal(`
-    <div class="m-title"><i class="ti ti-plus"></i> Neuer Zähler</div>
+    <div class="m-title"><i class="ti ${isEdit?'ti-pencil':'ti-plus'}"></i> ${isEdit?'Zähler bearbeiten':'Neuer Zähler'}</div>
     <div class="f"><label>Bezeichnung *</label>
-      <input type="text" id="nzName" placeholder="z. B. Wasser Garten"></div>
+      <input type="text" id="nzName" value="${(z.name||'').replace(/"/g,'&quot;')}" placeholder="z. B. Wasser Garten"></div>
     <div class="f-row">
       <div class="f"><label>Art</label>
         <select id="nzArt">
-          <option value="strom">Strom</option>
-          <option value="gas">Gas</option>
-          <option value="wasser">Wasser</option>
-          <option value="heizung">Heizung</option>
-          <option value="tiefgarage">Tiefgarage</option>
-          <option value="sonstige">Sonstige</option>
+          ${arten.map(([v,l])=>`<option value="${v}" ${z.art===v?'selected':''}>${l}</option>`).join('')}
         </select></div>
       <div class="f"><label>Einheit</label>
-        <input type="text" id="nzEinheit" value="kWh" placeholder="kWh / m³"></div>
+        <input type="text" id="nzEinheit" value="${(z.einheit||'kWh').replace(/"/g,'&quot;')}" placeholder="kWh / m³"></div>
     </div>
-    <div class="f"><label>Zählernummer (optional)</label>
-      <input type="text" id="nzNummer" placeholder="Gerätenummer"></div>
+    <div class="f"><label>Zählernummer</label>
+      <input type="text" id="nzNummer" value="${(z.zaehlernummer||'').replace(/"/g,'&quot;')}" placeholder="Gerätenummer"></div>
+    <div class="f"><label><i class="ti ti-link"></i> Zugeordneter Versorger</label>
+      <select id="nzVersorger">${vsOpts}</select>
+      ${versorger.length?'':'<div style="font-size:11px;color:var(--ink-40);margin-top:4px">Noch keine Versorger in diesem Objekt erfasst.</div>'}</div>
     <div class="f-row" style="margin-top:12px">
-      <button class="btn btn-copper btn-full" onclick="saveNeuerZaehler('${objektId}')"><i class="ti ti-check"></i> Speichern</button>
+      <button class="btn btn-copper btn-full" onclick="saveNeuerZaehler('${objektId}','${zaehlerId||''}')"><i class="ti ti-check"></i> Speichern</button>
       <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
-    </div>`);
+    </div>
+    ${isEdit?`<button class="btn btn-danger btn-full" style="margin-top:8px" onclick="delZaehler('${zaehlerId}','${objektId}')"><i class="ti ti-trash"></i> Zähler löschen</button>`:''}`);
 }
 
-async function saveNeuerZaehler(objektId){
+async function saveNeuerZaehler(objektId, zaehlerId){
   const name=document.getElementById('nzName')?.value?.trim();
   if(!name){ toast('Bitte Bezeichnung eingeben'); return; }
   const art=document.getElementById('nzArt')?.value||'sonstige';
-  const z={ id:'z_'+objektId+'_'+art+'_'+Math.random().toString(36).slice(2,6),
-    objektId, art, name, einheit:document.getElementById('nzEinheit')?.value?.trim()||'kWh',
-    zaehlernummer:document.getElementById('nzNummer')?.value?.trim()||'', erstellt:now() };
+  const neueVersorgerId=document.getElementById('nzVersorger')?.value||'';
+  const alt = zaehlerId ? await idbGet('zaehler', zaehlerId) : null;
+  const z={
+    id: zaehlerId || ('z_'+objektId+'_'+art+'_'+Math.random().toString(36).slice(2,6)),
+    objektId, art, name,
+    einheit:document.getElementById('nzEinheit')?.value?.trim()||'kWh',
+    zaehlernummer:document.getElementById('nzNummer')?.value?.trim()||'',
+    versorgerId: neueVersorgerId,
+    erstellt: alt?.erstellt||now(), updatedAt: nowIso() };
   await idbPut('zaehler', z);
+  // Beidseitige Verknüpfung spiegeln: alten Versorger lösen, neuen setzen
+  await spiegelZaehlerVersorger(z.id, alt?.versorgerId||'', neueVersorgerId);
   closeModal();
   clearTimeout(window._syncTimer);
   window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
   await renderObjZaehler(document.getElementById('objTabContent'));
-  toast('Zähler angelegt ✓');
+  toast(zaehlerId?'Zähler gespeichert ✓':'Zähler angelegt ✓');
+}
+
+async function delZaehler(zaehlerId, objektId){
+  if(!confirm('Diesen Zähler wirklich löschen? Zugehörige Ablesungen bleiben erhalten, verlieren aber die Zuordnung.')) return;
+  const z=await idbGet('zaehler', zaehlerId);
+  if(z?.versorgerId){ await spiegelZaehlerVersorger(zaehlerId, z.versorgerId, ''); }
+  await idbDelete('zaehler', zaehlerId);
+  closeModal();
+  clearTimeout(window._syncTimer);
+  window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
+  await renderObjZaehler(document.getElementById('objTabContent'));
+  toast('Zähler gelöscht ✓');
+}
+
+// Hält Zähler.versorgerId und Versorger.zaehlerId konsistent (eine Datenquelle, beidseitig gespiegelt)
+async function spiegelZaehlerVersorger(zaehlerId, alteVersorgerId, neueVersorgerId){
+  if(alteVersorgerId===neueVersorgerId) return;
+  // Alten Versorger lösen (nur wenn er auf genau diesen Zähler zeigt)
+  if(alteVersorgerId){
+    const va=await idbGet('versorger', alteVersorgerId).catch(()=>null);
+    if(va && va.zaehlerId===zaehlerId){ va.zaehlerId=''; va.updatedAt=nowIso(); await idbPut('versorger', va); }
+  }
+  // Neuen Versorger setzen
+  if(neueVersorgerId){
+    const vn=await idbGet('versorger', neueVersorgerId).catch(()=>null);
+    if(vn){
+      // Falls der neue Versorger bereits auf einen ANDEREN Zähler zeigte, diesen Zähler lösen
+      if(vn.zaehlerId && vn.zaehlerId!==zaehlerId){
+        const zAlt=await idbGet('zaehler', vn.zaehlerId).catch(()=>null);
+        if(zAlt && zAlt.versorgerId===neueVersorgerId){ zAlt.versorgerId=''; zAlt.updatedAt=nowIso(); await idbPut('zaehler', zAlt); }
+      }
+      vn.zaehlerId=zaehlerId; vn.updatedAt=nowIso(); await idbPut('versorger', vn);
+    }
+  }
+}
+
+// Gegenrichtung: Versorger setzt zaehlerId -> Zähler.versorgerId nachziehen
+async function spiegelVersorgerZaehler(versorgerId, alterZaehlerId, neuerZaehlerId){
+  if(alterZaehlerId===neuerZaehlerId) return;
+  // Alten Zähler lösen (nur wenn er auf genau diesen Versorger zeigt)
+  if(alterZaehlerId){
+    const za=await idbGet('zaehler', alterZaehlerId).catch(()=>null);
+    if(za && za.versorgerId===versorgerId){ za.versorgerId=''; za.updatedAt=nowIso(); await idbPut('zaehler', za); }
+  }
+  // Neuen Zähler setzen
+  if(neuerZaehlerId){
+    const zn=await idbGet('zaehler', neuerZaehlerId).catch(()=>null);
+    if(zn){
+      // Falls der neue Zähler bereits einem ANDEREN Versorger zugeordnet war, dort lösen
+      if(zn.versorgerId && zn.versorgerId!==versorgerId){
+        const vAlt=await idbGet('versorger', zn.versorgerId).catch(()=>null);
+        if(vAlt && vAlt.zaehlerId===neuerZaehlerId){ vAlt.zaehlerId=''; vAlt.updatedAt=nowIso(); await idbPut('versorger', vAlt); }
+      }
+      zn.versorgerId=versorgerId; zn.updatedAt=nowIso(); await idbPut('zaehler', zn);
+    }
+  }
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -2372,6 +2462,7 @@ async function renderObjVersorger(el){
   if(CU?.role!=='admin'){ el.innerHTML='<div class="empty"><i class="ti ti-lock"></i><p>Nur für Administratoren sichtbar.</p></div>'; return; }
   const liste=(await idbGetAll('versorger','objektId',currentObjId))
     .sort((a,b)=>a.sparte.localeCompare(b.sparte));
+  const zMap = Object.fromEntries((await idbGetAll('zaehler','objektId',currentObjId)).map(z=>[z.id,z]));
   let h=`<div class="s-hdr"><div class="s-title"><i class="ti ti-file-dollar"></i> Versorger & Verträge (${liste.length})</div>
     <button class="btn btn-sm btn-copper" onclick="modalVersorger('${currentObjId}')"><i class="ti ti-plus"></i> Versorger</button>
   </div>
@@ -2414,6 +2505,7 @@ async function renderObjVersorger(el){
         ${v.grundpreis?`<span>Grundpreis: <strong>${fmtEur(v.grundpreis)}/Monat</strong></span>`:''}
         ${v.arbeitspreis?`<span>Arbeitspreis: <strong>${v.arbeitspreis} ct/${v.einheit||'Einheit'}</strong></span>`:''}
       </div>
+      ${v.zaehlerId&&zMap[v.zaehlerId]?`<div style="font-size:12px;color:var(--copper);margin-top:4px"><i class="ti ti-link"></i> Zähler: <strong>${zMap[v.zaehlerId].name}</strong>${zMap[v.zaehlerId].zaehlernummer?' · Nr. '+zMap[v.zaehlerId].zaehlernummer:''}</div>`:''}
       <button class="btn btn-sm" style="width:100%;margin-top:8px" onclick="zeigeVersorgerDetail('${v.id}')"><i class="ti ti-eye"></i> Details & Zugangsdaten</button>
     </div>`;
   }
@@ -2423,6 +2515,10 @@ async function renderObjVersorger(el){
 async function modalVersorger(objektId, versorgerId){
   const v = versorgerId ? await idbGet('versorger', versorgerId) : {};
   const isEdit = !!versorgerId;
+  // Zähler desselben Objekts für die Zuordnung laden
+  const objZaehler=(await idbGetAll('zaehler','objektId',objektId)).sort((a,b)=>(a.name||'').localeCompare(b.name||''));
+  const zOpts=['<option value="">— kein Zähler —</option>']
+    .concat(objZaehler.map(z=>`<option value="${z.id}" ${v.zaehlerId===z.id?'selected':''}>${z.name}${z.zaehlernummer?' (Nr. '+z.zaehlernummer+')':''}</option>`)).join('');
   // Passwort nur anzeigen, wenn entsperrt; sonst Platzhalter
   let pwWert='', pwHinweis='';
   if(v.passwortEnc){
@@ -2448,6 +2544,9 @@ async function modalVersorger(objektId, versorgerId){
       <div class="f"><label>Kündigungsfrist (Monate)</label><input type="number" id="vKuendFrist" min="0" step="1" value="${v.kuendigungsfristMonate||''}" placeholder="z. B. 1"></div>
       <div class="f"><label>Abrechnungseinheit</label><input type="text" id="vEinheit" value="${v.einheit||''}" placeholder="kWh / m³"></div>
     </div>
+    <div class="f"><label><i class="ti ti-link"></i> Zugeordneter Zähler</label>
+      <select id="vZaehler">${zOpts}</select>
+      ${objZaehler.length?'':'<div style="font-size:11px;color:var(--ink-40);margin-top:4px">Noch keine Zähler in diesem Objekt erfasst – erst unter „Zähler" anlegen.</div>'}</div>
     <div class="f-row">
       <div class="f"><label>Grundpreis (€/Monat)</label><input type="number" id="vGrundpreis" step="0.01" value="${v.grundpreis||''}"></div>
       <div class="f"><label>Arbeitspreis (ct/Einheit)</label><input type="number" id="vArbeitspreis" step="0.001" value="${v.arbeitspreis||''}"></div>
@@ -2480,6 +2579,7 @@ async function saveVersorger(objektId, versorgerId){
     vertragsende:   document.getElementById('vEnde')?.value||'',
     kuendigungsfristMonate: parseInt(document.getElementById('vKuendFrist')?.value)||'',
     einheit: document.getElementById('vEinheit')?.value?.trim()||'',
+    zaehlerId: document.getElementById('vZaehler')?.value||'',
     grundpreis: parseFloat(document.getElementById('vGrundpreis')?.value)||'',
     arbeitspreis: parseFloat(document.getElementById('vArbeitspreis')?.value)||'',
     website: document.getElementById('vWebsite')?.value?.trim()||'',
@@ -2544,11 +2644,13 @@ async function saveVersorgerFortsetzen(formData){
     sparte: fd.sparte, anbieter: fd.anbieter,
     vertragsnummer: fd.vertragsnummer, vertragsbeginn: fd.vertragsbeginn,
     vertragsende: fd.vertragsende, kuendigungsfristMonate: fd.kuendigungsfristMonate,
-    einheit: fd.einheit, grundpreis: fd.grundpreis, arbeitspreis: fd.arbeitspreis,
+    einheit: fd.einheit, zaehlerId: fd.zaehlerId||'', grundpreis: fd.grundpreis, arbeitspreis: fd.arbeitspreis,
     website: fd.website, login: fd.login, passwortEnc, notiz: fd.notiz,
-    erstellt: alt?.erstellt||now(), terminId: alt?.terminId||null,
+    erstellt: alt?.erstellt||now(), terminId: alt?.terminId||null, updatedAt: nowIso(),
   };
   await idbPut('versorger', v);
+  // Beidseitige Verknüpfung spiegeln (Versorger-Seite gesetzt -> Zähler-Seite nachziehen)
+  await spiegelVersorgerZaehler(v.id, alt?.zaehlerId||'', v.zaehlerId||'');
   await syncVersorgerErinnerung(v);
   closeModal();
   clearTimeout(window._syncTimer);
@@ -2595,6 +2697,8 @@ async function deleteVersorger(versorgerId, objektId){
   if(!confirm('Versorger wirklich löschen? Die zugehörige Kalender-Erinnerung wird ebenfalls entfernt.')) return;
   const v=await idbGet('versorger', versorgerId);
   if(v?.terminId) await idbDelete('termine', v.terminId).catch(()=>{});
+  // Verknüpften Zähler lösen, damit keine verwaiste Zuordnung zurückbleibt
+  if(v?.zaehlerId) await spiegelVersorgerZaehler(versorgerId, v.zaehlerId, '');
   await idbDelete('versorger', versorgerId);
   closeModal();
   clearTimeout(window._syncTimer);
@@ -2608,6 +2712,8 @@ async function zeigeVersorgerDetail(versorgerId){
   if(!v) return;
   const sp=getSparte(v.sparte);
   const obj=getObj(v.objektId);
+  const zaehlerObj = v.zaehlerId ? await idbGet('zaehler', v.zaehlerId).catch(()=>null) : null;
+  const zaehlerTxt = zaehlerObj ? (zaehlerObj.name + (zaehlerObj.zaehlernummer?' · Nr. '+zaehlerObj.zaehlernummer:'')) : '';
   const zeile=(label,val,opts={})=> val ? `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--ink-10);font-size:13px">
       <span style="color:var(--ink-40)">${label}</span>
       <span style="font-weight:600;text-align:right;${opts.mono?'font-family:monospace':''}">${opts.link?`<a href="${val}" target="_blank" rel="noopener" style="color:var(--copper)">${val}</a>`:val}</span>
@@ -2629,6 +2735,7 @@ async function zeigeVersorgerDetail(versorgerId){
     <div class="m-title"><i class="ti ${sp.icon}"></i> ${v.anbieter}</div>
     <div style="font-size:12px;color:var(--ink-40);margin-bottom:10px">${sp.label} · ${obj?.name||''}</div>
     ${zeile('Vertragsnummer', v.vertragsnummer)}
+    ${zeile('Zugeordneter Zähler', zaehlerTxt)}
     ${zeile('Vertragsbeginn', v.vertragsbeginn?new Date(v.vertragsbeginn).toLocaleDateString('de-DE'):'')}
     ${zeile('Vertragsende', v.vertragsende?new Date(v.vertragsende).toLocaleDateString('de-DE'):'')}
     ${zeile('Kündigungsfrist', v.kuendigungsfristMonate?v.kuendigungsfristMonate+' Monate':'')}
