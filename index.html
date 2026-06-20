@@ -736,8 +736,8 @@ body.printing-active #printRoot{display:block!important}
 /* ═══════════════════════════════════════════════════════════
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
-const DB_NAME='immo_v2', DB_VER=23;
-const APP_VERSION = '2026-06-19-v94';
+const DB_NAME='immo_v2', DB_VER=24;
+const APP_VERSION = '2026-06-20-v99';
 /* v94 (19.06.2026): Etappe 1 – Lokale Benachrichtigungen erweitert (Termine + Maengel).
    - checkFaelligeAufgaben() prueft jetzt zusaetzlich:
      a) Termin-Erinnerungen: Termine mit gesetztem Erinnerungs-Vorlauf (1/2/7 Tage)
@@ -837,10 +837,11 @@ function openIDB(){
     const req=indexedDB.open(DB_NAME,DB_VER);
     req.onupgradeneeded=e=>{
       const db=e.target.result;
-      ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','fotos','wartung','zaehler','zaehlerstaende','versorger','versorger_archiv','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','sync_log','mieter_snapshots','branchenbuch','interessenten','od_dateien'].forEach(s=>{
+      ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','fotos','wartung','zaehler','zaehlerstaende','versorger','versorger_archiv','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','sync_log','mieter_snapshots','branchenbuch','interessenten','od_dateien','buchungen'].forEach(s=>{
         if(!db.objectStoreNames.contains(s)){
           const store=db.createObjectStore(s,{keyPath:'id'});
           if(s==='mieter'){store.createIndex('objektId','objektId');store.createIndex('weNr','weNr')}
+          if(s==='buchungen'){store.createIndex('mieterId','mieterId');store.createIndex('kontoId','kontoId');store.createIndex('mietmonat','mietmonat')}
           if(s==='aufgaben'){store.createIndex('objektId','objektId');store.createIndex('status','status')}
           if(s==='maengel'){store.createIndex('objektId','objektId')}
           if(s==='reparaturen'){store.createIndex('objektId','objektId')}
@@ -978,16 +979,20 @@ const OBJEKTE=[
   {id:'wilm11',  gruppe:'krefeld',    name:'Wilmendyk 11',         ort:'47803 Krefeld',       nr:4,color:'c-kr'},
   {id:'wilm13',  gruppe:'krefeld',    name:'Wilmendyk 13',         ort:'47803 Krefeld',       nr:4,color:'c-kr'},
   {id:'marien22',gruppe:'monheim',    name:'Marienburger Str. 22', ort:'40789 Monheim am Rhein',nr:5,color:'c-mon',
-   sichtbarFuer:['u_alexander'], privat:true},
+   sichtbarFuer:['u_admin','u_pfau','u_roland'], privat:true},
+  {id:'verlach37',gruppe:'mg',         name:'Zur Verlach 37',       ort:'40723 Hilden',        nr:6,color:'c-mg',
+   sichtbarFuer:['u_admin','u_pfau','u_roland'], privat:true},
+  {id:'amboss10', gruppe:'pfau',       name:'Amboßstr. 10',         ort:'40547 Düsseldorf',    nr:7,color:'c-dus'},
 ];
 const OBJ_MAP={
   'Ruhrtalstr. 41':'ruhrt41','Mindener Str. 23':'mind23','Mindener Str. 25':'mind25',
   'Kyffhäuser 28':'kyff28','Kyffhäuser 30':'kyff30','Kyffhäuser 32':'kyff32',
   'Inrather Str. 181':'inr181','Inrather Str. 183':'inr183','Inrather Str. 185':'inr185',
   'Wilmendyk 7':'wilm7','Wilmendyk 9':'wilm9','Wilmendyk 11':'wilm11','Wilmendyk 13':'wilm13',
+  'Zur Verlach 37':'verlach37','Amboßstr. 10':'amboss10','Marienburger Str. 22':'marien22',
 };
 const getObj=id=>OBJEKTE.find(o=>o.id===id);
-const GRUPPE_LABEL={duesseldorf:'Düsseldorf',mg:'Mönchengladbach',krefeld:'Krefeld',monheim:'Monheim am Rhein'};
+const GRUPPE_LABEL={duesseldorf:'Düsseldorf',mg:'Mönchengladbach',krefeld:'Krefeld',monheim:'Monheim am Rhein',pfau:'Pfau (Amboßstr.)'};
 
 /* ═══════════════════════════════════════════════════════════
    MIETVERTRAG-GENERATOR – Datenbasis (v85)
@@ -1201,8 +1206,46 @@ async function tryLogin(){
   try { sessionStorage.setItem('activeSession', uid); } catch(e) {}
   try { localStorage.setItem('activeSession', JSON.stringify({uid, ts: Date.now(), tag: today()})); } catch(e) {}
   CU=user;pinBuf='';
+  // Kontrolle: letzte Aktivität + Gerätekennung am Benutzer hinterlegen (für Admin-Übersicht)
+  try { await erfasseAktivitaet(user); } catch(e){}
   showScreen('appScreen');
   await initApp();
+}
+
+/* Persistente, anonyme Gerätekennung (pro Installation) */
+function getDeviceId(){
+  let d='';
+  try { d = localStorage.getItem('deviceId') || ''; } catch(e){}
+  if(!d){
+    d = 'dev_' + Math.random().toString(36).slice(2,8) + Date.now().toString(36).slice(-4);
+    try { localStorage.setItem('deviceId', d); } catch(e){}
+  }
+  return d;
+}
+/* Gerätename: aus User-Agent grob ableiten (Anzeige-Hilfe) */
+function getDeviceLabel(){
+  const ua = navigator.userAgent || '';
+  let os='Gerät';
+  if(/Android/i.test(ua)) os='Android';
+  else if(/iPhone|iPad|iPod/i.test(ua)) os='iOS';
+  else if(/Windows/i.test(ua)) os='Windows';
+  else if(/Mac/i.test(ua)) os='Mac';
+  else if(/Linux/i.test(ua)) os='Linux';
+  return os;
+}
+/* Letzte Aktivität am Benutzer speichern (mit Merge-Schutz für updatedAt) */
+async function erfasseAktivitaet(user){
+  if(!user || !user.id) return;
+  const u = await idbGet('users', user.id);
+  if(!u) return;
+  u.lastSeen = nowIso();
+  u.lastDevice = getDeviceId();
+  u.lastDeviceLabel = getDeviceLabel();
+  u.updatedAt = nowIso();
+  await idbPut('users', u);
+  if(CU && CU.id===user.id){ CU.lastSeen=u.lastSeen; CU.lastDevice=u.lastDevice; }
+  clearTimeout(window._syncTimer);
+  window._syncTimer = setTimeout(()=>{ if(typeof syncToOneDrive==='function') syncToOneDrive(); }, 4000);
 }
 function showLoginErr(msg){
   const el=document.getElementById('loginErr');
@@ -11532,6 +11575,12 @@ const BRIEFKOPF_DEFAULTS = {
     strasse:'Venloer Straße 20', ort:'40477 Düsseldorf',
     tel:'0177 / 2509710', email:'nadigpfau-hausverwaltung@gmx.de',
   },
+  pfau: {
+    name:'Anna Pfau und Torben Pfau', absender:'Anna und Torben Pfau',
+    zusatz:'',
+    strasse:'Venloer Straße 20', ort:'40477 Düsseldorf',
+    tel:'0177 / 2509710', email:'nadigpfau-hausverwaltung@gmx.de',
+  },
 };
 // ── Eigentümer-/Vermieter-Stammdaten (Punkt 1.1) ─────────────────
 // Zentrale, editierbare Eigentümerliste in settings (id 'eigentuemer_liste').
@@ -11569,6 +11618,7 @@ function briefkopfGruppe(obj){
   const g=(obj?.gruppe||'').toLowerCase();
   if(g==='mg') return 'mg';
   if(g==='krefeld'||g==='kr') return 'kr';
+  if(g==='pfau') return 'pfau';
   // duesseldorf, monheim und alles Übrige -> Düsseldorfer Briefkopf (Nadig Pfau)
   return 'dus';
 }
@@ -11657,7 +11707,8 @@ function renderBriefkopfConfig(){
   const gruppen=[
     {key:'dus', label:'Düsseldorf / Monheim (Nadig Pfau)'},
     {key:'kr',  label:'Krefeld (Nadig Pfau)'},
-    {key:'mg',  label:'Mönchengladbach (Roland Nadig)'},
+    {key:'mg',  label:'Mönchengladbach + Hilden (Roland Nadig)'},
+    {key:'pfau',label:'Amboßstr. (Anna & Torben Pfau)'},
   ];
   const feld=(k,f,lbl,val)=>`<div class="f" style="margin-bottom:6px"><label style="font-size:10px">${lbl}</label>
     <input type="text" id="bk_${k}_${f}" value="${esc(val||'')}" style="font-size:12px"></div>`;
@@ -14657,7 +14708,7 @@ function kappungsgrenze(obj, stichtagISO){
   // NRW-MietSchVO gilt bis 28.02.2030; danach Regelfall 20%
   const stichtag = stichtagISO ? new Date(stichtagISO) : new Date();
   const verordnungAktiv = stichtag <= new Date('2030-02-28');
-  const abgesenkt = ['krefeld','kr','duesseldorf','dus','monheim'].includes(g);
+  const abgesenkt = ['krefeld','kr','duesseldorf','dus','monheim','pfau'].includes(g);
   if(abgesenkt && verordnungAktiv) return 15;
   return 20;  // Mönchengladbach (mg) und alles Übrige / nach 2030
 }
@@ -16215,6 +16266,8 @@ async function saveEditMieter(id) {
     m.bic          = document.getElementById('mBic')?.value?.trim() || '';
     m.sepaMandat   = document.getElementById('mSepaMandat')?.value?.trim() || '';
     m.bankBemerkung= document.getElementById('mBankBem')?.value?.trim() || '';
+    // F1: IBAN-Liste mit Altfeld synchron halten (Liste = Quelle, m.iban = Spiegel)
+    zaSyncIbanSpiegel(m);
   }
   await idbPut('mieter', m);
   closeModal();
@@ -18521,6 +18574,57 @@ function switchSettingsTab(tab){
   document.querySelectorAll('.st-tab').forEach(b=>{
     b.classList.toggle('active', b.dataset.tab===tab);
   });
+  if(tab==='kontrolle') renderKontrolle();
+}
+
+/* Benutzer-Kontrolle (nur u_admin): Liste + letzte Aktivität */
+async function renderKontrolle(){
+  if(CU?.id!=='u_admin') return;
+  const box=document.getElementById('kontrolleListe');
+  if(!box) return;
+  const users=(await idbGetAll('users')).filter(u=>u && u.id);
+  const rollLabel={admin:'Admin', hm:'Hausmeister'};
+  const fmt=iso=>{
+    if(!iso) return '<span style="color:var(--ink-40)">noch nie</span>';
+    const d=new Date(iso);
+    if(isNaN(d)) return esc(String(iso));
+    const diff=Math.floor((Date.now()-d.getTime())/86400000);
+    const rel = diff===0?'heute':(diff===1?'gestern':`vor ${diff} Tagen`);
+    return `${d.toLocaleDateString('de-DE')} ${d.toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'})} <span style="color:var(--ink-40);font-size:11px">(${rel})</span>`;
+  };
+  // sortiere: zuletzt aktive zuerst
+  users.sort((a,b)=> String(b.lastSeen||'').localeCompare(String(a.lastSeen||'')));
+  const rows=users.map(u=>{
+    const objekte = (u.objekte&&u.objekte.length)
+      ? u.objekte.map(g=>GRUPPE_LABEL[g]||g).join(', ')
+      : (u.role==='admin' ? '<span style="color:var(--ink-40)">alle (Admin)</span>' : '<span style="color:var(--amber)">keine</span>');
+    const aktiv = u.aktiv===false ? '<span style="color:var(--red,#dc2626);font-size:11px">deaktiviert</span>' : '';
+    const dev = u.lastDeviceLabel ? `${esc(u.lastDeviceLabel)}` : '';
+    const devId = u.lastDevice ? `<div style="font-size:10px;color:var(--ink-40)">${esc(u.lastDevice)}</div>` : '';
+    return `<tr style="border-bottom:1px solid var(--line)">
+      <td style="padding:8px 6px">
+        <div style="font-weight:600">${esc(u.name)} ${aktiv}</div>
+        <div style="font-size:11px;color:var(--ink-40)">${esc(u.id)}</div>
+      </td>
+      <td style="padding:8px 6px;font-size:12px">${rollLabel[u.role]||esc(u.role||'?')}</td>
+      <td style="padding:8px 6px;font-size:12px">${objekte}</td>
+      <td style="padding:8px 6px;font-size:12px">${fmt(u.lastSeen)}</td>
+      <td style="padding:8px 6px;font-size:12px">${dev}${devId}</td>
+    </tr>`;
+  }).join('');
+  box.innerHTML=`
+    <div style="overflow-x:auto">
+    <table style="width:100%;border-collapse:collapse;font-size:13px;min-width:640px">
+      <thead><tr style="border-bottom:2px solid var(--line);text-align:left;color:var(--ink-40);font-size:11px">
+        <th style="padding:6px">Benutzer</th><th style="padding:6px">Rolle</th>
+        <th style="padding:6px">Objektzugriff</th><th style="padding:6px">Zuletzt aktiv</th><th style="padding:6px">Gerät</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>
+    <p style="font-size:11px;color:var(--ink-40);margin-top:10px">
+      ${users.length} Benutzer. „Zuletzt aktiv" wird ab dieser Version beim Login erfasst –
+      bestehende Benutzer erscheinen erst nach ihrer nächsten Anmeldung mit Zeitstempel.
+    </p>`;
 }
 
 async function renderSettings(){
@@ -18533,6 +18637,8 @@ async function renderSettings(){
       ${isAdmin?`<button class="st-tab" data-tab="objekte" onclick="switchSettingsTab('objekte')"><i class="ti ti-building"></i><span>Objekte</span></button>`:''}
       ${isAdmin?`<button class="st-tab" data-tab="daten" onclick="switchSettingsTab('daten')"><i class="ti ti-database"></i><span>Daten</span></button>`:''}
       ${isAdmin?`<button class="st-tab" data-tab="system" onclick="switchSettingsTab('system')"><i class="ti ti-settings"></i><span>System</span></button>`:''}
+      ${isAdmin?`<button class="st-tab" data-tab="zahlung" onclick="switchSettingsTab('zahlung')"><i class="ti ti-cash-banknote"></i><span>Zahlungen</span></button>`:''}
+      ${CU?.id==='u_admin'?`<button class="st-tab" data-tab="kontrolle" onclick="switchSettingsTab('kontrolle')"><i class="ti ti-shield-lock"></i><span>Kontrolle</span></button>`:''}
     </div>
 
     <div class="settings-card" data-tab="allgemein">
@@ -18718,7 +18824,42 @@ async function renderSettings(){
     <div style="text-align:center;padding:14px 0 24px;color:var(--ink-40);font-size:12px">
       <i class="ti ti-package" style="font-size:14px"></i> Nadig Pfau Hausverwaltung<br>
       App-Version ${APP_VERSION}
-    </div>`;
+    </div>
+
+    ${isAdmin?`
+    <div class="settings-card" data-tab="zahlung">
+      <div class="card-hdr"><i class="ti ti-cash-banknote"></i> Zahlungsabgleich – Kontoimport</div>
+      <p style="font-size:13px;color:var(--ink-40);margin:0 0 12px">
+        Kontoauszug als CSV-Datei (CSV UTF-8) hochladen. Die App ordnet Mieteingänge automatisch den Mietern zu –
+        zuerst über die hinterlegte IBAN, ersatzweise über die WE-Nummer im Verwendungszweck.
+      </p>
+      <div class="f">
+        <label>Konto auswählen</label>
+        <select id="zaKonto" class="inp">
+          ${ZA_KONTEN.map(k=>`<option value="${k.id}">${esc(k.label)}</option>`).join('')}
+        </select>
+      </div>
+      <div style="margin-top:12px">
+        <input type="file" id="zaFile" accept=".csv,text/csv" style="display:none" onchange="zaDateiGewaehlt(event)">
+        <button class="btn btn-primary" onclick="document.getElementById('zaFile').click()">
+          <i class="ti ti-upload"></i> CSV-Datei wählen
+        </button>
+        <span id="zaFileName" style="font-size:12px;color:var(--ink-40);margin-left:10px"></span>
+      </div>
+      <div id="zaErgebnis" style="margin-top:16px"></div>
+    </div>`:''}
+
+    ${CU?.id==='u_admin'?`
+    <div class="settings-card" data-tab="kontrolle">
+      <div class="card-hdr"><i class="ti ti-shield-lock"></i> Benutzer-Kontrolle</div>
+      <p style="font-size:13px;color:var(--ink-40);margin:0 0 12px">
+        Übersicht aller Benutzer mit Rolle, Objektzugriff und letzter Aktivität.
+        Die Aktivität wird beim Login erfasst und über OneDrive synchronisiert –
+        sie zeigt, wer zuletzt von welchem Gerät aktiv war (keine Echtzeit-Anzeige).
+      </p>
+      <div id="kontrolleListe"></div>
+    </div>`:''}
+  `;
   // OneDrive-Status-Karte befüllen
   const odCard = document.getElementById('onedriveSyncCard');
   if (odCard) {
@@ -19018,7 +19159,7 @@ async function modalEditUser(id){
     </div>
     <div class="f"><label>Objekt-Zugriff</label>
       <select id="euObjekte" multiple style="height:110px">
-        ${['duesseldorf','mg','krefeld'].map(g=>`<option value="${g}" ${u.objekte?.includes(g)?'selected':''}>${GRUPPE_LABEL[g]||g}</option>`).join('')}
+        ${Object.keys(GRUPPE_LABEL).map(g=>`<option value="${g}" ${u.objekte?.includes(g)?'selected':''}>${GRUPPE_LABEL[g]||g}</option>`).join('')}
       </select>
     </div>
     <div class="f"><label>Wochensoll (Stunden) – für Stundenkonto</label>
@@ -19073,7 +19214,7 @@ async function delUser(id){
 async function exportBackup(){
   if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
   const backup={};
-  for(const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','versicherungen','versorger_archiv','od_dateien']){
+  for(const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','versicherungen','versorger_archiv','od_dateien','buchungen']){
     backup[s]=await idbGetAll(s);
   }
   backup.exportedAt=now();backup.version=2;
@@ -19277,7 +19418,7 @@ async function importBackupAusfuehren(modus){
   const backup = window._pendingBackup;
   if(!backup){ toast('Keine Backup-Datei geladen'); closeModal(); return; }
   closeModal();
-  const alleStores=['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','versorger_archiv','od_dateien'];
+  const alleStores=['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','versorger_archiv','od_dateien','buchungen'];
   try{
     await erstelleMieterSnapshot('vor Import ('+modus+')');
     if(modus==='ersetzen'){
@@ -19535,7 +19676,7 @@ async function syncToOneDrive() {
     } catch(e){ /* offline o. 404: normaler Upload-Weg unten */ }
 
     const backup = {};
-    for (const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','versorger_archiv','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch','sync_log','interessenten','versicherungen','od_dateien']) {
+    for (const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','versorger_archiv','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch','sync_log','interessenten','versicherungen','od_dateien','buchungen']) {
       backup[s] = await idbGetAll(s);
     }
     backup.updatedAt = new Date().toISOString();
@@ -20308,6 +20449,570 @@ function fmtIban(iban){
   const clean=String(iban).replace(/\s+/g,'').toUpperCase();
   return clean.replace(/(.{4})/g,'$1 ').trim();
 }
+
+/* ═══════════════════════════════════════════════════════════
+   ZAHLUNGSABGLEICH F1 (v95) – IBAN-Liste + CSV-Import + Matching
+   IBAN-Liste am Mieter: m.ibans = [{iban,inhaber,bic,status,seit,bis}]
+   m.iban / m.bic / m.kontoinhaber bleiben Spiegel der aktiven IBAN
+═══════════════════════════════════════════════════════════ */
+
+/* Konto-Konfiguration: welches Konto deckt welche Objekte ab */
+const ZA_KONTEN = [
+  { id:'ruhrt', label:'Ruhrtalstr. 41',      objekte:['ruhrt41'] },
+  { id:'mind',  label:'Mindener Str. 23/25', objekte:['mind23','mind25'] },
+  { id:'mg',    label:'Mönchengladbach',     objekte:['kyff28','kyff30','kyff32'] },
+  { id:'kref',  label:'Krefeld',             objekte:['inr181','inr183','inr185','wilm7','wilm9','wilm11','wilm13'] },
+];
+
+function zaNormIban(s){ return String(s||'').replace(/\s+/g,'').toUpperCase(); }
+function zaNum(s){
+  if(s==null) return 0;
+  const t=String(s).trim().replace(/\./g,'').replace(',','.');
+  const n=parseFloat(t); return isNaN(n)?0:n;
+}
+function zaDatumISO(s){
+  if(!s) return '';
+  const m=String(s).trim().match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
+  if(!m) return '';
+  return `${m[3]}-${m[2].padStart(2,'0')}-${m[1].padStart(2,'0')}`;
+}
+function zaWeAusZweck(zweck){
+  if(!zweck) return '';
+  const m=String(zweck).match(/\bWE\s*0*(\d{1,3})/i);
+  return m?m[1]:'';
+}
+function zaParseCSVLine(line){
+  const out=[]; let cur=''; let inQ=false;
+  for(let i=0;i<line.length;i++){
+    const c=line[i];
+    if(c==='"'){ if(inQ && line[i+1]==='"'){ cur+='"'; i++; } else inQ=!inQ; }
+    else if(c===';' && !inQ){ out.push(cur); cur=''; }
+    else cur+=c;
+  }
+  out.push(cur); return out;
+}
+function zaParseCSV(text){
+  text=text.replace(/^\uFEFF/,'');
+  const lines=text.split(/\r?\n/).filter(l=>l.trim()!=='');
+  if(lines.length<2) return {header:[],buchungen:[]};
+  const header=zaParseCSVLine(lines[0]).map(h=>h.replace(/^"|"$/g,'').trim());
+  const col=n=>header.indexOf(n);
+  const iBetrag=col('Betrag'), iText=col('Buchungstext'), iTag=col('Buchungstag'),
+        iName=col('Begünstigter/Absender - Name'),
+        iIban=col('Begünstigter/Absender - Kontonummer'),
+        iZweck=col('Verwendungszweckzeile 1');
+  if(iBetrag<0||iIban<0){ return {header,buchungen:[],fehler:'Unbekanntes CSV-Format (Spalten nicht gefunden)'}; }
+  const buchungen=[];
+  for(let r=1;r<lines.length;r++){
+    const f=zaParseCSVLine(lines[r]);
+    if(f.length<header.length-5) continue;
+    const clean=v=>String(v??'').replace(/^"|"$/g,'').trim();
+    const betrag=zaNum(clean(f[iBetrag]));
+    const zweck=clean(f[iZweck]);
+    buchungen.push({
+      betrag, buchungstext:clean(f[iText]),
+      datumISO:zaDatumISO(clean(f[iTag])), datumRaw:clean(f[iTag]),
+      name:clean(f[iName]), iban:zaNormIban(clean(f[iIban])),
+      zweck, weHint:zaWeAusZweck(zweck), typ:betrag>0?'eingang':'ausgang',
+    });
+  }
+  return {header,buchungen};
+}
+function zaNurEingaenge(buchungen){
+  return buchungen.filter(b=>b.typ==='eingang' && b.iban && b.iban.startsWith('DE'));
+}
+function zaMatch(buchungen, mieterListe, konto){
+  const objSet=konto?new Set(konto.objekte):null;
+  const pool=mieterListe.filter(m=>!objSet || objSet.has(m.objektId));
+  const ibanIdx={};
+  for(const m of pool){
+    const list=Array.isArray(m.ibans)&&m.ibans.length ? m.ibans
+             : (m.iban?[{iban:m.iban,status:'aktiv'}]:[]);
+    for(const e of list){ const k=zaNormIban(e.iban); if(k) ibanIdx[k]={m,status:e.status||'aktiv'}; }
+  }
+  const weIdx={};
+  for(const m of pool){
+    const k=String(m.weNr||'').replace(/^0+/,'');
+    if(k)(weIdx[k]=weIdx[k]||[]).push(m);
+  }
+  const results=[];
+  for(const b of buchungen){
+    let match=null;
+    const hit=ibanIdx[b.iban];
+    if(hit){
+      match={mieterId:hit.m.id,name:hit.m.mieter,weNr:hit.m.weNr,via:'iban',
+             status:hit.status,score:hit.status==='alt'?70:100};
+    }
+    if(!match && b.weHint){
+      const cand=weIdx[String(b.weHint).replace(/^0+/,'')]||[];
+      if(cand.length===1){
+        match={mieterId:cand[0].id,name:cand[0].mieter,weNr:cand[0].weNr,via:'we',status:'neu',score:85};
+      }
+    }
+    results.push({buchung:b,match});
+  }
+  return results;
+}
+
+/* Spiegel: aktive IBAN aus Liste in Altfelder schreiben (eine Datenquelle = Liste) */
+function zaSyncIbanSpiegel(m){
+  if(!Array.isArray(m.ibans)){
+    // Migration: vorhandenes Einzelfeld in Liste heben
+    if(m.iban){ m.ibans=[{iban:zaNormIban(m.iban),inhaber:m.kontoinhaber||'',bic:m.bic||'',status:'aktiv',seit:'',bis:''}]; }
+    else m.ibans=[];
+  }
+  const aktiv=m.ibans.find(e=>e.status==='aktiv');
+  if(aktiv){
+    m.iban=zaNormIban(aktiv.iban);
+    if(aktiv.bic) m.bic=aktiv.bic;
+    if(aktiv.inhaber) m.kontoinhaber=aktiv.inhaber;
+  }
+  return m;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   ZAHLUNGSABGLEICH F1 – UI-Workflow (Import + Zuordnung)
+═══════════════════════════════════════════════════════════ */
+
+let ZA_STATE = { konto:null, results:[], dateiName:'' };
+
+function zaDateiGewaehlt(ev){
+  const file = ev.target.files && ev.target.files[0];
+  if(!file) return;
+  ZA_STATE.dateiName = file.name;
+  const nameEl=document.getElementById('zaFileName');
+  if(nameEl) nameEl.textContent = file.name;
+  const reader = new FileReader();
+  reader.onload = async e => {
+    try { await zaVerarbeiten(e.target.result); }
+    catch(err){ toast('Fehler beim Import: '+(err.message||err)); console.error(err); }
+  };
+  reader.onerror = ()=> toast('Datei konnte nicht gelesen werden.');
+  reader.readAsText(file, 'UTF-8');
+}
+
+async function zaVerarbeiten(text){
+  const kontoId = document.getElementById('zaKonto')?.value;
+  const konto = ZA_KONTEN.find(k=>k.id===kontoId);
+  if(!konto){ toast('Bitte ein Konto auswählen.'); return; }
+  ZA_STATE.konto = konto;
+
+  const parsed = zaParseCSV(text);
+  if(parsed.fehler){ toast(parsed.fehler); return; }
+  const eingaenge = zaNurEingaenge(parsed.buchungen);
+
+  // Mieter laden (alle), Matching im Kontoraum
+  const alleMieter = await idbGetAll('mieter');
+  // Nur aktive, echte Mieter (kein Vormieter-/Zukunfts-Eintrag) für Matching-Pool
+  const pool = alleMieter.filter(m => m && m.mieter && !m._vormieter && m.aktiv!==false);
+  window._zaMieterCache = pool; // für manuelle Dropdown-Zuordnung
+  ZA_STATE.results = zaMatch(eingaenge, pool, konto);
+  ZA_STATE.alleBuchungen = parsed.buchungen; // für Speicherung (auch Ausgänge)
+  zaRenderErgebnis();
+}
+
+/* F2: Importierte Buchungen dauerhaft speichern (mit Dedup) */
+async function zaSpeichern(){
+  const konto = ZA_STATE.konto;
+  if(!konto || !ZA_STATE.results.length){ toast('Nichts zu speichern.'); return; }
+  let neu=0, dup=0;
+  for(const r of ZA_STATE.results){
+    const rec = zaBuchungRecord(konto.id, r.buchung, r.match);
+    let exists=false;
+    try { const e=await idbGet('buchungen', rec.id); exists=!!e; } catch(_){}
+    if(exists){ dup++; continue; }
+    await idbPut('buchungen', rec);
+    neu++;
+  }
+  toast(`${neu} Buchungen gespeichert${dup?`, ${dup} bereits vorhanden`:''}.`);
+  clearTimeout(window._syncTimer);
+  window._syncTimer=setTimeout(()=>{ if(typeof syncToOneDrive==='function') syncToOneDrive(); }, 3000);
+  zaRenderVerlauf();
+}
+
+/* ═══════════════════════════════════════════════════════════
+   ZAHLUNGSABGLEICH F3 – Verlaufsansicht (2 Sichten umschaltbar)
+═══════════════════════════════════════════════════════════ */
+
+let ZA_VERLAUF = { sicht:'mietkonto', kontoId:null };
+
+async function zaRenderVerlauf(){
+  const box = document.getElementById('zaErgebnis');
+  if(!box) return;
+  const konto = ZA_STATE.konto;
+  if(!konto){ toast('Bitte zuerst ein Konto wählen.'); return; }
+  ZA_VERLAUF.kontoId = konto.id;
+
+  // Alle gespeicherten Buchungen dieses Kontos laden
+  let alle=[];
+  try { alle = await idbGetAll('buchungen'); } catch(_){ alle=[]; }
+  const buch = alle.filter(b=>b.kontoId===konto.id);
+  if(!buch.length){
+    box.innerHTML = `<p style="color:var(--ink-40)">Für ${esc(konto.label)} sind noch keine Buchungen gespeichert. Bitte zuerst eine CSV importieren und „Buchungen speichern" klicken.</p>`;
+    return;
+  }
+
+  // Mieter dieses Kontos
+  const alleMieter = await idbGetAll('mieter');
+  const objSet = new Set(konto.objekte);
+  const mieter = alleMieter.filter(m=>m && m.mieter && objSet.has(m.objektId) && !m._vormieter && m.aktiv!==false);
+
+  // Monate mit substanziellen Eingängen (Randmonate mit Einzelzahlungen ausblenden)
+  const monateSet = {};
+  for(const b of buch){ if(b.typ==='eingang') monateSet[b.mietmonat]=(monateSet[b.mietmonat]||0)+1; }
+  const maxCnt = Math.max(1, ...Object.values(monateSet));
+  // Schwelle: mind. 25% des stärksten Monats (so fallen vereinzelte Vormonats-Überweisungen raus)
+  const schwelle = Math.max(2, Math.floor(maxCnt*0.25));
+  const monate = Object.keys(monateSet).filter(m=>monateSet[m]>=schwelle).sort();
+
+  const sichtBtns = `
+    <div style="display:flex;gap:6px;margin-bottom:12px">
+      <button class="btn btn-sm ${ZA_VERLAUF.sicht==='mietkonto'?'btn-primary':''}" onclick="zaSetSicht('mietkonto')">
+        <i class="ti ti-user"></i> Mietkonto (je Mieter)</button>
+      <button class="btn btn-sm ${ZA_VERLAUF.sicht==='auszug'?'btn-primary':''}" onclick="zaSetSicht('auszug')">
+        <i class="ti ti-list"></i> Kontoauszug (je Monat)</button>
+    </div>`;
+
+  let inhalt;
+  if(ZA_VERLAUF.sicht==='mietkonto'){
+    inhalt = zaRenderMietkonto(buch, mieter, monate, konto);
+  } else {
+    inhalt = zaRenderAuszug(buch, monate, konto);
+  }
+  box.innerHTML = `<h3 style="margin:0 0 4px">${esc(konto.label)} – Zahlungsverlauf</h3>
+    <p style="font-size:12px;color:var(--ink-40);margin:0 0 10px">${buch.length} gespeicherte Buchungen · ${monate.length} Monate</p>
+    ${sichtBtns}${inhalt}`;
+}
+
+function zaSetSicht(s){ ZA_VERLAUF.sicht=s; zaRenderVerlauf(); }
+
+/* Sicht 1: Mietkonto je Mieter – Soll-Ist je Monat, Stellplatz aufgeschlüsselt */
+function zaRenderMietkonto(buch, mieter, monate, konto){
+  const rows = zaSollIst(buch, mieter, monate);
+  const eur = n => (Number(n)||0).toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const monHdr = monate.map(m=>`<th colspan="2" style="padding:6px;text-align:center;border-left:1px solid var(--line)">${m.slice(5)}/${m.slice(2,4)}</th>`).join('');
+  const subHdr = monate.map(()=>`<th style="padding:4px;text-align:right;font-size:10px;color:var(--ink-40)">Ist</th><th style="padding:4px;text-align:right;font-size:10px;color:var(--ink-40)">Δ Soll</th>`).join('');
+
+  const trs = rows.map(r=>{
+    const cells = monate.map(mo=>{
+      const v=r.monate[mo];
+      let farbe='', dmark='';
+      if(v.status==='ok'){ farbe='var(--green)'; dmark='✓'; }
+      else if(v.status==='offen'){ farbe='var(--ink-40)'; dmark='—'; }
+      else if(v.status==='mehr'){ farbe='#1a56db'; dmark='+'+eur(v.diff); }
+      else { farbe='var(--red,#dc2626)'; dmark=eur(v.diff); }
+      const spInfo = v.stellplatz>0 ? `<div style="font-size:9px;color:var(--ink-40)">davon SP ${eur(v.stellplatz)}</div>` : '';
+      return `<td style="padding:5px;text-align:right;border-left:1px solid var(--line);font-variant-numeric:tabular-nums">
+                ${v.ist>0?eur(v.ist):'<span style="color:var(--ink-40)">—</span>'}${spInfo}</td>
+              <td style="padding:5px;text-align:right;color:${farbe};font-weight:600;font-size:12px">${dmark}</td>`;
+    }).join('');
+    const bg = r.warnung ? 'background:#fff8f0' : '';
+    return `<tr style="border-bottom:1px solid var(--line);${bg}">
+      <td style="padding:6px;font-size:11px;color:var(--ink-40)">${esc(r.weNr||'')}</td>
+      <td style="padding:6px;font-size:13px">${esc(r.mieter)}</td>
+      <td style="padding:6px;text-align:right;font-variant-numeric:tabular-nums;font-size:12px">
+        ${eur(r.soll)}<div style="font-size:9px;color:var(--ink-40)">${eur(r.netto)}+${eur(r.nk)}</div></td>
+      ${cells}</tr>`;
+  }).join('');
+
+  const warnCount = rows.filter(r=>r.warnung).length;
+  return `<div style="overflow-x:auto">
+    <table style="width:100%;border-collapse:collapse;font-size:13px;min-width:${300+monate.length*120}px">
+      <thead>
+        <tr style="border-bottom:2px solid var(--line)">
+          <th rowspan="2" style="padding:6px;text-align:left;font-size:11px;color:var(--ink-40)">WE</th>
+          <th rowspan="2" style="padding:6px;text-align:left;font-size:11px;color:var(--ink-40)">Mieter</th>
+          <th rowspan="2" style="padding:6px;text-align:right;font-size:11px;color:var(--ink-40)">Soll<br>(Netto+NK)</th>
+          ${monHdr}
+        </tr>
+        <tr style="border-bottom:1px solid var(--line)">${subHdr}</tr>
+      </thead>
+      <tbody>${trs}</tbody>
+    </table></div>
+    <p style="font-size:12px;color:var(--ink-40);margin-top:8px">
+      ${warnCount?`<b style="color:var(--red,#dc2626)">${warnCount} Mieter mit Abweichung/offen</b> (rosa hinterlegt). `:'Alle Zahlungen stimmen mit dem Soll überein. '}
+      „Δ Soll" = Differenz Ist minus Soll. SP = Stellplatzanteil.
+    </p>`;
+}
+
+/* Sicht 2: Kontoauszug je Monat – alle Eingänge chronologisch */
+function zaRenderAuszug(buch, monate, konto){
+  const eur = n => (Number(n)||0).toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const eingaenge = buch.filter(b=>b.typ==='eingang').sort((a,b)=>(b.datumISO||'').localeCompare(a.datumISO||''));
+  let html='';
+  for(const mo of [...monate].reverse()){
+    const liste = eingaenge.filter(b=>b.mietmonat===mo);
+    if(!liste.length) continue;
+    const summe = liste.reduce((s,b)=>s+b.betrag,0);
+    const rows = liste.map(b=>`
+      <tr style="border-bottom:1px solid var(--line)">
+        <td style="padding:5px;font-size:11px;white-space:nowrap">${esc((b.datumISO||'').slice(8)+'.'+(b.datumISO||'').slice(5,7))}</td>
+        <td style="padding:5px;text-align:right;font-variant-numeric:tabular-nums;font-weight:600">${eur(b.betrag)}</td>
+        <td style="padding:5px;font-size:12px">${esc(b.mieterName||b.name)}${b.istStellplatz?' <span style="font-size:9px;color:var(--ink-40)">[SP]</span>':''}
+          ${b.mieterId?'':' <span style="font-size:9px;color:var(--amber)">nicht zugeordnet</span>'}</td>
+      </tr>`).join('');
+    html += `<div style="margin-bottom:16px">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;background:var(--green-l);padding:6px 10px;border-radius:6px;margin-bottom:4px">
+        <b>${mo.slice(5)}/${mo.slice(0,4)}</b>
+        <span style="font-variant-numeric:tabular-nums">${liste.length} Eingänge · ${eur(summe)} €</span>
+      </div>
+      <table style="width:100%;border-collapse:collapse;font-size:13px">${rows}</table>
+    </div>`;
+  }
+  return html || '<p style="color:var(--ink-40)">Keine Eingänge.</p>';
+}
+
+
+function zaRenderErgebnis(){
+  const box = document.getElementById('zaErgebnis');
+  if(!box) return;
+  const res = ZA_STATE.results;
+  const konto = ZA_STATE.konto;
+  if(!res.length){ box.innerHTML = '<p style="color:var(--ink-40)">Keine Mieteingänge in dieser Datei gefunden.</p>'; return; }
+
+  const zForm = n => n.toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const viaLabel = {iban:'IBAN', we:'WE-Nr.', null:'–'};
+  const rows = res.map((r,i)=>{
+    const b=r.buchung;
+    const m=r.match;
+    let statusHtml, aktion='';
+    if(m && m.via==='iban' && m.status==='aktiv'){
+      statusHtml = `<span style="color:var(--green);font-weight:600"><i class="ti ti-check"></i> ${esc(m.name)}</span>
+                    <span style="font-size:11px;color:var(--ink-40)"> · via IBAN</span>`;
+    } else if(m && m.via==='iban' && m.status==='alt'){
+      statusHtml = `<span style="color:var(--amber);font-weight:600"><i class="ti ti-alert-triangle"></i> ${esc(m.name)}</span>
+                    <span style="font-size:11px;color:var(--amber)"> · veraltete IBAN!</span>`;
+    } else if(m && m.via==='we'){
+      statusHtml = `<span style="color:var(--ink-70)"><i class="ti ti-help-circle"></i> Vorschlag: ${esc(m.name)} (WE ${esc(m.weNr)})</span>`;
+      aktion = `<button class="btn btn-sm btn-primary" onclick="zaZuordnen(${i})">
+                  <i class="ti ti-link"></i> IBAN übernehmen</button>`;
+    } else {
+      statusHtml = `<span style="color:var(--ink-40)">Kein Mieter – Auswahl:</span>`;
+      aktion = zaMieterDropdown(i);
+    }
+    return `<tr style="border-bottom:1px solid var(--line)">
+      <td style="padding:8px 6px;white-space:nowrap;font-size:12px">${esc(b.datumISO||b.datumRaw)}</td>
+      <td style="padding:8px 6px;text-align:right;font-variant-numeric:tabular-nums;font-weight:600">${zForm(b.betrag)} €</td>
+      <td style="padding:8px 6px;font-size:12px">
+        <div>${esc(b.name)}</div>
+        <div style="font-size:11px;color:var(--ink-40);font-variant-numeric:tabular-nums">${esc(fmtIban(b.iban))}</div>
+      </td>
+      <td style="padding:8px 6px">${statusHtml}<div style="margin-top:4px">${aktion}</div></td>
+    </tr>`;
+  }).join('');
+
+  const nIban = res.filter(r=>r.match?.via==='iban').length;
+  const nWe   = res.filter(r=>r.match?.via==='we').length;
+  const nOffen= res.filter(r=>!r.match).length;
+
+  box.innerHTML = `
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+      <span class="badge" style="background:var(--green-l);color:var(--green)">${nIban} per IBAN erkannt</span>
+      ${nWe?`<span class="badge" style="background:var(--blue-l,#e8f0fe);color:var(--blue,#1a56db)">${nWe} Vorschläge (WE)</span>`:''}
+      ${nOffen?`<span class="badge" style="background:var(--line);color:var(--ink-40)">${nOffen} offen</span>`:''}
+    </div>
+    <div style="overflow-x:auto">
+    <table style="width:100%;border-collapse:collapse;font-size:13px">
+      <thead><tr style="border-bottom:2px solid var(--line);text-align:left;color:var(--ink-40);font-size:11px">
+        <th style="padding:6px">Datum</th><th style="padding:6px;text-align:right">Betrag</th>
+        <th style="padding:6px">Zahler / IBAN</th><th style="padding:6px">Zuordnung</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>
+    <p style="font-size:12px;color:var(--ink-40);margin-top:10px">
+      Konto: <b>${esc(konto.label)}</b> · Datei: ${esc(ZA_STATE.dateiName)}<br>
+      Bei „IBAN übernehmen" wird die IBAN dauerhaft beim Mieter als <b>aktiv</b> gespeichert.
+      Künftige Importe ordnen diesen Mieter dann automatisch zu.
+    </p>
+    <div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap">
+      <button class="btn btn-primary" onclick="zaSpeichern()">
+        <i class="ti ti-database-import"></i> Diese Buchungen speichern
+      </button>
+      <button class="btn" onclick="zaRenderVerlauf()">
+        <i class="ti ti-history"></i> Gespeicherten Verlauf anzeigen
+      </button>
+    </div>`;
+}
+
+/* Dropdown aller Kontoraum-Mieter für manuelle Zuordnung */
+function zaMieterDropdown(i){
+  const konto=ZA_STATE.konto;
+  const objSet=new Set(konto.objekte);
+  // Mieter werden beim Render erst gebraucht; wir holen sie synchron aus Cache
+  // Fallback: leeres Dropdown, wird über zaZuordnenManuell gefüllt
+  return `<select class="inp" style="font-size:12px;padding:4px" onchange="zaZuordnenManuell(${i}, this.value)">
+            <option value="">– Mieter wählen –</option>
+            ${(window._zaMieterCache||[]).filter(m=>objSet.has(m.objektId))
+              .map(m=>`<option value="${m.id}">WE ${esc(m.weNr||'?')} · ${esc(m.mieter)}</option>`).join('')}
+          </select>`;
+}
+
+/* IBAN aus Vorschlag (WE-Match) am Mieter speichern */
+async function zaZuordnen(i){
+  const r = ZA_STATE.results[i];
+  if(!r || !r.match){ return; }
+  await zaIbanAnMieter(r.match.mieterId, r.buchung.iban, r.buchung.name);
+  // Im Ergebnis als erledigt markieren
+  r.match.via='iban'; r.match.status='aktiv';
+  zaRenderErgebnis();
+}
+
+/* IBAN per manuellem Dropdown am gewählten Mieter speichern */
+async function zaZuordnenManuell(i, mieterId){
+  if(!mieterId) return;
+  const r = ZA_STATE.results[i];
+  if(!r) return;
+  const m = await idbGet('mieter', mieterId);
+  if(!m){ toast('Mieter nicht gefunden.'); return; }
+  await zaIbanAnMieter(mieterId, r.buchung.iban, r.buchung.name);
+  r.match = {mieterId, name:m.mieter, weNr:m.weNr, via:'iban', status:'aktiv', score:100};
+  zaRenderErgebnis();
+}
+
+/* Kernoperation: IBAN als aktiv am Mieter eintragen (Liste + Spiegel) */
+async function zaIbanAnMieter(mieterId, iban, inhaber){
+  const m = await idbGet('mieter', mieterId);
+  if(!m){ toast('Mieter nicht gefunden.'); return; }
+  zaSyncIbanSpiegel(m); // sorgt für m.ibans-Existenz + Migration Altfeld
+  const norm = zaNormIban(iban);
+  const vorhanden = m.ibans.find(e=>zaNormIban(e.iban)===norm);
+  if(vorhanden){
+    vorhanden.status='aktiv';
+  } else {
+    // Bestehende aktive IBAN(s) auf "alt" setzen (Mieter hat neues Konto)
+    const hatteAktive = m.ibans.some(e=>e.status==='aktiv');
+    if(hatteAktive){
+      if(!confirm(`${m.mieter} zahlt von einer anderen IBAN als bisher hinterlegt.\n\nNeue IBAN als aktiv übernehmen und die alte als „veraltet" markieren?`)){
+        return;
+      }
+      m.ibans.forEach(e=>{ if(e.status==='aktiv'){ e.status='alt'; e.bis=nowIso(); } });
+    }
+    m.ibans.push({iban:norm, inhaber:inhaber||'', bic:'', status:'aktiv', seit:nowIso(), bis:''});
+  }
+  zaSyncIbanSpiegel(m);
+  await idbPut('mieter', m);
+  // Cache aktualisieren
+  if(Array.isArray(window._zaMieterCache)){
+    const ci=window._zaMieterCache.findIndex(x=>x.id===mieterId);
+    if(ci>=0) window._zaMieterCache[ci]=m;
+  }
+  toast(`IBAN gespeichert für ${m.mieter}.`);
+  clearTimeout(window._syncTimer);
+  window._syncTimer=setTimeout(()=>{ if(typeof syncToOneDrive==='function') syncToOneDrive(); }, 3000);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   ZAHLUNGSABGLEICH F2/F3 – Speicherung + Verlauf
+   Store 'buchungen': dauerhafte Bankbuchungen mit Dedup
+═══════════════════════════════════════════════════════════ */
+
+/* Stabile Buchungs-ID (Dedup): Konto+Datum+Betrag+Zweck -> Hash */
+function zaBuchungId(kontoId, b){
+  const raw = `${kontoId}|${b.datumISO||b.datumRaw}|${b.betrag}|${b.iban}|${(b.zweck||'').slice(0,40)}`;
+  let h=0;
+  for(let i=0;i<raw.length;i++){ h=((h<<5)-h+raw.charCodeAt(i))|0; }
+  return 'buch_'+kontoId+'_'+(h>>>0).toString(36);
+}
+
+/* Mietmonat-Zuordnung: Lastschrift=Buchungsmonat; Überweisung ab Tag 25 = Folgemonat;
+   Zweck-Monatsangabe ('5.2026','06/2026','Mai') überschreibt. 'DATUM tt.mm.jjjj' wird ignoriert. */
+function zaMietmonat(b){
+  const iso=b.datumISO||'';
+  const m=iso.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if(!m) return iso.slice(0,7);
+  const [_,y,mo,tag]=m.map(Number);
+  const istLastschrift = (b.buchungstext||'')==='EINZELLASTSCHRIFTEINZUG';
+  if(istLastschrift) return `${y}-${String(mo).padStart(2,'0')}`;
+  // Zweck nach Mietmonat durchsuchen (DATUM-Feld ausblenden)
+  const z=(b.zweck||'').replace(/DATUM\s*\d{1,2}\.\d{1,2}\.\d{4}.*/i,'');
+  let mm=z.match(/\b(0?[1-9]|1[0-2])[./](?:20)?26\b/);
+  if(mm) return `2026-${String(+mm[1]).padStart(2,'0')}`;
+  for(const [nm,mz] of [['mai','05'],['juni','06'],['juli','07'],['august','08'],
+       ['september','09'],['oktober','10'],['november','11'],['dezember','12'],
+       ['januar','01'],['februar','02'],['märz','03'],['april','04']]){
+    if(z.toLowerCase().includes(nm)) return `2026-${mz}`;
+  }
+  // pränumerando: Zahlung ab 25. zählt für Folgemonat
+  if(tag>=25){ const nm=mo===12?1:mo+1, ny=mo===12?y+1:y; return `${ny}-${String(nm).padStart(2,'0')}`; }
+  return `${y}-${String(mo).padStart(2,'0')}`;
+}
+
+/* Stellplatz-Erkennung im Verwendungszweck */
+function zaIstStellplatz(zweck){
+  return /stellplatz|garage|tiefgarage|tg-platz/i.test(zweck||'') && !/wohnung|WE\s*\d/i.test((zweck||'').replace(/stellplatz.*/i,''));
+}
+function zaStellplatzAnteil(b){
+  // grobe Heuristik: reine Stellplatzzahlung
+  if(zaIstStellplatz(b.zweck)) return b.betrag;
+  return 0;
+}
+
+/* Eine importierte Buchung in Speicherform bringen */
+function zaBuchungRecord(kontoId, b, match){
+  return {
+    id: zaBuchungId(kontoId, b),
+    kontoId,
+    datumISO: b.datumISO||'',
+    mietmonat: zaMietmonat(b),
+    betrag: b.betrag,
+    name: b.name||'',
+    iban: b.iban||'',
+    zweck: b.zweck||'',
+    buchungstext: b.buchungstext||'',
+    typ: b.betrag>0 ? 'eingang' : 'ausgang',
+    istStellplatz: zaIstStellplatz(b.zweck),
+    mieterId: match?.mieterId || null,
+    mieterName: match?.name || null,
+    zuordnungVia: match?.via || null,
+    importiertAm: (typeof nowIso==='function'?nowIso():new Date().toISOString()),
+    updatedAt: (typeof nowIso==='function'?nowIso():new Date().toISOString()),
+  };
+}
+
+/* Soll-Ist-Aggregation: pro Mieter je Monat Ist-Summe gegen Soll (gesamt) */
+function zaSollIst(buchungen, mieterListe, monate){
+  const sollIdx={};
+  for(const m of mieterListe){
+    sollIdx[m.id]={ mieter:m.mieter, weNr:m.weNr, objektId:m.objektId,
+      soll: Number(m.gesamt)||0, netto:Number(m.miete)||0, nk:Number(m.nk)||0 };
+  }
+  // Ist je Mieter+Monat
+  const ist={}; // mieterId -> {monat -> {miete, stellplatz}}
+  for(const b of buchungen){
+    if(b.typ!=='eingang' || !b.mieterId) continue;
+    if(monate && !monate.includes(b.mietmonat)) continue;
+    const key=b.mieterId;
+    (ist[key]=ist[key]||{});
+    (ist[key][b.mietmonat]=ist[key][b.mietmonat]||{miete:0,stellplatz:0});
+    if(b.istStellplatz) ist[key][b.mietmonat].stellplatz += b.betrag;
+    else ist[key][b.mietmonat].miete += b.betrag;
+  }
+  // Ergebnis je Mieter
+  const rows=[];
+  for(const mid in sollIdx){
+    const s=sollIdx[mid];
+    const monatsWerte={};
+    let warnung=false;
+    for(const mo of (monate||[])){
+      const i=ist[mid]?.[mo] || {miete:0,stellplatz:0};
+      const istGesamt=Math.round((i.miete+i.stellplatz)*100)/100;
+      const diff=Math.round((istGesamt - s.soll)*100)/100;
+      monatsWerte[mo]={ist:istGesamt, miete:i.miete, stellplatz:i.stellplatz, diff,
+        status: istGesamt===0?'offen':(Math.abs(diff)<0.5?'ok':(diff>0?'mehr':'weniger'))};
+      if(istGesamt===0 || Math.abs(diff)>=0.5) warnung=true;
+    }
+    rows.push({mieterId:mid, mieter:s.mieter, weNr:s.weNr, objektId:s.objektId,
+      soll:s.soll, netto:s.netto, nk:s.nk, monate:monatsWerte, warnung});
+  }
+  rows.sort((a,b)=>{
+    const wa=parseInt(a.weNr)||999, wb=parseInt(b.weNr)||999;
+    return wa-wb || String(a.mieter).localeCompare(String(b.mieter));
+  });
+  return rows;
+}
+
+
+
 
 // Robustes Öffnen einer Druckansicht. document.write nach window.open zeigt in
 // manchen Browsern (v. a. mobil) nur eine weiße Seite, weil window.onload bereits
