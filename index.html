@@ -737,7 +737,7 @@ body.printing-active #printRoot{display:block!important}
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=25;
-const APP_VERSION = '2026-06-21-v105';
+const APP_VERSION = '2026-06-21-v107';
 /* v94 (19.06.2026): Etappe 1 – Lokale Benachrichtigungen erweitert (Termine + Maengel).
    - checkFaelligeAufgaben() prueft jetzt zusaetzlich:
      a) Termin-Erinnerungen: Termine mit gesetztem Erinnerungs-Vorlauf (1/2/7 Tage)
@@ -8005,6 +8005,60 @@ async function migriereKontaktInPersonen(){
       try{ localStorage.setItem('mig_tel_v105', String(geaendert)); }catch(e){}
     }
   }catch(err){ console.warn('migriereKontaktInPersonen:', err); }
+}
+
+/* ── Einmalige Daten-Migration (v107): Wohnfläche/Etage in Wohnungsstamm ──
+   Spiegelt flaeche/etage aktiver Mieter einmalig in objekt_stamm
+   (wohnungen_<objektId>). Der Stamm überdauert Mieterwechsel; vorhandene
+   Stammwerte werden NIE überschrieben – es werden nur leere Felder befüllt.
+   Idempotent: läuft pro Installation genau einmal (Flag mig_flaeche_v107). */
+async function migriereFlaecheInStamm(){
+  try{
+    if(localStorage.getItem('mig_flaeche_v107')) return;
+  }catch(_){}
+  try{
+    const alle = await idbGetAll('mieter');
+    // Stamm je Objekt nur einmal laden/schreiben (Performance + weniger Sync-Last)
+    const stammCache = {};   // objektId -> wohnungen-Map
+    const dirty = new Set(); // objektId, die geändert wurden
+    for(const m of alle){
+      if(!m || typeof m!=='object') continue;
+      if(m.leerstand) continue;
+      const oid = m.objektId;
+      const we  = (m.weNr!==undefined && m.weNr!==null) ? String(m.weNr) : '';
+      if(!oid || we==='') continue;
+      const fl = (m.flaeche!==undefined && m.flaeche!=='') ? m.flaeche : null;
+      const et = (m.etage!==undefined && m.etage!=='')     ? m.etage   : null;
+      if(fl==null && et==null) continue;
+      if(!stammCache[oid]) stammCache[oid] = await ladeWohnungsStamm(oid);
+      const map = stammCache[oid];
+      const cur = map[we] || {};
+      let touched = false;
+      if(fl!=null && (cur.flaeche===undefined || cur.flaeche==='')){ cur.flaeche=fl; touched=true; }
+      if(et!=null && (cur.etage===undefined   || cur.etage===''  )){ cur.etage=et;   touched=true; }
+      if(touched){ map[we]=cur; dirty.add(oid); }
+    }
+    let objGeaendert = 0;
+    for(const oid of dirty){
+      const id='wohnungen_'+oid;
+      let rec; try{ rec=await idbGet('objekt_stamm',id); }catch(_){ rec=null; }
+      if(!rec||typeof rec!=='object') rec={id, wohnungen:{}};
+      if(!rec.wohnungen) rec.wohnungen={};
+      const map=stammCache[oid];
+      for(const we of Object.keys(map)){
+        rec.wohnungen[we] = {...rec.wohnungen[we], ...map[we]};
+      }
+      rec.geaendert=now();
+      await idbPut('objekt_stamm',rec);
+      objGeaendert++;
+    }
+    try{ localStorage.setItem('mig_flaeche_v107', String(objGeaendert)); }catch(_){}
+    if(objGeaendert){
+      console.log('Flächen-Migration v107: '+objGeaendert+' Objekt-Stämme aktualisiert.');
+      clearTimeout(window._syncTimer);
+      window._syncTimer=setTimeout(()=>syncToOneDrive(),3000);
+    }
+  }catch(err){ console.warn('migriereFlaecheInStamm:', err); }
 }
 
 /* ── Personen-Helfer (personen_liste mit verstorben-Status) ── */
@@ -16582,6 +16636,15 @@ async function saveEditMieter(id) {
     zaSyncIbanSpiegel(m);
   }
   await idbPut('mieter', m);
+  // F2: Wohnfläche/Etage in Wohnungsstamm spiegeln (Stamm überdauert Mieterwechsel)
+  try{
+    if(m.objektId && (m.weNr!==undefined && m.weNr!=='' && m.weNr!==null)){
+      const spiegel={};
+      if(m.flaeche!==undefined && m.flaeche!=='') spiegel.flaeche=m.flaeche;
+      if(m.etage!==undefined && m.etage!=='')     spiegel.etage=m.etage;
+      if(Object.keys(spiegel).length) await saveWohnungStamm(m.objektId, m.weNr, spiegel);
+    }
+  }catch(_){}
   closeModal();
   clearTimeout(window._syncTimer);
   window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
@@ -20777,6 +20840,7 @@ const ZA_KONTEN = [
   { id:'mind',  label:'Mindener Str. 23/25', objekte:['mind23','mind25'] },
   { id:'mg',    label:'Mönchengladbach',     objekte:['kyff28','kyff30','kyff32'] },
   { id:'kref',  label:'Krefeld',             objekte:['inr181','inr183','inr185','wilm7','wilm9','wilm11','wilm13'] },
+  { id:'amboss',label:'Amboßstr. 10',        objekte:['amboss10'] },
 ];
 
 function zaNormIban(s){ return String(s||'').replace(/\s+/g,'').toUpperCase(); }
@@ -23157,6 +23221,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   try { await ensureDefaultUsers(); } catch(err) { console.warn('ensureDefaultUsers:', err); }
   try { await ensureTaetigkeitKat(); } catch(err) { console.warn('ensureTaetigkeitKat:', err); }
   try { await migriereKontaktInPersonen(); } catch(err) { console.warn('migriereKontaktInPersonen:', err); }
+  try { await migriereFlaecheInStamm(); } catch(err) { console.warn('migriereFlaecheInStamm:', err); }
   try {
     // Aktive Session wiederherstellen (nach OS-Reload, z. B. nach Kamera-Nutzung)
     let sessionUid = null;
