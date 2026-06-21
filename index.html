@@ -737,7 +737,7 @@ body.printing-active #printRoot{display:block!important}
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=25;
-const APP_VERSION = '2026-06-20-v100';
+const APP_VERSION = '2026-06-21-v104';
 /* v94 (19.06.2026): Etappe 1 – Lokale Benachrichtigungen erweitert (Termine + Maengel).
    - checkFaelligeAufgaben() prueft jetzt zusaetzlich:
      a) Termin-Erinnerungen: Termine mit gesetztem Erinnerungs-Vorlauf (1/2/7 Tage)
@@ -1179,7 +1179,7 @@ async function loadLoginUsers(){
   const lastUser=localStorage.getItem('lastLoginUser')||'';
   const sel=document.getElementById('loginUserSel');
   sel.innerHTML='<option value="">– Benutzer wählen –</option>'+
-    active.map(u=>`<option value="${u.id}" ${u.id===lastUser?'selected':''}>${u.name} · ${u.role==='admin'?'Admin':'Hausmeister'}</option>`).join('');
+    active.map(u=>`<option value="${u.id}" ${u.id===lastUser?'selected':''}>${u.name} · ${rollenLabel(u.role)}</option>`).join('');
 }
 
 function pinPress(d){
@@ -1388,7 +1388,7 @@ async function renderDash() {
 
   // Stempeluhr-Kärtchen direkt unter den Kacheln (nur Hausmeister) – schneller Zugriff.
   // Verlauf und Tätigkeits-QR-Liste bleiben hinter dem Button „Zeiterfassung".
-  if (CU?.role !== 'admin' && (CU?.erfassungsModus||'zeit')==='taetigkeit') {
+  if (CU?.role==='hm' && (CU?.erfassungsModus||'zeit')==='taetigkeit') {
     // Reine Tätigkeitserfassung: kein Uhrwerk, direkter Scan-Zugriff
     const tSitzung = await getOffeneSitzung().catch(()=>null);
     const segOffen = tSitzung ? offenesSegment(tSitzung) : null;
@@ -1405,7 +1405,7 @@ async function renderDash() {
     }
     html += `<button class="btn btn-full" onclick="scanTaetigkeitQR()"><i class="ti ti-qrcode"></i> Tätigkeit per QR scannen</button>
     </div>`;
-  } else if (CU?.role !== 'admin') {
+  } else if (CU?.role==='hm') {
     const zSitzung = await getOffeneSitzung().catch(()=>null);
     if (zSitzung && zSitzung.datum!==today()) {
       html += `<div class="card" style="border-left:3px solid var(--amber);background:var(--amber-l);margin-bottom:12px">
@@ -1426,8 +1426,8 @@ async function renderDash() {
     <button class="qa-btn" onclick="nav('wartung')"><i class="ti ti-calendar-stats"></i> Wartung</button>
     <button class="qa-btn" onclick="nav('branchenbuch')"><i class="ti ti-address-book"></i> Branchenbuch</button>
     <button class="qa-btn" onclick="modalMeinePackliste()"><i class="ti ti-backpack"></i> Meine Packliste</button>
-    ${CU?.role==='admin'?`<button class="qa-btn" onclick="nav('rechnungen')"><i class="ti ti-file-invoice"></i> Rechnungen</button>`:''}
-    ${CU?.role==='admin'?`<button class="qa-btn" onclick="nav('settings')"><i class="ti ti-upload"></i> Excel-Import</button>`:''}
+    ${istVerwalter()?`<button class="qa-btn" onclick="nav('rechnungen')"><i class="ti ti-file-invoice"></i> Rechnungen</button>`:''}
+    ${istSystemAdmin()?`<button class="qa-btn" onclick="nav('settings')"><i class="ti ti-upload"></i> Excel-Import</button>`:''}
   </div>`;
 
   // Fällige Wartungsfristen
@@ -1472,7 +1472,7 @@ async function renderDash() {
   }
 
   // Admin: offene Urlaubsanträge
-  if (CU?.role==='admin') {
+  if (istVerwalter()) {
     const offeneUrlaube=(await idbGetAll('abwesenheit')).filter(a=>a.typ==='urlaub'&&a.status==='beantragt');
     if (offeneUrlaube.length) {
       html += `<div style="background:var(--amber-l);border-radius:10px;padding:10px 14px;margin-bottom:12px;display:flex;align-items:center;gap:10px;cursor:pointer" onclick="nav('urlaub')">
@@ -1564,8 +1564,32 @@ async function getMyObjekte(){
   if(!CU) return [];
   // Objekte mit eingeschränkter Sichtbarkeit (sichtbarFuer) nur für gelistete Benutzer
   const sichtbar = o => !o.sichtbarFuer || o.sichtbarFuer.includes(CU.id);
-  if(CU.role==='admin') return OBJEKTE.filter(sichtbar);
+  if(istVerwalter()) return OBJEKTE.filter(sichtbar);
   return OBJEKTE.filter(o=>CU.objekte.includes(o.gruppe) && sichtbar(o));
+}
+
+/* ═══════════════════════════════════════════════════════════
+   ROLLEN / BERECHTIGUNGEN (v101)
+   Drei Rollen: 'admin' (Vollzugriff, System+alle Objekte),
+   'eigentuemer' (Vollzugriff wie Admin, aber nur eigene Objekte;
+   keine System-/Benutzer-/Objektverwaltung),
+   'hm' (Hausmeister, operativ, ohne kaufmännische Daten).
+   istVerwalter()  → kaufmännische Sicht/Bearbeitung (admin ODER eigentuemer)
+   istSystemAdmin()→ System, Benutzer, Objekt-Anlage, Rechtevergabe (nur admin)
+   darfObjekt(id)  → Objektgrenze: admin immer; eigentuemer nur eigene Gruppen
+═══════════════════════════════════════════════════════════ */
+function istVerwalter(u){ const r=(u||CU)?.role; return r==='admin'||r==='eigentuemer'; }
+function istSystemAdmin(u){ return (u||CU)?.role==='admin'; }
+function istEigentuemer(u){ return (u||CU)?.role==='eigentuemer'; }
+function rollenLabel(role){ return role==='admin'?'Administrator':(role==='eigentuemer'?'Eigentümer':'Hausmeister'); }
+function darfObjekt(objektId, u){
+  const cu=u||CU; if(!cu) return false;
+  if(cu.role==='admin') return true;
+  const o = (typeof getObj==='function') ? getObj(objektId) : OBJEKTE.find(x=>x.id===objektId);
+  if(!o) return false;
+  if(cu.role==='eigentuemer') return Array.isArray(cu.objekte) && cu.objekte.includes(o.gruppe);
+  // Hausmeister: gleiche Objektgrenze wie bisher (Gruppe), aber keine kaufm. Rechte
+  return Array.isArray(cu.objekte) && cu.objekte.includes(o.gruppe);
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -1585,9 +1609,9 @@ async function showObjekt(objId){
     <button class="tab-btn" onclick="objTab('maengel',this)">Mängel</button>
     <button class="tab-btn" onclick="objTab('zaehler',this)">Zähler</button>
     <button class="tab-btn" onclick="objTab('dokumente',this)">Dokumente</button>
-    ${CU?.role==='admin'?`<button class="tab-btn" onclick="objTab('interessenten',this)">Interessenten</button>`:''}
-    ${CU?.role==='admin'?`<button class="tab-btn" onclick="objTab('versorger',this)">Versorger</button>`:''}
-    ${CU?.role==='admin'&&!istPrivat?'<button class="tab-btn" onclick="objTab(\'nka\',this)">NKA-Archiv</button>':''}
+    ${istVerwalter()?`<button class="tab-btn" onclick="objTab('interessenten',this)">Interessenten</button>`:''}
+    ${istVerwalter()?`<button class="tab-btn" onclick="objTab('versorger',this)">Versorger</button>`:''}
+    ${istVerwalter()&&!istPrivat?'<button class="tab-btn" onclick="objTab(\'nka\',this)">NKA-Archiv</button>':''}
   </div>
   <div id="objTabContent"></div>`;
   nav('objekt',obj.name,obj.ort);
@@ -1632,7 +1656,7 @@ const INTERESSENT_STATUS = [
 function interessentStatusInfo(v){ return INTERESSENT_STATUS.find(x=>x.val===v) || INTERESSENT_STATUS[0]; }
 
 async function renderInteressenten(el, objektId){
-  if(CU?.role!=='admin'){ el.innerHTML='<div class="empty"><i class="ti ti-lock"></i><p>Nur für Administratoren.</p></div>'; return; }
+  if(!istVerwalter()){ el.innerHTML='<div class="empty"><i class="ti ti-lock"></i><p>Nur für Administratoren.</p></div>'; return; }
   let alle = await idbGetAll('interessenten').catch(()=>[]);
   // Objektbezug: Kandidaten für dieses Objekt ODER allgemeine Warteliste ohne Objekt
   let liste = objektId
@@ -1693,7 +1717,7 @@ async function interessentWohnungsOptionen(objektId, selWe){
 }
 
 async function modalInteressentNeu(objektId, id){
-  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
   const k = id ? (await idbGet('interessenten', id).catch(()=>null))||{} : {};
   const objId = k.objektId || objektId || '';
   const objOpts = OBJEKTE.filter(o=>!o.privat || o.sichtbarFuer?.includes(CU?.id))
@@ -1779,7 +1803,7 @@ async function interessentObjChange(){
 }
 
 async function saveInteressent(id){
-  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
   const name = document.getElementById('iName')?.value?.trim()||'';
   if(!name){ toast('Bitte Namen angeben'); return; }
   const objId = document.getElementById('iObj')?.value||'';
@@ -1857,7 +1881,7 @@ async function modalInteressentDetail(id){
 }
 
 async function deleteInteressent(id){
-  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
   const k = await idbGet('interessenten', id).catch(()=>null);
   if(!k) return;
   if(!confirm(`Interessent „${k.name||''}" wirklich löschen?`)) return;
@@ -1874,7 +1898,7 @@ async function deleteInteressent(id){
 // Miete/Fläche und bestätigt. Nach dem Speichern wird der Kandidat auf
 // Status 'uebernommen' gesetzt (separat, da saveNewMieter den Kandidaten nicht kennt).
 async function interessentZuMieter(id){
-  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
   const k = await idbGet('interessenten', id).catch(()=>null);
   if(!k){ toast('Interessent nicht gefunden'); return; }
   if(!k.objektId){
@@ -1928,7 +1952,7 @@ const ZAEHLER_SONDERFALL = {
     {art:'tiefgarage',name:'Tiefgarage',     einheit:'kWh'},
   ],
 };
-const ZAEHLER_ICON = {gas:'ti-flame',wasser:'ti-droplet',strom:'ti-bolt',heizung:'ti-temperature',tiefgarage:'ti-parking'};
+const ZAEHLER_ICON = {gas:'ti-flame',wasser:'ti-droplet',warmwasser:'ti-droplet-half-2',strom:'ti-bolt',heizung:'ti-temperature',tiefgarage:'ti-parking'};
 
 // Stellt sicher, dass für ein Objekt die (Standard- oder Sonder-)Zähler existieren.
 async function ensureZaehler(objektId){
@@ -1948,14 +1972,14 @@ async function ensureZaehler(objektId){
 async function renderObjZaehler(el){
   const zaehler = (await ensureZaehler(currentObjId)).sort((a,b)=>a.name.localeCompare(b.name));
   const alleStaende = await idbGetAll('zaehlerstaende','objektId',currentObjId);
-  const alleVersorger = (CU?.role==='admin') ? await idbGetAll('versorger','objektId',currentObjId) : [];
+  const alleVersorger = (istVerwalter()) ? await idbGetAll('versorger','objektId',currentObjId) : [];
   const vMap = Object.fromEntries(alleVersorger.map(v=>[v.id,v]));
   // Dubletten-Erkennung: gleiche Art + gleiche (normalisierte) Bezeichnung im selben Objekt
   const norm = t => (t||'').toLowerCase().replace(/\s+/g,' ').trim();
   const dubCount = {};
   zaehler.forEach(z=>{ const k=z.art+'|'+norm(z.name); dubCount[k]=(dubCount[k]||0)+1; });
   let h=`<div class="s-hdr"><div class="s-title"><i class="ti ti-gauge"></i> Zähler (${zaehler.length})</div>
-    ${CU?.role==='admin'?`<button class="btn btn-sm" onclick="modalNeuerZaehler('${currentObjId}')"><i class="ti ti-plus"></i> Zähler</button>`:''}
+    ${istVerwalter()?`<button class="btn btn-sm" onclick="modalNeuerZaehler('${currentObjId}')"><i class="ti ti-plus"></i> Zähler</button>`:''}
   </div>`;
 
   for(const z of zaehler){
@@ -1974,7 +1998,7 @@ async function renderObjZaehler(el){
     const vLink = z.versorgerId ? vMap[z.versorgerId] : null;
     const vLinkTxt = vLink
       ? `<span style="color:var(--copper)"><i class="ti ti-link"></i> ${vLink.anbieter||getSparte(vLink.sparte).label}</span>`
-      : (CU?.role==='admin' ? `<span style="color:var(--ink-40)"><i class="ti ti-link-off"></i> kein Versorger</span>` : '');
+      : (istVerwalter() ? `<span style="color:var(--ink-40)"><i class="ti ti-link-off"></i> kein Versorger</span>` : '');
     h+=`<div class="card" style="margin-bottom:10px${istDub?';border:1px solid #E6A23C':''}">
       ${istDub?`<div style="font-size:11px;color:#B8860B;margin-bottom:6px"><i class="ti ti-alert-triangle"></i> Möglicher doppelter Zähler (gleiche Art &amp; Bezeichnung) – ggf. einen löschen.</div>`:''}
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
@@ -1982,7 +2006,7 @@ async function renderObjZaehler(el){
           <i class="ti ${ZAEHLER_ICON[z.art]||'ti-gauge'}"></i>
         </div>
         <div style="flex:1">
-          <div style="font-weight:600;font-size:14px">${z.name}</div>
+          <div style="font-weight:600;font-size:14px">${z.name}${z.weNr?` <span style="font-size:11px;font-weight:600;color:var(--copper);background:var(--ink-05);padding:1px 6px;border-radius:6px;margin-left:4px"><i class="ti ti-home" style="font-size:11px"></i> WE ${z.weNr}</span>`:''}</div>
           ${z.zaehlernummer?`<div style="font-size:12px;color:var(--ink-60)"><i class="ti ti-hash"></i> ${z.zaehlernummer}</div>`:''}
           <div style="font-size:12px;color:var(--ink-40)">
             ${letzter?`Letzter Stand: <strong>${letzter.wert} ${z.einheit}</strong> · ${letzter.datum}`:'Noch keine Ablesung'}
@@ -1991,7 +2015,7 @@ async function renderObjZaehler(el){
         </div>
         <div style="display:flex;flex-direction:column;gap:4px">
           <button class="btn btn-sm btn-copper" onclick="modalZaehlerstand('${z.id}')"><i class="ti ti-camera"></i> Ablesen</button>
-          ${CU?.role==='admin'?`<button class="btn btn-sm" onclick="modalNeuerZaehler('${currentObjId}','${z.id}')"><i class="ti ti-pencil"></i> Bearbeiten</button>`:''}
+          ${istVerwalter()?`<button class="btn btn-sm" onclick="modalNeuerZaehler('${currentObjId}','${z.id}')"><i class="ti ti-pencil"></i> Bearbeiten</button>`:''}
         </div>
       </div>
       ${verbrauchTxt?`<div style="font-size:12px;margin-bottom:6px">${verbrauchTxt}</div>`:''}
@@ -2113,7 +2137,7 @@ async function zeigeZaehlerVerlauf(zaehlerId){
       <td style="padding:6px 4px;font-size:12px">${diff}</td>
       <td style="padding:6px 4px;font-size:11px;color:var(--ink-40)">${proTag}</td>
       <td style="padding:6px 4px;text-align:right">${s.foto?`<button class="btn btn-sm" onclick="openFoto('${s.id}','zaehlerstand')"><i class="ti ti-photo"></i></button>`:''}
-        ${CU?.role==='admin'?`<button class="btn btn-sm" onclick="modalZaehlerstandEdit('${s.id}','${zaehlerId}')"><i class="ti ti-pencil"></i></button>
+        ${istVerwalter()?`<button class="btn btn-sm" onclick="modalZaehlerstandEdit('${s.id}','${zaehlerId}')"><i class="ti ti-pencil"></i></button>
         <button class="btn btn-sm btn-danger" onclick="delZaehlerstand('${s.id}','${zaehlerId}')"><i class="ti ti-trash"></i></button>`:''}</td>
     </tr>`;
   }
@@ -2160,7 +2184,7 @@ async function delZaehlerstand(id, zaehlerId){
 
 // Einzelnen Ablesewert bearbeiten (nur Admin)
 async function modalZaehlerstandEdit(id, zaehlerId){
-  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
   const st = await idbGet('zaehlerstaende', id);
   if(!st){ toast('Ablesung nicht gefunden'); return; }
   const z = await idbGet('zaehler', zaehlerId);
@@ -2183,7 +2207,7 @@ async function modalZaehlerstandEdit(id, zaehlerId){
 }
 
 async function saveZaehlerstandEdit(id, zaehlerId){
-  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
   const st = await idbGet('zaehlerstaende', id);
   if(!st) return;
   const wert = document.getElementById('zseWert')?.value;
@@ -2208,7 +2232,10 @@ async function saveZaehlerstandEdit(id, zaehlerId){
 async function modalNeuerZaehler(objektId, zaehlerId){
   const z = zaehlerId ? (await idbGet('zaehler', zaehlerId)) : {};
   const isEdit = !!zaehlerId;
-  const arten=[['strom','Strom'],['gas','Gas'],['wasser','Wasser'],['heizung','Heizung'],['tiefgarage','Tiefgarage'],['sonstige','Sonstige']];
+  const arten=[['strom','Strom'],['gas','Gas'],['wasser','Wasser'],['warmwasser','Warmwasser'],['heizung','Heizung'],['tiefgarage','Tiefgarage'],['sonstige','Sonstige']];
+  // Wohnungs-Optionen (stabile WE-Zuordnung; Hauszähler = leer)
+  const weInner = await interessentWohnungsOptionen(objektId, z.weNr||'');
+  const weOpts = '<option value=""'+((z.weNr===undefined||z.weNr==='')?' selected':'')+'>— Hauszähler (ganzes Objekt) —</option>'+weInner;
   // Versorger desselben Objekts für die Zuordnung laden
   const versorger=(await idbGetAll('versorger','objektId',objektId)).sort((a,b)=>(a.sparte||'').localeCompare(b.sparte||''));
   const vsOpts=['<option value="">— kein Versorger —</option>']
@@ -2230,6 +2257,9 @@ async function modalNeuerZaehler(objektId, zaehlerId){
     </div>
     <div class="f"><label>Zählernummer</label>
       <input type="text" id="nzNummer" value="${(z.zaehlernummer||'').replace(/"/g,'&quot;')}" placeholder="Gerätenummer"></div>
+    <div class="f"><label><i class="ti ti-home"></i> Wohnung (WE)</label>
+      <select id="nzWeNr">${weOpts}</select>
+      <div style="font-size:11px;color:var(--ink-40);margin-top:4px">Wohnungszähler (z. B. Warmwasser Krefeld) bleiben dauerhaft der WE zugeordnet – auch bei Mieterwechsel.</div></div>
     <div class="f"><label><i class="ti ti-link"></i> Zugeordneter Versorger</label>
       <select id="nzVersorger">${vsOpts}</select>
       ${versorger.length?'':'<div style="font-size:11px;color:var(--ink-40);margin-top:4px">Noch keine Versorger in diesem Objekt erfasst.</div>'}</div>
@@ -2246,9 +2276,10 @@ async function saveNeuerZaehler(objektId, zaehlerId){
   const art=document.getElementById('nzArt')?.value||'sonstige';
   const neueVersorgerId=document.getElementById('nzVersorger')?.value||'';
   const alt = zaehlerId ? await idbGet('zaehler', zaehlerId) : null;
+  const weNr=(document.getElementById('nzWeNr')?.value||'').trim();
   const z={
     id: zaehlerId || ('z_'+objektId+'_'+art+'_'+Math.random().toString(36).slice(2,6)),
-    objektId, art, name,
+    objektId, art, name, weNr,
     einheit:document.getElementById('nzEinheit')?.value?.trim()||'kWh',
     zaehlernummer:document.getElementById('nzNummer')?.value?.trim()||'',
     versorgerId: neueVersorgerId,
@@ -2459,7 +2490,7 @@ function monateAbziehen(datum, monate){
 }
 
 async function renderObjVersorger(el){
-  if(CU?.role!=='admin'){ el.innerHTML='<div class="empty"><i class="ti ti-lock"></i><p>Nur für Administratoren sichtbar.</p></div>'; return; }
+  if(!istVerwalter()){ el.innerHTML='<div class="empty"><i class="ti ti-lock"></i><p>Nur für Administratoren sichtbar.</p></div>'; return; }
   const liste=(await idbGetAll('versorger','objektId',currentObjId))
     .sort((a,b)=>a.sparte.localeCompare(b.sparte));
   const zMap = Object.fromEntries((await idbGetAll('zaehler','objektId',currentObjId)).map(z=>[z.id,z]));
@@ -3394,7 +3425,7 @@ function wohnungsPortalUrl(objektId, weNr){
 }
 
 async function modalWohnungsQR(objektId){
-  if(CU?.role!=='admin'){ toast('Nur für Admins'); return; }
+  if(!istVerwalter()){ toast('Nur für Admins'); return; }
   const obj=getObj(objektId);
   if(!obj){ toast('Objekt nicht gefunden'); return; }
   // Belegte WE aus aktiven Mietern ableiten (keine Vormieter/zukünftige, kein reiner Leerstand)
@@ -3829,10 +3860,79 @@ function stempelTimerStart(){
 }
 function stempelTimerStop(){ if(_stempelTimer){ clearInterval(_stempelTimer); _stempelTimer=null; } }
 
+/* Eigentümer-Leistungsübersicht (v101): objektbezogene Kleinreparaturen und
+   Mängel/Reparaturen für die Abrechnung – keine Personal-/Stundendaten.
+   Strikt auf die Objekte des Eigentümers begrenzt (darfObjekt). */
+async function renderEigentuemerLeistung(el){
+  const myObj = await getMyObjekte();
+  const myIds = new Set(myObj.map(o=>o.id));
+  const jahr = new Date().getFullYear();
+
+  // Kleinreparaturen/Reparaturen nur eigener Objekte
+  const repAll = (await idbGetAll('reparaturen').catch(()=>[]))
+    .filter(r=>r && myIds.has(r.objektId));
+  // nach Jahr (laufendes + Vorjahr) sortiert, neueste zuerst
+  const rep = repAll.sort((a,b)=>String(b.datum||b.erstellt||'').localeCompare(String(a.datum||a.erstellt||'')));
+
+  let h=`<div class="s-hdr"><div class="s-title"><i class="ti ti-clipboard-text"></i> Leistungen / Abrechnung</div></div>
+    <p style="font-size:12px;color:var(--ink-40);margin:0 0 12px">Erfasste Kleinreparaturen und Reparaturen Ihrer Objekte – Grundlage für Nebenkosten- und Eigentümerabrechnung. Personaldaten werden nicht angezeigt.</p>`;
+
+  if(!rep.length){
+    h+=`<div class="empty"><i class="ti ti-clipboard-off"></i><p>Für Ihre Objekte sind noch keine Reparaturen erfasst.</p></div>`;
+    el.innerHTML=h; return;
+  }
+
+  // Gruppieren nach Objekt
+  const proObjekt={};
+  for(const r of rep){ (proObjekt[r.objektId]=proObjekt[r.objektId]||[]).push(r); }
+
+  // Gesamtsumme laufendes Jahr
+  const summeJahr = rep.filter(r=>String(r.datum||'').startsWith(String(jahr)))
+    .reduce((s,r)=>s+(Number(r.kosten||r.gesamt)||0),0);
+  h+=`<div class="card" style="margin-bottom:14px">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <div style="font-size:12px;color:var(--ink-40)">Summe Reparaturen ${jahr}</div>
+      <div style="font-size:20px;font-weight:700">${fmtEur(summeJahr)}</div>
+    </div>
+  </div>`;
+
+  for(const oid of Object.keys(proObjekt)){
+    const obj=getObj(oid);
+    const liste=proObjekt[oid];
+    const summe=liste.reduce((s,r)=>s+(Number(r.kosten||r.gesamt)||0),0);
+    h+=`<div class="card-hdr" style="margin:14px 0 6px;display:flex;justify-content:space-between">
+      <span><i class="ti ti-building"></i> ${esc(obj?.name||oid)}</span>
+      <span style="color:var(--copper-d)">${fmtEur(summe)}</span></div>`;
+    for(const r of liste){
+      const stColor = r.status==='erledigt' ? 'var(--green)' : 'var(--amber)';
+      h+=`<div class="card" style="margin-bottom:6px">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+          <div style="flex:1;min-width:0">
+            <div style="font-size:14px;font-weight:600">${esc(r.titel||r.beschreibung||'Reparatur')}</div>
+            <div style="font-size:11px;color:var(--ink-40)">${r.weNr?'WE '+esc(String(r.weNr))+' · ':''}${r.datum?fmtDatumKurz(r.datum):''}${r.extern?' · extern':''}</div>
+          </div>
+          <div style="text-align:right">
+            <div style="font-size:14px;font-weight:700">${fmtEur(Number(r.kosten||r.gesamt)||0)}</div>
+            <div style="font-size:10px;color:${stColor}">${esc(r.status||'')}</div>
+          </div>
+        </div>
+      </div>`;
+    }
+  }
+  el.innerHTML=h;
+}
+
+
 async function renderZeiterfassung(){
   const el=document.getElementById('page-zeit');
   if(!el) return;
-  const istAdmin = CU?.role==='admin';
+  // Eigentümer: keine Stempeluhr/Personalsicht, sondern objektbezogene
+  // Leistungsübersicht (Kleinreparaturen, Reparaturen) für die Abrechnung.
+  if(istEigentuemer()){
+    await renderEigentuemerLeistung(el);
+    return;
+  }
+  const istAdmin = istSystemAdmin();
   // Erfassungsmodus des aktuellen Users (Admins immer Zeiterfassung)
   const modus = istAdmin ? 'zeit' : (CU?.erfassungsModus || 'zeit');
   if(modus==='taetigkeit'){
@@ -3863,7 +3963,7 @@ async function renderZeiterfassung(){
   }
 
   // ── Stundenkonto (für den eingeloggten Mitarbeiter) ──
-  if(CU?.role==='admin'){
+  if(istVerwalter()){
     // Admins: reine Ist-Dokumentation, kein Soll, kein Saldo
     const ak=await berechneIstStunden(CU.id);
     h+=`<div class="card" style="margin-top:16px;margin-bottom:6px">
@@ -4154,7 +4254,7 @@ async function modalTaetigkeitStart(){
   window._tsBezug = 'objekt'; // 'objekt' | 'standort'
   const kats=await getTaetigkeitKat(true);
   const objekte=await getMyObjekte();
-  const istAdmin=CU?.role==='admin';
+  const istAdmin=istVerwalter();
   showModal(`
     <div class="m-title"><i class="ti ti-player-play"></i> Tätigkeit starten</div>
     <div class="f"><label>Tätigkeit *</label>
@@ -4204,7 +4304,7 @@ async function tsKatWechsel(){
   const istMangel=opt?.getAttribute('data-mangel')==='1';
   const istAllg=opt?.getAttribute('data-allg')==='1';
   // Allgemeine Tätigkeit gewählt → für Admins automatisch auf Standortbezug umschalten
-  if(istAllg && CU?.role==='admin' && window._tsBezug!=='standort' && document.getElementById('tsBezugStandort')){
+  if(istAllg && istVerwalter() && window._tsBezug!=='standort' && document.getElementById('tsBezugStandort')){
     tsBezugWechsel('standort');
     return;
   }
@@ -4452,7 +4552,14 @@ async function modalMitarbeiterZeit(userId){
 async function renderUrlaub(){
   const el=document.getElementById('page-urlaub');
   if(!el) return;
-  const istAdmin = CU?.role==='admin';
+  // Personalverwaltung (alle Urlaube) nur für echten Admin. Eigentümer ist kein
+  // Mitarbeiter und sieht keine fremden Personaldaten – nur Hinweis.
+  if(istEigentuemer()){
+    el.innerHTML=`<div class="s-hdr"><div class="s-title"><i class="ti ti-beach"></i> Urlaub</div></div>
+      <div class="empty"><i class="ti ti-shield-lock"></i><p>Die Urlaubs- und Personalverwaltung liegt beim Administrator.<br>Geleistete Tätigkeiten an Ihren Objekten finden Sie unter „Zeiterfassung".</p></div>`;
+    return;
+  }
+  const istAdmin = istSystemAdmin();
   const jahr=new Date().getFullYear();
 
   let h=`<div class="s-hdr"><div class="s-title"><i class="ti ti-beach"></i> Urlaub</div></div>`;
@@ -5525,7 +5632,7 @@ async function arbeitszeitVorStichtagLoeschen(stichDatum){
 
 // ── Modal: Testzeiten bis Stichtag löschen (Admin) ──
 async function modalZeitenBereinigen(){
-  if(CU?.role!=='admin'){ toast('Nur für Admins'); return; }
+  if(!istVerwalter()){ toast('Nur für Admins'); return; }
   const heuteStr=today();
   const alle=await idbGetAll('arbeitszeit');
   const offen=alle.filter(s=>s.status==='offen').length;
@@ -5623,7 +5730,7 @@ async function taetigkeitBeenden(){
 // QR-Start: vom Scanner aufgerufen
 async function starteTaetigkeitVonQR(katId, objId){
   // Reine Tätigkeitserfassung: nur Zeitstempel speichern, keine Uhr
-  if((CU?.erfassungsModus||'zeit')==='taetigkeit' && CU?.role!=='admin'){
+  if((CU?.erfassungsModus||'zeit')==='taetigkeit' && !istVerwalter()){
     const kats=await getTaetigkeitKat(); const kat=kats.find(k=>k.id===katId);
     const istLg=(objId||'').startsWith('lg_');
     const zielName=istLg ? ((typeof LIEGENSCHAFTEN!=='undefined'?LIEGENSCHAFTEN:[]).find(l=>l.id===objId)?.name||objId) : (getObj(objId)?.name||objId);
@@ -5658,7 +5765,7 @@ async function rundgangWegpunktScan(lgId, nr, gesamt){
   const lg=(typeof LIEGENSCHAFTEN!=='undefined'?LIEGENSCHAFTEN:[]).find(l=>l.id===lgId);
   const lgName=lg?.name||lgId;
   // Reine Tätigkeitserfassung: jeden Wegpunkt nur als Zeitstempel speichern
-  if((CU?.erfassungsModus||'zeit')==='taetigkeit' && CU?.role!=='admin'){
+  if((CU?.erfassungsModus||'zeit')==='taetigkeit' && !istVerwalter()){
     await speichereTaetigkeit('Müllrundgang', lgName, {wegpunkt:nr, wpGesamt:gesamt});
     toast('Wegpunkt '+nr+'/'+gesamt+' erfasst · '+lgName+' ✓');
     nav('zeit');
@@ -7464,7 +7571,7 @@ async function getSchluesselSoll(objektId, weNr){
 }
 
 async function modalSchluessel(objektId, weNr){
-  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
   const obj = getObj(objektId);
   const soll = await getSchluesselSoll(objektId, weNr);
   const w = await getWohnungStamm(objektId, weNr);
@@ -7488,7 +7595,7 @@ async function modalSchluessel(objektId, weNr){
 }
 
 async function saveSchluessel(objektId, weNr){
-  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
   const schluessel = {};
   SCHLUESSEL_TYPEN.forEach(t => { schluessel[t.key] = Number(document.getElementById('sk_'+t.key)?.value)||0; });
   const schluesselNotiz = document.getElementById('skNotiz')?.value?.trim()||'';
@@ -7498,7 +7605,7 @@ async function saveSchluessel(objektId, weNr){
 }
 
 async function modalGebaeudeStamm(objektId){
-  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
   const obj=getObj(objektId);
   const s=(await idbGet('objekt_stamm',objektId).catch(()=>null))||{};
   // Punkt 1.1: Eigentümerliste + aktuelle Zuordnung laden
@@ -7571,7 +7678,7 @@ async function onEigSelectChange(){
   wrap.style.display = sel.value==='__neu' ? 'block' : 'none';
 }
 async function saveGebaeudeStamm(objektId){
-  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
   // Punkt 1.1: Eigentümer ermitteln (Auswahl oder Neueintrag)
   let eigId='', eigName='', eigAnschrift='';
   const eigSel=document.getElementById('gsEigSelect')?.value||'';
@@ -7642,7 +7749,7 @@ async function getVersicherungenFuerObjekt(objektId){
 
 // Verwaltungs-Modal: alle Versicherungen eines Objekts
 async function modalVersicherungen(objektId){
-  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
   const obj=getObj(objektId);
   const list=await getVersicherungenFuerObjekt(objektId);
   const zeilen = list.length
@@ -7675,7 +7782,7 @@ async function modalVersicherungen(objektId){
 
 // Anlage/Bearbeitung einer einzelnen Versicherung
 async function modalVersicherungEdit(objektId, versId){
-  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
   const obj=getObj(objektId);
   let v={id:'',objektId,art:'haftpflicht',artText:'',gesellschaft:'',scheinNr:'',ansprechpartner:'',schadenEmail:'',schadenTel:'',notiz:''};
   if(versId){ const ex=await idbGet('versicherungen',versId).catch(()=>null); if(ex) v=ex; }
@@ -7715,7 +7822,7 @@ function onVsArtChange(){
   if(sel&&wrap) wrap.style.display = sel.value==='sonstige' ? 'block' : 'none';
 }
 async function saveVersicherung(objektId, versId){
-  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
   const g=id=>document.getElementById(id)?.value?.trim()||'';
   const art=document.getElementById('vsArt')?.value||'haftpflicht';
   const rec={
@@ -7739,7 +7846,7 @@ async function saveVersicherung(objektId, versId){
   await modalVersicherungen(objektId);
 }
 async function versicherungLoeschen(objektId, versId){
-  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
   if(!confirm('Diese Versicherung wirklich löschen?')) return;
   await idbDelete('versicherungen',versId);
   clearTimeout(window._syncTimer);
@@ -7750,7 +7857,7 @@ async function versicherungLoeschen(objektId, versId){
 
 /* ── Schadensmeldung an Versicherung (Paket 3b) ── */
 async function modalSchadenMelden(mangelId, store='maengel'){
-  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
   const m=await idbGet(store,mangelId).catch(()=>null);
   if(!m){ toast('Vorgang nicht gefunden'); return; }
   const obj=getObj(m.objektId);
@@ -7894,11 +8001,11 @@ function personenBlockHTML(m){
         <div style="font-weight:600;font-size:14px">${esc(p.name)}${v?' <span style="font-size:10px;color:var(--ink-40);font-weight:400">(verstorben)</span>':''}</div>
         <div style="display:flex;flex-direction:column;gap:2px;margin-top:3px">
           ${p.geburtsdatum?`<span style="font-size:12px;color:var(--ink-60)"><i class="ti ti-cake" style="font-size:12px"></i> ${fmtDate(p.geburtsdatum)}${alterAus(p.geburtsdatum)?` (${alterAus(p.geburtsdatum)} J.)`:''}</span>`:''}
-          ${p.telefon?`<span style="font-size:12px;color:var(--ink-60)"><i class="ti ti-phone" style="font-size:12px"></i> <a href="tel:${p.telefon}">${esc(p.telefon)}</a></span>`:''}
+          ${p.telefon?`<span style="font-size:12px;color:var(--ink-60)"><i class="ti ti-phone" style="font-size:12px"></i> <a href="tel:${p.telefon}">${esc(p.telefon)}</a>${waLink(p.telefon)?` · <a href="${waLink(p.telefon)}" target="_blank" rel="noopener" style="color:#25D366;font-weight:600"><i class="ti ti-brand-whatsapp" style="font-size:12px"></i> WhatsApp</a>`:''}</span>`:''}
           ${p.email?`<span style="font-size:12px;color:var(--ink-60)"><i class="ti ti-mail" style="font-size:12px"></i> <a href="mailto:${p.email}">${esc(p.email)}</a></span>`:''}
         </div>
       </div>
-      ${CU?.role==='admin'?`<button class="btn btn-sm" title="${v?'Als lebend markieren':'Als verstorben markieren'}" onclick="togglePersonVerstorben('${m.id}',${i})">
+      ${istVerwalter()?`<button class="btn btn-sm" title="${v?'Als lebend markieren':'Als verstorben markieren'}" onclick="togglePersonVerstorben('${m.id}',${i})">
         <i class="ti ti-${v?'rotate':'grave'}" style="font-size:14px"></i>
       </button>`:''}
     </div>`;
@@ -7917,7 +8024,7 @@ function alterAus(iso){
 }
 // Person als verstorben / wieder lebend markieren
 async function togglePersonVerstorben(mieterId, idx){
-  if(CU?.role!=='admin'){ toast('Nur Administratoren können den Verstorben-Status ändern'); return; }
+  if(!istVerwalter()){ toast('Nur Administratoren können den Verstorben-Status ändern'); return; }
   const m=await idbGet('mieter',mieterId); if(!m) return;
   // Sicherstellen, dass eine personen_liste existiert
   if(!m.personen_liste||!m.personen_liste.length){
@@ -7978,7 +8085,7 @@ async function renderObjMieter(el){
   // Gebäude-Stammdaten + Bewohnerzahl
   const stamm = await idbGet('objekt_stamm', currentObjId).catch(()=>null);
   const personenGesamt = mieter.reduce((s,m)=>s+(parseInt(m.personen)||(m.leerstand?0:1)),0);
-  const istAdmin = CU?.role==='admin';
+  const istAdmin = istVerwalter();
 
   if(!mieter.length && !zukuenftig.length){
     el.innerHTML=`${gebaeudeStatsHTML(stamm,personenGesamt,mieter.length,istAdmin)}
@@ -7997,10 +8104,10 @@ async function renderObjMieter(el){
       <button class="btn btn-sm" onclick="newProtokollForObj('${currentObjId}')"><i class="ti ti-clipboard-check"></i> Protokoll</button>
       <button class="btn btn-sm" onclick="modalBrief('','${currentObjId}')"><i class="ti ti-mail"></i> Brief</button>
       <button class="btn btn-sm" onclick="modalAushang('${currentObjId}')"><i class="ti ti-news"></i> Aushang</button>
-      ${CU?.role==='admin'?`<button class="btn btn-sm" onclick="modalWohnungsQR('${currentObjId}')"><i class="ti ti-qrcode"></i> Wohnungs-QR</button>`:''}
-      ${CU?.role==='admin'?`<button class="btn btn-sm" onclick="modalNKA('${currentObjId}')"><i class="ti ti-receipt"></i> NKA</button>`:''}
-      ${CU?.role==='admin'&&(getObj(currentObjId)?.gruppe==='krefeld')?`<button class="btn btn-sm btn-copper" onclick="modalNKALiegenschaft('lg_krefeld')"><i class="ti ti-buildings"></i> NKA Krefeld (alle Häuser)</button>`:''}
-      ${CU?.role==='admin'&&(getObj(currentObjId)?.gruppe==='mg')?`<button class="btn btn-sm btn-copper" onclick="modalNKALiegenschaft('lg_mg')"><i class="ti ti-buildings"></i> NKA Mönchengladbach (alle Häuser)</button>`:''}
+      ${istVerwalter()?`<button class="btn btn-sm" onclick="modalWohnungsQR('${currentObjId}')"><i class="ti ti-qrcode"></i> Wohnungs-QR</button>`:''}
+      ${istVerwalter()?`<button class="btn btn-sm" onclick="modalNKA('${currentObjId}')"><i class="ti ti-receipt"></i> NKA</button>`:''}
+      ${istVerwalter()&&(getObj(currentObjId)?.gruppe==='krefeld')?`<button class="btn btn-sm btn-copper" onclick="modalNKALiegenschaft('lg_krefeld')"><i class="ti ti-buildings"></i> NKA Krefeld (alle Häuser)</button>`:''}
+      ${istVerwalter()&&(getObj(currentObjId)?.gruppe==='mg')?`<button class="btn btn-sm btn-copper" onclick="modalNKALiegenschaft('lg_mg')"><i class="ti ti-buildings"></i> NKA Mönchengladbach (alle Häuser)</button>`:''}
     </div>
   </div>`;
   mieter.forEach(m=>{
@@ -8198,6 +8305,21 @@ function renderMieterListe(q){
   if(body) body.innerHTML=mieterListeRows(gefiltert);
 }
 
+// Wandelt eine deutsche Telefonnummer in ein wa.me-taugliches Format (E.164 ohne +, ohne Sonderzeichen).
+// Beispiele: '0177 / 2509710' -> '491772509710' ; '+49 177 ...' -> '49177...' ; '0049 ...' -> '49...'
+function waNummer(tel){
+  if(!tel) return '';
+  let t = String(tel).trim();
+  let plus = t.trim().startsWith('+');
+  let d = t.replace(/[^0-9]/g,'');
+  if(!d) return '';
+  if(plus){ /* bereits internationale Notation, führende Nullen entfernen */ d = d.replace(/^0+/,''); return d; }
+  if(d.startsWith('00')) return d.slice(2);      // 0049... -> 49...
+  if(d.startsWith('0'))  return '49'+d.slice(1); // nationale 0er-Nummer -> Deutschland-Vorwahl
+  return d;
+}
+function waLink(tel){ const n=waNummer(tel); return n?('https://wa.me/'+n):''; }
+
 async function showMieter(id){
   currentMieterId=id;
   const m=await idbGet('mieter',id);
@@ -8226,21 +8348,22 @@ async function showMieter(id){
       <i class="ti ti-history"></i> Ehemaliger Mieter (ausgezogen${m.auszug?' am '+m.auszug:''}).${m.neueAdresse?' Neue Anschrift: '+m.neueAdresse:''}
     </div>`:''}
     <div class="det-grid">
-      ${CU?.role==='admin'?`<div class="det-field"><label>Miete</label><span>${fmtEur(m.miete)}</span></div>
+      ${istVerwalter()?`<div class="det-field"><label>Miete</label><span>${fmtEur(m.miete)}</span></div>
       <div class="det-field"><label>NK-Vorauszahlung</label><span>${fmtEur(m.nk)}</span></div>
       <div class="det-field"><label>Gesamtmiete</label><span>${fmtEur(m.gesamt)}</span></div>`:''}
       <div class="det-field"><label>Wohnfläche</label><span>${m.flaeche?m.flaeche+' m²':'–'}</span></div>
-      ${CU?.role==='admin'&&mieteProQm(m)!==null?`<div class="det-field"><label>Kaltmiete je m²</label><span>${mieteProQmHTML(m,_stamm.mietspiegel)}${_stamm.mietspiegel?(()=>{const a=mietspiegelAmpel(mieteProQm(m),_stamm.mietspiegel);return a?` <span style="font-size:10px;color:${a.farbe}">· ${a.label} (MS ${String(_stamm.mietspiegel).replace('.',',')} €/m²)</span>`:'';})():' <span style="font-size:10px;color:var(--ink-40)">· kein Mietspiegel hinterlegt</span>'}</span></div>`:''}
+      ${istVerwalter()&&mieteProQm(m)!==null?`<div class="det-field"><label>Kaltmiete je m²</label><span>${mieteProQmHTML(m,_stamm.mietspiegel)}${_stamm.mietspiegel?(()=>{const a=mietspiegelAmpel(mieteProQm(m),_stamm.mietspiegel);return a?` <span style="font-size:10px;color:${a.farbe}">· ${a.label} (MS ${String(_stamm.mietspiegel).replace('.',',')} €/m²)</span>`:'';})():' <span style="font-size:10px;color:var(--ink-40)">· kein Mietspiegel hinterlegt</span>'}</span></div>`:''}
       <div class="det-field"><label>Einzug</label><span>${m.einzug||'–'}</span></div>
-      ${CU?.role==='admin'?(()=>{ const _kd=kautionDetailVon(m); const _si=kautionStatusInfo(_kd.status); const _ai=kautionArtInfo(_kd.art); return `<div class="det-field"><label>Kaution</label><span>${fmtEur(kautionSaldo(_kd))} <span style="font-size:10px;color:${_si.farbe}">· ${_ai.label.split(' (')[0]} · ${_si.label}</span></span></div>`; })():''}
+      ${istVerwalter()?(()=>{ const _kd=kautionDetailVon(m); const _si=kautionStatusInfo(_kd.status); const _ai=kautionArtInfo(_kd.art); return `<div class="det-field"><label>Kaution</label><span>${fmtEur(kautionSaldo(_kd))} <span style="font-size:10px;color:${_si.farbe}">· ${_ai.label.split(' (')[0]} · ${_si.label}</span></span></div>`; })():''}
       ${m.telefon?`<div class="det-field"><label>Telefon</label><span><a href="tel:${m.telefon}">${m.telefon}</a></span></div>`:''}
       ${m.email?`<div class="det-field"><label>E-Mail</label><span><a href="mailto:${m.email}">${m.email}</a></span></div>`:''}
     </div>
     ${m.telefon||m.email?`<div style="display:flex;gap:7px;margin-top:8px;flex-wrap:wrap">
       ${m.telefon?`<a href="tel:${m.telefon}" class="btn btn-success"><i class="ti ti-phone"></i> Anrufen</a>`:''}
+      ${m.telefon&&waLink(m.telefon)?`<a href="${waLink(m.telefon)}" target="_blank" rel="noopener" class="btn" style="background:#25D366;color:#fff;border-color:#25D366"><i class="ti ti-brand-whatsapp"></i> WhatsApp</a>`:''}
       ${m.email?`<a href="mailto:${m.email}" class="btn btn-copper"><i class="ti ti-mail"></i> E-Mail</a>`:''}
     </div>`:''}
-    ${CU?.role==='admin'&&(m.iban||m.zahlweise||m.sepaMandat)?`<div style="margin-top:10px;background:#fff;border:1px solid var(--ink-10);border-radius:8px;padding:10px 12px;color:#1a2433">
+    ${istVerwalter()&&(m.iban||m.zahlweise||m.sepaMandat)?`<div style="margin-top:10px;background:#fff;border:1px solid var(--ink-10);border-radius:8px;padding:10px 12px;color:#1a2433">
       <div style="font-size:12px;font-weight:700;color:#0C447C;margin-bottom:6px"><i class="ti ti-building-bank"></i> Bankverbindung</div>
       <div class="det-grid">
         ${m.zahlweise?`<div class="det-field"><label style="color:#6b7280">Zahlungsweise</label><span style="color:#1a2433">${m.zahlweise==='sepa'?'SEPA-Lastschrift':'Selbstüberweisung'}</span></div>`:''}
@@ -8254,7 +8377,7 @@ async function showMieter(id){
     <div style="display:none"><!-- dummy --></div
       ${tg?`<div class="det-field"><label>TG-Stellplatz</label><span>Nr. ${tg.nr} · ${fmtEur(tg.miete)}/Mon.</span></div>`:''}
       ${m.uebergabe?`<div class="det-field"><label>Übergabe</label><span>${m.uebergabe}</span></div>`:''}
-      ${CU?.role==='admin'&&m.krKlausel==='Ja'?`<div class="det-field"><label>KR-Klausel</label><span>${fmtEur(m.krHoehe)} · ${m.krProzent||'–'}% p.a.</span></div>`:''}
+      ${istVerwalter()&&m.krKlausel==='Ja'?`<div class="det-field"><label>KR-Klausel</label><span>${fmtEur(m.krHoehe)} · ${m.krProzent||'–'}% p.a.</span></div>`:''}
     </div>
   </div>
   ${personenBlockHTML(m)}
@@ -8266,6 +8389,7 @@ async function showMieter(id){
         ${m.zusatzkontakt.email?`<div style="font-size:12px;color:var(--ink-60)"><i class="ti ti-mail" style="font-size:12px"></i> <a href="mailto:${m.zusatzkontakt.email}">${esc(m.zusatzkontakt.email)}</a></div>`:''}
       </div>
       ${m.zusatzkontakt.telefon?`<a href="tel:${m.zusatzkontakt.telefon}" class="btn btn-sm btn-success"><i class="ti ti-phone"></i></a>`:''}
+      ${m.zusatzkontakt.telefon&&waLink(m.zusatzkontakt.telefon)?`<a href="${waLink(m.zusatzkontakt.telefon)}" target="_blank" rel="noopener" class="btn btn-sm" style="background:#25D366;color:#fff;border-color:#25D366" title="WhatsApp"><i class="ti ti-brand-whatsapp"></i></a>`:''}
     </div>
   </div>`:''}
   <div style="display:flex;gap:7px;flex-wrap:wrap;margin-bottom:14px">
@@ -8274,23 +8398,23 @@ async function showMieter(id){
     <button class="btn" onclick="modalAddMangel('${m.id}','${m.objektId}','mangel')"><i class="ti ti-alert-triangle"></i> Mangel</button>
     <button class="btn btn-sm" onclick="modalAddReparatur('${m.id}','${m.objektId}')"><i class="ti ti-tools"></i> Reparatur</button>
     <button class="btn btn-sm" onclick="modalEditMieter('${m.id}')"><i class="ti ti-pencil"></i> Bearbeiten</button>
-    ${CU?.role==='admin'?`<button class="btn btn-sm btn-copper" onclick="modalMieterhoehung('${m.id}')"><i class="ti ti-trending-up"></i> Mieterhöhung</button>`:''}
-    ${CU?.role==='admin'?`<button class="btn btn-sm" onclick="modalKaution('${m.id}')"><i class="ti ti-lock-dollar"></i> Kaution</button>`:''}
+    ${istVerwalter()?`<button class="btn btn-sm btn-copper" onclick="modalMieterhoehung('${m.id}')"><i class="ti ti-trending-up"></i> Mieterhöhung</button>`:''}
+    ${istVerwalter()?`<button class="btn btn-sm" onclick="modalKaution('${m.id}')"><i class="ti ti-lock-dollar"></i> Kaution</button>`:''}
     <button class="btn btn-sm" onclick="showMieterDokumente('${m.id}')"><i class="ti ti-paperclip"></i> Archiv & Dokumente</button>
-    ${CU?.role==='admin'?(m.mvEntwurf
+    ${istVerwalter()?(m.mvEntwurf
       ? `<button class="btn btn-sm btn-copper" onclick="mvBearbeiteEntwurf('${m.id}')"><i class="ti ti-file-text"></i> MV-Entwurf bearbeiten</button>`
       : (!m._vormieter ? `<button class="btn btn-sm btn-copper" onclick="mvStartFuerMieter('${m.id}')"><i class="ti ti-file-text"></i> Mietvertrag erstellen</button>` : '')
     ):''}
     <button class="btn btn-sm" onclick="modalWohnungGrundriss('${m.objektId}','${esc(String(m.weNr||''))}')"><i class="ti ti-map"></i> Grundriss</button>
     <button class="btn btn-sm" onclick="modalWohnungsbilder('${m.objektId}','${esc(String(m.weNr||''))}')"><i class="ti ti-photo-scan"></i> Bilder</button>
-    ${CU?.role==='admin'?`<button class="btn btn-sm" onclick="modalSchluessel('${m.objektId}','${esc(String(m.weNr||''))}')"><i class="ti ti-key"></i> Schlüssel</button>`:''}
-    ${CU?.role==='admin'?`<button class="btn btn-sm" onclick="modalWohnungHeizNk('${m.objektId}','${esc(String(m.weNr||''))}')"><i class="ti ti-temperature"></i> Heizung & NK</button>`:''}
+    ${istVerwalter()?`<button class="btn btn-sm" onclick="modalSchluessel('${m.objektId}','${esc(String(m.weNr||''))}')"><i class="ti ti-key"></i> Schlüssel</button>`:''}
+    ${istVerwalter()?`<button class="btn btn-sm" onclick="modalWohnungHeizNk('${m.objektId}','${esc(String(m.weNr||''))}')"><i class="ti ti-temperature"></i> Heizung & NK</button>`:''}
     <button class="btn btn-sm" onclick="druckeWohnungsgeberBescheinigung('${m.id}')"><i class="ti ti-file-certificate"></i> WGB</button>
-    ${CU?.role==='admin'?`<button class="btn btn-sm" onclick="modalMietbescheinigung('${m.id}')"><i class="ti ti-receipt-2"></i> Mietbescheinigung</button>`:''}
+    ${istVerwalter()?`<button class="btn btn-sm" onclick="modalMietbescheinigung('${m.id}')"><i class="ti ti-receipt-2"></i> Mietbescheinigung</button>`:''}
     <button class="btn btn-sm" onclick="modalBrief('${m.id}','${m.objektId}')"><i class="ti ti-mail"></i> Brief</button>
-    ${m._vormieterId?`<button class="btn btn-sm" onclick="zeigeVormieter('${m._vormieterId}')"><i class="ti ti-history"></i> Vormieter</button>`:(CU?.role==='admin'&&!m._vormieter&&!m._zukuenftig?`<button class="btn btn-sm" onclick="modalVormieterAnlegen('${m.id}')"><i class="ti ti-history"></i> Vormieter anlegen</button>`:'')}
+    ${m._vormieterId?`<button class="btn btn-sm" onclick="zeigeVormieter('${m._vormieterId}')"><i class="ti ti-history"></i> Vormieter</button>`:(istVerwalter()&&!m._vormieter&&!m._zukuenftig?`<button class="btn btn-sm" onclick="modalVormieterAnlegen('${m.id}')"><i class="ti ti-history"></i> Vormieter anlegen</button>`:'')}
     ${m._vormieter?`<button class="btn btn-sm" onclick="modalNeueAdresse('${m.id}')"><i class="ti ti-map-pin"></i> Neue Anschrift</button>`:''}
-    ${(m._vormieter&&CU?.role==='admin')?`<button class="btn btn-sm btn-copper" onclick="mieterReaktivieren('${m.id}')"><i class="ti ti-rotate-2"></i> Als aktuellen Mieter reaktivieren</button>`:''}
+    ${(m._vormieter&&istVerwalter())?`<button class="btn btn-sm btn-copper" onclick="mieterReaktivieren('${m.id}')"><i class="ti ti-rotate-2"></i> Als aktuellen Mieter reaktivieren</button>`:''}
     <button class="btn btn-sm btn-danger" onclick="deleteMieterConfirm('${m.id}')"><i class="ti ti-trash"></i></button>
   </div>`;
 
@@ -8525,7 +8649,7 @@ async function deleteWartung(id){
 // Punkt 4: HM sieht eine Aufgabe nur, wenn er sie selbst angelegt hat
 // oder sie ihm explizit zugewiesen wurde. Admins sehen alles.
 function aufgabeSichtbarFuerUser(a){
-  if(CU?.role==='admin') return true;
+  if(istVerwalter()) return true;
   if(a.erstellerId && a.erstellerId===CU?.id) return true;
   if(a.ersteller && CU?.name && a.ersteller===CU.name) return true;
   if(a.zugewiesen && CU?.id && a.zugewiesen===CU.id) return true;
@@ -9316,7 +9440,7 @@ async function renderDokumente(el, objektId, mieterId) {
   // Sensible Dokumente sind nur für Administratoren sichtbar:
   // NKA (Finanzdaten), Ausweise (§20 PAuswG / Art.9 DSGVO), SEPA-Mandate (Bankdaten)
   const ADMIN_ONLY_DOK = ['nka','ausweis','lastschrift'];
-  if (CU?.role !== 'admin') docs = docs.filter(d=>!ADMIN_ONLY_DOK.includes(d.typ));
+  if (!istVerwalter()) docs = docs.filter(d=>!ADMIN_ONLY_DOK.includes(d.typ));
 
   const gruppeByTyp = {};
   DOK_TYPEN.forEach(t=>{ gruppeByTyp[t.val]=[]; });
@@ -9351,7 +9475,7 @@ async function renderDokumente(el, objektId, mieterId) {
           <div style="font-size:11px;color:var(--ink-40);margin-top:1px">${d.erstellt||''} · ${isHtmlDok?'Schreiben':fmtBytes(d.size||0)}</div>
           ${d.notiz?`<div style="font-size:11px;color:var(--ink-60);margin-top:2px;font-style:italic">${d.notiz}</div>`:''}
         </div>
-        ${(CU?.role==='admin' && d.mieterId && PORTAL_DOK_TYPEN.includes(d.typ)) ? (()=>{
+        ${(istVerwalter() && d.mieterId && PORTAL_DOK_TYPEN.includes(d.typ)) ? (()=>{
             const frei = istPortalFreigegeben(d, portalTypDefaults);
             const ueberschrieben = (d.portalFreigabe===true||d.portalFreigabe===false);
             return `<button class="btn btn-sm" title="${frei?'Für Mieterportal freigegeben':'Nicht freigegeben'}${ueberschrieben?' (manuell gesetzt)':' (Typ-Standard)'} – tippen zum Umschalten" onclick="togglePortalFreigabe('${d.id}')" style="flex-shrink:0;${frei?'color:var(--success);border-color:var(--success)':'color:var(--ink-40)'}"><i class="ti ${frei?'ti-world-share':'ti-world-off'}"></i></button>`;
@@ -9371,7 +9495,7 @@ async function renderDokumente(el, objektId, mieterId) {
 // Portal-Freigabe eines Einzeldokuments umschalten.
 // Zyklus: Typ-Standard → ausdrücklich freigegeben → ausdrücklich gesperrt → Typ-Standard
 async function togglePortalFreigabe(id){
-  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
   const d = await idbGet('dokumente', id);
   if(!d || !PORTAL_DOK_TYPEN.includes(d.typ)){ return; }
   if(d.portalFreigabe === true)       d.portalFreigabe = false;
@@ -9475,7 +9599,7 @@ function modalUploadDok(objektId, mieterId) {
       <input type="text" id="dokName" placeholder="z. B. Grundriss EG, Ausweis Mustermann..." spellcheck="true" lang="de"></div>
     <div class="f"><label>Typ</label>
       <select id="dokTyp">
-        ${DOK_TYPEN.filter(t=>CU?.role==='admin'||!['nka','ausweis','lastschrift'].includes(t.val)).map(t=>`<option value="${t.val}">${t.label}</option>`).join('')}
+        ${DOK_TYPEN.filter(t=>istVerwalter()||!['nka','ausweis','lastschrift'].includes(t.val)).map(t=>`<option value="${t.val}">${t.label}</option>`).join('')}
       </select>
     </div>
     <div class="f"><label>Notiz (optional)</label>
@@ -10174,7 +10298,7 @@ function nkaSummeManuell(kId){
 }
 
 async function modalNKA(objektId) {
-  if (CU?.role !== 'admin') { toast('Nur für Administratoren'); return; }
+  if (!istVerwalter()) { toast('Nur für Verwalter'); return; }
   const obj      = getObj(objektId);
   const vorlage  = getNKAVorlage(objektId);
   if (!vorlage) { toast('Keine NKA-Vorlage für dieses Objekt'); return; }
@@ -10962,7 +11086,7 @@ async function ladeLgMieter(lgId, von, bis){
 function nkaLgPosKey(lgId, von, bis){ return 'nka_lg_'+lgId+'_'+(von||'')+'_'+(bis||''); }
 
 async function modalNKALiegenschaft(lgId){
-  if (CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  if (!istVerwalter()){ toast('Nur für Administratoren'); return; }
   const vorlage=getNKALgVorlage(lgId);
   if(!vorlage){ toast('Keine Liegenschafts-Vorlage'); return; }
   await ladeBriefkopfCache();
@@ -11132,7 +11256,7 @@ async function nkaLgGewaehlteSignaturen(){
 // Sammeldokument (Deckblatt + Einzelbriefe) und legt es je Mieter im Archiv ab.
 // korrektur: optionales {originalId, text} für nachträgliche Korrekturen.
 async function erstelleNKALiegenschaft(lgId, korrektur){
-  if (CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  if (!istVerwalter()){ toast('Nur für Administratoren'); return; }
   const vorlage=getNKALgVorlage(lgId);
   if(!vorlage) return;
   const lg=LIEGENSCHAFTEN.find(l=>l.id===lgId);
@@ -11803,7 +11927,7 @@ async function renderPortalFreigabe(){
 }
 
 async function onPortalTypToggle(typ, checked){
-  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
   await setPortalTypDefault(typ, checked);
   const pfEl=document.getElementById('portalFreigabeEl');
   if(pfEl) pfEl.innerHTML=await renderPortalFreigabe();
@@ -11890,7 +12014,7 @@ async function saveWohnungStamm(objektId, weNr, daten){
    für den Mietvertrag-Generator. Standard kommt aus dem Code-Mapping,
    gespeicherte Werte überschreiben ihn je Wohnung. */
 async function modalWohnungHeizNk(objektId, weNr){
-  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
   const obj = getObj(objektId);
   const w   = await getWohnungStamm(objektId, weNr);
   const stdHeiz = mvHeizVarianteStandard(objektId, weNr);
@@ -11936,7 +12060,7 @@ async function modalWohnungHeizNk(objektId, weNr){
 }
 
 async function saveWohnungHeizNk(objektId, weNr){
-  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
   const heiz = document.getElementById('whHeiz')?.value || '';
   const nk = {};
   MV_NK_KOSTENARTEN.forEach(ka=>{
@@ -12213,7 +12337,7 @@ let MV_DRAFT = null;
 
 // Schritt 1: Generator aus einem Interessenten/Kandidaten heraus öffnen.
 async function mvStartAusInteressent(interessentId){
-  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
   const k = await idbGet('interessenten', interessentId).catch(()=>null);
   if(!k){ toast('Interessent nicht gefunden'); return; }
   await mvOeffneGenerator({ quelleInteressentId:interessentId, vorbefuellung:k });
@@ -12254,7 +12378,7 @@ async function mvOeffneGenerator(opts){
 // Setzt MV_DRAFT aus m.mvEntwurf und merkt sich mieterId, damit beim erneuten Erzeugen
 // derselbe Mieter aktualisiert und das alte Vertragsdokument ersetzt wird.
 async function mvBearbeiteEntwurf(mieterId){
-  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
   const m = await idbGet('mieter', mieterId).catch(()=>null);
   if(!m){ toast('Mieter nicht gefunden'); return; }
   if(!m.mvEntwurf){ toast('Für diesen Mieter ist kein Vertragsentwurf gespeichert.'); return; }
@@ -12267,7 +12391,7 @@ async function mvBearbeiteEntwurf(mieterId){
 // werden vorbefüllt; mieterId wird gesetzt, damit beim Erzeugen genau dieser
 // Mieter aktualisiert wird (kein Duplikat) und ein evtl. Entwurf wieder geöffnet wird.
 async function mvStartFuerMieter(mieterId){
-  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
   const m = await idbGet('mieter', mieterId).catch(()=>null);
   if(!m){ toast('Mieter nicht gefunden'); return; }
   // Falls bereits ein Entwurf existiert: diesen weiterbearbeiten.
@@ -12758,7 +12882,7 @@ async function mvBaueRenderdaten(){
 
 // ── Hauptaktion: PDF erzeugen, beim Mieter ablegen, Mieter-Datensatz anlegen ──
 async function mvErzeugen(){
-  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
   mvSammleAusFormular();
   const D = MV_DRAFT;
   // Pflichtprüfungen
@@ -12889,7 +13013,7 @@ const WOGG_LAGE2=['Vorne','Hinten','Flügel','Anbau'];
 
 // ── Mietbescheinigung §23 Abs.3 WoGG: Dialog ──
 async function modalMietbescheinigung(mieterId){
-  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
   const m=await idbGet('mieter',mieterId); if(!m){ toast('Mieter nicht gefunden'); return; }
   const obj=getObj(m.objektId);
   const w=await getWohnungStamm(m.objektId, m.weNr);   // dauerhafte Wohnungsdaten
@@ -13154,7 +13278,7 @@ async function erstelleMietbescheinigung(mieterId){
 
 // Vorschalt-Dialog: hinterlegte Admin-Unterschriften für die WGB wählen (analog NKA)
 async function druckeWohnungsgeberBescheinigung(mieterId){
-  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
   const m = await idbGet('mieter', mieterId);
   if(!m){ toast('Mieter nicht gefunden'); return; }
   const users = await idbGetAll('users').catch(()=>[]);
@@ -13358,13 +13482,13 @@ function getNKAZeitraum(objektId) {
    NKA-ARCHIV
 ═══════════════════════════════════════════════════════════ */
 async function renderNKAArchiv(el, objektId) {
-  if (CU?.role !== 'admin') { el.innerHTML = '<div class="empty"><i class="ti ti-lock"></i><p>Nur für Administratoren.</p></div>'; return; }
+  if (!istVerwalter()) { el.innerHTML = '<div class="empty"><i class="ti ti-lock"></i><p>Nur für Verwalter.</p></div>'; return; }
   const alle = (await idbGetAll('nka_archiv','objektId',objektId))
     .sort((a,b)=>b.erstellt.localeCompare(a.erstellt));
 
   let h = `<div class="s-hdr" style="margin-bottom:10px">
     <div class="s-title">NKA-Archiv (${alle.length})</div>
-    ${CU?.role==='admin'?`<button class="btn btn-sm btn-copper" onclick="modalNKA('${objektId}')">
+    ${istVerwalter()?`<button class="btn btn-sm btn-copper" onclick="modalNKA('${objektId}')">
       <i class="ti ti-receipt"></i> Neue NKA
     </button>`:''}
   </div>`;
@@ -13419,7 +13543,7 @@ async function deleteNKA(id) {
 // vorbefüllt mit den gespeicherten Werten. Das Ergebnis wird als Korrektur
 // gekennzeichnet und ersetzt den bisherigen Archiv-Eintrag (gleiche ID).
 async function modalNKAKorrektur(nkaId){
-  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
   const nka=await idbGet('nka_archiv', nkaId);
   if(!nka){ toast('Eintrag nicht gefunden'); return; }
   showModal(`
@@ -15155,7 +15279,7 @@ ${istZustimmung
    EXCEL-EXPORT
 ═══════════════════════════════════════════════════════════ */
 async function exportExcel() {
-  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  if(!istSystemAdmin()){ toast('Nur für Administratoren'); return; }
   if (typeof XLSX === 'undefined') { toast('XLSX-Bibliothek nicht geladen'); return; }
   toast('Excel wird erstellt...');
   const myObj   = await getMyObjekte();
@@ -15401,7 +15525,7 @@ async function renderKalender() {
 
   const myObj  = await getMyObjekte();
   const myIds  = myObj.map(o=>o.id);
-  const istAdmin = CU?.role==='admin';
+  const istAdmin = istVerwalter();
   let alle   = (await idbGetAll('termine'))
     .filter(t=>!t.objektId||myIds.includes(t.objektId));
 
@@ -15704,7 +15828,7 @@ async function showTerminDetail(id) {
   const d    = new Date(t.datum+'T12:00:00').toLocaleDateString('de-DE',{weekday:'long',day:'numeric',month:'long',year:'numeric'});
   // Packlisten-Status (nur Admin)
   let packBtn='';
-  if(CU?.role==='admin'){
+  if(istVerwalter()){
     const pa=await packlisteAnzahl(id);
     const badge = pa.gesamt ? ` (${pa.offen} offen / ${pa.gesamt})` : '';
     packBtn=`<button class="btn btn-sm" onclick="closeModal();modalPackliste('${id}')"><i class="ti ti-clipboard-list"></i> Packliste${badge}</button>`;
@@ -15843,7 +15967,7 @@ async function modalAddAufgabe(mieterId,objektId){
       <div class="f"><label>Fällig am</label><input type="date" id="aDatum" value="${today()}"></div>
     </div>
     <div class="f"><label>Beschreibung</label><textarea spellcheck="true" lang="de" id="aBeschr" placeholder="Details zur Aufgabe..."></textarea></div>
-    ${CU?.role==='admin'?`<div class="f"><label>Zugewiesen an</label><select id="aZugewiesen">
+    ${istVerwalter()?`<div class="f"><label>Zugewiesen an</label><select id="aZugewiesen">
       <option value="">– nur für mich (Admin-intern) –</option>
       ${(await idbGetAll('users')).filter(u=>u.aktiv!==false&&u.id!==CU.id).map(u=>`<option value="${u.id}">${u.name}</option>`).join('')}
     </select>
@@ -16001,7 +16125,7 @@ function mieterFormHTML(obj, m={}) {
       <div class="f"><label>TG-Stellplatz Nr.</label>
         <input type="text" id="mTgNr" value="${m.tgNr||''}"></div>
     </div>
-    ${CU?.role==='admin'?`
+    ${istVerwalter()?`
     <div class="f-section-title"><i class="ti ti-building-bank"></i> Bankverbindung / Zahlung (nur Admin)</div>
     <div class="f-row">
       <div class="f"><label>Zahlungsweise</label>
@@ -16453,7 +16577,7 @@ async function mieterEndgueltigLoeschen(id){
 // Vormieter eines Mieters anzeigen (öffnet die Detailansicht des Vormieters)
 // Punkt 3: Historischen Vormieter manuell anlegen und mit aktuellem Mieter verknüpfen.
 async function modalVormieterAnlegen(mieterId){
-  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
   const m = await idbGet('mieter', mieterId);
   if(!m){ toast('Mieter nicht gefunden'); return; }
   const obj = getObj(m.objektId);
@@ -16481,7 +16605,7 @@ async function modalVormieterAnlegen(mieterId){
 }
 
 async function saveVormieterAnlegen(mieterId){
-  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
   const m = await idbGet('mieter', mieterId);
   if(!m) return;
   const name = document.getElementById('vmName')?.value?.trim()||'';
@@ -16536,7 +16660,7 @@ async function modalLeerstandWE(objektId, weNr, vormieterId){
       ${vm?`Letzter Mieter: <strong>${esc(vm.mieter||'')}</strong>${vm.auszug?' (Auszug '+esc(vm.auszug)+')':''}`:'Keine früheren Mieterdaten hinterlegt.'}
       <br><br>Die Wohnung ist vorhanden – nur derzeit nicht vermietet. Ihre Stammdaten bleiben dauerhaft erhalten.
     </div>
-    ${(vm&&CU?.role==='admin')?`
+    ${(vm&&istVerwalter())?`
       <button class="btn btn-copper btn-full" style="margin-bottom:8px" onclick="closeModal();mieterReaktivieren('${vm.id}')">
         <i class="ti ti-rotate-2"></i> „${esc((vm.mieter||'').slice(0,20))}" wieder als aktuellen Mieter
       </button>` : ''}
@@ -16557,7 +16681,7 @@ async function modalLeerstandWE(objektId, weNr, vormieterId){
 // wurde zum Vormieter). Ein fälschlich angelegter Nachmieter kann dabei entfernt
 // oder selbst zum Vormieter gemacht werden. Wohnungs-Stammdaten bleiben unberührt.
 async function mieterReaktivieren(vormieterId){
-  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
   const vm = await idbGet('mieter', vormieterId);
   if(!vm){ toast('Mieter nicht gefunden'); return; }
   if(!vm._vormieter){ toast('Dieser Mieter ist bereits aktiv'); return; }
@@ -16838,7 +16962,7 @@ function kautionSaldo(kd){
 }
 
 async function modalKaution(mieterId){
-  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
   const m = await idbGet('mieter', mieterId);
   if(!m) return;
   const obj = getObj(m.objektId);
@@ -16942,7 +17066,7 @@ async function modalKaution(mieterId){
 
 // ── Kautionszins-Rechner (v77) ──────────────────────────────────
 async function modalKautionZins(mieterId){
-  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
   const m=await idbGet('mieter', mieterId);
   if(!m) return;
   const kd=kautionDetailVon(m);
@@ -17684,7 +17808,7 @@ async function buildPD(objId,mietId,art){
     mieterName:m?.mieter||'',mieterNeu:'',mietKontakt:m?.telefon||'',
     flaeche:m?.flaeche||'',art,
     datum:today(),uhrzeitStart:'',uhrzeitEnd:'',
-    vermName:CU?.name||'',vermFunktion:CU?.role==='admin'?'Eigentümer / Hausverwaltung':'Hausmeister',
+    vermName:CU?.name||'',vermFunktion:istVerwalter()?'Eigentümer / Hausverwaltung':'Hausmeister',
     zeugeName:'',zeugeFunktion:'',
     raeume:Object.fromEntries(ROOMS.map(r=>[r,{conditions:{},notes:'',photos:[]}])),
     zaehler:[{typ:'Stromzähler',nr:'',stand:'',einheit:'kWh'},{typ:'Gaszähler',nr:'',stand:'',einheit:'m³'},
@@ -17844,7 +17968,7 @@ function getProtStep(step){
     <div class="f"><label style="margin-bottom:6px">Vermieter / Verwalter: ${d.vermName}</label>
       ${d.sigVermieter?`<div style="font-size:12px;color:var(--green);margin-bottom:6px"><i class="ti ti-circle-check"></i> Unterschrift hinterlegt – zum Ändern neu zeichnen oder löschen</div>
         <div style="border:1px solid var(--ink-10);border-radius:8px;padding:8px;background:#fff;text-align:center;margin-bottom:8px"><img src="${d.sigVermieter}" style="max-height:60px;max-width:100%"></div>`:''}
-      ${CU?.role==='admin'?`<div id="sigAdminPick" style="margin-bottom:8px"></div>`:''}
+      ${istVerwalter()?`<div id="sigAdminPick" style="margin-bottom:8px"></div>`:''}
       <canvas class="sig-pad" id="sigV"></canvas>
       <div class="sig-row"><button class="btn btn-sm btn-danger" onclick="clearSig('sigV')"><i class="ti ti-trash"></i> Löschen</button></div>
     </div>
@@ -18051,7 +18175,7 @@ function initSigs(){
 // Admin-Auswahl: hinterlegte Unterschrift eines (anderen) Administrators als Vermieter-Unterschrift setzen
 async function populateSigAdminPick(){
   const wrap=document.getElementById('sigAdminPick');
-  if(!wrap||CU?.role!=='admin') return;
+  if(!wrap||!istVerwalter()) return;
   const users=await idbGetAll('users');
   const admins=users.filter(u=>u.role==='admin'&&u.signatur);
   if(!admins.length){ wrap.innerHTML=''; return; }
@@ -18228,7 +18352,7 @@ async function viewProtokoll(id){
   const p=await idbGet('protokolle',id);
   if(!p) return;
   const obj=getObj(p.objektId);
-  const istAdmin=CU?.role==='admin';
+  const istAdmin=istVerwalter();
   const aenderungen=p.aenderungen||[];
 
   const condRows=(rn,rd)=>{
@@ -18311,7 +18435,7 @@ async function viewProtokoll(id){
 async function adminEditProtokoll(id){
   const p=await idbGet('protokolle',id);
   if(!p){ return; }
-  if(CU?.role!=='admin'){ toast('Nur Administratoren dürfen archivierte Protokolle ändern'); return; }
+  if(!istVerwalter()){ toast('Nur Administratoren dürfen archivierte Protokolle ändern'); return; }
   if(!confirm('Dieses archivierte Protokoll bearbeiten? Änderungen werden rot protokolliert.')) return;
   closeModal();
   PD={...p};pRoomIdx=0;
@@ -18505,7 +18629,7 @@ ${(d.aenderungen&&d.aenderungen.length)?`<div style="margin-top:12px;padding:8px
    EXCEL IMPORT
 ═══════════════════════════════════════════════════════════ */
 async function importExcel(input){
-  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  if(!istSystemAdmin()){ toast('Nur für Administratoren'); return; }
   const file=input.files[0]; if(!file) return;
   const el=document.getElementById('importStatus');
   el.innerHTML='<div style="color:var(--amber);font-size:13px"><i class="ti ti-loader" style="animation:spin 1s linear infinite"></i> Importiere...</div>';
@@ -18690,7 +18814,7 @@ async function renderKontrolle(){
   const box=document.getElementById('kontrolleListe');
   if(!box) return;
   const users=(await idbGetAll('users')).filter(u=>u && u.id);
-  const rollLabel={admin:'Admin', hm:'Hausmeister'};
+  const rollLabel={admin:'Admin', eigentuemer:'Eigentümer', hm:'Hausmeister'};
   const fmt=iso=>{
     if(!iso) return '<span style="color:var(--ink-40)">noch nie</span>';
     const d=new Date(iso);
@@ -18737,13 +18861,14 @@ async function renderKontrolle(){
 async function renderSettings(){
   const setting=await idbGet('settings','lastImport').catch(()=>null);
   const el=document.getElementById('page-settings');
-  const isAdmin=CU?.role==='admin';
+  const isAdmin=istVerwalter();        // Verwalter (Admin ODER Eigentümer): kaufmännische Bereiche
+  const istSysAdmin=istSystemAdmin();  // Nur echter Admin: System, Benutzer, Objekt-Anlage
   el.innerHTML=`
     <div class="settings-tabs">
       <button class="st-tab active" data-tab="allgemein" onclick="switchSettingsTab('allgemein')"><i class="ti ti-adjustments"></i><span>Allgemein</span></button>
       ${isAdmin?`<button class="st-tab" data-tab="objekte" onclick="switchSettingsTab('objekte')"><i class="ti ti-building"></i><span>Objekte</span></button>`:''}
       ${isAdmin?`<button class="st-tab" data-tab="daten" onclick="switchSettingsTab('daten')"><i class="ti ti-database"></i><span>Daten</span></button>`:''}
-      ${isAdmin?`<button class="st-tab" data-tab="system" onclick="switchSettingsTab('system')"><i class="ti ti-settings"></i><span>System</span></button>`:''}
+      ${istSysAdmin?`<button class="st-tab" data-tab="system" onclick="switchSettingsTab('system')"><i class="ti ti-settings"></i><span>System</span></button>`:''}
       ${isAdmin?`<button class="st-tab" data-tab="zahlung" onclick="switchSettingsTab('zahlung')"><i class="ti ti-cash-banknote"></i><span>Zahlungen</span></button>`:''}
       ${CU?.id==='u_admin'?`<button class="st-tab" data-tab="kontrolle" onclick="switchSettingsTab('kontrolle')"><i class="ti ti-shield-lock"></i><span>Kontrolle</span></button>`:''}
     </div>
@@ -18751,10 +18876,10 @@ async function renderSettings(){
     <div class="settings-card" data-tab="allgemein">
       <div class="card-hdr"><i class="ti ti-user-circle"></i> Angemeldet als</div>
       <div style="display:flex;align-items:center;gap:12px">
-        <div class="user-av ${CU?.role==='admin'?'admin':''}"><i class="ti ti-user"></i></div>
+        <div class="user-av ${istVerwalter()?'admin':''}"><i class="ti ti-user"></i></div>
         <div>
           <div style="font-weight:600;font-size:15px">${CU?.name||'–'}</div>
-          <div style="font-size:12px;color:var(--ink-40)">${CU?.role==='admin'?'Administrator – alle Objekte':`Hausmeister – ${(CU?.objekte||[]).map(g=>GRUPPE_LABEL[g]||g).join(', ')}`}</div>
+          <div style="font-size:12px;color:var(--ink-40)">${istSystemAdmin()?'Administrator – alle Objekte':(istEigentuemer()?`Eigentümer – ${(CU?.objekte||[]).map(g=>GRUPPE_LABEL[g]||g).join(', ')}`:`Hausmeister – ${(CU?.objekte||[]).map(g=>GRUPPE_LABEL[g]||g).join(', ')}`)}</div>
         </div>
         <button class="btn btn-sm btn-danger" style="margin-left:auto" onclick="doLogout()"><i class="ti ti-logout"></i> Abmelden</button>
       </div>
@@ -18785,7 +18910,7 @@ async function renderSettings(){
       <div id="syncSchutzEl"></div>
     </div>`:''}
 
-    ${isAdmin?`<div class="settings-card" data-tab="daten">
+    ${istSysAdmin?`<div class="settings-card" data-tab="daten">
       <div class="card-hdr"><i class="ti ti-file-spreadsheet"></i> Mieterdaten (Excel-Import)</div>
       <p style="font-size:13px;color:var(--ink-40);margin-bottom:12px;line-height:1.6">
         Excel-Datei (.xlsm) hochladen, um Mieter- und Objektdaten abzugleichen. Vorhandene Mieter werden über Objekt, WE-Nr. und Name erkannt und nur in geänderten Feldern aktualisiert – leere Excel-Zellen überschreiben nichts. In der App neu angelegte Mieter sowie alle Protokolle, Aufgaben, Mängel und Dokumente bleiben erhalten.
@@ -18799,7 +18924,7 @@ async function renderSettings(){
       <div id="importStatus" style="margin-top:10px"></div>
     </div>`:''}
 
-    ${isAdmin?`<div class="settings-card" data-tab="daten">
+    ${istSysAdmin?`<div class="settings-card" data-tab="daten">
       <div class="card-hdr"><i class="ti ti-cloud-upload"></i> Website-Backend – Wohnungsexport</div>
       <p style="font-size:13px;color:var(--ink-40);margin-bottom:12px;line-height:1.6">
         Erzeugt die Liste der belegten Wohneinheiten für das Azure-Backend (Mieterportal). Übertragen werden nur die zum Portal-Login nötigen Daten: Kennung, Adresse, Eckdaten und die hinterlegte Kontakt-E-Mail (für den Zugangscode). Es werden keine Verträge, Beträge oder Dokumente exportiert. Datei als JSON speichern und im Backend importieren – oder bei eingerichteter Verbindung direkt übertragen.
@@ -18810,7 +18935,7 @@ async function renderSettings(){
       <div id="wohnungsExportStatus" style="margin-top:10px"></div>
     </div>`:''}
 
-    ${isAdmin?`<div class="settings-card" data-tab="system">
+    ${istSysAdmin?`<div class="settings-card" data-tab="system">
       <div class="card-hdr"><i class="ti ti-shield"></i> Benutzerverwaltung</div>
       <div id="userListEl"></div>
       <button class="btn btn-primary btn-full" style="margin-top:10px" onclick="modalAddUser()">
@@ -18818,7 +18943,7 @@ async function renderSettings(){
       </button>
     </div>`:''}
 
-    ${isAdmin?`<div class="settings-card" data-tab="system">
+    ${istSysAdmin?`<div class="settings-card" data-tab="system">
       <div class="card-hdr"><i class="ti ti-plug-connected"></i> Website-Backend (Azure)</div>
       <p style="font-size:13px;color:var(--ink-40);margin-bottom:12px;line-height:1.6">
         Für die direkte Übertragung des Wohnungsexports an das Mieterportal-Backend. Den Function-Key (Host-Schlüssel der Azure Function) hier hinterlegen. Er wird nur lokal auf diesem Gerät gespeichert und ausschließlich für Aufrufe an <code>${esc(BACKEND_BASIS)}</code> verwendet. Ohne Schlüssel funktioniert der JSON-Export weiterhin.
@@ -18884,7 +19009,7 @@ async function renderSettings(){
       </div>
     </div>
 
-    ${isAdmin?`<div class="settings-card" data-tab="daten">
+    ${istSysAdmin?`<div class="settings-card" data-tab="daten">
       <div class="card-hdr"><i class="ti ti-database"></i> Datenspeicher</div>
       <p style="font-size:13px;color:var(--ink-40);margin-bottom:12px">Alle Daten werden lokal in IndexedDB auf diesem Gerät gespeichert.</p>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
@@ -18943,7 +19068,7 @@ async function renderSettings(){
       <div class="f">
         <label>Konto auswählen</label>
         <select id="zaKonto" class="inp">
-          ${ZA_KONTEN.map(k=>`<option value="${k.id}">${esc(k.label)}</option>`).join('')}
+          ${ZA_KONTEN.filter(k=>k.objekte.some(oid=>darfObjekt(oid))).map(k=>`<option value="${k.id}">${esc(k.label)}</option>`).join('')}
         </select>
       </div>
       <div style="margin-top:12px">
@@ -19172,7 +19297,7 @@ async function renderUserList_(){
       <div class="user-av ${u.role==='admin'?'admin':''}"><i class="ti ti-user"></i></div>
       <div class="user-body">
         <div class="user-name">${u.name}${inaktiv?' · <span style="color:var(--red)">deaktiviert</span>':''}</div>
-        <div class="user-role">${u.role==='admin'?'Administrator':'Hausmeister'} · ${u.objekte?.length?u.objekte.map(g=>GRUPPE_LABEL[g]||g).join(', '):'alle Objekte'}</div>
+        <div class="user-role">${rollenLabel(u.role)} · ${u.objekte?.length?u.objekte.map(g=>GRUPPE_LABEL[g]||g).join(', '):'alle Objekte'}</div>
       </div>
       <div style="display:flex;gap:5px">
         <button class="btn btn-sm" onclick="modalEditUser('${u.id}')"><i class="ti ti-pencil"></i></button>
@@ -19210,16 +19335,15 @@ async function modalAddUser(){
     <div class="f"><label>PIN (4 Ziffern) *</label><input type="password" id="nuPin" placeholder="••••" inputmode="numeric" maxlength="6"></div>
     <div class="f"><label>Rolle</label><select id="nuRole">
       <option value="hm">Hausmeister</option>
+      <option value="eigentuemer">Eigentümer</option>
       <option value="admin">Administrator</option>
     </select></div>
     <div class="f"><label>Objekt-Zugriff (Mehrfachauswahl)</label>
-      <select id="nuObjekte" multiple style="height:110px">
-        <option value="duesseldorf">Düsseldorf</option>
-        <option value="mg">Mönchengladbach</option>
-        <option value="krefeld">Krefeld</option>
+      <select id="nuObjekte" multiple style="height:130px">
+        ${Object.keys(GRUPPE_LABEL).map(g=>`<option value="${g}">${GRUPPE_LABEL[g]||g}</option>`).join('')}
       </select>
     </div>
-    <p style="font-size:11px;color:var(--ink-40);margin-bottom:12px">Admin hat automatisch Zugriff auf alle Objekte.</p>
+    <p style="font-size:11px;color:var(--ink-40);margin-bottom:12px">Admin hat automatisch Zugriff auf alle Objekte. Eigentümer und Hausmeister sehen nur die hier gewählten Objektgruppen.</p>
     <div class="f"><label>Wochensoll (Stunden) – für Stundenkonto</label>
       <input type="number" id="nuWochenSoll" value="40" min="0" max="60" step="0.5" inputmode="decimal"></div>
     <div class="f"><label>Urlaubsanspruch (Tage/Jahr)</label>
@@ -19254,9 +19378,10 @@ async function modalEditUser(id){
     <div class="f"><label>Neuer PIN (leer lassen = unverändert)</label><input type="password" id="euPin" placeholder="••••" inputmode="numeric" maxlength="6"></div>
     <div class="f"><label>Rolle</label><select id="euRole" onchange="euRoleWechsel()">
       <option value="hm" ${u.role==='hm'?'selected':''}>Hausmeister</option>
+      <option value="eigentuemer" ${u.role==='eigentuemer'?'selected':''}>Eigentümer</option>
       <option value="admin" ${u.role==='admin'?'selected':''}>Administrator</option>
     </select></div>
-    <div class="f" id="euModusWrap" style="${u.role==='admin'?'display:none':''}">
+    <div class="f" id="euModusWrap" style="${(u.role==='admin'||u.role==='eigentuemer')?'display:none':''}">
       <label>Zeit-/Tätigkeitserfassung</label>
       <select id="euModus">
         <option value="zeit" ${(u.erfassungsModus||'zeit')==='zeit'?'selected':''}>Zeiterfassung (Stempeluhr läuft)</option>
@@ -19298,7 +19423,7 @@ async function saveEditUser(id){
   u.role=role;
   u.objekte=role==='admin'?[]:Array.from(sel.selectedOptions).map(o=>o.value);
   // Erfassungsmodus nur für Hausmeister relevant
-  u.erfassungsModus = role==='admin' ? 'zeit' : (document.getElementById('euModus')?.value || 'zeit');
+  u.erfassungsModus = (role==='admin'||role==='eigentuemer') ? 'zeit' : (document.getElementById('euModus')?.value || 'zeit');
   const ws=parseFloat(document.getElementById('euWochenSoll')?.value);
   if(!isNaN(ws)) u.wochenSoll=ws;
   const eintr=document.getElementById('euEintritt')?.value;
@@ -19319,7 +19444,7 @@ async function delUser(id){
    BACKUP EXPORT / IMPORT
 ═══════════════════════════════════════════════════════════ */
 async function exportBackup(){
-  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  if(!istSystemAdmin()){ toast('Nur für Administratoren'); return; }
   const backup={};
   for(const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','versicherungen','versorger_archiv','od_dateien','buchungen']){
     backup[s]=await idbGetAll(s);
@@ -19486,7 +19611,7 @@ function mergeRecord(local, remote){
 }
 
 async function importBackup(input){
-  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  if(!istSystemAdmin()){ toast('Nur für Administratoren'); return; }
   const file=input.files[0]; if(!file) return;
   const reader=new FileReader();
   reader.onload=function(e){
@@ -19522,6 +19647,7 @@ async function importBackup(input){
 
 // Führt den gewählten Import-Modus auf der zwischengespeicherten Backup-Datei aus.
 async function importBackupAusfuehren(modus){
+  if(!istSystemAdmin()){ toast('Nur für Administratoren'); return; }
   const backup = window._pendingBackup;
   if(!backup){ toast('Keine Backup-Datei geladen'); closeModal(); return; }
   closeModal();
@@ -19571,6 +19697,7 @@ async function importBackupAusfuehren(modus){
 }
 
 async function confirmReset(){
+  if(!istSystemAdmin()){ toast('Nur für Administratoren'); return; }
   if(!confirm('ACHTUNG: Alle lokalen Daten werden unwiderruflich gelöscht. Fortfahren?')) return;
   for(const s of ['mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings']) await idbClear(s);
   await ensureDefaultUsers();
@@ -20412,7 +20539,7 @@ function bbSichtbarFuerHM(key){ return !!bbKat(key).hm; }
 let _bbFilter = {kat:'', ort:''};
 
 async function renderBranchenbuch(el){
-  const istAdmin = CU?.role==='admin';
+  const istAdmin = istVerwalter();
   let alle = (await idbGetAll('branchenbuch').catch(()=>[])).filter(x=>x && !x._deleted);
   // Hausmeister: nur handwerkliche Kategorien + Notdienst
   if(!istAdmin) alle = alle.filter(x=>bbSichtbarFuerHM(x.kategorie));
@@ -20471,7 +20598,7 @@ function bbSetFilter(feld,val){
 }
 
 async function modalBranchenbuch(id){
-  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
   const x = id ? (await idbGet('branchenbuch',id).catch(()=>null))||{} : {};
   const orte = x.orte||[];
   const katOpts = BB_KATEGORIEN.map(k=>`<option value="${k.key}" ${x.kategorie===k.key?'selected':''}>${k.label}</option>`).join('');
@@ -20702,6 +20829,8 @@ async function zaVerarbeiten(text){
   const kontoId = document.getElementById('zaKonto')?.value;
   const konto = ZA_KONTEN.find(k=>k.id===kontoId);
   if(!konto){ toast('Bitte ein Konto auswählen.'); return; }
+  // Objektgrenze: nur Konten eigener Objekte (Admin: alle)
+  if(!konto.objekte.some(oid=>darfObjekt(oid))){ toast('Kein Zugriff auf dieses Konto.'); return; }
   ZA_STATE.konto = konto;
 
   const parsed = zaParseCSV(text);
@@ -20710,8 +20839,9 @@ async function zaVerarbeiten(text){
 
   // Mieter laden (alle), Matching im Kontoraum
   const alleMieter = await idbGetAll('mieter');
-  // Nur aktive, echte Mieter (kein Vormieter-/Zukunfts-Eintrag) für Matching-Pool
-  const pool = alleMieter.filter(m => m && m.mieter && !m._vormieter && m.aktiv!==false);
+  // Nur aktive, echte Mieter (kein Vormieter-/Zukunfts-Eintrag) für Matching-Pool;
+  // zusätzlich auf Objekte beschränken, auf die der Benutzer Zugriff hat.
+  const pool = alleMieter.filter(m => m && m.mieter && !m._vormieter && m.aktiv!==false && darfObjekt(m.objektId));
   window._zaMieterCache = pool; // für manuelle Dropdown-Zuordnung
   ZA_STATE.results = zaMatch(eingaenge, pool, konto);
   ZA_STATE.alleBuchungen = parsed.buchungen; // für Speicherung (auch Ausgänge)
@@ -21273,11 +21403,13 @@ let _rechnBeleg = null; // { data, mimeType, name }
 async function renderRechnungen(){
   const el=document.getElementById('page-rechnungen');
   if(!el) return;
-  if(CU?.role!=='admin'){ el.innerHTML='<div class="empty"><i class="ti ti-lock"></i><p>Nur für Administratoren</p></div>'; return; }
+  if(!istVerwalter()){ el.innerHTML='<div class="empty"><i class="ti ti-lock"></i><p>Nur für Administratoren</p></div>'; return; }
 
   const myObj=await getMyObjekte();
   const myIds=myObj.map(o=>o.id);
-  let alle=(await idbGetAll('rechnungen')).filter(r=>!r.objektId || myIds.includes(r.objektId));
+  // Admin sieht auch objektlose (allgemeine) Rechnungen; Eigentümer nur die zu seinen Objekten.
+  let alle=(await idbGetAll('rechnungen')).filter(r=>
+    istSystemAdmin() ? (!r.objektId || myIds.includes(r.objektId)) : myIds.includes(r.objektId));
 
   // Jahre für Filter
   const jahre=[...new Set(alle.map(r=>(r.datum||'').slice(0,4)).filter(Boolean))].sort().reverse();
@@ -21392,7 +21524,7 @@ function fmtDatumKurz(ds){
 
 // ── Erfassungs-Modal ──
 async function modalRechnungErfassen(rechnung){
-  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
   _rechnBeleg = rechnung?.beleg ? {data:rechnung.beleg, mimeType:rechnung.belegMime, name:rechnung.belegName||'Beleg'} : null;
   const myObj=await getMyObjekte();
   const isEdit=!!rechnung;
@@ -21771,7 +21903,7 @@ async function meinePackClearDone(){
 }
 
 async function modalPackliste(terminId){
-  if(CU?.role!=='admin'){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
   const termin=await idbGet('termine', terminId);
   if(!termin){ toast('Termin nicht gefunden'); return; }
   const items=(await idbGetAll('packliste','terminId',terminId).catch(()=>[]))
