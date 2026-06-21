@@ -382,6 +382,18 @@ button.chip.chip-active{background:var(--ink);color:#fff;border-color:var(--ink)
 }
 /* In-Page-Druckmodus: ganze App verbergen, nur #printRoot drucken */
 #printRoot{display:none}
+/* Druck-Vorschau: Dokument zuerst ansehen, dann gezielt drucken */
+#druckVorschau{display:none;position:fixed;inset:0;z-index:99999;background:#525659;flex-direction:column}
+#druckVorschau.aktiv{display:flex}
+#dvBar{display:flex;align-items:center;gap:8px;padding:10px 14px;background:#fff;border-bottom:1px solid var(--ink-10);box-shadow:0 1px 4px rgba(0,0,0,.15);flex:0 0 auto}
+#dvTitel{font-weight:600;color:var(--ink);font-size:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:55%}
+.dv-btn{padding:9px 16px;border-radius:var(--radius);border:none;font-size:14px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;gap:6px;font-family:var(--font)}
+.dv-btn.dv-print{background:var(--copper);color:#fff}
+.dv-btn.dv-print:active{background:var(--copper-d)}
+.dv-btn.dv-close{background:#eef1f4;color:#444}
+.dv-btn.dv-close:active{background:#e2e6ea}
+#dvFrame{flex:1 1 auto;width:100%;border:none;background:#525659}
+@media print{#druckVorschau{display:none!important}}
 body.printing-active{overflow:visible!important}
 body.printing-active #appScreen,
 body.printing-active #loginScreen,
@@ -699,6 +711,17 @@ body.printing-active #printRoot{display:block!important}
 <!-- DRUCK-CONTAINER (In-Page-Druck, zuverlässig auf Android/PWA) -->
 <div id="printRoot" aria-hidden="true"></div>
 
+<!-- DRUCK-VORSCHAU: Dokument zuerst ansehen, dann gezielt drucken -->
+<div id="druckVorschau" aria-hidden="true">
+  <div id="dvBar">
+    <span id="dvTitel">Vorschau</span>
+    <span style="flex:1"></span>
+    <button type="button" class="dv-btn dv-print" onclick="druckVorschauDrucken()"><i class="ti ti-printer"></i> Drucken</button>
+    <button type="button" class="dv-btn dv-close" onclick="schliesseDruckVorschau()"><i class="ti ti-x"></i> Schließen</button>
+  </div>
+  <iframe id="dvFrame" title="Dokumentvorschau"></iframe>
+</div>
+
 
 <!-- FOTO OVERLAY (Vollbild) -->
 <div class="foto-overlay" id="fotoOverlay" onclick="closeFotoOverlay()">
@@ -737,7 +760,7 @@ body.printing-active #printRoot{display:block!important}
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=25;
-const APP_VERSION = '2026-06-21-v107';
+const APP_VERSION = '2026-06-21-v111';
 /* v94 (19.06.2026): Etappe 1 – Lokale Benachrichtigungen erweitert (Termine + Maengel).
    - checkFaelligeAufgaben() prueft jetzt zusaetzlich:
      a) Termin-Erinnerungen: Termine mit gesetztem Erinnerungs-Vorlauf (1/2/7 Tage)
@@ -8421,6 +8444,175 @@ function waNummer(tel){
 }
 function waLink(tel){ const n=waNummer(tel); return n?('https://wa.me/'+n):''; }
 
+/* ═══════════════════════════════════════════════════════════
+   KONTAKT-EXPORT (vCard) & WHATSAPP-WEITERLEITUNG  (v111)
+═══════════════════════════════════════════════════════════ */
+
+// Objektkürzel inkl. Hausnummer, z.B. 'RT 41', 'KR 181', 'WIL 7', 'MIN 23', 'MG 28', 'MON 22', 'HIL 37', 'AMB 10'.
+function objKuerzel(objId){
+  const o = getObj(objId);
+  if(!o) return '';
+  const nr = (o.name||'').match(/(\d+[a-zA-Z]?)/);   // erste Zahl im Namen = Hausnummer
+  const hn = nr ? nr[1] : '';
+  let pre = '';
+  switch(o.id){
+    case 'ruhrt41':   pre='RT'; break;
+    case 'mind23': case 'mind25': pre='MIN'; break;
+    case 'kyff28': case 'kyff30': case 'kyff32': pre='MG'; break;
+    case 'inr181': case 'inr183': case 'inr185': pre='KR'; break;
+    case 'wilm7': case 'wilm9': case 'wilm11': case 'wilm13': pre='WIL'; break;
+    case 'marien22':  pre='MON'; break;
+    case 'verlach37': pre='HIL'; break;
+    case 'amboss10':  pre='AMB'; break;
+    default: pre=(o.name||'').slice(0,3).toUpperCase();
+  }
+  return (pre+(hn?(' '+hn):'')).trim();
+}
+
+// Vollen Mieternamen in Vor-/Nachname zerlegen (heuristisch, letztes Wort = Nachname).
+// Mehrfachnamen ("Max und Anna Mustermann") werden anhand des letzten Tokens getrennt.
+function splitName(voll){
+  const t=(voll||'').trim().replace(/\s+/g,' ');
+  if(!t) return {vorname:'', nachname:''};
+  const teile=t.split(' ');
+  if(teile.length===1) return {vorname:'', nachname:teile[0]};
+  return {vorname:teile.slice(0,-1).join(' '), nachname:teile[teile.length-1]};
+}
+
+// vCard-Feldwerte escapen (Komma, Semikolon, Backslash, Zeilenumbruch).
+function vcEsc(v){ return String(v||'').replace(/\\/g,'\\\\').replace(/;/g,'\\;').replace(/,/g,'\\,').replace(/\r?\n/g,'\\n'); }
+
+// Telefonnummer auf reines tel:-Format normalisieren (+49… bevorzugt).
+function telNorm(tel){
+  const wa=waNummer(tel);
+  return wa?('+'+wa):String(tel||'').replace(/[^\+\d]/g,'');
+}
+
+// Erzeugt eine einzelne vCard (Version 3.0) für einen Mieter.
+// Kontaktname: "Nachname, Vorname (RT 41 / WE 3 / 1.OG li)" – Schema laut Vorgabe.
+function mieterVCard(m){
+  const o   = getObj(m.objektId);
+  const kz  = objKuerzel(m.objektId);
+  const {vorname,nachname} = splitName(m.mieter);
+  const we  = m.weNr!=null && m.weNr!=='' ? ('WE '+m.weNr) : '';
+  const lage= (m.etage||'').trim();
+  const klammerTeile=[kz, we, lage].filter(Boolean).join(' / ');
+  const fn  = (nachname?nachname:(m.mieter||'')) + (vorname?(', '+vorname):'') + (klammerTeile?(' ('+klammerTeile+')'):'');
+  const tel = telNorm(m.telefon);
+  const adrStrasse = o ? (o.name||'') : '';
+  const adrOrt     = o ? (o.ort||'')  : '';
+  // ort = "40239 Düsseldorf" -> PLZ + Stadt trennen
+  const ortM = adrOrt.match(/^\s*(\d{5})\s+(.+)$/);
+  const plz  = ortM?ortM[1]:'';
+  const stadt= ortM?ortM[2]:adrOrt;
+
+  let v='BEGIN:VCARD\r\nVERSION:3.0\r\n';
+  v+='N:'+vcEsc(nachname)+';'+vcEsc(vorname)+';;;\r\n';
+  v+='FN:'+vcEsc(fn)+'\r\n';
+  if(o) v+='ORG:'+vcEsc('Mieter '+kz+(we?(' '+we):''))+'\r\n';
+  if(tel)      v+='TEL;TYPE=CELL,VOICE:'+vcEsc(tel)+'\r\n';
+  if(m.email)  v+='EMAIL;TYPE=INTERNET:'+vcEsc(m.email)+'\r\n';
+  if(adrStrasse||plz||stadt)
+    v+='ADR;TYPE=HOME:;;'+vcEsc(adrStrasse)+';'+vcEsc(stadt)+';;'+vcEsc(plz)+';Deutschland\r\n';
+  const noteParts=[];
+  if(kz)   noteParts.push('Objekt: '+kz);
+  if(we)   noteParts.push(we);
+  if(lage) noteParts.push('Lage: '+lage);
+  if(m.flaeche) noteParts.push(m.flaeche+' m²');
+  if(noteParts.length) v+='NOTE:'+vcEsc(noteParts.join(' · '))+'\r\n';
+  v+='END:VCARD\r\n';
+  return v;
+}
+
+// Blob/Datei aus vCard(s) erzeugen und teilen (Web Share) – Fallback: Download.
+async function vcardTeilen(vcardText, dateiname){
+  const blob=new Blob([vcardText],{type:'text/vcard;charset=utf-8'});
+  const file=new File([blob], dateiname, {type:'text/vcard'});
+  if(navigator.canShare && navigator.canShare({files:[file]})){
+    try{ await navigator.share({files:[file], title:dateiname}); return; }
+    catch(e){ if(e&&e.name==='AbortError') return; }
+  }
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url; a.download=dateiname;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),3000);
+  toast('Kontakt heruntergeladen ✓');
+}
+
+// Einzelnen Mieter als Kontakt (vCard) weiterleiten.
+async function mieterKontaktTeilen(id){
+  const m = await idbGet('mieter', id).catch(()=>null);
+  if(!m){ toast('Mieter nicht gefunden'); return; }
+  const vc = mieterVCard(m);
+  const {nachname}=splitName(m.mieter);
+  const fn=((nachname||m.mieter||'Mieter').replace(/[^a-zA-Z0-9äöüÄÖÜß _-]/g,'')||'Mieter');
+  await vcardTeilen(vc, 'Kontakt_'+fn+'.vcf');
+}
+
+// Alle (sichtbaren) Mieter als Sammel-vCard exportieren/teilen.
+async function mieterAlleVcardExport(){
+  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
+  const myObj = await getMyObjekte();
+  const myIds = myObj.map(o=>o.id);
+  let mieter = (await idbGetAll('mieter').catch(()=>[]))
+    .filter(m=>m && !m._deleted && myIds.includes(m.objektId) && !m.leerstand && (m.mieter||'').trim());
+  // Sortierung: Objektkürzel, dann WE-Nr.
+  mieter.sort((a,b)=> objKuerzel(a.objektId).localeCompare(objKuerzel(b.objektId)) || (Number(a.weNr)||0)-(Number(b.weNr)||0));
+  if(!mieter.length){ toast('Keine Mieter zum Exportieren'); return; }
+  const vc = mieter.map(mieterVCard).join('');
+  const heute=new Date().toISOString().slice(0,10);
+  await vcardTeilen(vc, 'Mieter_Kontakte_'+heute+'.vcf');
+  toast(mieter.length+' Kontakte bereit ✓');
+}
+
+// Mangel/ToDo gebündelt an Handwerker senden: Beschreibungstext + alle Fotos via Web Share.
+async function mangelAnHandwerker(id, store){
+  const m = await idbGet(store, id).catch(()=>null);
+  if(!m){ toast('Eintrag nicht gefunden'); return; }
+  const o = getObj(m.objektId);
+  const zeilen=[];
+  zeilen.push((m.nummer?m.nummer+' · ':'')+(m.titel||'Mangel'));
+  if(o) zeilen.push('Objekt: '+o.name+(o.ort?(', '+o.ort):''));
+  if(m.weNr!=null && m.weNr!=='') zeilen.push('WE '+m.weNr+(m.etage?(' · '+m.etage):''));
+  if(m.beschreibung) zeilen.push('', m.beschreibung);
+  const text=zeilen.join('\n');
+
+  // Fotos als Files sammeln
+  const fotoSrcs=(m.fotos||[]).slice();
+  const files=[];
+  for(let i=0;i<fotoSrcs.length;i++){
+    try{
+      const res=await fetch(fotoSrcs[i]);
+      const blob=await res.blob();
+      files.push(new File([blob], 'Foto_'+(i+1)+'.jpg', {type:blob.type||'image/jpeg'}));
+    }catch(_){}
+  }
+
+  // Bevorzugt: Fotos + Text in einem Share
+  if(files.length && navigator.canShare && navigator.canShare({files})){
+    try{ await navigator.share({files, text, title:(m.titel||'Mangel')}); return; }
+    catch(e){ if(e&&e.name==='AbortError') return; }
+  }
+  // Ohne Fotos: nur Text teilen
+  if(navigator.share){
+    try{ await navigator.share({text, title:(m.titel||'Mangel')}); return; }
+    catch(e){ if(e&&e.name==='AbortError') return; }
+  }
+  // Fallback: WhatsApp-Web mit Text (Fotos manuell)
+  const wa='https://wa.me/?text='+encodeURIComponent(text);
+  window.open(wa,'_blank','noopener');
+  if(files.length) toast('Text geöffnet – Fotos bitte einzeln anhängen');
+}
+
+// WhatsApp-Button-HTML für Branchenbuch/Kontakte (kleiner Button).
+function waBtnSm(tel, title){
+  const l=waLink(tel);
+  if(!l) return '';
+  return '<a href="'+l+'" target="_blank" rel="noopener" class="btn btn-sm" style="background:#25D366;color:#fff;border-color:#25D366" title="'+(title||'WhatsApp')+'"><i class="ti ti-brand-whatsapp"></i></a>';
+}
+
+
 async function showMieter(id){
   currentMieterId=id;
   const m=await idbGet('mieter',id);
@@ -8459,11 +8651,12 @@ async function showMieter(id){
       ${m.telefon?`<div class="det-field"><label>Telefon</label><span><a href="tel:${m.telefon}">${m.telefon}</a></span></div>`:''}
       ${m.email?`<div class="det-field"><label>E-Mail</label><span><a href="mailto:${m.email}">${m.email}</a></span></div>`:''}
     </div>
-    ${m.telefon||m.email?`<div style="display:flex;gap:7px;margin-top:8px;flex-wrap:wrap">
+    <div style="display:flex;gap:7px;margin-top:8px;flex-wrap:wrap">
       ${m.telefon?`<a href="tel:${m.telefon}" class="btn btn-success"><i class="ti ti-phone"></i> Anrufen</a>`:''}
       ${m.telefon&&waLink(m.telefon)?`<a href="${waLink(m.telefon)}" target="_blank" rel="noopener" class="btn" style="background:#25D366;color:#fff;border-color:#25D366"><i class="ti ti-brand-whatsapp"></i> WhatsApp</a>`:''}
       ${m.email?`<a href="mailto:${m.email}" class="btn btn-copper"><i class="ti ti-mail"></i> E-Mail</a>`:''}
-    </div>`:''}
+      <button class="btn" onclick="mieterKontaktTeilen('${m.id}')" title="Kontakt als vCard weiterleiten"><i class="ti ti-user-share"></i> Kontakt teilen</button>
+    </div>
     ${istVerwalter()&&(m.iban||m.zahlweise||m.sepaMandat)?`<div style="margin-top:10px;background:#fff;border:1px solid var(--ink-10);border-radius:8px;padding:10px 12px;color:#1a2433">
       <div style="font-size:12px;font-weight:700;color:#0C447C;margin-bottom:6px"><i class="ti ti-building-bank"></i> Bankverbindung</div>
       <div class="det-grid">
@@ -10814,7 +11007,7 @@ async function erstelleNKA(objektId, korrektur) {
     grussHTML=`<div class="gruss">Mit freundlichen Grüßen
       <div style="display:flex;gap:40px;margin-top:6px">
         ${sigListe.map(sg=>`<div style="text-align:left">
-          <img src="${sg.signatur}" style="max-height:54px;display:block;margin:2px 0">
+          <img src="${sg.signatur}" style="max-height:54px;display:block;margin:2px auto -2px;position:relative;z-index:1">
           <div style="border-top:1px solid #999;padding-top:2px;font-size:9px">${sg.name}</div>
         </div>`).join('')}
       </div>
@@ -11013,6 +11206,9 @@ h2{font-size:11px;font-weight:700;color:#1F4E79}
 .pos-table{width:100%;border-collapse:collapse;margin-bottom:8px}
 .pos-table th{padding:3px 6px;background:#1F4E79;color:#fff;font-size:9px;text-align:left}
 .pos-table td{padding:2px 6px;border:1px solid #dde;font-size:9px}
+.pos-table tr{page-break-inside:avoid}
+.pos-table thead{display:table-header-group}
+.pos-table tfoot{display:table-footer-group}
 .pos-table td:last-child{text-align:right;font-weight:600}
 .pos-table td:nth-child(3){text-align:right}
 .pos-table td:nth-child(6){text-align:right}
@@ -11035,6 +11231,8 @@ h2{font-size:11px;font-weight:700;color:#1F4E79}
 .uebersicht-table{width:100%;border-collapse:collapse}
 .uebersicht-table th{padding:4px 6px;background:#1F4E79;color:#fff;font-size:9px;text-align:left}
 .uebersicht-table td{padding:3px 6px;border:1px solid #dde;font-size:9px}
+.uebersicht-table tr{page-break-inside:avoid}
+.uebersicht-table thead{display:table-header-group}
 .footer{font-size:8px;color:#aaa;text-align:center;padding-top:6px;border-top:1px solid #eee;margin-top:10px}
 @page{margin:1.5cm;size:A4}
 @media print{body{padding:0;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
@@ -11580,7 +11778,7 @@ async function erstelleNKALiegenschaft(lgId, korrektur){
     if(sigListe.length>=2){
       grussHTML=`<div class="gruss">Mit freundlichen Grüßen
         <div style="display:flex;gap:40px;margin-top:6px">
-          ${sigListe.map(sg=>`<div style="text-align:left"><img src="${sg.signatur}" style="max-height:54px;display:block;margin:2px 0"><div style="border-top:1px solid #999;padding-top:2px;font-size:9px">${sg.name}</div></div>`).join('')}
+          ${sigListe.map(sg=>`<div style="text-align:left"><img src="${sg.signatur}" style="max-height:54px;display:block;margin:2px auto -2px;position:relative;z-index:1"><div style="border-top:1px solid #999;padding-top:2px;font-size:9px">${sg.name}</div></div>`).join('')}
         </div><div style="margin-top:4px;font-size:9px;color:#666">${bk.name}</div></div>`;
     } else if(sigListe.length===1){
       grussHTML=`<div class="gruss">Mit freundlichen Grüßen<br><img src="${sigListe[0].signatur}" style="max-height:60px;display:block;margin:2px 0">${bk.name}</div>`;
@@ -11701,6 +11899,9 @@ h2{font-size:11px;font-weight:700;color:#1F4E79}
 .pos-table{width:100%;border-collapse:collapse;margin-bottom:8px}
 .pos-table th{padding:3px 6px;background:#1F4E79;color:#fff;font-size:9px;text-align:left}
 .pos-table td{padding:2px 6px;border:1px solid #dde;font-size:9px}
+.pos-table tr{page-break-inside:avoid}
+.pos-table thead{display:table-header-group}
+.pos-table tfoot{display:table-footer-group}
 .pos-table td:last-child{text-align:right;font-weight:600}
 .summen-table{width:50%;margin-left:50%;border-collapse:collapse;margin-bottom:10px}
 .summen-table td{padding:3px 8px;border:1px solid #dde;font-size:10px}
@@ -11719,6 +11920,8 @@ h2{font-size:11px;font-weight:700;color:#1F4E79}
 .uebersicht-table{width:100%;border-collapse:collapse}
 .uebersicht-table th{padding:4px 6px;background:#1F4E79;color:#fff;font-size:9px;text-align:left}
 .uebersicht-table td{padding:3px 6px;border:1px solid #dde;font-size:9px}
+.uebersicht-table tr{page-break-inside:avoid}
+.uebersicht-table thead{display:table-header-group}
 .footer{font-size:8px;color:#aaa;text-align:center;padding-top:6px;border-top:1px solid #eee;margin-top:10px}
 @page{margin:1.5cm;size:A4}
 @media print{body{padding:0;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
@@ -12328,7 +12531,12 @@ function mvVertragHTML(d){
       .mv-sigrow { display:flex; gap:48px; margin-top:40px; }
       .mv-sigline { flex:1; border-top:1px solid #333; padding-top:4px; font-size:9pt; color:#555; }
       .mv-pb { page-break-before:always; }
-      .mv-box { background:#f4f7fb; border:1px solid #d4e0ec; border-radius:4px; padding:8px 11px; margin:6px 0; }
+      .mv-box { background:#f4f7fb; border:1px solid #d4e0ec; border-radius:4px; padding:8px 11px; margin:6px 0; page-break-inside:avoid; }
+      .mv-row { break-inside:avoid; }
+      .mv-sig, .mv-sigrow { page-break-inside:avoid; }
+      table { page-break-inside:auto; }
+      tr { page-break-inside:avoid; }
+      thead { display:table-header-group; }
     </style>`;
 
   let h = '<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8"><title>Wohnraum-Mietvertrag</title>' + STYLE + '</head><body>';
@@ -13379,7 +13587,7 @@ async function erstelleMietbescheinigung(mieterId){
       <div>${esc(bk.ort?bk.ort.replace(/^\d+\s*/,''):'')}, den ${heute}</div>
       <div class="mb-sig-wrap">
         ${sigListe.length
-          ? sigListe.map(sg=>`<div class="mb-sig-line"><img src="${sg.signatur}" style="max-height:42px;display:block;margin:0 auto 1px"><div style="border-top:1px solid #333;padding-top:2px;font-size:9px;color:#555">${esc(sg.name||'Unterschrift / Stempel')}</div></div>`).join('')
+          ? sigListe.map(sg=>`<div class="mb-sig-line"><img src="${sg.signatur}" style="max-height:42px;display:block;margin:0 auto -2px;position:relative;z-index:1"><div style="border-top:1px solid #333;padding-top:2px;font-size:9px;color:#555">${esc(sg.name||'Unterschrift / Stempel')}</div></div>`).join('')
           : `<div class="mb-sig-line"><div style="border-top:1px solid #333;padding-top:2px;font-size:9px;color:#555">Unterschrift / Stempel</div></div>`}
       </div>
     </div>`;
@@ -13391,10 +13599,11 @@ async function erstelleMietbescheinigung(mieterId){
     .mb-h2{font-size:12px;font-weight:700;margin:7px 0 3px;border-bottom:1.5px solid #333;padding-bottom:2px}
     .mb-sub{font-size:9px;color:#444;margin-bottom:5px;line-height:1.35}
     .mb-t{width:100%;border-collapse:collapse;margin:3px 0}
+    .mb-t tr{page-break-inside:avoid}
     .mb-t td{border:1px solid #999;padding:2px 6px;font-size:10px}
     .mb-t td.l{background:#f4f4f4;width:58%;color:#333}
     .mb-row{font-size:10px;margin:3px 0;line-height:1.45}
-    .mb-vermieter{margin-top:10px;border:1px solid #999;padding:4px 8px;font-size:10px}
+    .mb-vermieter{margin-top:10px;border:1px solid #999;padding:4px 8px;font-size:10px;page-break-inside:avoid}
     .mb-sig{margin-top:14px;display:flex;justify-content:space-between;align-items:flex-end;gap:16px}
     .mb-sig-wrap{display:flex;gap:18px;align-items:flex-end}
     .mb-sig-line{min-width:150px;text-align:center}
@@ -13496,10 +13705,11 @@ h2{font-size:11px;font-weight:700;margin:14px 0 6px;border-bottom:1px solid #333
 .zeile label{font-size:10px;color:#555;white-space:nowrap;width:180px;flex-shrink:0}
 .zeile .val{border-bottom:1px solid #777;flex:1;min-height:16px;font-size:11px;padding:1px 0}
 table{width:100%;border-collapse:collapse}
+table tr{page-break-inside:avoid}
 .checks{margin:10px 0}
 .check-row{display:flex;gap:8px;align-items:center;margin-bottom:6px;font-size:11px}
 .box{width:12px;height:12px;border:1px solid #333;display:inline-block;flex-shrink:0}
-.sig-area{margin-top:20px;display:grid;grid-template-columns:1fr 1fr;gap:20px}
+.sig-area{margin-top:20px;display:grid;grid-template-columns:1fr 1fr;gap:20px;page-break-inside:avoid}
 .sig-box{border-top:1px solid #333;padding-top:4px;font-size:10px;color:#555;text-align:center}
 .footer{font-size:8px;color:#888;margin-top:16px;text-align:center}
 @page{margin:1.5cm;size:A4}@media print{body{padding:0;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
@@ -14260,7 +14470,7 @@ function druckeAushang(objektId) {
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:Arial,sans-serif;background:#fff;padding:20px;max-width:190mm;margin:0 auto}
-.aushang{border:3px solid ${stilColors.border};border-radius:8px;overflow:hidden}
+.aushang{border:3px solid ${stilColors.border};border-radius:8px;overflow:hidden;page-break-inside:avoid}
 .aushang-head{background:${stilColors.border};color:#fff;padding:14px 20px;display:flex;justify-content:space-between;align-items:center}
 .aushang-head h1{font-size:22px;font-weight:700;letter-spacing:.5px}
 .aushang-head .obj{font-size:11px;opacity:.85;margin-top:3px}
@@ -15327,8 +15537,8 @@ async function saveMieterhoehung(mieterId) {
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:Arial,sans-serif;font-size:11px;color:#111;padding:20px;max-width:190mm}
 .bk-box{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:0}
-.bk-left{width:85mm;padding-top:5mm}
-.bk-right{width:85mm;padding-top:45mm}
+.bk-left{width:85mm;padding-top:5mm;order:2;text-align:right}/* Logo rechts */
+.bk-right{width:85mm;padding-top:45mm;order:1;text-align:left}/* Anschrift links (DIN 5008) */
 .bk-absender{font-size:7px;color:#999;text-decoration:underline;margin-bottom:2mm}
 .trenn{border-bottom:1px solid #185FA5;opacity:0.3;margin:4mm 0 6mm}
 h2{font-size:13px;font-weight:700;margin-bottom:8px}
@@ -17408,8 +17618,9 @@ async function kzDrucken(mieterId){
     body{font-family:Arial,sans-serif;font-size:12px;color:#111;padding:18mm 16mm;max-width:210mm}
     h1{font-size:17px;margin-bottom:4px}
     .sub{font-size:11px;color:#555;margin-bottom:10px}
-    .box{background:#f4f6f9;border-radius:6px;padding:10px 12px;margin:8px 0;font-size:12px;line-height:1.7}
+    .box{background:#f4f6f9;border-radius:6px;padding:10px 12px;margin:8px 0;font-size:12px;line-height:1.7;page-break-inside:avoid}
     table{width:100%;border-collapse:collapse;font-size:11px;margin-top:8px}
+    tr{page-break-inside:avoid}
     th{text-align:left;padding:3px 6px;border:1px solid #999;background:#e8eef5}
     .r{text-align:right}
     .foot{margin-top:14px;font-size:10px;color:#555}
@@ -18599,6 +18810,11 @@ async function printProt(id){
 // Druckt HTML zuverlässig im selben Tab (mobil-tauglich) via verstecktem iframe.
 // Fallback auf window.open, falls iframe-Druck nicht greift.
 function printViaIframe(html){
+  // Einheitlicher Ablauf: erst Vorschau zeigen, drucken erst per Button.
+  if(typeof druckHTML==='function'){ return druckHTML(html); }
+  return _printViaIframeKern(html);
+}
+function _printViaIframeKern(html){
   try {
     const old = document.getElementById('printFrame');
     if (old) old.remove();
@@ -18705,11 +18921,12 @@ async function printProtHTML(d) {
 .hdr{border-bottom:3px solid #1F4E79;padding-bottom:8px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:flex-end}
 h1{font-size:15px;color:#1F4E79;font-weight:700}.sub{font-size:10px;color:#666;margin-top:2px}
 .art{background:#1F4E79;color:#fff;padding:3px 8px;border-radius:4px;font-size:10px;font-weight:600}
-h2{font-size:10px;background:#1F4E79;color:#fff;padding:4px 8px;margin:10px 0 4px;border-radius:3px;text-transform:uppercase;letter-spacing:.5px}
+h2{font-size:10px;background:#1F4E79;color:#fff;padding:4px 8px;margin:10px 0 4px;border-radius:3px;text-transform:uppercase;letter-spacing:.5px;page-break-after:avoid}
 .meta{display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px}.mi{background:#f0f4f9;border-radius:3px;padding:4px 7px}
 .mi strong{display:block;font-size:8px;color:#777;text-transform:uppercase;margin-bottom:1px}
 table{width:100%;border-collapse:collapse;margin-bottom:4px}
-.sigs{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:8px}
+tr{page-break-inside:avoid}
+.sigs{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:8px;page-break-inside:avoid}
 .sig-box{border:1px solid #ccd;border-radius:4px;padding:7px;text-align:center}
 .sig-box img{max-width:100%;max-height:90px;width:auto;height:auto;object-fit:contain;display:block;margin:0 auto}.sig-box p{font-size:9px;color:#666;margin-top:3px;line-height:1.5}
 .footer{font-size:8px;color:#aaa;text-align:center;margin-top:12px;padding-top:8px;border-top:1px solid #eee}
@@ -19159,6 +19376,7 @@ async function renderSettings(){
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn" onclick="exportBackup()"><i class="ti ti-download"></i> Backup exportieren</button>
         <button class="btn" onclick="exportExcel()"><i class="ti ti-file-spreadsheet"></i> Excel exportieren</button>
+        <button class="btn" onclick="mieterAlleVcardExport()"><i class="ti ti-address-book"></i> Mieter als Telefonkontakte (.vcf)</button>
         <button class="btn" onclick="document.getElementById('importBackupIn').click()"><i class="ti ti-upload"></i> Backup importieren</button>
         <button class="btn btn-danger" onclick="confirmReset()"><i class="ti ti-trash"></i> Zurücksetzen</button>
       </div>
@@ -20721,6 +20939,7 @@ async function renderBranchenbuch(el){
         </div>`:''}
       </div>
       <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:6px;font-size:13px">${tel}${mob}${mail}</div>
+      ${(x.mobil||x.telefon)&&waLink(x.mobil||x.telefon)?`<div style="margin-top:6px"><a href="${waLink(x.mobil||x.telefon)}" target="_blank" rel="noopener" class="btn btn-sm" style="background:#25D366;color:#fff;border-color:#25D366"><i class="ti ti-brand-whatsapp"></i> WhatsApp</a></div>`:''}
       ${x.notiz?`<div style="font-size:12px;color:var(--ink-60);margin-top:6px;padding-top:6px;border-top:1px solid var(--ink-10)">${esc(x.notiz)}</div>`:''}
     </div>`;
   }).join('') : '<div class="empty"><i class="ti ti-address-book"></i><p>Keine Einträge'+(_bbFilter.kat||_bbFilter.ort?' für diesen Filter':'')+'.</p></div>';
@@ -21401,7 +21620,53 @@ function zaSollIst(buchungen, mieterListe, monate){
 // gefeuert hat und das eingebettete Druckskript nicht mehr ausgelöst wird.
 // Lösung: Inhalt als Blob-URL öffnen; der Druckdialog wird unten im HTML
 // per mehrfach abgesichertem Auslöser gestartet. Liefert true bei Erfolg.
-function druckHTML(html){
+// Hält das aktuell in der Vorschau angezeigte Dokument für den Druck-Button bereit.
+let _dvAktuellesHtml = '';
+
+// Öffnet zuerst eine sichtbare Vorschau. Gedruckt wird erst über den Button.
+// titel ist optional und erscheint in der Kopfleiste der Vorschau.
+function druckHTML(html, titel){
+  try{
+    _dvAktuellesHtml = html;
+    const ov = document.getElementById('druckVorschau');
+    const fr = document.getElementById('dvFrame');
+    const tt = document.getElementById('dvTitel');
+    if(!ov || !fr){ return _druckJetzt(html); } // Fallback: direkt drucken
+    if(tt) tt.textContent = titel || 'Vorschau – Drucken zum Ausgeben';
+    // Auto-Print-Scripts aus der Vorschau entfernen (Druck nur per Button).
+    // Deckt normale <script> und hex-kodierte \x3cscript\x3e-Varianten ab.
+    let vHtml = String(html)
+      .replace(/<scr(?:ipt|.)*?>[\s\S]*?window\.print\(\)[\s\S]*?<\/scr.{0,3}ipt>/gi, '')
+      .replace(/\\x3cscript\\x3e[\s\S]*?window\.print\(\)[\s\S]*?\\x3c\/script\\x3e/gi, '')
+      .replace(/<script\b[^>]*>[\s\S]*?window\.print\(\)[\s\S]*?<\/script>/gi, '');
+    fr.srcdoc = vHtml;
+    ov.classList.add('aktiv');
+    ov.setAttribute('aria-hidden','false');
+    return true;
+  }catch(e){
+    console.warn('Vorschau fehlgeschlagen, drucke direkt:', e);
+    return _druckJetzt(html);
+  }
+}
+
+// Schließt die Vorschau ohne zu drucken.
+function schliesseDruckVorschau(){
+  const ov = document.getElementById('druckVorschau');
+  const fr = document.getElementById('dvFrame');
+  if(ov){ ov.classList.remove('aktiv'); ov.setAttribute('aria-hidden','true'); }
+  if(fr){ try{ fr.srcdoc=''; }catch(_){} }
+}
+
+// Löst aus der Vorschau heraus den eigentlichen Druck aus.
+function druckVorschauDrucken(){
+  const html = _dvAktuellesHtml;
+  schliesseDruckVorschau();
+  // kurze Verzögerung, damit das Overlay sicher aus dem Layout ist
+  setTimeout(()=>{ _druckJetzt(html); }, 60);
+}
+
+// IN-PAGE-DRUCK (Kern): rendert das Dokument in #printRoot und druckt das Fenster.
+function _druckJetzt(html){
   // IN-PAGE-DRUCK: Der zuverlässigste Weg auf Android/Samsung-PWAs.
   // iframe- und Blob-Tab-Druck liefern dort oft eine leere Seite, weil der
   // Browser beim Drucken den falschen (leeren) Body verwendet. Stattdessen
@@ -22540,6 +22805,7 @@ async function showMangelDetail(id, store='maengel') {
       </button>
       <button class="btn btn-sm" onclick="editMangel('${id}','${store}')"><i class="ti ti-pencil"></i> Bearbeiten</button>
       <button class="btn btn-sm" onclick="materialFuerMangel('${id}','${store}')"><i class="ti ti-package"></i> Material</button>
+      <button class="btn btn-sm" onclick="mangelAnHandwerker('${id}','${store}')" style="background:#25D366;color:#fff;border-color:#25D366"><i class="ti ti-brand-whatsapp"></i> An Handwerker senden</button>
       <button class="btn btn-sm" onclick="modalSchadenMelden('${id}','${store}')"><i class="ti ti-shield-check"></i> An Versicherung melden</button>
       <button class="btn btn-sm" onclick="modalAddEinkauf('${id}','Mangel','',{objektId:'${m.objektId||''}',weNr:'${esc(m.weNr||'')}',bezugText:'${esc((m.nummer?m.nummer+' · ':'')+m.titel)}'})"><i class="ti ti-shopping-cart"></i></button>
       <button class="btn btn-sm btn-danger" onclick="deleteMangelConfirm('${id}','${store}')"><i class="ti ti-trash"></i></button>
