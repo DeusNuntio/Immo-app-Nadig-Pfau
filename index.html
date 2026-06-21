@@ -760,7 +760,7 @@ body.printing-active #printRoot{display:block!important}
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=25;
-const APP_VERSION = '2026-06-21-v111';
+const APP_VERSION = '2026-06-22-v112';
 /* v94 (19.06.2026): Etappe 1 – Lokale Benachrichtigungen erweitert (Termine + Maengel).
    - checkFaelligeAufgaben() prueft jetzt zusaetzlich:
      a) Termin-Erinnerungen: Termine mit gesetztem Erinnerungs-Vorlauf (1/2/7 Tage)
@@ -12191,13 +12191,19 @@ function briefkopfGruppe(obj){
 }
 // Im Speicher hinterlegte Überschreibung (synchron aus Cache, der beim Start geladen wird)
 let _briefkopfCache = {};
+// v112: Pro-Gruppe-Umleitung des verwendeten Briefkopfs (z.B. Krefeld -> Roland B. Nadig),
+//       ohne die Objekt-Gruppe zu ändern. Wert = Ziel-Briefkopfschlüssel ('mg'/'kr'/'dus'/'pfau') oder leer = Standard.
+let _briefkopfOverride = {};
 async function ladeBriefkopfCache(){
-  for(const k of ['mg','kr','dus']){
+  for(const k of ['mg','kr','dus','pfau']){
     try{ const e=await idbGet('settings','briefkopf_'+k); if(e&&e.value) _briefkopfCache[k]=e.value; }catch(_){}
+    try{ const o=await idbGet('settings','briefkopf_override_'+k); _briefkopfOverride[k]=(o&&o.value)||''; }catch(_){}
   }
 }
 function getBriefkopfFor(gruppeKey){
-  return { ...BRIEFKOPF_DEFAULTS[gruppeKey], ...(_briefkopfCache[gruppeKey]||{}) };
+  // Umleitung beachten: ist für diese Gruppe ein anderer Briefkopf gewählt, diesen verwenden.
+  const ziel = _briefkopfOverride[gruppeKey] || gruppeKey;
+  return { ...BRIEFKOPF_DEFAULTS[ziel], ...(_briefkopfCache[ziel]||{}) };
 }
 
 // Nachnamen fürs Adressfeld (P13): max. 2, verbunden mit "und".
@@ -12281,9 +12287,22 @@ function renderBriefkopfConfig(){
     <input type="text" id="bk_${k}_${f}" value="${esc(val||'')}" style="font-size:12px"></div>`;
   return gruppen.map(g=>{
     const b=getBriefkopfFor(g.key);
+    const ovWahl = _briefkopfOverride[g.key] || '';
+    const ovHtml = (g.key==='kr'||g.key==='mg') ? `
+        <div class="f" style="margin-bottom:10px;background:#FFF7ED;border:1px solid #FCD9B6;border-radius:8px;padding:8px 10px">
+          <label style="font-size:11px;font-weight:600;color:#9E5E24">Verwendeter Briefkopf für diese Gruppe</label>
+          <select id="bkov_${g.key}" onchange="saveBriefkopfOverride('${g.key}',this.value)" style="font-size:12px;width:100%;margin-top:4px">
+            <option value="" ${ovWahl===''?'selected':''}>Standard (${g.key==='kr'?'Nadig Pfau':'Roland B. Nadig'})</option>
+            <option value="mg" ${ovWahl==='mg'?'selected':''}>Hausverwaltung Roland B. Nadig</option>
+            <option value="kr" ${ovWahl==='kr'?'selected':''}>Hausverwaltung Nadig Pfau (Krefeld)</option>
+          </select>
+          ${ovWahl?`<div style="font-size:10px;color:#9E5E24;margin-top:4px"><i class="ti ti-info-circle"></i> Abweichender Briefkopf aktiv – alle Dokumente dieser Gruppe nutzen aktuell ${ovWahl==='mg'?'Roland B. Nadig':'Nadig Pfau'}.</div>`:''}
+        </div>
+        <div style="font-size:11px;color:var(--ink-40);margin-bottom:8px">Die folgenden Felder bearbeiten den <b>${g.label}</b>-Briefkopf selbst (Adresse, Telefon). Sie sind unabhängig von der Umleitung oben.</div>` : '';
     return `<details style="border:1px solid var(--ink-10);border-radius:8px;padding:8px 10px;margin-bottom:8px">
-      <summary style="font-weight:600;font-size:13px;cursor:pointer;color:var(--copper)">${g.label}</summary>
+      <summary style="font-weight:600;font-size:13px;cursor:pointer;color:var(--copper)">${g.label}${(_briefkopfOverride[g.key])?' <span style=\'font-size:10px;color:#9E5E24;font-weight:600\'>· abweichend</span>':''}</summary>
       <div style="margin-top:8px">
+        ${ovHtml}
         ${feld(g.key,'name','Voller Name (Gruß / Briefende)',b.name)}
         ${feld(g.key,'absender','Absenderzeile (über Adressfeld, ohne Vornamen)',b.absender||b.name)}
         ${feld(g.key,'zusatz','Zusatz (optional)',b.zusatz)}
@@ -12304,6 +12323,17 @@ async function saveBriefkopf(key){
   clearTimeout(window._syncTimer);
   window._syncTimer=setTimeout(()=>syncToOneDrive(),2000);
   toast('Briefkopf gespeichert ✓');
+}
+// v112: Briefkopf-Umleitung pro Gruppe speichern (leer = Standard).
+async function saveBriefkopfOverride(key, ziel){
+  _briefkopfOverride[key] = ziel || '';
+  await idbPut('settings',{id:'briefkopf_override_'+key, value:(ziel||''), geaendert:nowIso()});
+  clearTimeout(window._syncTimer);
+  window._syncTimer=setTimeout(()=>syncToOneDrive(),2000);
+  // UI neu zeichnen, damit Hinweis/Markierung aktualisiert
+  const bkEl=document.getElementById('briefkopfConfigEl');
+  if(bkEl) bkEl.innerHTML=renderBriefkopfConfig();
+  toast(ziel?('Briefkopf umgestellt auf '+(ziel==='mg'?'Roland B. Nadig':'Nadig Pfau')+' ✓'):'Briefkopf auf Standard zurückgesetzt ✓');
 }
 
 
