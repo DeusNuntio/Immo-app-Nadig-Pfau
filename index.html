@@ -737,7 +737,7 @@ body.printing-active #printRoot{display:block!important}
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=25;
-const APP_VERSION = '2026-06-21-v104';
+const APP_VERSION = '2026-06-21-v105';
 /* v94 (19.06.2026): Etappe 1 – Lokale Benachrichtigungen erweitert (Termine + Maengel).
    - checkFaelligeAufgaben() prueft jetzt zusaetzlich:
      a) Termin-Erinnerungen: Termine mit gesetztem Erinnerungs-Vorlauf (1/2/7 Tage)
@@ -7960,6 +7960,53 @@ async function schadenMailKopieren(mangelId, store, mieterZeile, _still){
   }
 }
 
+/* ── Einmalige Daten-Migration: Telefon/E-Mail in personen_liste spiegeln ──
+   Hintergrund: Bei vor dem Personen-Split angelegten Mietern stand die Nummer
+   nur in m.telefon/m.email. Die Bearbeiten-Maske liest Kontaktdaten aber aus
+   personen_liste. Diese Migration übernimmt m.telefon/m.email verlustfrei in
+   die erste (Vertragspartner-)Person, sofern dort leer – es wird NIE etwas
+   überschrieben. Läuft idempotent bei jedem Start; bewirkt nach einmaliger
+   Korrektur keine Änderungen mehr. */
+async function migriereKontaktInPersonen(){
+  try{
+    const alle = await idbGetAll('mieter');
+    let geaendert = 0;
+    for(const m of alle){
+      if(!m || typeof m!=='object') continue;
+      const tel  = (m.telefon||'').trim();
+      const mail = (m.email||'').trim();
+      if(!tel && !mail) continue;            // nichts zu spiegeln
+      // personen_liste sicherstellen (aus Stammfeldern ableiten, falls nicht vorhanden)
+      let pl = Array.isArray(m.personen_liste) ? m.personen_liste.slice() : [];
+      if(!pl.length){
+        pl = [{name:(m.mieter||'').trim(), anrede:m.anrede||'',
+               telefon:'', email:'', geburtsdatum:m.geburtsdatum||'',
+               verstorben:false, vertragspartner:true}];
+      }
+      // Zielperson = erste lebende Vertragspartei, sonst erste lebende, sonst erste
+      let ziel = pl.find(p=>p && !p.verstorben && p.vertragspartner)
+              || pl.find(p=>p && !p.verstorben)
+              || pl[0];
+      if(!ziel) continue;
+      let touched = false;
+      if(tel  && !(ziel.telefon||'').trim()){ ziel.telefon = tel;  touched = true; }
+      if(mail && !(ziel.email||'').trim()){   ziel.email   = mail; touched = true; }
+      // falls die Liste neu erzeugt wurde, ist das auch eine Änderung
+      const listeWarLeer = !Array.isArray(m.personen_liste) || !m.personen_liste.length;
+      if(touched || listeWarLeer){
+        m.personen_liste = pl;
+        m.updatedAt = nowIso();
+        await idbPut('mieter', m);
+        geaendert++;
+      }
+    }
+    if(geaendert){
+      console.log('Telefon/E-Mail-Migration: '+geaendert+' Mieter aktualisiert.');
+      try{ localStorage.setItem('mig_tel_v105', String(geaendert)); }catch(e){}
+    }
+  }catch(err){ console.warn('migriereKontaktInPersonen:', err); }
+}
+
 /* ── Personen-Helfer (personen_liste mit verstorben-Status) ── */
 // Liefert die Personenliste eines Mieters; fällt auf den Hauptnamen zurück.
 function personenVon(m){
@@ -8417,6 +8464,38 @@ async function showMieter(id){
     ${(m._vormieter&&istVerwalter())?`<button class="btn btn-sm btn-copper" onclick="mieterReaktivieren('${m.id}')"><i class="ti ti-rotate-2"></i> Als aktuellen Mieter reaktivieren</button>`:''}
     <button class="btn btn-sm btn-danger" onclick="deleteMieterConfirm('${m.id}')"><i class="ti ti-trash"></i></button>
   </div>`;
+
+  // ── Wohnungszähler dieser WE (z. B. Warmwasser Krefeld) ──
+  try{
+    if(m.weNr!=null && m.weNr!=='' && istVerwalter()){
+      const weZ = (await idbGetAll('zaehler','objektId',m.objektId))
+        .filter(z=>String(z.weNr||'')===String(m.weNr))
+        .sort((a,b)=>(a.name||'').localeCompare(b.name||''));
+      if(weZ.length){
+        const alleStaende = await idbGetAll('zaehlerstaende','objektId',m.objektId);
+        h+=`<div class="card-hdr" style="margin-bottom:8px;margin-top:12px"><i class="ti ti-gauge"></i> Wohnungszähler – WE ${esc(String(m.weNr))} (${weZ.length})</div>`;
+        for(const z of weZ){
+          const st=alleStaende.filter(x=>x.zaehlerId===z.id)
+            .sort((a,b)=>new Date(b.datumISO||0)-new Date(a.datumISO||0));
+          const letzter=st[0];
+          h+=`<div class="card" style="margin-bottom:8px">
+            <div style="display:flex;align-items:center;gap:10px">
+              <div style="width:34px;height:34px;border-radius:8px;background:var(--ink-05);display:flex;align-items:center;justify-content:center;color:var(--copper)">
+                <i class="ti ${ZAEHLER_ICON[z.art]||'ti-gauge'}"></i></div>
+              <div style="flex:1">
+                <div style="font-weight:600;font-size:14px">${esc(z.name)}</div>
+                ${z.zaehlernummer?`<div style="font-size:12px;color:var(--ink-60)"><i class="ti ti-hash"></i> ${esc(z.zaehlernummer)}</div>`:''}
+                <div style="font-size:12px;color:var(--ink-40)">${letzter?`Letzter Stand: <strong>${letzter.wert} ${esc(z.einheit||'')}</strong> · ${letzter.datum||''}`:'Noch keine Ablesung'}</div>
+              </div>
+              <button class="btn btn-sm btn-copper" onclick="modalZaehlerstand('${z.id}')"><i class="ti ti-camera"></i> Ablesen</button>
+            </div>
+            ${st.length?`<button class="btn btn-sm" style="width:100%;margin-top:8px" onclick="zeigeZaehlerVerlauf('${z.id}')"><i class="ti ti-chart-line"></i> Verlauf & Verbrauch (${st.length})</button>`:''}
+          </div>`;
+        }
+        h+=`<div style="font-size:11px;color:var(--ink-40);margin:-2px 0 10px"><i class="ti ti-info-circle"></i> Zähler werden im Objekt unter „Zähler" angelegt und der Wohnung zugeordnet.</div>`;
+      }
+    }
+  }catch(err){ console.warn('WE-Zähler-Block:', err); }
 
   // Reparaturen des Mieters laden
   const reps = (await idbGetAll('reparaturen')).filter(r=>r.mieterId===id);
@@ -16458,8 +16537,10 @@ async function saveEditMieter(id) {
   const vpListe = lebend.filter(p=>p.vertragspartner);
   const haupt = vpListe[0] || lebend[0] || persListe[0];
   if(haupt?.anrede) m.anrede = haupt.anrede;
-  m.telefon = haupt?.telefon || '';
-  m.email   = haupt?.email   || '';
+  // Gespiegelte Hauptkontaktdaten: bevorzugt aus der Person; eine bereits
+  // vorhandene Hauptnummer NICHT durch einen leeren Personen-Wert löschen.
+  m.telefon = (haupt?.telefon || '').trim() || (m.telefon || '');
+  m.email   = (haupt?.email   || '').trim() || (m.email   || '');
   // Zusatzkontakt
   const zkName = document.getElementById('zkName')?.value?.trim()||'';
   if(zkName){
@@ -23075,6 +23156,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   }
   try { await ensureDefaultUsers(); } catch(err) { console.warn('ensureDefaultUsers:', err); }
   try { await ensureTaetigkeitKat(); } catch(err) { console.warn('ensureTaetigkeitKat:', err); }
+  try { await migriereKontaktInPersonen(); } catch(err) { console.warn('migriereKontaktInPersonen:', err); }
   try {
     // Aktive Session wiederherstellen (nach OS-Reload, z. B. nach Kamera-Nutzung)
     let sessionUid = null;
