@@ -791,8 +791,8 @@ body.printing-active #printRoot{display:block!important}
 /* ═══════════════════════════════════════════════════════════
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
-const DB_NAME='immo_v2', DB_VER=27;
-const APP_VERSION = '2026-06-22-v116';
+const DB_NAME='immo_v2', DB_VER=28;
+const APP_VERSION = '2026-06-22-v117';
 /* v94 (19.06.2026): Etappe 1 – Lokale Benachrichtigungen erweitert (Termine + Maengel).
    - checkFaelligeAufgaben() prueft jetzt zusaetzlich:
      a) Termin-Erinnerungen: Termine mit gesetztem Erinnerungs-Vorlauf (1/2/7 Tage)
@@ -892,7 +892,7 @@ function openIDB(){
     const req=indexedDB.open(DB_NAME,DB_VER);
     req.onupgradeneeded=e=>{
       const db=e.target.result;
-      ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','fotos','wartung','zaehler','zaehlerstaende','versorger','versorger_archiv','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','sync_log','mieter_snapshots','branchenbuch','interessenten','od_dateien','buchungen','mietbescheinigungen','mv_entwuerfe'].forEach(s=>{
+      ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','fotos','wartung','zaehler','zaehlerstaende','versorger','versorger_archiv','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','sync_log','mieter_snapshots','branchenbuch','interessenten','od_dateien','buchungen','mietbescheinigungen','mv_entwuerfe','selbstauskuenfte'].forEach(s=>{
         if(!db.objectStoreNames.contains(s)){
           const store=db.createObjectStore(s,{keyPath:'id'});
           if(s==='mieter'){store.createIndex('objektId','objektId');store.createIndex('weNr','weNr')}
@@ -927,6 +927,7 @@ function openIDB(){
           if(s==='od_dateien'){store.createIndex('objektId','objektId');store.createIndex('pfad','pfad')}
           if(s==='mietbescheinigungen'){store.createIndex('mieterId','mieterId');store.createIndex('objektId','objektId')}
           if(s==='mv_entwuerfe'){store.createIndex('mieterId','mieterId');store.createIndex('objektId','objektId')}
+          if(s==='selbstauskuenfte'){store.createIndex('objektId','objektId');store.createIndex('status','status')}
         }
       });
     };
@@ -3558,6 +3559,8 @@ async function wohnungsQrAlleNiimbot(objektId){
    im Format der Table "wohnungen". Nur portalrelevante Felder.
 ═══════════════════════════════════════════════════════════ */
 const BACKEND_BASIS = 'https://api.nadigpfau.de';
+// Für Selbstauskunft/Posteingang wird die direkte Azure-URL verwendet (Website nutzt dieselbe).
+const BACKEND_AZURE = 'https://func-nadigpfau-g7fghseafmftemeq.westeurope-01.azurewebsites.net';
 
 async function sammleWohnungen(){
   const alle=(await idbGetAll('mieter')).filter(m=>!m._vormieter && !m._zukuenftig && !m.leerstand);
@@ -3642,6 +3645,197 @@ async function wohnungenExportPush(){
   }
 }
 
+/* ═══════════════════════════════════════════════════════════
+   SELBSTAUSKÜNFTE (Website) – Posteingang, Entschlüsselung, Import
+   - Abruf über GET /api/inbox-sa (Function-Key)
+   - Inhalte sind AES-256-GCM-verschlüsselt; Entschlüsselung lokal
+     mit dem in den Einstellungen hinterlegten Schlüssel (settings→saEncKey).
+   - Import erzeugt einen Interessenten-Datensatz (quelle='website-sa').
+   ═══════════════════════════════════════════════════════════ */
+
+// AES-Schlüssel (base64, 32 Byte) aus Settings laden
+async function saEncKeyHolen(){
+  const rec=await idbGet('settings','saEncKey').catch(()=>null);
+  return rec && rec.value ? rec.value : '';
+}
+function _b64ToBytes(b64){
+  const bin=atob(b64); const a=new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++) a[i]=bin.charCodeAt(i);
+  return a;
+}
+// Entschlüsselt einen String im Format v1:<iv_b64>:<tag_b64>:<cipher_b64>
+async function saEntschluessle(chiffre){
+  const keyB64=await saEncKeyHolen();
+  if(!keyB64) throw new Error('Kein Entschlüsselungs-Schlüssel hinterlegt');
+  const teile=String(chiffre).split(':');
+  if(teile.length!==4 || teile[0]!=='v1') throw new Error('Unbekanntes Format');
+  const iv=_b64ToBytes(teile[1]);
+  const tag=_b64ToBytes(teile[2]);
+  const ct=_b64ToBytes(teile[3]);
+  // Web Crypto erwartet ciphertext+tag zusammenhängend
+  const gesamt=new Uint8Array(ct.length+tag.length);
+  gesamt.set(ct,0); gesamt.set(tag,ct.length);
+  const keyBytes=_b64ToBytes(keyB64);
+  if(keyBytes.length!==32) throw new Error('Schlüssel muss 32 Byte (base64) sein');
+  const key=await crypto.subtle.importKey('raw',keyBytes,{name:'AES-GCM'},false,['decrypt']);
+  const klar=await crypto.subtle.decrypt({name:'AES-GCM',iv:iv,tagLength:128},key,gesamt);
+  return new TextDecoder().decode(klar);
+}
+
+// Posteingang öffnen: Abruf + Anzeige
+async function oeffneSelbstauskuenfte(){
+  if(!istVerwalter()){ toast('Nur für Verwalter'); return; }
+  const key=(await idbGet('settings','backendKey').catch(()=>null))?.value;
+  showModal(`
+    <div class="m-title"><i class="ti ti-inbox"></i> Selbstauskünfte (Website)</div>
+    <div id="saInboxBody" style="max-height:60vh;overflow:auto">
+      <p style="font-size:13px;color:var(--ink-40)">Lade neue Selbstauskünfte …</p>
+    </div>
+    <button class="btn btn-full" style="margin-top:12px" onclick="closeModal()">Schließen</button>`);
+  const body=document.getElementById('saInboxBody');
+  if(!key){
+    body.innerHTML='<p style="font-size:13px;color:var(--red,#c0392b)">Kein Backend-Schlüssel hinterlegt. Bitte unter „System → Website-Backend" den Function-Key speichern.</p>';
+    return;
+  }
+  const encKey=await saEncKeyHolen();
+  if(!encKey){
+    body.innerHTML='<p style="font-size:13px;color:var(--red,#c0392b)">Kein Entschlüsselungs-Schlüssel hinterlegt. Bitte unter „System → Website-Backend" den Selbstauskunft-Schlüssel (SA_ENC_KEY) speichern.</p>';
+    return;
+  }
+  let liste=[];
+  try{
+    const res=await fetch(BACKEND_AZURE+'/api/inbox-sa',{ headers:{'x-functions-key':key} });
+    if(!res.ok){
+      body.innerHTML='<p style="font-size:13px;color:var(--red,#c0392b)">Abruf fehlgeschlagen ('+res.status+').</p>';
+      return;
+    }
+    liste=await res.json().catch(()=>[]);
+  }catch(e){
+    body.innerHTML='<p style="font-size:13px;color:var(--red,#c0392b)">Backend nicht erreichbar.</p>';
+    return;
+  }
+  if(!liste.length){
+    body.innerHTML='<p style="font-size:13px;color:var(--ink-40)">Keine neuen Selbstauskünfte.</p>';
+    return;
+  }
+  // Liste rendern (Klartext-Kopf), Detail erst beim Aufklappen entschlüsseln
+  window._saInbox = {};
+  let html='';
+  for(const e of liste){
+    window._saInbox[e.id]=e;
+    const dt=e.zeitstempel?new Date(e.zeitstempel).toLocaleString('de-DE'):'';
+    html+=`<div style="border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:10px">
+      <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap">
+        <div><b>${esc(e.anzeigeName||'(ohne Namen)')}</b><br>
+          <span style="font-size:12px;color:var(--ink-40)">${esc(e.objektName||'')} · ${esc(dt)}</span></div>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+        <button class="btn btn-sm" onclick="saDetailZeigen('${e.id}')"><i class="ti ti-eye"></i> Anzeigen</button>
+        <button class="btn btn-sm btn-primary" onclick="saAlsInteressentImportieren('${e.id}')"><i class="ti ti-user-plus"></i> Als Interessent</button>
+      </div>
+      <div id="saDetail_${e.id}" style="margin-top:10px"></div>
+    </div>`;
+  }
+  body.innerHTML=html;
+}
+
+// Detail entschlüsseln und anzeigen
+async function saDetailZeigen(id){
+  const e=window._saInbox && window._saInbox[id];
+  const ziel=document.getElementById('saDetail_'+id);
+  if(!e||!ziel) return;
+  ziel.innerHTML='<span style="font-size:12px;color:var(--ink-40)">Entschlüssele …</span>';
+  let obj;
+  try{
+    const klar=await saEntschluessle(e.daten);
+    obj=JSON.parse(klar);
+  }catch(err){
+    ziel.innerHTML='<span style="font-size:12px;color:var(--red,#c0392b)">Entschlüsselung fehlgeschlagen: '+esc(err.message)+'</span>';
+    return;
+  }
+  const b=obj.basis||{}, sa=obj.selbstauskunft||{}, p1=sa.person1||{}, p2=sa.person2||{};
+  function z(label,wert){ return wert? `<div style="font-size:13px"><b>${esc(label)}:</b> ${esc(wert)}</div>`:''; }
+  let h='<div style="background:var(--bg-soft,#f6f6f4);border-radius:8px;padding:10px;line-height:1.7">';
+  h+='<div style="font-weight:600;margin-bottom:4px">Vormerk-Daten</div>';
+  h+=z('Name',(b.vorname||'')+' '+(b.nachname||''));
+  h+=z('Telefon',b.telefon); h+=z('E-Mail',b.email);
+  h+=z('Objekt',b.objektName); h+=z('Einzug',b.einzug);
+  h+=z('Erwachsene',b.erwachsene); h+=z('Kinder',b.kinder); h+=z('Alter Kinder',b.kinderAlter);
+  h+=z('Nachricht',b.nachricht);
+  h+='<div style="font-weight:600;margin:8px 0 4px">Person 1</div>';
+  h+=z('Geburtsname',p1.geburtsname); h+=z('geboren',p1.geboren); h+=z('Geburtsort',p1.geburtsort);
+  h+=z('Staatsang.',p1.staat); h+=z('Familienstand',p1.familienstand);
+  h+=z('Telefon gesch.',p1.telefonGesch);
+  h+=z('Beruf',p1.beruf); h+=z('Beschäftigung',p1.beschaeftigung); h+=z('Arbeitgeber',p1.arbeitgeber);
+  h+=z('Anschrift AG',p1.anschriftAG); h+=z('angestellt seit',p1.seit); h+=z('Nettoeinkommen',p1.einkommen);
+  if(p2 && (p2.vorname||p2.nachname||p2.einkommen)){
+    h+='<div style="font-weight:600;margin:8px 0 4px">Person 2</div>';
+    h+=z('Name',(p2.vorname||'')+' '+(p2.nachname||''));
+    h+=z('geboren',p2.geboren); h+=z('Beruf',p2.beruf); h+=z('Beschäftigung',p2.beschaeftigung);
+    h+=z('Arbeitgeber',p2.arbeitgeber); h+=z('Nettoeinkommen',p2.einkommen); h+=z('E-Mail',p2.email);
+  }
+  h+='<div style="font-weight:600;margin:8px 0 4px">Weiteres</div>';
+  h+=z('Anschrift',sa.anschrift); h+=z('Derz. Vermieter',sa.vermieter); h+=z('Bisherige Miete',sa.bisherigeMiete);
+  h+=z('Haustiere',sa.haustiere); h+=z('Raucher',sa.raucher); h+=z('Sozialleistungen',sa.sozial);
+  h+=z('Keine Mietrückstände',sa.erkl_keineRueckstaende?'bestätigt':'');
+  h+=z('Keine Vollstreckung',sa.erkl_keineVollstreckung?'bestätigt':'');
+  h+='</div>';
+  ziel.innerHTML=h;
+}
+
+// Import als Interessent + serverseitig als verarbeitet markieren
+async function saAlsInteressentImportieren(id){
+  const e=window._saInbox && window._saInbox[id];
+  if(!e){ toast('Datensatz nicht gefunden'); return; }
+  let obj;
+  try{ obj=JSON.parse(await saEntschluessle(e.daten)); }
+  catch(err){ toast('Entschlüsselung fehlgeschlagen'); return; }
+  const b=obj.basis||{}, sa=obj.selbstauskunft||{}, p1=(sa.person1||{});
+  // Dublette? (gleiche Quelle-ID)
+  const alle=await idbGetAll('interessenten').catch(()=>[]);
+  if(alle.some(k=>k.quelleId===e.id)){ toast('Bereits importiert'); return; }
+  const rec={
+    id:'i_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,6),
+    objektId:b.objektId||null, objektName:b.objektName||'',
+    anrede:'', vorname:b.vorname||'', name:((b.vorname||'')+' '+(b.nachname||'')).trim(),
+    nachname:b.nachname||'',
+    telefon:b.telefon||'', email:b.email||'',
+    adresse:sa.anschrift||'',
+    personen:((Number(b.erwachsene)||0)+(Number(b.kinder)||0))||'',
+    beruf:p1.beruf||'', arbeitgeber:p1.arbeitgeber||'', einkommen:p1.einkommen||'',
+    geboren:p1.geboren||'', staat:p1.staat||'', familienstand:p1.familienstand||'',
+    mietbeginn:b.einzug||'',
+    haustiere:!!(sa.haustiere && sa.haustiere!=='keine'), raucher:(sa.raucher==='ja'),
+    notiz:b.nachricht||'',
+    selbstauskunft:obj,                 // vollständige Auskunft mitführen
+    status:'neu', quelle:'website-sa', quelleId:e.id,
+    erstellt:nowIso(), geaendert:nowIso()
+  };
+  await idbPut('interessenten', rec);
+  // Lokale Archivablage der Selbstauskunft (Store selbstauskuenfte)
+  try{
+    await idbPut('selbstauskuenfte', {
+      id:e.id, objektId:b.objektId||'', objektName:b.objektName||'',
+      anzeigeName:e.anzeigeName||rec.name, zeitstempel:e.zeitstempel||nowIso(),
+      daten:obj, status:'importiert', geaendert:nowIso()
+    });
+  }catch(_){}
+  // Serverseitig als verarbeitet markieren
+  const key=(await idbGet('settings','backendKey').catch(()=>null))?.value;
+  if(key){
+    try{
+      await fetch(BACKEND_AZURE+'/api/inbox-sa/mark-read',{
+        method:'POST', headers:{'Content-Type':'application/json','x-functions-key':key},
+        body:JSON.stringify({ id:e.id })
+      });
+    }catch(_){}
+  }
+  toast('Als Interessent übernommen ✓');
+  // aus der Liste entfernen
+  const karte=document.getElementById('saDetail_'+id);
+  if(karte && karte.parentElement) karte.parentElement.style.display='none';
+}
+
 /* ── Function-Key-Verwaltung (Settings → System) ── */
 async function backendKeyLaden(){
   const rec=await idbGet('settings','backendKey').catch(()=>null);
@@ -3674,6 +3868,47 @@ async function backendKeyLoeschen(){
   if(st) st.innerHTML='<div style="font-size:12px;color:var(--ink-40)">Schlüssel entfernt.</div>';
   toast('Schlüssel entfernt');
 }
+
+/* ── SA-Entschlüsselungs-Schlüssel (SA_ENC_KEY) ── */
+async function saEncKeyLaden(){
+  const rec=await idbGet('settings','saEncKey').catch(()=>null);
+  const inp=document.getElementById('saEncKeyIn');
+  const del=document.getElementById('saEncKeyDelBtn');
+  if(inp && rec?.value){ inp.value=rec.value; if(del) del.style.display=''; }
+  else if(del){ del.style.display='none'; }
+}
+function saEncKeyToggle(){
+  const inp=document.getElementById('saEncKeyIn');
+  const eye=document.getElementById('saEncKeyEye');
+  if(!inp) return;
+  if(inp.type==='password'){ inp.type='text'; eye?.classList.replace('ti-eye','ti-eye-off'); }
+  else { inp.type='password'; eye?.classList.replace('ti-eye-off','ti-eye'); }
+}
+async function saEncKeySpeichern(){
+  const val=(document.getElementById('saEncKeyIn')?.value||'').trim();
+  const st=document.getElementById('saEncKeyStatus');
+  if(!val){ if(st) st.innerHTML='<div style="font-size:12px;color:var(--ink-40)">Bitte einen Schlüssel eingeben.</div>'; return; }
+  // Plausibilitätsprüfung: 32 Byte base64
+  try{
+    const bin=atob(val); if(bin.length!==32) throw 0;
+  }catch(e){
+    if(st) st.innerHTML='<div style="font-size:12px;color:var(--red,#c0392b)">Schlüssel muss 32 Byte (base64) sein.</div>'; return;
+  }
+  await idbPut('settings', { id:'saEncKey', value:val, geaendert:nowIso() });
+  const del=document.getElementById('saEncKeyDelBtn'); if(del) del.style.display='';
+  if(st) st.innerHTML='<div style="font-size:12px;color:var(--green,#2E7D52)"><i class="ti ti-circle-check"></i> Schlüssel gespeichert (nur auf diesem Gerät).</div>';
+  toast('Selbstauskunft-Schlüssel gespeichert');
+}
+async function saEncKeyLoeschen(){
+  await idbDelete('settings','saEncKey').catch(()=>{});
+  const inp=document.getElementById('saEncKeyIn'); if(inp) inp.value='';
+  const del=document.getElementById('saEncKeyDelBtn'); if(del) del.style.display='none';
+  const st=document.getElementById('saEncKeyStatus');
+  if(st) st.innerHTML='<div style="font-size:12px;color:var(--ink-40)">Schlüssel entfernt.</div>';
+  toast('Schlüssel entfernt');
+}
+// Hilfsfunktion: Modal schließen, dann Aktion (z. B. Posteingang öffnen)
+function closeAllModalsThen(fn){ try{ closeModal(); }catch(e){} setTimeout(()=>{ try{ fn&&fn(); }catch(e){} }, 60); }
 async function backendKeyTesten(){
   const val=(document.getElementById('backendKeyIn')?.value||'').trim();
   const st=document.getElementById('backendKeyStatus');
@@ -19841,6 +20076,23 @@ async function renderSettings(){
         <button class="btn btn-danger btn-sm" id="backendKeyDelBtn" onclick="backendKeyLoeschen()" style="display:none"><i class="ti ti-trash"></i> Entfernen</button>
       </div>
       <div id="backendKeyStatus" style="margin-top:10px"></div>
+
+      <hr style="border:none;border-top:1px solid var(--line);margin:16px 0">
+      <div class="card-hdr" style="font-size:14px"><i class="ti ti-lock"></i> Selbstauskünfte (verschlüsselt)</div>
+      <p style="font-size:13px;color:var(--ink-40);margin:8px 0 12px;line-height:1.6">
+        Selbstauskünfte von der Website werden serverseitig verschlüsselt und nur hier entschlüsselt. Hinterlegen Sie denselben Schlüssel wie in der Azure-Einstellung <code>SA_ENC_KEY</code> (32 Byte, base64). Wird nur lokal auf diesem Gerät gespeichert.
+      </p>
+      <label style="font-size:12px;color:var(--ink-40);display:block;margin-bottom:4px">Entschlüsselungs-Schlüssel (SA_ENC_KEY)</label>
+      <div style="display:flex;gap:8px;align-items:center">
+        <input type="password" id="saEncKeyIn" placeholder="base64-Schlüssel einfügen …" style="flex:1;min-width:0" autocomplete="off">
+        <button class="btn btn-sm" type="button" onclick="saEncKeyToggle()" title="Anzeigen/Verbergen"><i class="ti ti-eye" id="saEncKeyEye"></i></button>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+        <button class="btn btn-primary" onclick="saEncKeySpeichern()"><i class="ti ti-device-floppy"></i> Speichern</button>
+        <button class="btn btn-danger btn-sm" id="saEncKeyDelBtn" onclick="saEncKeyLoeschen()" style="display:none"><i class="ti ti-trash"></i> Entfernen</button>
+        <button class="btn" onclick="closeAllModalsThen(oeffneSelbstauskuenfte)"><i class="ti ti-inbox"></i> Posteingang öffnen</button>
+      </div>
+      <div id="saEncKeyStatus" style="margin-top:10px"></div>
     </div>`:''}
 
     ${isAdmin?`<div class="settings-card" data-tab="objekte">
@@ -20009,7 +20261,7 @@ async function renderSettings(){
   if(isAdmin){ const pfEl=document.getElementById('portalFreigabeEl'); if(pfEl) pfEl.innerHTML=await renderPortalFreigabe(); }
   if(isAdmin){ const ssEl=document.getElementById('syncSchutzEl'); if(ssEl) ssEl.innerHTML=await renderSyncSchutz(); }
   if(isAdmin){ try{ await wohnungenExportInfo(); }catch(e){} }
-  if(isAdmin){ try{ await backendKeyLaden(); }catch(e){} }
+  if(isAdmin){ try{ await backendKeyLaden(); }catch(e){} try{ await saEncKeyLaden(); }catch(e){} }
   await renderMeineSignatur();
   // Niimbot-Druckdichte vorselektieren
   try{
@@ -20329,7 +20581,7 @@ async function delUser(id){
 async function exportBackup(){
   if(!istSystemAdmin()){ toast('Nur für Administratoren'); return; }
   const backup={};
-  for(const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','versicherungen','versorger_archiv','od_dateien','buchungen','mietbescheinigungen','mv_entwuerfe']){
+  for(const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','versicherungen','versorger_archiv','od_dateien','buchungen','mietbescheinigungen','mv_entwuerfe','selbstauskuenfte']){
     backup[s]=await idbGetAll(s);
   }
   backup.exportedAt=now();backup.version=2;
@@ -20534,7 +20786,7 @@ async function importBackupAusfuehren(modus){
   const backup = window._pendingBackup;
   if(!backup){ toast('Keine Backup-Datei geladen'); closeModal(); return; }
   closeModal();
-  const alleStores=['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','versorger_archiv','od_dateien','buchungen','mietbescheinigungen','mv_entwuerfe'];
+  const alleStores=['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','versorger_archiv','od_dateien','buchungen','mietbescheinigungen','mv_entwuerfe','selbstauskuenfte'];
   try{
     await erstelleMieterSnapshot('vor Import ('+modus+')');
     if(modus==='ersetzen'){
@@ -20793,7 +21045,7 @@ async function syncToOneDrive() {
     } catch(e){ /* offline o. 404: normaler Upload-Weg unten */ }
 
     const backup = {};
-    for (const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','versorger_archiv','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch','sync_log','interessenten','versicherungen','od_dateien','buchungen','mietbescheinigungen','mv_entwuerfe']) {
+    for (const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','versorger_archiv','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch','sync_log','interessenten','versicherungen','od_dateien','buchungen','mietbescheinigungen','mv_entwuerfe','selbstauskuenfte']) {
       backup[s] = await idbGetAll(s);
     }
     backup.updatedAt = new Date().toISOString();
@@ -20888,7 +21140,7 @@ async function syncFromOneDrive() {
       await idbPut('settings', { id:'tombstones', value: mergedTomb });
 
       // Merge: ID-basiert, nur übernehmen wenn remote neuer oder lokal fehlt
-      const mergeStores = ['protokolle','aufgaben','maengel','reparaturen','dokumente','nka_archiv','einkaufsliste','wartung','termine','zaehler','zaehlerstaende','versorger','versorger_archiv','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch','sync_log','interessenten','od_dateien','mietbescheinigungen','mv_entwuerfe'];
+      const mergeStores = ['protokolle','aufgaben','maengel','reparaturen','dokumente','nka_archiv','einkaufsliste','wartung','termine','zaehler','zaehlerstaende','versorger','versorger_archiv','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch','sync_log','interessenten','od_dateien','mietbescheinigungen','mv_entwuerfe','selbstauskuenfte'];
       for (const s of mergeStores) {
         if (!backup[s]) continue;
         const tombS = mergedTomb[s] || {};
