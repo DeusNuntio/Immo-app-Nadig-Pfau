@@ -757,10 +757,42 @@ body.printing-active #printRoot{display:block!important}
 
 <script>
 /* ═══════════════════════════════════════════════════════════
+   DATUMS-FORMAT (app-weit): bei de-DE immer führende Null,
+   also 01.01.2026 statt 1.1.2026. Manche Android-WebViews geben
+   ohne explizite Optionen einstellige Tage/Monate aus; dieser
+   Patch ergänzt fehlende day/month-Optionen automatisch mit
+   '2-digit'. Aufrufe mit eigenen Optionen (z. B. weekday) bleiben
+   unangetastet. Gilt für ALLE Datumsausgaben inkl. erzeugter
+   Dokumente, da diese dieselbe Methode nutzen.
+═══════════════════════════════════════════════════════════ */
+(function(){
+  const _od = Date.prototype.toLocaleDateString;
+  Date.prototype.toLocaleDateString = function(locale, opts){
+    const istDE = locale==='de-DE' || (Array.isArray(locale)&&locale.includes('de-DE'));
+    // Nur eingreifen, wenn KEINE Optionen übergeben wurden. Aufrufe mit eigenen
+    // Optionen (z. B. {weekday:'short'} oder {month:'long'}) bleiben unverändert,
+    // damit Kalender-Beschriftungen weiterhin korrekt sind.
+    if(istDE && (opts===undefined || opts===null)){
+      return _od.call(this, locale, {day:'2-digit',month:'2-digit',year:'numeric'});
+    }
+    return _od.call(this, locale, opts);
+  };
+  const _ot = Date.prototype.toLocaleString;
+  Date.prototype.toLocaleString = function(locale, opts){
+    const istDE = locale==='de-DE' || (Array.isArray(locale)&&locale.includes('de-DE'));
+    if(istDE && (opts===undefined || opts===null)){
+      // Datum+Uhrzeit standardmäßig vollständig zweistellig.
+      return _ot.call(this, locale, {day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'});
+    }
+    return _ot.call(this, locale, opts);
+  };
+})();
+
+/* ═══════════════════════════════════════════════════════════
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
-const DB_NAME='immo_v2', DB_VER=25;
-const APP_VERSION = '2026-06-22-v112';
+const DB_NAME='immo_v2', DB_VER=26;
+const APP_VERSION = '2026-06-22-v114';
 /* v94 (19.06.2026): Etappe 1 – Lokale Benachrichtigungen erweitert (Termine + Maengel).
    - checkFaelligeAufgaben() prueft jetzt zusaetzlich:
      a) Termin-Erinnerungen: Termine mit gesetztem Erinnerungs-Vorlauf (1/2/7 Tage)
@@ -860,7 +892,7 @@ function openIDB(){
     const req=indexedDB.open(DB_NAME,DB_VER);
     req.onupgradeneeded=e=>{
       const db=e.target.result;
-      ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','fotos','wartung','zaehler','zaehlerstaende','versorger','versorger_archiv','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','sync_log','mieter_snapshots','branchenbuch','interessenten','od_dateien','buchungen'].forEach(s=>{
+      ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','fotos','wartung','zaehler','zaehlerstaende','versorger','versorger_archiv','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','sync_log','mieter_snapshots','branchenbuch','interessenten','od_dateien','buchungen','mietbescheinigungen'].forEach(s=>{
         if(!db.objectStoreNames.contains(s)){
           const store=db.createObjectStore(s,{keyPath:'id'});
           if(s==='mieter'){store.createIndex('objektId','objektId');store.createIndex('weNr','weNr')}
@@ -893,6 +925,7 @@ function openIDB(){
           if(s==='taetigkeit_log'){store.createIndex('userId','userId');store.createIndex('datum','datum')}
           if(s==='interessenten'){store.createIndex('objektId','objektId');store.createIndex('status','status')}
           if(s==='od_dateien'){store.createIndex('objektId','objektId');store.createIndex('pfad','pfad')}
+          if(s==='mietbescheinigungen'){store.createIndex('mieterId','mieterId');store.createIndex('objektId','objektId')}
         }
       });
     };
@@ -8778,13 +8811,49 @@ async function showMieter(id){
     });
     h+=`</div>`;
   }
+  // ── Punkt 4: Gespeicherte Mietbescheinigungen ──
+  if(istVerwalter()){
+    try{
+      const mbs = (await idbGetAll('mietbescheinigungen','mieterId',id))
+        .sort((a,b)=>new Date(b.erstelltAm||0)-new Date(a.erstelltAm||0));
+      if(mbs.length){
+        h+=`<div class="card" style="margin-top:12px"><div class="card-hdr"><i class="ti ti-file-certificate"></i> Mietbescheinigungen (${mbs.length})</div>`;
+        mbs.forEach(b=>{
+          const d=b.erstelltAm?new Date(b.erstelltAm).toLocaleDateString('de-DE'):'';
+          const gm=(typeof b.gesamtmiete==='number'&&b.gesamtmiete)?b.gesamtmiete.toFixed(2).replace('.',',')+' €':'';
+          h+=`<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:9px 0;border-bottom:1px solid var(--ink-10)">
+            <div style="flex:1;min-width:0">
+              <div style="font-weight:600;font-size:13px">Erstellt am ${d}${b.erstelltVon?' · '+esc(b.erstelltVon):''}</div>
+              <div style="font-size:11px;color:var(--ink-40)">Gesamtmiete ${gm||'–'}${b.mieteSeitText?' · seit '+esc(b.mieteSeitText):''}</div>
+            </div>
+            <button class="btn btn-sm" onclick="zeigeGespMietbescheinigung('${b.id}')" title="Anzeigen / Drucken"><i class="ti ti-printer"></i></button>
+            <button class="btn btn-sm btn-danger" onclick="loescheGespMietbescheinigung('${b.id}','${id}')" title="Löschen"><i class="ti ti-trash"></i></button>
+          </div>`;
+        });
+        h+=`</div>`;
+      }
+    }catch(err){ console.warn('Mietbescheinigung-Archiv-Block:', err); }
+  }
+
   el.innerHTML=h;
   nav('mieter',m.mieter,obj?.name||'');
 }
 
-/* ═══════════════════════════════════════════════════════════
-   WARTUNGSFRISTEN
-═══════════════════════════════════════════════════════════ */
+// Gespeicherte Mietbescheinigung erneut anzeigen / drucken (offline, aus HTML)
+async function zeigeGespMietbescheinigung(mbId){
+  const b=await idbGet('mietbescheinigungen',mbId);
+  if(!b||!b.html){ toast('Bescheinigung nicht gefunden'); return; }
+  druckHTML(b.html, 'Mietbescheinigung – '+(b.mieterName||''));
+}
+// Gespeicherte Mietbescheinigung löschen
+async function loescheGespMietbescheinigung(mbId, mieterId){
+  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
+  if(!confirm('Diese gespeicherte Mietbescheinigung wirklich löschen?')) return;
+  await idbDelete('mietbescheinigungen', mbId);
+  bcSend('mietbescheinigung_saved', {mieterId});
+  toast('Bescheinigung gelöscht');
+  if(typeof showMieter==='function') showMieter(mieterId);
+}
 const WARTUNG_TYPEN = [
   {val:'heizung',    label:'Heizungswartung',        intervall:12, icon:'ti-flame',         hinweis:'Fachkundige Wartung nach GEG; Intervall je nach Anlage (oft jährlich).'},
   {val:'rauchmelder',label:'Rauchmelder-Prüfung',    intervall:12, icon:'ti-bell-ringing',  hinweis:'Jährliche Funktionsprüfung nach DIN 14676.'},
@@ -13458,7 +13527,8 @@ async function modalMietbescheinigung(mieterId){
         <input type="text" inputmode="decimal" id="mbNkGes" value="${nkGes||''}" oninput="mbRechneNK()"></div>
     </div>
     <div class="f"><label>Gesamtmiete seit/ab (Datum)</label>
-      <input type="date" id="mbMieteSeit" value="${m.einzugISO||(m.einzug&&m.einzug.includes('.')?m.einzug.split('.').reverse().join('-'):'')||''}"></div>
+      <input type="date" id="mbMieteSeit" value="${m.mieteSeitISO||m.einzugISO||(m.einzug&&m.einzug.includes('.')?m.einzug.split('.').reverse().join('-'):'')||''}">
+      <div style="font-size:10px;color:var(--ink-40);margin-top:2px">Vorbelegt aus dem Mieterfeld „Aktuelle Miete gezahlt seit"; sonst Einzug.</div></div>
 
     <div class="f-section-title" style="margin-top:10px"><i class="ti ti-plus"></i> Zuschläge (optional, €)</div>
     <div class="f-row">
@@ -13624,28 +13694,72 @@ async function erstelleMietbescheinigung(mieterId){
 
   const style=`<style>
     *{margin:0;padding:0;box-sizing:border-box}
-    body{font-family:Arial,sans-serif;font-size:10px;color:#111;padding:11mm 14mm;max-width:210mm;line-height:1.25}
-    .mb-h{font-size:15px;font-weight:700;text-align:center;margin-bottom:3px}
-    .mb-h2{font-size:12px;font-weight:700;margin:7px 0 3px;border-bottom:1.5px solid #333;padding-bottom:2px}
-    .mb-sub{font-size:9px;color:#444;margin-bottom:5px;line-height:1.35}
-    .mb-t{width:100%;border-collapse:collapse;margin:3px 0}
+    body{font-family:Arial,sans-serif;font-size:13px;color:#111;padding:16mm 18mm;max-width:210mm;line-height:1.5}
+    .mb-h{font-size:24px;font-weight:700;text-align:center;margin-bottom:14px;letter-spacing:.5px}
+    .mb-h2{font-size:17px;font-weight:700;margin:20px 0 12px;border-bottom:2px solid #333;padding-bottom:5px}
+    .mb-sub{font-size:12px;color:#444;margin-bottom:14px;line-height:1.55}
+    .mb-t{width:100%;border-collapse:collapse;margin:10px 0}
     .mb-t tr{page-break-inside:avoid}
-    .mb-t td{border:1px solid #999;padding:2px 6px;font-size:10px}
-    .mb-t td.l{background:#f4f4f4;width:58%;color:#333}
-    .mb-row{font-size:10px;margin:3px 0;line-height:1.45}
-    .mb-vermieter{margin-top:10px;border:1px solid #999;padding:4px 8px;font-size:10px;page-break-inside:avoid}
-    .mb-sig{margin-top:14px;display:flex;justify-content:space-between;align-items:flex-end;gap:16px}
-    .mb-sig-wrap{display:flex;gap:18px;align-items:flex-end}
-    .mb-sig-line{min-width:150px;text-align:center}
-    @page{margin:0;size:A4}@media print{body{padding:11mm 14mm;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+    .mb-t td{border:1px solid #999;padding:7px 11px;font-size:13px}
+    .mb-t td.l{background:#f4f4f4;width:56%;color:#333}
+    .mb-row{font-size:13px;margin:10px 0;line-height:1.7}
+    .mb-vermieter{margin-top:22px;border:1px solid #999;padding:9px 13px;font-size:13px;page-break-inside:avoid}
+    .mb-vermieter span{font-size:11px}
+    .mb-sig{margin-top:34px;display:flex;justify-content:space-between;align-items:flex-end;gap:24px}
+    .mb-sig-wrap{display:flex;gap:28px;align-items:flex-end}
+    .mb-sig-line{min-width:190px;text-align:center}
+    .mb-sig-line img{max-height:56px !important}
+    .mb-sig-line div{font-size:11px !important}
+    @page{margin:0;size:A4}@media print{body{padding:16mm 18mm;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
   </style>`;
   const html=`<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8"><title>Mietbescheinigung – ${esc(m.mieter||'')}</title>${style}</head>
     <body>${seite1}${seite2}
     <scr`+`ipt>(function(){var p=function(){setTimeout(function(){window.focus();window.print();},500);};if(document.readyState==='complete'){p();}else{window.addEventListener('load',p);}})()</scr`+`ipt></body></html>`;
 
+  // ── Punkt 4: Mietbescheinigung dauerhaft beim Mieter speichern ──
+  // Gespeichert werden a) die ausgefüllten Felder (für spätere Neuerstellung)
+  // und b) das fertige Dokument als HTML (offline jederzeit als PDF druckbar).
+  // Mehrere Versionen bleiben erhalten (eigener Datensatz je Erstellung).
+  try{
+    const archivHtml = html.replace(/<scr(ipt|.)*?>[\s\S]*?window\.print\(\)[\s\S]*?<\/scr.{0,3}ipt>/gi,'');
+    const mbDaten = {
+      id: 'mb_' + m.id + '_' + Date.now().toString(36),
+      mieterId: m.id,
+      objektId: m.objektId,
+      mieterName: m.mieter || '',
+      objektName: obj?.name || '',
+      weNr: m.weNr || '',
+      erstelltAm: new Date().toISOString(),
+      erstelltVon: CU?.name || '',
+      // ausgefüllte Felder (Wohnung + Miete + sonstiges)
+      felder: {
+        zimmer: val('mbZimmer'), baujahr: val('mbBaujahr'),
+        lage: radioVal('mbLage'), lage2: radioVal('mbLage2'),
+        sammelheizung: chk('mbSammelheizung'), bad: chk('mbBad'),
+        brennstoff: radioVal('mbBrennstoff'), warmwasser: val('mbWarmwasser'),
+        modernisiert: chk('mbModern'), modernisiertText: val('mbModernText'),
+        gefoerdert: chk('mbGefoerdert'), gewerbe: chk('mbGewerbe'),
+        moeblierung: val('mbMoeblierung'),
+        kalt: val('mbKalt'), heiz: val('mbHeiz'), nkGes: val('mbNkGes'),
+        garage: val('mbGarage'), moebel: val('mbMoebel'),
+        kaution: val('mbKaution'), staffel: chk('mbStaffel'),
+        schulden: val('mbSchulden'),
+        mieteSeit: val('mbMieteSeit'), personen: parseInt(m.personen)||1,
+        flaeche: m.flaeche||'',
+      },
+      // berechnete Kernwerte (für die Übersicht ohne Neurechnung)
+      gesamtmiete: gesamt,
+      mieteSeitText: mieteSeit || m.einzug || '',
+      // fertiges Dokument (offline druckbar)
+      html: archivHtml,
+    };
+    await idbPut('mietbescheinigungen', mbDaten);
+    bcSend('mietbescheinigung_saved', {mieterId:m.id});
+  }catch(e){ console.warn('Mietbescheinigung-Archiv:', e); }
+
   druckHTML(html);
   closeModal();
-  toast('Mietbescheinigung erstellt ✓');
+  toast('Mietbescheinigung erstellt & gespeichert ✓');
 }
 
 // Vorschalt-Dialog: hinterlegte Admin-Unterschriften für die WGB wählen (analog NKA)
@@ -16391,7 +16505,7 @@ function personenZeileHTML(p, i){
             <option value="Divers" ${p.anrede==='Divers'?'selected':''}>Divers</option>
           </select></div>
         <div class="f"><label style="font-size:10px">Name (Nachname, Vorname)</label>
-          <input type="text" id="pName_${i}" value="${esc(p.name||'')}" spellcheck="true" lang="de" placeholder="Nachname, Vorname" style="font-size:13px"></div>
+          <input type="text" id="pName_${i}" value="${esc(p.name||'')}" spellcheck="true" lang="de" placeholder="Nachname, Vorname" style="font-size:13px" oninput="mPersonenAuto()"></div>
         ${i>0?`<button type="button" class="btn btn-sm btn-danger" onclick="removePerson(${i})" style="flex-shrink:0"><i class="ti ti-trash"></i></button>`:'<div style="width:0"></div>'}
       </div>
       <div class="f-row" style="margin-bottom:6px">
@@ -16413,7 +16527,7 @@ function personenZeileHTML(p, i){
           <input type="checkbox" id="pVp_${i}" ${vp?'checked':''} style="width:15px;height:15px"> <i class="ti ti-file-signature" style="font-size:13px"></i> Vertragspartner
         </label>
         <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-size:12px;color:${p.verstorben?'var(--ink)':'var(--ink-40)'}">
-          <input type="checkbox" id="pTot_${i}" ${p.verstorben?'checked':''} style="width:15px;height:15px"> verstorben
+          <input type="checkbox" id="pTot_${i}" ${p.verstorben?'checked':''} style="width:15px;height:15px" onchange="mPersonenAuto()"> verstorben
         </label>
       </div>
     </div>`;
@@ -16464,7 +16578,7 @@ function mieterFormHTML(obj, m={}) {
       <div class="f"><label>Wohnfläche (m²)</label>
         <input type="number" id="mFlaeche" value="${m.flaeche||''}" step="0.01"></div>
       <div class="f"><label>Personen (Anzahl)${istPersonenObjekt(obj?.id)?' <span class="chip chip-warn" style="font-size:9px;padding:0 5px">NK-relevant</span>':''}</label>
-        <input type="number" id="mPersonen" value="${m.personen||personen.filter(p=>!p.verstorben).length||1}" min="1" max="20">
+        <input type="number" id="mPersonen" value="${m.personen||personen.filter(p=>!p.verstorben).length||1}" min="1" max="20" oninput="mPersonenManuell(this)"${(parseInt(m.personen)||0) > personen.filter(p=>!p.verstorben).length ? ' data-manuell="1"' : ''}>
         <div style="font-size:10px;color:var(--ink-40);margin-top:2px">${istPersonenObjekt(obj?.id)?'Dieses Objekt rechnet Nebenkosten nach Personen ab. ':''}Wird beim Speichern aus der Zahl lebender Personen abgeleitet, sofern hier nicht abweichend gesetzt.</div></div>
     </div>
     <div class="f-row">
@@ -16497,6 +16611,11 @@ function mieterFormHTML(obj, m={}) {
           m.auszug.split('.').reverse().join('-'):m.auszug||''}"></div>
       <div class="f"><label>TG-Stellplatz Nr.</label>
         <input type="text" id="mTgNr" value="${m.tgNr||''}"></div>
+    </div>
+    <div class="f-row">
+      <div class="f"><label>Aktuelle Miete gezahlt seit</label>
+        <input type="date" id="mMieteSeit" value="${m.mieteSeitISO||''}">
+        <div style="font-size:10px;color:var(--ink-40);margin-top:2px">Datum, seit dem die aktuelle Gesamtmiete gezahlt wird (z. B. nach Mieterhöhung). Wird für die Mietbescheinigung übernommen. Leer = Einzugsdatum.</div></div>
     </div>
     ${istVerwalter()?`
     <div class="f-section-title"><i class="ti ti-building-bank"></i> Bankverbindung / Zahlung (nur Admin)</div>
@@ -16538,7 +16657,31 @@ function redrawPersonenListe(personen){
   const liste = document.getElementById('personenListe');
   if(!liste) return;
   liste.innerHTML = personen.map((p,i)=>personenZeileHTML(p,i)).join('');
+  mPersonenAuto();
 }
+
+// Personen-Anzahl-Feld automatisch aus der Zahl lebender Personen füllen.
+// Der Wert wird nur gesetzt, solange der Nutzer das Feld nicht manuell
+// überschrieben hat (Markierung via data-manuell="1"). Live-Update beim Tippen
+// im Namen und beim Umschalten von "verstorben".
+function mPersonenAuto(){
+  const feld = document.getElementById('mPersonen');
+  if(!feld) return;
+  if(feld.dataset.manuell==='1') return;  // Nutzer hat selbst gesetzt -> nicht überschreiben
+  const liste = document.getElementById('personenListe');
+  if(!liste) return;
+  let lebend = 0;
+  for(let i=0;i<liste.children.length;i++){
+    const nameEl = document.getElementById('pName_'+i);
+    if(!nameEl) continue;
+    if(!nameEl.value.trim()) continue;
+    if(document.getElementById('pTot_'+i)?.checked) continue;
+    lebend++;
+  }
+  feld.value = lebend>0 ? lebend : 1;
+}
+// Nutzer hat das Personen-Feld von Hand geändert -> Vorrang merken.
+function mPersonenManuell(el){ if(el) el.dataset.manuell='1'; }
 
 // Liest alle Personenzeilen vollständig aus.
 // nurMitName=true (Standard) filtert leere Zeilen heraus (für Speichern);
@@ -16607,7 +16750,7 @@ async function modalAddMieter(objektId) {
           <option value="Divers">Divers / Keine</option>
         </select></div>
       <div class="f"><label>Personen (Anzahl)${istPersonenObjekt(objektId)?' <span class="chip chip-warn" style="font-size:9px;padding:0 5px">NK-relevant</span>':''}</label>
-        <input type="number" id="mPersonen" value="1" min="1" max="20">
+        <input type="number" id="mPersonen" value="1" min="1" max="20" oninput="mPersonenManuell(this)">
         ${istPersonenObjekt(objektId)?'<div style="font-size:10px;color:var(--amber);margin-top:2px">Dieses Objekt rechnet Nebenkosten nach Personen ab – bitte aktuell halten.</div>':''}</div>
     </div>
     <div style="font-size:11px;color:var(--ink-40);margin-bottom:6px">Jede Zeile = eine Person. Vertragspartner = im Mietvertrag genannt.</div>
@@ -16727,7 +16870,9 @@ async function saveNewMieter(objektId) {
     weNr, etage, flaeche,
     mieter: hauptmieterNachnamen({personen_liste:persListe}) || name,
     anrede: haupt.anrede || document.getElementById('mAnrede')?.value || 'Herr',
-    personen: parseInt(document.getElementById('mPersonen')?.value)||lebend.length||persListe.length||1,
+    personen: (document.getElementById('mPersonen')?.dataset.manuell==='1'
+                ? (parseInt(document.getElementById('mPersonen')?.value)||lebend.length||persListe.length||1)
+                : (lebend.length||persListe.length||1)),
     personen_liste: persListe,
     miete, nk,
     gesamt: (parseFloat(miete)||0)+(parseFloat(nk)||0) || '',
@@ -16845,8 +16990,14 @@ async function saveEditMieter(id) {
       email: document.getElementById('zkMail')?.value?.trim()||'',
     };
   } else { delete m.zusatzkontakt; }
-  // Personenzahl: manueller Wert hat Vorrang, sonst lebende Personen
-  m.personen = parseInt(document.getElementById('mPersonen').value)||lebend.length||persListe.length||1;
+  // Personenzahl: nur ein VOM NUTZER manuell gesetzter Wert hat Vorrang,
+  // ansonsten = Anzahl lebender Personen (verhindert "2 Personen, Zahl bleibt 1").
+  {
+    const _pf = document.getElementById('mPersonen');
+    const _manuell = _pf && _pf.dataset.manuell==='1';
+    m.personen = _manuell ? (parseInt(_pf.value)||lebend.length||persListe.length||1)
+                          : (lebend.length||persListe.length||1);
+  }
   m.weNr    = document.getElementById('mWeNr').value || m.weNr;
   m.etage   = document.getElementById('mEtage').value;
   m.flaeche = document.getElementById('mFlaeche').value;
@@ -16864,6 +17015,7 @@ async function saveEditMieter(id) {
   else { m.auszug = ''; m.auszugISO = ''; }
   m.kaution = parseFloat(document.getElementById('mKaution').value)||m.kaution||'';
   m.tgNr    = document.getElementById('mTgNr').value;
+  m.mieteSeitISO = document.getElementById('mMieteSeit')?.value || '';
   // Bankverbindung / Zahlung (nur Admin sieht die Felder; HM-Formular enthält sie nicht)
   if(document.getElementById('mIban')){
     m.zahlweise    = document.getElementById('mZahlweise')?.value || m.zahlweise || '';
@@ -19838,7 +19990,7 @@ async function delUser(id){
 async function exportBackup(){
   if(!istSystemAdmin()){ toast('Nur für Administratoren'); return; }
   const backup={};
-  for(const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','versicherungen','versorger_archiv','od_dateien','buchungen']){
+  for(const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','versicherungen','versorger_archiv','od_dateien','buchungen','mietbescheinigungen']){
     backup[s]=await idbGetAll(s);
   }
   backup.exportedAt=now();backup.version=2;
@@ -20043,7 +20195,7 @@ async function importBackupAusfuehren(modus){
   const backup = window._pendingBackup;
   if(!backup){ toast('Keine Backup-Datei geladen'); closeModal(); return; }
   closeModal();
-  const alleStores=['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','versorger_archiv','od_dateien','buchungen'];
+  const alleStores=['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','versorger_archiv','od_dateien','buchungen','mietbescheinigungen'];
   try{
     await erstelleMieterSnapshot('vor Import ('+modus+')');
     if(modus==='ersetzen'){
@@ -20302,7 +20454,7 @@ async function syncToOneDrive() {
     } catch(e){ /* offline o. 404: normaler Upload-Weg unten */ }
 
     const backup = {};
-    for (const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','versorger_archiv','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch','sync_log','interessenten','versicherungen','od_dateien','buchungen']) {
+    for (const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','versorger_archiv','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch','sync_log','interessenten','versicherungen','od_dateien','buchungen','mietbescheinigungen']) {
       backup[s] = await idbGetAll(s);
     }
     backup.updatedAt = new Date().toISOString();
@@ -20397,7 +20549,7 @@ async function syncFromOneDrive() {
       await idbPut('settings', { id:'tombstones', value: mergedTomb });
 
       // Merge: ID-basiert, nur übernehmen wenn remote neuer oder lokal fehlt
-      const mergeStores = ['protokolle','aufgaben','maengel','reparaturen','dokumente','nka_archiv','einkaufsliste','wartung','termine','zaehler','zaehlerstaende','versorger','versorger_archiv','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch','sync_log','interessenten','od_dateien'];
+      const mergeStores = ['protokolle','aufgaben','maengel','reparaturen','dokumente','nka_archiv','einkaufsliste','wartung','termine','zaehler','zaehlerstaende','versorger','versorger_archiv','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch','sync_log','interessenten','od_dateien','mietbescheinigungen'];
       for (const s of mergeStores) {
         if (!backup[s]) continue;
         const tombS = mergedTomb[s] || {};
