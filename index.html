@@ -791,8 +791,8 @@ body.printing-active #printRoot{display:block!important}
 /* ═══════════════════════════════════════════════════════════
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
-const DB_NAME='immo_v2', DB_VER=26;
-const APP_VERSION = '2026-06-22-v115';
+const DB_NAME='immo_v2', DB_VER=27;
+const APP_VERSION = '2026-06-22-v116';
 /* v94 (19.06.2026): Etappe 1 – Lokale Benachrichtigungen erweitert (Termine + Maengel).
    - checkFaelligeAufgaben() prueft jetzt zusaetzlich:
      a) Termin-Erinnerungen: Termine mit gesetztem Erinnerungs-Vorlauf (1/2/7 Tage)
@@ -892,7 +892,7 @@ function openIDB(){
     const req=indexedDB.open(DB_NAME,DB_VER);
     req.onupgradeneeded=e=>{
       const db=e.target.result;
-      ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','fotos','wartung','zaehler','zaehlerstaende','versorger','versorger_archiv','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','sync_log','mieter_snapshots','branchenbuch','interessenten','od_dateien','buchungen','mietbescheinigungen'].forEach(s=>{
+      ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','fotos','wartung','zaehler','zaehlerstaende','versorger','versorger_archiv','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','sync_log','mieter_snapshots','branchenbuch','interessenten','od_dateien','buchungen','mietbescheinigungen','mv_entwuerfe'].forEach(s=>{
         if(!db.objectStoreNames.contains(s)){
           const store=db.createObjectStore(s,{keyPath:'id'});
           if(s==='mieter'){store.createIndex('objektId','objektId');store.createIndex('weNr','weNr')}
@@ -926,6 +926,7 @@ function openIDB(){
           if(s==='interessenten'){store.createIndex('objektId','objektId');store.createIndex('status','status')}
           if(s==='od_dateien'){store.createIndex('objektId','objektId');store.createIndex('pfad','pfad')}
           if(s==='mietbescheinigungen'){store.createIndex('mieterId','mieterId');store.createIndex('objektId','objektId')}
+          if(s==='mv_entwuerfe'){store.createIndex('mieterId','mieterId');store.createIndex('objektId','objektId')}
         }
       });
     };
@@ -8852,6 +8853,32 @@ async function showMieter(id){
     }catch(err){ console.warn('Mietbescheinigung-Archiv-Block:', err); }
   }
 
+  // ── Punkt 13: Mietvertrag-Entwürfe (Historie) ──
+  if(istVerwalter()){
+    try{
+      const mves = (await idbGetAll('mv_entwuerfe','mieterId',id))
+        .sort((a,b)=>new Date(b.erstelltAm||0)-new Date(a.erstelltAm||0));
+      if(mves.length){
+        h+=`<div class="card" style="margin-top:12px"><div class="card-hdr"><i class="ti ti-file-stack"></i> Mietvertrag-Entwürfe (${mves.length})</div>`;
+        mves.forEach((e,idx)=>{
+          const d=e.erstelltAm?new Date(e.erstelltAm).toLocaleDateString('de-DE'):'';
+          const gm=e.gesamtMiete?(fmtEur(e.gesamtMiete)):'';
+          const aktuell = idx===0 ? ' · <span style="color:var(--copper)">aktuell</span>' : '';
+          h+=`<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:9px 0;border-bottom:1px solid var(--ink-10)">
+            <div style="flex:1;min-width:0">
+              <div style="font-weight:600;font-size:13px">Entwurf vom ${d}${e.erstelltVon?' · '+esc(e.erstelltVon):''}${aktuell}</div>
+              <div style="font-size:11px;color:var(--ink-40)">Gesamtmiete ${gm||'–'}${e.weNr?' · WE '+esc(e.weNr):''}</div>
+            </div>
+            <button class="btn btn-sm" onclick="zeigeMvEntwurf('${e.id}')" title="Anzeigen / Drucken"><i class="ti ti-printer"></i></button>
+            <button class="btn btn-sm" onclick="mvEntwurfWiederherstellen('${e.id}')" title="In Generator laden"><i class="ti ti-edit"></i></button>
+            <button class="btn btn-sm btn-danger" onclick="loescheMvEntwurf('${e.id}','${id}')" title="Löschen"><i class="ti ti-trash"></i></button>
+          </div>`;
+        });
+        h+=`</div>`;
+      }
+    }catch(err){ console.warn('MV-Entwurf-Archiv-Block:', err); }
+  }
+
   el.innerHTML=h;
   nav('mieter',m.mieter,obj?.name||'');
 }
@@ -8869,6 +8896,31 @@ async function loescheGespMietbescheinigung(mbId, mieterId){
   await idbDelete('mietbescheinigungen', mbId);
   bcSend('mietbescheinigung_saved', {mieterId});
   toast('Bescheinigung gelöscht');
+  if(typeof showMieter==='function') showMieter(mieterId);
+}
+
+// Punkt 13: Gespeicherten MV-Entwurf erneut anzeigen / drucken (offline, aus HTML).
+async function zeigeMvEntwurf(eid){
+  const e=await idbGet('mv_entwuerfe',eid);
+  if(!e||!e.html){ toast('Entwurf nicht gefunden'); return; }
+  druckHTML(e.html, 'Mietvertrag-Entwurf – '+(e.mieterName||''));
+}
+// Punkt 13: Archivierten Entwurf wieder in den Generator laden (zum Weiterbearbeiten).
+async function mvEntwurfWiederherstellen(eid){
+  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
+  const e=await idbGet('mv_entwuerfe',eid);
+  if(!e||!e.entwurf){ toast('Entwurf nicht gefunden'); return; }
+  MV_DRAFT = Object.assign({}, e.entwurf, { mieterId: e.mieterId });
+  await mvRenderGeneratorModal();
+  toast('Entwurf in den Generator geladen');
+}
+// Punkt 13: Archivierten Entwurf löschen.
+async function loescheMvEntwurf(eid, mieterId){
+  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
+  if(!confirm('Diesen Mietvertrag-Entwurf wirklich löschen?')) return;
+  await idbDelete('mv_entwuerfe', eid);
+  bcSend('mv_entwurf_saved', {mieterId});
+  toast('Entwurf gelöscht');
   if(typeof showMieter==='function') showMieter(mieterId);
 }
 const WARTUNG_TYPEN = [
@@ -12583,7 +12635,13 @@ function mvVertragHTML(d){
   zeilenMiete += '<div class="mv-row"><span>Nettokaltmiete (ohne Betriebskosten, Heizung, Warmwasser):</span><b>' + mvEur(d.kaltmiete) + ' EUR</b></div>';
   zeilenMiete += '<div class="mv-row"><span>Betriebskostenvorauszahlung (§ 556 Abs. 2 BGB):</span><b>' + mvEur(d.nkVorschuss) + ' EUR</b></div>';
   if(zeigeHeizVorschuss){
-    zeilenMiete += '<div class="mv-row"><span>Vorauszahlung Heizung/Warmwasser (§ 6):</span><b>' + mvEur(d.heizVorschuss) + ' EUR</b></div>';
+    // Punkt 9: Bei dezentralem Warmwasser (Variante B) wird Warmwasser NICHT
+    // umgelegt – die Vorauszahlung betrifft nur die Heizung. Nur Variante A
+    // legt Heizung UND Warmwasser zentral um.
+    const _vzLabel = (d.heizVariante==='A')
+      ? 'Vorauszahlung Heizung/Warmwasser (§ 6):'
+      : 'Vorauszahlung Heizung (§ 6):';
+    zeilenMiete += '<div class="mv-row"><span>' + _vzLabel + '</span><b>' + mvEur(d.heizVorschuss) + ' EUR</b></div>';
   }
   zeilenMiete += '<div class="mv-row mv-sum"><span>Monatliche Gesamtzahlung zurzeit:</span><b>' + mvEur(d.gesamtMiete) + ' EUR</b></div>';
 
@@ -12802,10 +12860,59 @@ function mvVertragHTML(d){
 
   h += '<div class="mv-foot">Hausverwaltung Nadig / Pfau · Wohnraum-Mietvertrag</div>';
 
+  // Punkt 5+10: Jede ANGEKLICKTE Anlage als eigene Seite anhängen. Wo ein
+  // Volltext in der App vorliegt, kann er eingebettet werden; sonst wird eine
+  // klar gekennzeichnete Platzhalterseite erzeugt (vom Vermieter beizufügen).
+  h += mvAnlagenSeiten(anl, d);
+
   // Auto-Druck
   h += '<scr'+'ipt>(function(){var p=function(){setTimeout(function(){window.focus();window.print();},600);};if(document.readyState===\'complete\'){p();}else{window.addEventListener(\'load\',p);}})()</scr'+'ipt>';
   h += '</body></html>';
   return h;
+}
+
+// Erzeugt für jede angeklickte Anlage eine eigene Seite (Seitenumbruch davor).
+// Reihenfolge entspricht der Anlagenliste. Platzhalter, solange kein Volltext
+// hinterlegt ist – so ist die Anlage im PDF vorhanden und klar als beizufügend
+// gekennzeichnet (Punkt 10).
+function mvAnlagenSeiten(anl, d){
+  anl = anl || {};
+  const ANLAGEN = [
+    {key:'hausordnung', titel:'Anlage 1 – Hausordnung',
+      hinweis:'Die für das Objekt geltende Hausordnung ist diesem Vertrag als gesonderte Anlage beigefügt und Bestandteil des Mietvertrags.'},
+    {key:'merkblatt', titel:'Anlage – Merkblatt „Richtig heizen und lüften"',
+      hinweis:'Das Merkblatt „Richtig heizen und lüften" ist diesem Vertrag als gesonderte Anlage beigefügt.'},
+    {key:'wgb', titel:'Anlage – Wohnungsgeberbestätigung (§ 19 BMG)',
+      hinweis:'Die Wohnungsgeberbestätigung nach § 19 Bundesmeldegesetz wird gesondert ausgestellt und dem Mieter ausgehändigt.'},
+    {key:'dsgvo', titel:'Anlage – Datenschutzhinweis (Art. 13 DSGVO)',
+      hinweis:'Der Datenschutzhinweis nach Art. 13 DSGVO ist diesem Vertrag als gesonderte Anlage beigefügt.'},
+    {key:'energie', titel:'Anlage – Energieausweis / Pflichtangaben (§ 80 GEG)',
+      hinweis:'Die Pflichtangaben zum Energieausweis (§ 80 GEG) sind diesem Vertrag als gesonderte Anlage beigefügt.'},
+    {key:'sepa', titel:'Anlage – SEPA-Lastschriftmandat',
+      hinweis:'Das SEPA-Lastschriftmandat ist diesem Vertrag als gesonderte Anlage beigefügt und vom Mieter zu unterzeichnen.'},
+  ];
+  let out = '';
+  ANLAGEN.forEach(a=>{
+    if(!anl[a.key]) return;
+    // Energieausweis: vorhandene Kennwerte aus dem Entwurf mit ausgeben
+    let extra = '';
+    if(a.key==='energie'){
+      const vorgelegt = mvEsc(d?.energieausweis||'nein');
+      const kw = mvEsc(d?.energieKennwerte||'');
+      extra = '<p style="margin-top:10px">Energieausweis vorgelegt: ' + vorgelegt
+        + (kw ? ('<br>Kennwerte: ' + kw) : '') + '</p>';
+    }
+    out += '<div class="mv-pb">'
+      + '<h2 style="margin-top:0">' + mvEsc(a.titel) + '</h2>'
+      + '<p>' + mvEsc(a.hinweis) + '</p>'
+      + extra
+      + '<div style="margin-top:18px;padding:14px;border:1px dashed #999;color:#555;font-size:11px;text-align:center">'
+      + '[ Inhalt dieser Anlage wird gesondert beigefügt ]'
+      + '</div>'
+      + '<div class="mv-foot">Anlage zum Wohnraum-Mietvertrag · Hausverwaltung Nadig / Pfau</div>'
+      + '</div>';
+  });
+  return out;
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -13111,7 +13218,7 @@ async function mvRenderGeneratorModal(){
       <div id="mvMpbInfo" style="font-size:11px;color:${reguliert?'var(--copper)':'var(--ink-40)'};margin-bottom:4px">
         ${reguliert?'<i class="ti ti-info-circle"></i> Objekt liegt in einem regulierten Gebiet – Auskunft empfohlen.':'Objekt nicht reguliert – § 15 wird nicht aufgenommen.'}
       </div>
-      <label style="font-size:12px;display:block"><input type="checkbox" id="mvMpb" ${d.mietpreisbremse||reguliert?'checked':''} ${reguliert?'':'disabled'}> § 15 aufnehmen</label>
+      <label style="font-size:12px;display:block"><input type="checkbox" id="mvMpb" ${d.mietpreisbremse||reguliert?'checked':''} ${reguliert?'':'disabled'} onchange="mvMpbVorbefuellen()"> § 15 aufnehmen</label>
       <div class="f" id="mvMpbWrap" style="display:${(d.mietpreisbremse||reguliert)?'block':'none'}"><label>Auskunft (Vormiete / Ausnahmegrund, Textform)</label>
         <textarea id="mvMpbText" style="min-height:42px" placeholder="z. B. Vormiete betrug ___ EUR; oder: Ausnahme nach umfassender Modernisierung">${esc(d.mpbAuskunft||'')}</textarea></div>
 
@@ -13151,7 +13258,7 @@ async function mvRenderGeneratorModal(){
       <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
     </div>`);
 
-  setTimeout(()=>{ mvBerechneGesamt(); mvWarnKr(); mvOnHeizVarChange(); mvRenderSchluessel(); mvRenderGemeinschaft(); }, 50);
+  setTimeout(()=>{ mvBerechneGesamt(); mvWarnKr(); mvOnHeizVarChange(); mvRenderSchluessel(); mvRenderGemeinschaft(); mvMpbVorbefuellen(); }, 50);
 }
 
 // ── Live-UI-Helfer ──
@@ -13252,6 +13359,7 @@ async function mvOnWeChange(){
     if(w.kellerNr) set('mvMitbenutzung', w.kellerNr);
     if(typeof mvRenderSchluessel==='function')   await mvRenderSchluessel();
     if(typeof mvRenderGemeinschaft==='function') await mvRenderGemeinschaft();
+    if(typeof mvMpbVorbefuellen==='function')    await mvMpbVorbefuellen();
     // Heizungsvariante-Auto aktualisieren
     MV_DRAFT._heizAuto = await mvHeizVarianteFuer(MV_DRAFT.objektId, we);
     mvOnHeizVarChange();
@@ -13325,6 +13433,55 @@ function mvGemSync(){
   const obj={};
   document.querySelectorAll('#mvGemeinschaftBox .mvGemChk').forEach(chk=>{ obj[chk.dataset.key]=chk.checked; });
   if(MV_DRAFT) MV_DRAFT.gemeinschaft=obj;
+}
+
+// Punkt 6: Vormiete der WE ermitteln. Reihenfolge:
+// 1) Vormieter dieser WE (_vormieter mit höchstem Auszugsdatum),
+// 2) bei Leerstand der zuletzt dort wohnende aktive Mieter (vor dem aktuellen Entwurf).
+// Liefert {betrag, name, datum} oder null.
+async function mvVormieteFuerWe(objektId, weNr){
+  if(!objektId || !weNr || weNr==='__neu') return null;
+  const alle = await idbGetAll('mieter','objektId',objektId).catch(()=>[]);
+  const dieserWe = alle.filter(m=>String(m.weNr)===String(weNr));
+  // Vormieter bevorzugen (zuletzt ausgezogen)
+  const vor = dieserWe.filter(m=>m._vormieter && (parseFloat(String(m.miete||'').replace(',','.'))>0));
+  vor.sort((a,b)=>{
+    const da = a.auszugISO || (a.auszug && a.auszug.includes('.')?a.auszug.split('.').reverse().join('-'):'') || '';
+    const db = b.auszugISO || (b.auszug && b.auszug.includes('.')?b.auszug.split('.').reverse().join('-'):'') || '';
+    return db.localeCompare(da);
+  });
+  let q = vor[0];
+  // sonst: aktiver Mieter (nicht der gerade bearbeitete Entwurf), der dort wohnt
+  if(!q){
+    const aktiv = dieserWe.filter(m=>!m._vormieter && !m.leerstand && (parseFloat(String(m.miete||'').replace(',','.'))>0));
+    // den gerade bearbeiteten Entwurf-Mieter ausschließen
+    const gefiltert = aktiv.filter(m=>!MV_DRAFT || m.id!==MV_DRAFT.mieterId);
+    q = gefiltert[0];
+  }
+  if(!q) return null;
+  const betrag = parseFloat(String(q.miete||'').replace(',','.'))||0;
+  if(!(betrag>0)) return null;
+  return { betrag, name: q.mieter||'', datum: q.auszug||q.einzug||'' };
+}
+
+// Punkt 6: §15-Beispieltext mit Vormiete vorbefüllen (nur wenn Feld leer).
+async function mvMpbVorbefuellen(){
+  const wrap=document.getElementById('mvMpbWrap');
+  const ta=document.getElementById('mvMpbText');
+  const chk=document.getElementById('mvMpb');
+  if(!ta || !chk) return;
+  mvToggle('mvMpbWrap', chk.checked);
+  if(!chk.checked) return;
+  if(ta.value && ta.value.trim()) return; // bestehenden Text nie überschreiben
+  const vm = await mvVormieteFuerWe(MV_DRAFT?.objektId, MV_DRAFT?.weNr);
+  if(vm && vm.betrag>0){
+    ta.value = 'Die Vormiete betrug ' + mvEur(vm.betrag) + ' EUR netto kalt monatlich. '
+      + 'Die nach §§ 556d ff. BGB zulässige Miete wird eingehalten.';
+  } else {
+    ta.value = 'Vormiete: keine bekannt (z. B. Neuvermietung nach Leerstand/Ersterfassung). '
+      + 'Die nach §§ 556d ff. BGB zulässige Miete wird eingehalten.';
+  }
+  if(MV_DRAFT) MV_DRAFT.mpbAuskunft = ta.value;
 }
 
 // Formularwerte in MV_DRAFT übernehmen (ohne zu erzeugen)
@@ -13498,6 +13655,28 @@ async function mvErzeugen(){
       mieterId, objektId: D.objektId, typ:'vertrag',
       name:'Wohnraum-Mietvertrag (Entwurf zur Prüfung)', html, mimeType:'text/html',
     });
+  }
+
+  // 2b) Punkt 13: Diesen Entwurf zusätzlich versioniert im Archiv ablegen
+  //     (volle Historie – jeder Erzeugungsvorgang ein eigener Datensatz).
+  if(mieterId){
+    try{
+      const entwurfDaten = {}; Object.keys(D).forEach(k=>{ if(!k.startsWith('_')) entwurfDaten[k]=D[k]; });
+      const archivHtml = String(html).replace(/<scr(?:ipt|.)*?>[\s\S]*?window\.print\(\)[\s\S]*?<\/scr.{0,3}ipt>/gi,'');
+      await idbPut('mv_entwuerfe', {
+        id: 'mve_' + mieterId + '_' + Date.now().toString(36),
+        mieterId,
+        objektId: D.objektId,
+        mieterName: D.mieter1Name||'',
+        weNr: D.weNr||'',
+        erstelltAm: new Date().toISOString(),
+        erstelltVon: CU?.name||'',
+        gesamtMiete: rd.gesamtMiete||'',
+        entwurf: entwurfDaten,   // vollständige Eingaben zum Wiederherstellen
+        html: archivHtml,        // fertiges Dokument (offline druckbar)
+      });
+      bcSend('mv_entwurf_saved', {mieterId});
+    }catch(e){ console.warn('MV-Entwurf-Archiv:', e); }
   }
 
   // 3) Interner Angemessenheits-Hinweis (nur falls Ausgleich) am Mieter vermerken
@@ -20150,7 +20329,7 @@ async function delUser(id){
 async function exportBackup(){
   if(!istSystemAdmin()){ toast('Nur für Administratoren'); return; }
   const backup={};
-  for(const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','versicherungen','versorger_archiv','od_dateien','buchungen','mietbescheinigungen']){
+  for(const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','versicherungen','versorger_archiv','od_dateien','buchungen','mietbescheinigungen','mv_entwuerfe']){
     backup[s]=await idbGetAll(s);
   }
   backup.exportedAt=now();backup.version=2;
@@ -20355,7 +20534,7 @@ async function importBackupAusfuehren(modus){
   const backup = window._pendingBackup;
   if(!backup){ toast('Keine Backup-Datei geladen'); closeModal(); return; }
   closeModal();
-  const alleStores=['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','versorger_archiv','od_dateien','buchungen','mietbescheinigungen'];
+  const alleStores=['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','versorger_archiv','od_dateien','buchungen','mietbescheinigungen','mv_entwuerfe'];
   try{
     await erstelleMieterSnapshot('vor Import ('+modus+')');
     if(modus==='ersetzen'){
@@ -20614,7 +20793,7 @@ async function syncToOneDrive() {
     } catch(e){ /* offline o. 404: normaler Upload-Weg unten */ }
 
     const backup = {};
-    for (const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','versorger_archiv','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch','sync_log','interessenten','versicherungen','od_dateien','buchungen','mietbescheinigungen']) {
+    for (const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','versorger_archiv','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch','sync_log','interessenten','versicherungen','od_dateien','buchungen','mietbescheinigungen','mv_entwuerfe']) {
       backup[s] = await idbGetAll(s);
     }
     backup.updatedAt = new Date().toISOString();
@@ -20709,7 +20888,7 @@ async function syncFromOneDrive() {
       await idbPut('settings', { id:'tombstones', value: mergedTomb });
 
       // Merge: ID-basiert, nur übernehmen wenn remote neuer oder lokal fehlt
-      const mergeStores = ['protokolle','aufgaben','maengel','reparaturen','dokumente','nka_archiv','einkaufsliste','wartung','termine','zaehler','zaehlerstaende','versorger','versorger_archiv','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch','sync_log','interessenten','od_dateien','mietbescheinigungen'];
+      const mergeStores = ['protokolle','aufgaben','maengel','reparaturen','dokumente','nka_archiv','einkaufsliste','wartung','termine','zaehler','zaehlerstaende','versorger','versorger_archiv','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch','sync_log','interessenten','od_dateien','mietbescheinigungen','mv_entwuerfe'];
       for (const s of mergeStores) {
         if (!backup[s]) continue;
         const tombS = mergedTomb[s] || {};
