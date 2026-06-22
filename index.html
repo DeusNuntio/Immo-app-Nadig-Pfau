@@ -792,7 +792,7 @@ body.printing-active #printRoot{display:block!important}
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=26;
-const APP_VERSION = '2026-06-22-v114';
+const APP_VERSION = '2026-06-22-v115';
 /* v94 (19.06.2026): Etappe 1 – Lokale Benachrichtigungen erweitert (Termine + Maengel).
    - checkFaelligeAufgaben() prueft jetzt zusaetzlich:
      a) Termin-Erinnerungen: Termine mit gesetztem Erinnerungs-Vorlauf (1/2/7 Tage)
@@ -7594,7 +7594,7 @@ function gebaeudeStatsHTML(stamm, personenGesamt, mieterAnzahl, istAdmin){
       </div>`:''}
     </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap">
-      ${feld('ti-ruler-2','Wohnfläche', s.wohnflaeche?esc(String(s.wohnflaeche))+' m²':'')}
+      ${feld('ti-ruler-2','Wohnfläche', s.wohnflaeche?qm(s.wohnflaeche)+' m²':'')}
       ${feld('ti-calendar','Baujahr', s.baujahr?esc(String(s.baujahr)):'')}
       ${feld('ti-tools','Modernisiert', s.modernisiert?esc(String(s.modernisiert)):'')}
       ${feld('ti-users','Bewohner', String(personenGesamt))}
@@ -7615,6 +7615,16 @@ const SCHLUESSEL_TYPEN = [
   {key:'keller',  label:'Kellerschlüssel'},
   {key:'garage',  label:'Garagen-/TG-Schlüssel'},
   {key:'sonstige',label:'Sonstige Schlüssel'},
+];
+
+// Gemeinschaftliche Einrichtungen eines Objekts (Objektinfos). Im Gebäudestamm
+// festgelegt, im Mietvertrag (§ 1 Mitbenutzung) als Auswahl angeboten.
+const GEMEINSCHAFT_TYPEN = [
+  {key:'waschkueche',  label:'Waschküche'},
+  {key:'garten',       label:'Garten'},
+  {key:'trockenraum',  label:'Trockenraum'},
+  {key:'fahrradkeller',label:'Fahrradkeller'},
+  {key:'dachboden',    label:'Dachboden / Speicher'},
 ];
 
 // Schlüssel-Sollbestand einer Wohnung (aus Wohnungsstamm), mit sicheren Defaults.
@@ -7704,6 +7714,12 @@ async function modalGebaeudeStamm(objektId){
         <option value="">– bitte wählen –</option>
         ${HEIZUNG_ARTEN.map(h=>`<option value="${h}" ${s.heizung===h?'selected':''}>${h}</option>`).join('')}
       </select></div>
+    <div class="f-section-title" style="margin-top:14px"><i class="ti ti-building-community"></i> Gemeinschaftliche Einrichtungen</div>
+    <div style="font-size:11px;color:var(--ink-40);margin:-4px 0 8px">Was es im Objekt gibt. Wird im Mietvertrag (§ 1 Mitbenutzung) zur Auswahl angeboten.</div>
+    <div style="display:flex;flex-direction:column;gap:4px;margin-bottom:6px">
+      ${GEMEINSCHAFT_TYPEN.map(g=>`<label style="font-size:13px"><input type="checkbox" id="gsGem_${g.key}" ${s.gemeinschaft&&s.gemeinschaft[g.key]?'checked':''}> ${g.label}</label>`).join('')}
+    </div>
+
     <div class="f-section-title" style="margin-top:14px"><i class="ti ti-building-bank"></i> Bankverbindung für Mietzahlung (Mieterportal)</div>
     <div style="font-size:11px;color:var(--ink-40);margin:-4px 0 8px">Diese Bankzeile wird Mietern im Portal zur Überweisung angezeigt. Es wird kein Kontostand / Saldo veröffentlicht.</div>
     <div class="f"><label>Kontoinhaber / Empfänger</label>
@@ -7762,6 +7778,7 @@ async function saveGebaeudeStamm(objektId){
     modernisiert:document.getElementById('gsModern')?.value?.trim()||'',
     heizung:document.getElementById('gsHeizung')?.value||'',
     mietspiegel:parseFloat(String(document.getElementById('gsMietspiegel')?.value||'').replace(',','.'))||'',
+    gemeinschaft:(function(){ const g={}; GEMEINSCHAFT_TYPEN.forEach(t=>{ g[t.key]=!!document.getElementById('gsGem_'+t.key)?.checked; }); return g; })(),
     ktoInhaber:document.getElementById('gsKtoInhaber')?.value?.trim()||'',
     ktoIban:document.getElementById('gsKtoIban')?.value?.trim()||'',
     ktoBic:document.getElementById('gsKtoBic')?.value?.trim()||'',
@@ -8322,7 +8339,7 @@ async function renderObjMieter(el){
         const vm=vormieterProWE[String(we)];
         const etage=stamm.etage||vm?.etage||'';
         const flaeche=stamm.flaeche||vm?.flaeche||'';
-        const sub=[etage?('Etage '+esc(String(etage))):'', flaeche?(esc(String(flaeche))+' m²'):''].filter(Boolean).join(' · ');
+        const sub=[etage?('Etage '+esc(String(etage))):'', flaeche?(qm(flaeche)+' m²'):''].filter(Boolean).join(' · ');
         h+=`<div class="mieter-row" style="border-style:dashed;background:var(--ink-02)" onclick="modalLeerstandWE('${currentObjId}','${esc(String(we))}','${vm?vm.id:''}')">
           <div class="m-avatar" style="background:var(--ink-10);color:var(--ink-40)"><i class="ti ti-home-off"></i></div>
           <div class="m-body">
@@ -8551,7 +8568,7 @@ function mieterVCard(m){
   if(kz)   noteParts.push('Objekt: '+kz);
   if(we)   noteParts.push(we);
   if(lage) noteParts.push('Lage: '+lage);
-  if(m.flaeche) noteParts.push(m.flaeche+' m²');
+  if(m.flaeche) noteParts.push(qm(m.flaeche)+' m²');
   if(noteParts.length) v+='NOTE:'+vcEsc(noteParts.join(' · '))+'\r\n';
   v+='END:VCARD\r\n';
   return v;
@@ -8735,7 +8752,7 @@ async function showMieter(id){
     <button class="btn btn-sm" onclick="modalWohnungGrundriss('${m.objektId}','${esc(String(m.weNr||''))}')"><i class="ti ti-map"></i> Grundriss</button>
     <button class="btn btn-sm" onclick="modalWohnungsbilder('${m.objektId}','${esc(String(m.weNr||''))}')"><i class="ti ti-photo-scan"></i> Bilder</button>
     ${istVerwalter()?`<button class="btn btn-sm" onclick="modalSchluessel('${m.objektId}','${esc(String(m.weNr||''))}')"><i class="ti ti-key"></i> Schlüssel</button>`:''}
-    ${istVerwalter()?`<button class="btn btn-sm" onclick="modalWohnungHeizNk('${m.objektId}','${esc(String(m.weNr||''))}')"><i class="ti ti-temperature"></i> Heizung & NK</button>`:''}
+    ${istVerwalter()?`<button class="btn btn-sm" onclick="modalWohnungHeizNk('${m.objektId}','${esc(String(m.weNr||''))}')"><i class="ti ti-home-cog"></i> Wohnungsinfos</button>`:''}
     <button class="btn btn-sm" onclick="druckeWohnungsgeberBescheinigung('${m.id}')"><i class="ti ti-file-certificate"></i> WGB</button>
     ${istVerwalter()?`<button class="btn btn-sm" onclick="modalMietbescheinigung('${m.id}')"><i class="ti ti-receipt-2"></i> Mietbescheinigung</button>`:''}
     <button class="btn btn-sm" onclick="modalBrief('${m.id}','${m.objektId}')"><i class="ti ti-mail"></i> Brief</button>
@@ -11052,7 +11069,7 @@ async function erstelleNKA(objektId, korrektur) {
     uebersichtRows+=`<tr>
       <td style="padding:4px 6px;border:1px solid #dde;font-size:9px">WE ${m.weNr}</td>
       <td style="padding:4px 6px;border:1px solid #dde;font-size:9px">${m.mieter}</td>
-      <td style="padding:4px 6px;border:1px solid #dde;font-size:9px;text-align:right">${parseFloat(m.flaeche)||0} m²</td>
+      <td style="padding:4px 6px;border:1px solid #dde;font-size:9px;text-align:right">${qm(parseFloat(m.flaeche)||0)} m²</td>
       <td style="padding:4px 6px;border:1px solid #dde;font-size:9px;text-align:right">${fmtEur(nkAnteil)}</td>
       <td style="padding:4px 6px;border:1px solid #dde;font-size:9px;text-align:right">${kostenMap['heizung']?.[m.id]>0?fmtEur(kostenMap['heizung'][m.id]):'–'}</td>
       <td style="padding:4px 6px;border:1px solid #dde;font-size:9px;text-align:right">${ex.kr>0?fmtEur(ex.kr):'–'}</td>
@@ -11189,7 +11206,7 @@ async function erstelleNKA(objektId, korrektur) {
       </table>
       <table class="info-table" style="margin-bottom:10px">
         <tr><td>Ihre Wohnmonate</td><td>WFL</td><td>Personenmonate</td><td>Vorauszahlung</td></tr>
-        <tr><td>${mWohnM}</td><td>${parseFloat(m.flaeche)||0} m²</td><td>${personenMonate(m,von,bis)}</td>
+        <tr><td>${mWohnM}</td><td>${qm(parseFloat(m.flaeche)||0)} m²</td><td>${personenMonate(m,von,bis)}</td>
           <td>${fmtEur(vzJahres)} gesamt</td></tr>
       </table>
 
@@ -11788,7 +11805,7 @@ async function erstelleNKALiegenschaft(lgId, korrektur){
     uebersichtRows+=`<tr>
       <td style="padding:4px 6px;border:1px solid #dde;font-size:9px">${objN} · WE ${m.weNr}</td>
       <td style="padding:4px 6px;border:1px solid #dde;font-size:9px">${esc(m.mieter)}</td>
-      <td style="padding:4px 6px;border:1px solid #dde;font-size:9px;text-align:right">${parseFloat(m.flaeche)||0} m²</td>
+      <td style="padding:4px 6px;border:1px solid #dde;font-size:9px;text-align:right">${qm(parseFloat(m.flaeche)||0)} m²</td>
       <td style="padding:4px 6px;border:1px solid #dde;font-size:9px;text-align:right">${fmtEur(nkAnteil-heiz-ex.kr-ex.so)}</td>
       <td style="padding:4px 6px;border:1px solid #dde;font-size:9px;text-align:right">${heiz>0?fmtEur(heiz):'–'}</td>
       <td style="padding:4px 6px;border:1px solid #dde;font-size:9px;text-align:right">${ex.kr>0?fmtEur(ex.kr):'–'}</td>
@@ -11885,7 +11902,7 @@ async function erstelleNKALiegenschaft(lgId, korrektur){
       </table>
       <table class="info-table" style="margin-bottom:10px">
         <tr><td>Ihre Wohnmonate</td><td>WFL</td><td>Personenmonate</td><td>Vorauszahlung</td></tr>
-        <tr><td>${mWohnM}</td><td>${parseFloat(m.flaeche)||0} m²</td><td>${personenMonate(m,von,bis)}</td><td>${fmtEur(vzJahres)} gesamt</td></tr>
+        <tr><td>${mWohnM}</td><td>${qm(parseFloat(m.flaeche)||0)} m²</td><td>${personenMonate(m,von,bis)}</td><td>${fmtEur(vzJahres)} gesamt</td></tr>
       </table>
       <table class="pos-table">
         <thead><tr><th>Kostenart</th><th>Schlüssel</th><th>Betrag</th><th>Geteilt durch</th><th>Ihr Anteil</th><th>Preis/Anteil</th><th>Ihre Kosten</th></tr></thead>
@@ -12471,12 +12488,31 @@ async function modalWohnungHeizNk(objektId, weNr){
   }).join('');
 
   showModal(`
-    <div class="m-title"><i class="ti ti-temperature"></i> Heizung & NK – ${esc(obj?.name||'')} · WE ${esc(String(weNr||''))}</div>
+    <div class="m-title"><i class="ti ti-home-cog"></i> Wohnungsinfos – ${esc(obj?.name||'')} · WE ${esc(String(weNr||''))}</div>
     <div style="font-size:11px;color:var(--ink-40);margin-bottom:10px;line-height:1.5">
       Diese Angaben gelten dauerhaft für die Wohnung und liefern die Vorbelegung für den Mietvertrag.
       Leer = Objektstandard wird verwendet.</div>
 
-    <div class="f-section-title"><i class="ti ti-flame"></i> Heizungsvariante (§ 6)</div>
+    <div class="f-section-title"><i class="ti ti-door"></i> Räume &amp; Ausstattung</div>
+    <div class="f-row">
+      <div class="f" style="flex:0 0 120px"><label>Anzahl Zimmer</label>
+        <input type="number" id="whZimmer" min="0" step="1" value="${esc(w.zimmer!=null?w.zimmer:'')}" placeholder="z. B. 3"></div>
+      <div class="f"><label>Wohnfläche m²</label>
+        <input type="number" id="whFlaeche" step="0.01" value="${esc(w.flaeche!=null?w.flaeche:'')}" placeholder="z. B. 56,83"></div>
+    </div>
+    <div style="display:flex;gap:18px;flex-wrap:wrap;margin:4px 0 8px">
+      <label style="font-size:12px"><input type="checkbox" id="whKueche" ${w.kueche?'checked':''}> Küche</label>
+      <label style="font-size:12px"><input type="checkbox" id="whBad" ${w.bad?'checked':''}> Bad</label>
+      <label style="font-size:12px"><input type="checkbox" id="whDiele" ${w.diele?'checked':''}> Flur / Diele</label>
+    </div>
+    <div class="f-row">
+      <div class="f"><label>Keller / Kellerabteil-Nr.</label>
+        <input type="text" id="whKeller" value="${esc(w.kellerNr||'')}" placeholder="z. B. Keller Nr. 3"></div>
+      <div class="f"><label>Lage</label>
+        <input type="text" id="whLage" value="${esc(w.lage||'')}" placeholder="z. B. 1. OG rechts"></div>
+    </div>
+
+    <div class="f-section-title" style="margin-top:12px"><i class="ti ti-flame"></i> Heizungsvariante (§ 6)</div>
     <div class="f"><label>Variante (Standard für ${esc(obj?.name||'')}: ${MV_HEIZ_VARIANTEN[stdHeiz].label})</label>
       <select id="whHeiz">
         <option value="">– Objektstandard (${stdHeiz}) –</option>
@@ -12505,6 +12541,15 @@ async function saveWohnungHeizNk(objektId, weNr){
   const daten = { nkSchluessel: nk };
   if(heiz==='A'||heiz==='B'||heiz==='C') daten.heizVariante = heiz;
   else daten.heizVariante = '';   // zurück auf Standard
+  const _z = document.getElementById('whZimmer')?.value;
+  daten.zimmer  = (_z!=null && _z!=='') ? parseInt(_z) : '';
+  const _fl = document.getElementById('whFlaeche')?.value;
+  if(_fl!=null && _fl!=='') daten.flaeche = parseFloat(String(_fl).replace(',','.'));
+  daten.kueche  = !!document.getElementById('whKueche')?.checked;
+  daten.bad     = !!document.getElementById('whBad')?.checked;
+  daten.diele   = !!document.getElementById('whDiele')?.checked;
+  daten.kellerNr= document.getElementById('whKeller')?.value?.trim()||'';
+  daten.lage    = document.getElementById('whLage')?.value?.trim()||'';
   await saveWohnungStamm(objektId, weNr, daten);
   closeModal();
   toast('Wohnungsdaten gespeichert ✓');
@@ -12655,7 +12700,7 @@ function mvVertragHTML(d){
 
   // § 1
   h += '<h2>§ 1 Mieträume</h2>';
-  h += '<p>1. Vermietet werden im Haus <b>' + mvEsc(d.objektAnschrift) + '</b>, <b>' + mvEsc(d.weBezeichnung) + '</b> (' + mvEsc(d.etageLage) + '). Räume: ' + mvEsc(d.raeume||'__________') + '. Wohnfläche: ca. ' + mvEsc(d.wohnflaeche||'____') + ' m². Die Flächenangabe dient wegen möglicher Messtoleranzen nicht der Festlegung des Mietgegenstandes; maßgeblich ist der Umfang der vermieteten Räume.</p>';
+  h += '<p>1. Vermietet werden im Haus <b>' + mvEsc(d.objektAnschrift) + '</b>, <b>' + mvEsc(d.weBezeichnung) + '</b> (' + mvEsc(d.etageLage) + '). Räume: ' + mvEsc(d.raeume||'__________') + '. Wohnfläche: ca. ' + (d.wohnflaeche?qm(d.wohnflaeche):'____') + ' m². Die Flächenangabe dient wegen möglicher Messtoleranzen nicht der Festlegung des Mietgegenstandes; maßgeblich ist der Umfang der vermieteten Räume.</p>';
   h += '<p>2. Mitbenutzung: ' + mvEsc(d.mitbenutzung||'gemeinschaftliche Flächen nach Maßgabe der Hausordnung') + '. Zur Wohnung gehört ' + mvEsc(d.kellerBoden||'ein Kellerabteil') + '.</p>';
   h += '<p>3. Bei Übergabe ausgehändigte Schlüssel: ' + mvEsc(d.schluessel||'__________') + '. Weitere Schlüssel nur mit Einwilligung des Vermieters; die Anfertigung erfolgt auf Kosten des Mieters.</p>';
   h += '<p>4. Die Mieträume dienen ausschließlich Wohnzwecken. Anzahl einziehender Personen: ' + mvEsc(d.personenzahl||'__') + '. Der Mieter erfüllt seine Meldepflicht (§ 19 BMG); eine Wohnungsgeberbestätigung wird gesondert ausgestellt.</p>';
@@ -12882,8 +12927,20 @@ async function mvWeOptionen(objektId, selWe){
     if(isFinite(na)&&isFinite(nb)) return na-nb;
     return String(a).localeCompare(String(b));
   });
+  // Pro WE: aktueller Mieter (nicht Vormieter, nicht Leerstand) bzw. Leerstand.
+  const mieterFuerWe = w => {
+    const liste = mieter.filter(m=>String(m.weNr)===String(w) && !m._vormieter);
+    const aktiv = liste.find(m=>!m.leerstand);
+    return aktiv ? (aktiv.mieter||'') : '';
+  };
   let h = '<option value="">– WE wählen –</option>';
-  arr.forEach(w=>{ h += `<option value="${esc(w)}" ${String(selWe)===String(w)?'selected':''}>WE ${esc(w)}</option>`; });
+  arr.forEach(w=>{
+    const ws = stamm[String(w)]||{};
+    const lage = ws.lage || ws.etage || '';
+    const mName = mieterFuerWe(w);
+    const zusatz = [lage, mName ? ('derzeit: '+mName) : 'Leerstand'].filter(Boolean).join(' · ');
+    h += `<option value="${esc(w)}" ${String(selWe)===String(w)?'selected':''}>WE ${esc(w)}${zusatz?' · '+esc(zusatz):''}</option>`;
+  });
   h += `<option value="__neu" ${selWe==='__neu'?'selected':''}>+ neue WE-Nummer</option>`;
   return h;
 }
@@ -12934,10 +12991,6 @@ async function mvRenderGeneratorModal(){
         <div class="f"><label>E-Mail</label><input type="text" id="mvMail" value="${esc(d.email)}"></div>
         <div class="f" style="flex:0 0 120px"><label>Einziehende Personen</label><input type="number" id="mvPersZ" min="1" value="${esc(d.personenzahl)}"></div>
       </div>
-      <div class="f-row">
-        <div class="f"><label>Beruf</label><input type="text" id="mvBeruf" value="${esc(d.beruf)}"></div>
-        <div class="f"><label>Arbeitgeber</label><input type="text" id="mvAG" value="${esc(d.arbeitgeber)}"></div>
-      </div>
       <div style="display:flex;gap:16px;margin:4px 0 6px">
         <label style="font-size:12px"><input type="checkbox" id="mvTiere" ${d.haustiere?'checked':''}> Haustiere</label>
         <label style="font-size:12px"><input type="checkbox" id="mvRaucher" ${d.raucher?'checked':''}> Raucher</label>
@@ -12966,8 +13019,14 @@ async function mvRenderGeneratorModal(){
         <div class="f"><label>Räume</label><input type="text" id="mvRaeume" value="${esc(d.raeume||'')}" placeholder="z. B. 3 Zimmer, Küche, Bad"></div>
         <div class="f" style="flex:0 0 120px"><label>Wohnfläche m²</label><input type="number" id="mvFlaeche" step="0.01" value="${esc(d.wohnflaeche||'')}"></div>
       </div>
-      <div class="f"><label>Bei Übergabe ausgehändigte Schlüssel</label><input type="text" id="mvSchluessel" value="${esc(d.schluessel||'')}" placeholder="z. B. 2 Haustür, 2 Wohnung, 1 Keller"></div>
-      <div class="f"><label>Mitbenutzung / Keller-Boden</label><input type="text" id="mvMitbenutzung" value="${esc(d.mitbenutzung||'gemeinschaftliche Einrichtungen')}"></div>
+      <div class="f"><label>Bei Übergabe ausgehändigte Schlüssel</label>
+        <div id="mvSchluesselBox" style="background:var(--ink-05);border-radius:8px;padding:8px 10px"></div>
+        <input type="hidden" id="mvSchluessel" value="${esc(d.schluessel||'')}">
+      </div>
+      <div class="f"><label>Gemeinschaftliche Einrichtungen (Mitbenutzung)</label>
+        <div id="mvGemeinschaftBox" style="background:var(--ink-05);border-radius:8px;padding:8px 10px"></div>
+      </div>
+      <div class="f"><label>Keller-Abteil / Zusatz (Freitext)</label><input type="text" id="mvMitbenutzung" value="${esc(d.mitbenutzung||'')}" placeholder="z. B. Keller Nr. 3"></div>
 
       <div class="f-section-title" style="margin-top:8px"><i class="ti ti-calendar"></i> Mietzeit</div>
       <div class="f-row">
@@ -13061,10 +13120,8 @@ async function mvRenderGeneratorModal(){
         <div class="f" style="flex:0 0 150px"><label>Tier-Karenztage</label><input type="number" id="mvTierTage" value="${esc(d.tierTage!=null&&d.tierTage!==''?d.tierTage:3)}"></div>
       </div>
       <div style="display:flex;gap:16px;margin:4px 0">
-        <label style="font-size:12px"><input type="checkbox" id="mvGarten" onchange="mvToggle('mvGartenWrap',this.checked)" ${d.garten?'checked':''}> Garten</label>
-        <label style="font-size:12px"><input type="checkbox" id="mvDielen" ${d.dielen?'checked':''}> Originaldielen/-türen</label>
+        <label style="font-size:12px"><input type="checkbox" id="mvDielen" ${d.dielen?'checked':''}> Originaldielen / -türen (Dielenboden)</label>
       </div>
-      <div class="f" id="mvGartenWrap" style="display:${d.garten?'block':'none'}"><label>Gartennutzung</label><input type="text" id="mvGartenText" value="${esc(d.gartenText||'zur alleinigen Nutzung')}"></div>
       <div class="f"><label>Weitere Vereinbarungen</label><textarea id="mvSonstiges" style="min-height:38px">${esc(d.sonstigesText||'')}</textarea></div>
 
       <div class="f-section-title" style="margin-top:8px"><i class="ti ti-certificate"></i> Energieausweis</div>
@@ -13094,7 +13151,7 @@ async function mvRenderGeneratorModal(){
       <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
     </div>`);
 
-  setTimeout(()=>{ mvBerechneGesamt(); mvWarnKr(); mvOnHeizVarChange(); }, 50);
+  setTimeout(()=>{ mvBerechneGesamt(); mvWarnKr(); mvOnHeizVarChange(); mvRenderSchluessel(); mvRenderGemeinschaft(); }, 50);
 }
 
 // ── Live-UI-Helfer ──
@@ -13178,17 +13235,96 @@ async function mvOnWeChange(){
   mvToggle('mvWeNeuWrap', we==='__neu');
   if(we && we!=='__neu'){
     MV_DRAFT.weNr = we;
-    // Wohnungsstamm-Daten ziehen (Fläche, Etage, Lage) und Felder vorbelegen, falls leer
+    // Wohnungsstamm-Daten ziehen (Fläche, Etage, Lage, Räume) und Felder vorbelegen, falls leer
     const w = await getWohnungStamm(MV_DRAFT.objektId, we).catch(()=>({}));
     const set=(id,val)=>{ const e=document.getElementById(id); if(e && (!e.value||e.value==='') && val) e.value=val; };
-    set('mvFlaeche', w.flaeche||w.wohnflaeche||'');
+    const flRoh = w.flaeche||w.wohnflaeche||'';
+    set('mvFlaeche', flRoh!=='' ? String(flRoh).replace('.',',') : '');
     set('mvEtage', w.etage||'');
     set('mvLage', w.lage? (w.lage+(w.lage2?(' '+w.lage2):'')) : '');
-    set('mvRaeume', w.zimmer? (w.zimmer+' Zimmer') : '');
+    // Räume aus Wohnungsinfos: "3 Zimmer, Küche, Bad, Diele"
+    const teile=[];
+    if(w.zimmer) teile.push(w.zimmer+' Zimmer');
+    if(w.kueche) teile.push('Küche');
+    if(w.bad)    teile.push('Bad');
+    if(w.diele)  teile.push('Diele');
+    if(teile.length) set('mvRaeume', teile.join(', '));
+    if(w.kellerNr) set('mvMitbenutzung', w.kellerNr);
+    if(typeof mvRenderSchluessel==='function')   await mvRenderSchluessel();
+    if(typeof mvRenderGemeinschaft==='function') await mvRenderGemeinschaft();
     // Heizungsvariante-Auto aktualisieren
     MV_DRAFT._heizAuto = await mvHeizVarianteFuer(MV_DRAFT.objektId, we);
     mvOnHeizVarChange();
   }
+}
+
+// Schlüssel-Auswahl mit Zähler im MV-Generator rendern. Quelle: Wohnungsstamm
+// (schluessel), sonst letztes Übergabeprotokoll; sonst leer mit Hinweis.
+async function mvRenderSchluessel(){
+  const box=document.getElementById('mvSchluesselBox'); if(!box) return;
+  const objektId=MV_DRAFT?.objektId, weNr=MV_DRAFT?.weNr;
+  let soll={}; let quelle='';
+  if(objektId && weNr && weNr!=='__neu'){
+    const w=await getWohnungStamm(objektId, weNr).catch(()=>({}));
+    if(w && w.schluessel && Object.values(w.schluessel).some(n=>Number(n)>0)){ soll=w.schluessel; quelle='Wohnungsdatenbank'; }
+    else {
+      try{
+        const prots=(await idbGetAll('protokolle')).filter(p=>p.objektId===objektId && String(p.weNr)===String(weNr) && p.schluessel);
+        prots.sort((a,b)=>new Date(b.datum||0)-new Date(a.datum||0));
+        if(prots[0] && prots[0].schluessel){ soll=prots[0].schluessel; quelle='letztes Übergabeprotokoll'; }
+      }catch(_){}
+    }
+  }
+  if(MV_DRAFT && MV_DRAFT.schluesselObj && typeof MV_DRAFT.schluesselObj==='object'){ soll=MV_DRAFT.schluesselObj; quelle=quelle||'Entwurf'; }
+  const hatWerte=Object.values(soll).some(n=>Number(n)>0);
+  let h='';
+  h+=SCHLUESSEL_TYPEN.map(t=>`
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+      <label style="flex:1;font-size:12.5px;display:flex;align-items:center;gap:6px">
+        <input type="checkbox" class="mvSkChk" data-key="${t.key}" ${Number(soll[t.key])>0?'checked':''} onchange="mvSkSync()"> ${t.label}</label>
+      <input type="number" min="0" step="1" class="mvSkNum" data-key="${t.key}" value="${Number(soll[t.key])||0}" oninput="mvSkSync()" style="width:62px;text-align:center;font-size:12.5px">
+    </div>`).join('');
+  h+=`<div style="font-size:10px;color:var(--ink-40);margin-top:4px">${
+    hatWerte ? ('Vorbelegt aus: '+quelle+'. Anzahl anpassbar.')
+             : '<i class="ti ti-info-circle"></i> Keine Schlüsseldaten hinterlegt – Bestand wird im Übergabeprotokoll bei der Übergabe erfasst.'
+  }</div>`;
+  box.innerHTML=h;
+  mvSkSync();
+}
+function mvSkSync(){
+  const obj={}; const teile=[];
+  document.querySelectorAll('#mvSchluesselBox .mvSkNum').forEach(inp=>{
+    const key=inp.dataset.key;
+    const chk=document.querySelector('#mvSchluesselBox .mvSkChk[data-key="'+key+'"]');
+    let n=Number(inp.value)||0;
+    if(chk && !chk.checked) n=0;
+    obj[key]=n;
+    if(n>0){ const lbl=(SCHLUESSEL_TYPEN.find(t=>t.key===key)||{}).label||key; teile.push(n+'× '+lbl.replace('schlüssel','').replace('Schlüssel','').trim()); }
+  });
+  const hidden=document.getElementById('mvSchluessel');
+  if(hidden) hidden.value=teile.join(', ');
+  if(MV_DRAFT) MV_DRAFT.schluesselObj=obj;
+}
+// Gemeinschaftliche Einrichtungen aus Objektinfos rendern (anklickbar).
+async function mvRenderGemeinschaft(){
+  const box=document.getElementById('mvGemeinschaftBox'); if(!box) return;
+  const objektId=MV_DRAFT?.objektId;
+  let vorhanden={};
+  if(objektId){ const o=(await idbGet('objekt_stamm',objektId).catch(()=>null))||{}; vorhanden=o.gemeinschaft||{}; }
+  const sel=(MV_DRAFT&&MV_DRAFT.gemeinschaft)||{};
+  const liste=GEMEINSCHAFT_TYPEN.filter(g=>vorhanden[g.key]);
+  if(!liste.length){
+    box.innerHTML='<div style="font-size:11px;color:var(--ink-40)">Keine gemeinschaftlichen Einrichtungen im Objekt hinterlegt. Festlegen unter Gebäudedaten.</div>';
+    if(MV_DRAFT) MV_DRAFT.gemeinschaft={};
+    return;
+  }
+  box.innerHTML=liste.map(g=>`<label style="font-size:12.5px;display:block;margin-bottom:3px"><input type="checkbox" class="mvGemChk" data-key="${g.key}" ${ (sel[g.key]!==undefined?sel[g.key]:true) ?'checked':''} onchange="mvGemSync()"> ${g.label}</label>`).join('');
+  mvGemSync();
+}
+function mvGemSync(){
+  const obj={};
+  document.querySelectorAll('#mvGemeinschaftBox .mvGemChk').forEach(chk=>{ obj[chk.dataset.key]=chk.checked; });
+  if(MV_DRAFT) MV_DRAFT.gemeinschaft=obj;
 }
 
 // Formularwerte in MV_DRAFT übernehmen (ohne zu erzeugen)
@@ -13200,7 +13336,6 @@ function mvSammleAusFormular(){
   D.anrede=v('mvAnrede')||D.anrede; D.mieter1Name=v('mvName1')??D.mieter1Name;
   D.mieter1Gebdat=v('mvGeb1')??D.mieter1Gebdat; D.mieter1Anschrift=v('mvAnschrift1')??D.mieter1Anschrift;
   D.telefon=v('mvTel')??D.telefon; D.email=v('mvMail')??D.email; D.personenzahl=v('mvPersZ')??D.personenzahl;
-  D.beruf=v('mvBeruf')??D.beruf; D.arbeitgeber=v('mvAG')??D.arbeitgeber;
   D.haustiere=c('mvTiere'); D.raucher=c('mvRaucher');
   D.mieter2Name=v('mvName2')??D.mieter2Name; D.mieterWeitere=v('mvWeitere')??D.mieterWeitere;
   D.etage=v('mvEtage')??D.etage; D.lage=v('mvLage')??D.lage; D.raeume=v('mvRaeume')??D.raeume;
@@ -13216,7 +13351,7 @@ function mvSammleAusFormular(){
   D.mietanpassung=v('mvMietanpassung')||'keine'; D.staffelText=v('mvStaffelText')??D.staffelText;
   D.mietpreisbremse=c('mvMpb'); D.mpbAuskunft=v('mvMpbText')??D.mpbAuskunft;
   D.tierTage=v('mvTierTage')??D.tierTage;
-  D.garten=c('mvGarten'); D.gartenText=v('mvGartenText')??D.gartenText; D.dielen=c('mvDielen');
+  D.dielen=c('mvDielen');
   D.sonstigesText=v('mvSonstiges')??D.sonstigesText;
   D.energieausweis=v('mvEnergie')||'nein'; D.energieKennwerte=v('mvEnergieKw')??D.energieKennwerte;
   D.anlagen={
@@ -13227,6 +13362,18 @@ function mvSammleAusFormular(){
   const weSel=document.getElementById('mvWe')?.value;
   if(weSel==='__neu'){ const neu=document.getElementById('mvWeNeu')?.value?.trim(); if(neu) D.weNr=neu; }
   else if(weSel) D.weNr=weSel;
+}
+
+// Mitbenutzungstext für § 1.2 aus angeklickten gemeinschaftlichen Einrichtungen
+// + Freitext (Keller-Abteil) zusammensetzen.
+function mvMitbenutzungText(D){
+  const teile=[];
+  const sel=(D&&D.gemeinschaft)||{};
+  GEMEINSCHAFT_TYPEN.forEach(g=>{ if(sel[g.key]) teile.push(g.label); });
+  let txt = teile.length ? teile.join(', ') : '';
+  const frei=(D&&D.mitbenutzung||'').trim();
+  if(frei){ txt = txt ? (txt+'; '+frei) : frei; }
+  return txt || 'gemeinschaftliche Flächen nach Maßgabe der Hausordnung';
 }
 
 // ── Daten final für den Renderer aufbereiten ──
@@ -13286,9 +13433,9 @@ async function mvBaueRenderdaten(){
     etageLage,
     raeume: D.raeume||'__________',
     wohnflaeche: D.wohnflaeche||'____',
-    mitbenutzung: D.mitbenutzung||'gemeinschaftliche Einrichtungen',
+    mitbenutzung: mvMitbenutzungText(D),
     kellerBoden: D.kellerBoden||'ein Kellerraum',
-    schluessel: D.schluessel||'__________',
+    schluessel: (D.schluessel&&D.schluessel.trim())? D.schluessel : '__________',
     personenzahl: D.personenzahl||'____',
     // § 2
     mietbeginn: D.mietbeginn? fmtDate(D.mietbeginn):'__________',
@@ -13374,11 +13521,23 @@ async function mvErzeugen(){
   window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
 
   // 5) Vertrag drucken / als PDF speichern (In-Page-Druck, Samsung-tauglich)
-  druckHTML(html);
+  const _mvDateiname = mvDateinameBauen(D, getObj(D.objektId));
+  druckHTML(html, 'Mietvertrag – '+(D.mieter1Name||''), _mvDateiname);
   toast(D.mieterId
     ? 'Mietvertrag-Entwurf aktualisiert – beim Mieter ersetzt. Bitte ausdrucken und handschriftlich unterschreiben.'
     : 'Mietvertrag erzeugt – beim Mieter abgelegt. Bitte ausdrucken und handschriftlich unterschreiben.');
   MV_DRAFT = null;
+}
+
+// Sprechender Dateiname für den Mietvertrag, z. B.
+// "MV Mindener Str 25 WE 13 - Erika Muster - 22.06.2026"
+function mvDateinameBauen(D, obj){
+  const objName = (obj?.name||'Objekt').replace(/[\\/:*?"<>|]+/g,' ').replace(/\s+/g,' ').trim();
+  const weNeu = document.getElementById('mvWeNeu')?.value;
+  const we = (D.weNr && D.weNr!=='__neu') ? ('WE '+D.weNr) : (weNeu ? ('WE '+weNeu) : 'WE');
+  const name = (D.mieter1Name||'Mieter').replace(/[\\/:*?"<>|,]+/g,' ').replace(/\s+/g,' ').trim();
+  const datum = new Date().toLocaleDateString('de-DE');
+  return ['MV', objName, we, '-', name, '-', datum].join(' ').replace(/\s+/g,' ').trim();
 }
 
 // Mieter-Datensatz aus MV-Entwurf anlegen ODER aktualisieren (Variante 1: Entwurf editierbar).
@@ -13643,7 +13802,7 @@ async function erstelleMietbescheinigung(mieterId){
       <tr><td class="l">Für Frau/Herrn</td><td>${esc(m.mieter||'')}</td></tr>
       <tr><td class="l">Die Wohnung wird bewohnt mit</td><td>${parseInt(m.personen)||1} Person(en)</td></tr>
       <tr><td class="l">Mietverhältnis seit</td><td>${m.einzug||mieteSeit||''}</td></tr>
-      <tr><td class="l">Gesamtfläche</td><td>${m.flaeche||''} m²</td></tr>
+      <tr><td class="l">Gesamtfläche</td><td>${qm(m.flaeche)} m²</td></tr>
       <tr><td class="l">Anzahl Zimmer (ohne Küche/Bad/Diele)</td><td>${val('mbZimmer')||'–'}</td></tr>
       <tr><td class="l">Baujahr des Hauses</td><td>${val('mbBaujahr')||'–'}</td></tr>
     </table>
@@ -13659,7 +13818,7 @@ async function erstelleMietbescheinigung(mieterId){
   const seite2=`
     <div class="mb-h2">Miete</div>
     <table class="mb-t">
-      <tr><td class="l">Gesamtfläche der Wohnung</td><td>${m.flaeche||''} m²</td></tr>
+      <tr><td class="l">Gesamtfläche der Wohnung</td><td>${qm(m.flaeche)} m²</td></tr>
       <tr><td class="l">Monatliche Gesamtmiete seit ${mieteSeit||m.einzug||''}</td><td><strong>${eur(gesamt)}</strong></td></tr>
     </table>
     <p class="mb-sub" style="margin-top:6px">In der Gesamtmiete enthalten:</p>
@@ -13694,23 +13853,23 @@ async function erstelleMietbescheinigung(mieterId){
 
   const style=`<style>
     *{margin:0;padding:0;box-sizing:border-box}
-    body{font-family:Arial,sans-serif;font-size:13px;color:#111;padding:16mm 18mm;max-width:210mm;line-height:1.5}
-    .mb-h{font-size:24px;font-weight:700;text-align:center;margin-bottom:14px;letter-spacing:.5px}
-    .mb-h2{font-size:17px;font-weight:700;margin:20px 0 12px;border-bottom:2px solid #333;padding-bottom:5px}
-    .mb-sub{font-size:12px;color:#444;margin-bottom:14px;line-height:1.55}
-    .mb-t{width:100%;border-collapse:collapse;margin:10px 0}
+    body{font-family:Arial,sans-serif;font-size:11px;color:#111;padding:11mm 15mm;max-width:210mm;line-height:1.3}
+    .mb-h{font-size:19px;font-weight:700;text-align:center;margin-bottom:10px;letter-spacing:.5px}
+    .mb-h2{font-size:14px;font-weight:700;margin:13px 0 8px;border-bottom:2px solid #333;padding-bottom:3px}
+    .mb-sub{font-size:10.5px;color:#444;margin-bottom:8px;line-height:1.4}
+    .mb-t{width:100%;border-collapse:collapse;margin:5px 0}
     .mb-t tr{page-break-inside:avoid}
-    .mb-t td{border:1px solid #999;padding:7px 11px;font-size:13px}
+    .mb-t td{border:1px solid #999;padding:3.5px 9px;font-size:11px}
     .mb-t td.l{background:#f4f4f4;width:56%;color:#333}
-    .mb-row{font-size:13px;margin:10px 0;line-height:1.7}
-    .mb-vermieter{margin-top:22px;border:1px solid #999;padding:9px 13px;font-size:13px;page-break-inside:avoid}
-    .mb-vermieter span{font-size:11px}
-    .mb-sig{margin-top:34px;display:flex;justify-content:space-between;align-items:flex-end;gap:24px}
-    .mb-sig-wrap{display:flex;gap:28px;align-items:flex-end}
-    .mb-sig-line{min-width:190px;text-align:center}
-    .mb-sig-line img{max-height:56px !important}
-    .mb-sig-line div{font-size:11px !important}
-    @page{margin:0;size:A4}@media print{body{padding:16mm 18mm;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+    .mb-row{font-size:11px;margin:5px 0;line-height:1.45}
+    .mb-vermieter{margin-top:12px;border:1px solid #999;padding:6px 11px;font-size:11px;page-break-inside:avoid}
+    .mb-vermieter span{font-size:10px}
+    .mb-sig{margin-top:18px;display:flex;justify-content:space-between;align-items:flex-end;gap:24px}
+    .mb-sig-wrap{display:flex;gap:24px;align-items:flex-end}
+    .mb-sig-line{min-width:175px;text-align:center}
+    .mb-sig-line img{max-height:48px !important}
+    .mb-sig-line div{font-size:10px !important}
+    @page{margin:0;size:A4}@media print{body{padding:11mm 15mm;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
   </style>`;
   const html=`<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8"><title>Mietbescheinigung – ${esc(m.mieter||'')}</title>${style}</head>
     <body>${seite1}${seite2}
@@ -13757,7 +13916,8 @@ async function erstelleMietbescheinigung(mieterId){
     bcSend('mietbescheinigung_saved', {mieterId:m.id});
   }catch(e){ console.warn('Mietbescheinigung-Archiv:', e); }
 
-  druckHTML(html);
+  const _mbName = ['Mietbescheinigung', (obj?.name||'').replace(/[\\/:*?"<>|]+/g,' ').trim(), m.weNr?('WE '+m.weNr):'', '-', (m.mieter||'').replace(/[\\/:*?"<>|,]+/g,' ').trim(), '-', heute].filter(Boolean).join(' ').replace(/\s+/g,' ').trim();
+  druckHTML(html, 'Mietbescheinigung – '+(m.mieter||''), _mbName);
   closeModal();
   toast('Mietbescheinigung erstellt & gespeichert ✓');
 }
@@ -21804,16 +21964,18 @@ function zaSollIst(buchungen, mieterListe, monate){
 // per mehrfach abgesichertem Auslöser gestartet. Liefert true bei Erfolg.
 // Hält das aktuell in der Vorschau angezeigte Dokument für den Druck-Button bereit.
 let _dvAktuellesHtml = '';
+let _dvDateiname = '';
 
 // Öffnet zuerst eine sichtbare Vorschau. Gedruckt wird erst über den Button.
 // titel ist optional und erscheint in der Kopfleiste der Vorschau.
-function druckHTML(html, titel){
+function druckHTML(html, titel, dateiname){
   try{
     _dvAktuellesHtml = html;
+    _dvDateiname = dateiname || '';
     const ov = document.getElementById('druckVorschau');
     const fr = document.getElementById('dvFrame');
     const tt = document.getElementById('dvTitel');
-    if(!ov || !fr){ return _druckJetzt(html); } // Fallback: direkt drucken
+    if(!ov || !fr){ return _druckJetzt(html, _dvDateiname); } // Fallback: direkt drucken
     if(tt) tt.textContent = titel || 'Vorschau – Drucken zum Ausgeben';
     // Auto-Print-Scripts aus der Vorschau entfernen (Druck nur per Button).
     // Deckt normale <script> und hex-kodierte \x3cscript\x3e-Varianten ab.
@@ -21821,13 +21983,17 @@ function druckHTML(html, titel){
       .replace(/<scr(?:ipt|.)*?>[\s\S]*?window\.print\(\)[\s\S]*?<\/scr.{0,3}ipt>/gi, '')
       .replace(/\\x3cscript\\x3e[\s\S]*?window\.print\(\)[\s\S]*?\\x3c\/script\\x3e/gi, '')
       .replace(/<script\b[^>]*>[\s\S]*?window\.print\(\)[\s\S]*?<\/script>/gi, '');
+    // Vorschau-Grau-Fix: weissen Seitenhintergrund im Vorschau-iframe erzwingen.
+    const previewFix = '<style>html,body{background:#fff!important;}body{opacity:1!important;filter:none!important;color:#111;}*{-webkit-print-color-adjust:exact;print-color-adjust:exact;}</style>';
+    if(/<\/head>/i.test(vHtml)){ vHtml = vHtml.replace(/<\/head>/i, previewFix+'</head>'); }
+    else { vHtml = previewFix + vHtml; }
     fr.srcdoc = vHtml;
     ov.classList.add('aktiv');
     ov.setAttribute('aria-hidden','false');
     return true;
   }catch(e){
     console.warn('Vorschau fehlgeschlagen, drucke direkt:', e);
-    return _druckJetzt(html);
+    return _druckJetzt(html, _dvDateiname);
   }
 }
 
@@ -21842,13 +22008,16 @@ function schliesseDruckVorschau(){
 // Löst aus der Vorschau heraus den eigentlichen Druck aus.
 function druckVorschauDrucken(){
   const html = _dvAktuellesHtml;
+  const name = _dvDateiname;
   schliesseDruckVorschau();
   // kurze Verzögerung, damit das Overlay sicher aus dem Layout ist
-  setTimeout(()=>{ _druckJetzt(html); }, 60);
+  setTimeout(()=>{ _druckJetzt(html, name); }, 60);
 }
 
 // IN-PAGE-DRUCK (Kern): rendert das Dokument in #printRoot und druckt das Fenster.
-function _druckJetzt(html){
+function _druckJetzt(html, dateiname){
+  let _origTitle = null;
+  if(dateiname){ try{ _origTitle = document.title; document.title = dateiname; }catch(_){} }
   // IN-PAGE-DRUCK: Der zuverlässigste Weg auf Android/Samsung-PWAs.
   // iframe- und Blob-Tab-Druck liefern dort oft eine leere Seite, weil der
   // Browser beim Drucken den falschen (leeren) Body verwendet. Stattdessen
@@ -21916,6 +22085,7 @@ function _druckJetzt(html){
       });
       root.innerHTML = '';
       window.onafterprint = null;
+      if(_origTitle!=null){ try{ document.title = _origTitle; }catch(_){} }
     };
     window.onafterprint = cleanup;
 
@@ -21929,6 +22099,7 @@ function _druckJetzt(html){
     return true;
   }catch(e){
     console.warn('In-Page-Druck fehlgeschlagen, Fallback:', e);
+    if(_origTitle!=null){ try{ document.title = _origTitle; }catch(_){} }
     try{
       const blob=new Blob([html],{type:'text/html'});
       const url=URL.createObjectURL(blob);
@@ -21960,6 +22131,14 @@ function fmtEur(v){
   if(!v&&v!==0) return '–';
   if(isNaN(Number(v))) return String(v);
   return Number(v).toLocaleString('de-DE',{style:'currency',currency:'EUR'});
+}
+// Wohnfläche-Formatierung: Komma als Dezimaltrennzeichen (56,83 statt 56.83).
+// Liefert NUR die Zahl, ohne Einheit. Leere Werte -> ''.
+function qm(v){
+  if(v==null || v==='') return '';
+  const n = parseFloat(String(v).replace(',','.'));
+  if(!isFinite(n)) return String(v).replace('.',',');
+  return n.toLocaleString('de-DE',{minimumFractionDigits:0, maximumFractionDigits:2});
 }
 function initials(name){
   return (name||'').split(/[\s,]+/).filter(Boolean).map(w=>w[0]).slice(0,2).join('').toUpperCase()||'?';
