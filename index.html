@@ -792,7 +792,7 @@ body.printing-active #printRoot{display:block!important}
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=28;
-const APP_VERSION = '2026-06-23-v118';
+const APP_VERSION = '2026-06-23-v120';
 /* v94 (19.06.2026): Etappe 1 – Lokale Benachrichtigungen erweitert (Termine + Maengel).
    - checkFaelligeAufgaben() prueft jetzt zusaetzlich:
      a) Termin-Erinnerungen: Termine mit gesetztem Erinnerungs-Vorlauf (1/2/7 Tage)
@@ -3919,20 +3919,30 @@ async function saTokInteressentBefuellen(){
   // nur Einträge mit E-Mail, neueste zuerst
   liste=(liste||[]).filter(i=>i && i.email).sort((a,b)=>String(b.erstellt||'').localeCompare(String(a.erstellt||'')));
   sel.innerHTML='<option value="">– manuell eingeben –</option>'+liste.map(i=>{
-    const name=esc((i.name||((i.vorname||'')+' '+(i.nachname||''))).trim()||i.email);
+    const vn=(i.vorname||'').trim();
+    const nn=(i.nachname||'').trim() || (i.name||'').replace(vn,'').trim();
+    const name=esc((i.name||((vn+' '+nn).trim())).trim()||i.email);
     const obj=esc(i.objektName||'');
-    return `<option value="${esc(i.id)}" data-mail="${esc(i.email)}" data-objekt="${obj}">${name}${obj?' · '+obj:''}</option>`;
+    return `<option value="${esc(i.id)}" data-mail="${esc(i.email)}" data-objekt="${obj}" data-vorname="${esc(vn)}" data-nachname="${esc(nn)}" data-telefon="${esc(i.telefon||'')}">${name}${obj?' · '+obj:''}</option>`;
   }).join('');
 }
+var _saTokGewaehlt=null;   // gemerkter Interessent für die Vormerk-Verknüpfung
 function saTokInteressentGewaehlt(){
   const sel=document.getElementById('saTokInteressent');
   if(!sel) return;
   const opt=sel.options[sel.selectedIndex];
-  if(!opt || !opt.value){ return; }
+  if(!opt || !opt.value){ _saTokGewaehlt=null; return; }
   const mail=opt.getAttribute('data-mail')||'';
   const objekt=opt.getAttribute('data-objekt')||'';
   const mi=document.getElementById('saTokMail'); if(mi && mail) mi.value=mail;
   const oi=document.getElementById('saTokObjekt'); if(oi && objekt) oi.value=objekt;
+  _saTokGewaehlt={
+    id:opt.value,
+    vorname:opt.getAttribute('data-vorname')||'',
+    nachname:opt.getAttribute('data-nachname')||'',
+    telefon:opt.getAttribute('data-telefon')||'',
+    email:mail
+  };
 }
 async function saTokenSenden(){
   const st=document.getElementById('saTokStatus');
@@ -3942,19 +3952,25 @@ async function saTokenSenden(){
   if(!key){ if(st) st.innerHTML='<div style="font-size:12px;color:var(--red,#c0392b)">Kein Function-Key hinterlegt (oben speichern).</div>'; return; }
   if(!mail || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(mail)){ if(st) st.innerHTML='<div style="font-size:12px;color:var(--red,#c0392b)">Bitte eine gültige E-Mail-Adresse eingeben.</div>'; return; }
   if(st) st.innerHTML='<div style="font-size:12px;color:var(--ink-40)">Link wird gesendet …</div>';
+  // Vormerk-Daten mitschicken, wenn ein Interessent gewählt wurde (passend zur E-Mail)
+  let vormerkung=null;
+  if(_saTokGewaehlt && _saTokGewaehlt.email && _saTokGewaehlt.email.toLowerCase()===mail.toLowerCase()){
+    vormerkung={ vorname:_saTokGewaehlt.vorname, nachname:_saTokGewaehlt.nachname, telefon:_saTokGewaehlt.telefon, email:mail };
+  }
   try{
     const res=await fetch(BACKEND_AZURE+'/api/send-token',{
       method:'POST',
       headers:{'Content-Type':'application/json','x-functions-key':key},
-      body:JSON.stringify({ email:mail, objektName:objekt })
+      body:JSON.stringify(vormerkung ? { email:mail, objektName:objekt, vormerkung } : { email:mail, objektName:objekt })
     });
     const j=await res.json().catch(()=>({}));
     if(res.ok && j.ok!==false){
-      if(st) st.innerHTML='<div style="font-size:12px;color:var(--green,#2E7D52)"><i class="ti ti-circle-check"></i> Link an '+esc(mail)+' gesendet.</div>';
+      if(st) st.innerHTML='<div style="font-size:12px;color:var(--green,#2E7D52)"><i class="ti ti-circle-check"></i> Link an '+esc(mail)+' gesendet.'+(vormerkung?' (mit Vormerk-Daten)':'')+'</div>';
       toast('Selbstauskunft-Link gesendet');
       const oi=document.getElementById('saTokObjekt'); if(oi) oi.value='';
       const mi=document.getElementById('saTokMail'); if(mi) mi.value='';
       const sel=document.getElementById('saTokInteressent'); if(sel) sel.value='';
+      _saTokGewaehlt=null;
     }else if(res.status===401){
       if(st) st.innerHTML='<div style="font-size:12px;color:var(--red,#c0392b)">Function-Key ungültig (401).</div>';
     }else{
@@ -12866,10 +12882,80 @@ async function modalWohnungHeizNk(objektId, weNr){
     <div class="f-section-title" style="margin-top:12px"><i class="ti ti-receipt"></i> NK-Verteilerschlüssel (§ 3)</div>
     ${nkRows}
 
+    <div class="f-section-title" style="margin-top:12px"><i class="ti ti-photo"></i> Wohnungsfotos &amp; Grundriss</div>
+    <div style="font-size:11px;color:var(--ink-40);margin-bottom:8px;line-height:1.5">
+      Diese Bilder werden für den Leerstands-Aushang verwendet (und später für die Homepage). Fotos werden beim Hinzufügen automatisch verkleinert.</div>
+    <div class="f-row" style="gap:8px">
+      <button type="button" class="btn" style="flex:1" onclick="document.getElementById('whFotoIn').click()"><i class="ti ti-camera-plus"></i> Fotos hinzufügen</button>
+      <button type="button" class="btn" style="flex:1" onclick="document.getElementById('whGrundrissIn').click()"><i class="ti ti-layout-grid"></i> Grundriss</button>
+    </div>
+    <input type="file" id="whFotoIn" accept="image/*" multiple style="display:none" onchange="whFotosHinzufuegen(this)">
+    <input type="file" id="whGrundrissIn" accept="image/*" style="display:none" onchange="whGrundrissSetzen(this)">
+    <div id="whFotoGalerie" style="margin-top:10px"></div>
+
     <div class="f-row" style="margin-top:14px">
       <button class="btn btn-copper btn-full" onclick="saveWohnungHeizNk('${objektId}','${esc(String(weNr||''))}')"><i class="ti ti-check"></i> Speichern</button>
       <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
     </div>`);
+  // Foto-Arbeitsspeicher des Modals aus dem Stamm vorbefüllen
+  window._whFotos = Array.isArray(w.fotos) ? w.fotos.slice() : [];
+  window._whGrundriss = w.grundriss || '';
+  renderWhFotoGalerie();
+}
+
+// ── Wohnungsfotos: Arbeitsspeicher des Wohnungsinfo-Modals ──────────────
+function renderWhFotoGalerie(){
+  const el = document.getElementById('whFotoGalerie');
+  if(!el) return;
+  const fotos = window._whFotos || [];
+  const gr = window._whGrundriss || '';
+  let h = '';
+  if(gr){
+    h += `<div style="margin-bottom:8px"><div style="font-size:10px;color:var(--ink-40);text-transform:uppercase;letter-spacing:.4px;margin-bottom:4px">Grundriss</div>
+      <div style="position:relative;display:inline-block">
+        <img src="${gr}" style="height:84px;border-radius:8px;border:1px solid var(--ink-10);object-fit:cover">
+        <button type="button" onclick="whGrundrissEntfernen()" style="position:absolute;top:-7px;right:-7px;width:22px;height:22px;border-radius:50%;border:none;background:var(--red,#C0392B);color:#fff;font-size:12px;cursor:pointer;line-height:1">×</button>
+      </div></div>`;
+  }
+  if(fotos.length){
+    h += `<div style="font-size:10px;color:var(--ink-40);text-transform:uppercase;letter-spacing:.4px;margin-bottom:4px">Fotos (${fotos.length})</div>
+      <div style="display:flex;flex-wrap:wrap;gap:8px">`;
+    fotos.forEach((f,i)=>{
+      h += `<div style="position:relative">
+        <img src="${f}" style="width:84px;height:84px;border-radius:8px;border:1px solid var(--ink-10);object-fit:cover">
+        <button type="button" onclick="whFotoEntfernen(${i})" style="position:absolute;top:-7px;right:-7px;width:22px;height:22px;border-radius:50%;border:none;background:var(--red,#C0392B);color:#fff;font-size:12px;cursor:pointer;line-height:1">×</button>
+      </div>`;
+    });
+    h += `</div>`;
+  }
+  if(!gr && !fotos.length) h = `<div style="font-size:12px;color:var(--ink-40)">Noch keine Bilder hinterlegt.</div>`;
+  el.innerHTML = h;
+}
+async function whFotosHinzufuegen(input){
+  const files = Array.from(input.files||[]); input.value='';
+  if(!files.length) return;
+  if(!window._whFotos) window._whFotos = [];
+  for(const f of files){
+    if(window._whFotos.length >= 8){ toast('Maximal 8 Fotos je Wohnung'); break; }
+    const data = await compressFoto(f, 1400, 0.78);
+    if(data) window._whFotos.push(data);
+  }
+  renderWhFotoGalerie();
+}
+function whFotoEntfernen(i){
+  if(!window._whFotos) return;
+  window._whFotos.splice(i,1);
+  renderWhFotoGalerie();
+}
+async function whGrundrissSetzen(input){
+  const f = (input.files||[])[0]; input.value='';
+  if(!f) return;
+  const data = await compressFoto(f, 1600, 0.82);
+  if(data){ window._whGrundriss = data; renderWhFotoGalerie(); }
+}
+function whGrundrissEntfernen(){
+  window._whGrundriss = '';
+  renderWhFotoGalerie();
 }
 
 async function saveWohnungHeizNk(objektId, weNr){
@@ -12892,7 +12978,11 @@ async function saveWohnungHeizNk(objektId, weNr){
   daten.diele   = !!document.getElementById('whDiele')?.checked;
   daten.kellerNr= document.getElementById('whKeller')?.value?.trim()||'';
   daten.lage    = document.getElementById('whLage')?.value?.trim()||'';
+  // Wohnungsfotos & Grundriss aus dem Modal-Arbeitsspeicher übernehmen
+  daten.fotos     = Array.isArray(window._whFotos) ? window._whFotos.slice() : [];
+  daten.grundriss = window._whGrundriss || '';
   await saveWohnungStamm(objektId, weNr, daten);
+  window._whFotos = null; window._whGrundriss = null;
   closeModal();
   toast('Wohnungsdaten gespeichert ✓');
 }
@@ -17835,10 +17925,282 @@ async function modalLeerstandWE(objektId, weNr, vormieterId){
     ${vm?`<button class="btn btn-full" style="margin-bottom:8px" onclick="closeModal();showMieter('${vm.id}')">
       <i class="ti ti-history"></i> Letzten Mieter (Vormieter) ansehen
     </button>`:''}
+    ${istVerwalter()?`<button class="btn btn-full" style="margin-bottom:8px;border-color:var(--copper);color:var(--copper-d)" onclick="closeModal();modalAushangErstellen('${objektId}','${esc(String(weNr))}','${vormieterId||''}')">
+      <i class="ti ti-printer"></i> Aushang „Wohnung frei" erstellen
+    </button>`:''}
     <div id="leerstandODEl" style="margin-top:12px"></div>
     <button class="btn btn-full" style="margin-top:8px" onclick="closeModal()">Schließen</button>`);
   // OneDrive-Dateien dieser Wohnung auch im Leerstand sichtbar machen
   await renderODArchivFuerWE(document.getElementById('leerstandODEl'), obj?.gruppe, weNr);
+}
+
+// ═══════════════════════════════════════════════════════════
+//  AUSHANG „Wohnung frei" – Etappe 1 (lokal/PDF)
+//  Daten: Wohnungsstamm (Zimmer/Fläche/Lage/Ausstattung/Fotos/Grundriss)
+//  + Vormieter (Mietvorschlag) + manuelle Eingaben (Miete/NK/Datum).
+//  Absender oben rechts = Briefkopf der Gruppe (getBriefkopf).
+//  QR = Vormerk-Seite der Website (?angebot=Kennung).
+// ═══════════════════════════════════════════════════════════
+async function modalAushangErstellen(objektId, weNr, vormieterId){
+  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
+  const obj   = getObj(objektId);
+  const stamm = await getWohnungStamm(objektId, weNr);
+  const vm    = vormieterId ? await idbGet('mieter', vormieterId).catch(()=>null) : null;
+  const fotos = Array.isArray(stamm.fotos) ? stamm.fotos : [];
+  const grundriss = stamm.grundriss || '';
+
+  // Vorschlagswerte
+  const vKalt = vm?.kaltmiete!=null ? vm.kaltmiete : (vm?.miete!=null ? vm.miete : '');
+  const vNk   = vm?.nkVorschuss!=null ? vm.nkVorschuss : (vm?.nk!=null ? vm.nk : '');
+  const zimmer  = stamm.zimmer || '';
+  const flaeche = stamm.flaeche || '';
+  const lage    = stamm.lage || stamm.etage || '';
+  const keller  = stamm.kellerNr || '';
+
+  // Foto-Auswahlkacheln (alle vorausgewählt, max. 5 sinnvoll)
+  let fotoWahl = '';
+  if(fotos.length){
+    fotoWahl = '<div style="display:flex;flex-wrap:wrap;gap:8px;margin:6px 0 4px">' + fotos.map((f,i)=>
+      `<label style="position:relative;cursor:pointer">
+        <input type="checkbox" class="ausFotoChk" data-i="${i}" ${i<5?'checked':''} style="position:absolute;top:5px;left:5px;width:18px;height:18px;z-index:2">
+        <img src="${f}" style="width:78px;height:78px;border-radius:8px;border:1px solid var(--ink-10);object-fit:cover">
+      </label>`).join('') + '</div>';
+  } else {
+    fotoWahl = '<div style="font-size:12px;color:var(--amber);margin:4px 0"><i class="ti ti-alert-triangle"></i> Keine Wohnungsfotos hinterlegt. Du kannst sie über „Wohnungsinfos“ ergänzen – der Aushang funktioniert auch ohne.</div>';
+  }
+  const grWahl = grundriss
+    ? `<label style="display:flex;align-items:center;gap:8px;font-size:12px;margin-top:4px"><input type="checkbox" id="ausGrundriss" checked style="width:16px;height:16px"> Grundriss mit aufnehmen</label>`
+    : '';
+
+  showModal(`
+    <div class="m-title"><i class="ti ti-printer"></i> Aushang erstellen · WE ${esc(String(weNr))}</div>
+    <div style="font-size:12px;color:var(--ink-40);margin-bottom:12px">Daten prüfen oder ergänzen, dann „Aushang erzeugen“. Vorbelegte Werte stammen aus den Wohnungs-Stammdaten${vm?' und vom letzten Mieter':''}.</div>
+
+    <div class="f-row">
+      <div class="f" style="flex:0 0 110px"><label>Zimmer</label><input type="number" id="ausZimmer" min="0" step="1" value="${esc(zimmer)}"></div>
+      <div class="f"><label>Wohnfläche m²</label><input type="number" id="ausFlaeche" step="0.01" value="${esc(flaeche)}"></div>
+    </div>
+    <div class="f"><label>Lage / Etage</label><input type="text" id="ausLage" value="${esc(lage)}" placeholder="z. B. 1. OG rechts"></div>
+    <div class="f-row">
+      <div class="f"><label>Kaltmiete €</label><input type="number" id="ausKalt" step="0.01" value="${esc(vKalt)}" placeholder="z. B. 685"></div>
+      <div class="f"><label>NK-Vorauszahlung €</label><input type="number" id="ausNk" step="0.01" value="${esc(vNk)}" placeholder="z. B. 230"></div>
+    </div>
+    <div class="f-row">
+      <div class="f"><label>Bezugsfrei ab</label><input type="text" id="ausFrei" placeholder="z. B. ab 01.09.2026"></div>
+      <div class="f"><label>Keller / Abteil</label><input type="text" id="ausKeller" value="${esc(keller)}" placeholder="z. B. Kellerabteil Nr. 4"></div>
+    </div>
+    <div class="f"><label>Energieausweis-Angabe (Pflicht für Homepage, § 87 GEG)</label>
+      <input type="text" id="ausEnergie" value="${esc(stamm.energie||'')}" placeholder="z. B. Verbrauchsausweis · 118 kWh/(m²·a) · Gas · Bj. 1971 · Klasse D"></div>
+
+    <div class="f-section-title" style="margin-top:10px"><i class="ti ti-photo"></i> Bilder für den Aushang</div>
+    ${fotoWahl}
+    ${grWahl}
+
+    <label style="display:flex;align-items:center;gap:8px;font-size:12px;margin-top:12px;background:var(--copper-bg);padding:9px 11px;border-radius:8px">
+      <input type="checkbox" id="ausHomepage" style="width:16px;height:16px">
+      <span>Diese Wohnung auch für die Homepage vormerken <span style="color:var(--ink-40)">(wird in Etappe 2/3 übertragen)</span></span>
+    </label>
+
+    <div class="f-row" style="margin-top:14px">
+      <button class="btn btn-copper btn-full" onclick="aushangErzeugen('${objektId}','${esc(String(weNr))}')"><i class="ti ti-printer"></i> Aushang erzeugen</button>
+      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+    </div>`);
+}
+
+function aushangFmtEur(v){
+  const n = parseFloat(String(v==null?'':v).replace(',','.'));
+  if(!isFinite(n) || v==='' || v==null) return '';
+  return n.toLocaleString('de-DE',{minimumFractionDigits:0, maximumFractionDigits:0});
+}
+
+async function aushangErzeugen(objektId, weNr){
+  const obj   = getObj(objektId);
+  const stamm = await getWohnungStamm(objektId, weNr);
+  const bk    = getBriefkopf(objektId);   // Absender oben rechts aus Briefkopf-Gruppe
+  const fotos = Array.isArray(stamm.fotos) ? stamm.fotos : [];
+
+  const zimmer  = (document.getElementById('ausZimmer')?.value||'').trim();
+  const flaeche = (document.getElementById('ausFlaeche')?.value||'').trim();
+  const lage    = (document.getElementById('ausLage')?.value||'').trim();
+  const kalt    = (document.getElementById('ausKalt')?.value||'').trim();
+  const nk      = (document.getElementById('ausNk')?.value||'').trim();
+  const frei    = (document.getElementById('ausFrei')?.value||'').trim();
+  const keller  = (document.getElementById('ausKeller')?.value||'').trim();
+  const energie = (document.getElementById('ausEnergie')?.value||'').trim();
+  const homepage = !!document.getElementById('ausHomepage')?.checked;
+
+  // ausgewählte Fotos
+  const gewaehlt = [];
+  document.querySelectorAll('.ausFotoChk').forEach(chk=>{ if(chk.checked) gewaehlt.push(fotos[parseInt(chk.dataset.i)]); });
+  const grChk = document.getElementById('ausGrundriss');
+  const grundriss = (grChk && grChk.checked && stamm.grundriss) ? stamm.grundriss : '';
+
+  // abgeleitete Werte
+  const kaltN = parseFloat(String(kalt).replace(',','.'));
+  const nkN   = parseFloat(String(nk).replace(',','.'));
+  const warm  = (isFinite(kaltN)?kaltN:0) + (isFinite(nkN)?nkN:0);
+  const kaution = isFinite(kaltN) ? Math.round(kaltN*3) : null;
+  const zimmerTitel = zimmer ? `${zimmer}-Zimmer-Wohnung` : 'Wohnung';
+  const adrObjekt = [obj?.name, obj?.ort].filter(Boolean).join(' · ');
+
+  // QR auf Vormerk-Seite (Etappe 3 wertet ?angebot= aus)
+  const kennung = (typeof wohnungsKennung==='function') ? wohnungsKennung(objektId, weNr) : (objektId+'-WE'+weNr);
+  const qrUrl = PORTAL_BASIS + '?angebot=' + encodeURIComponent(kennung);
+  let qrSvg = '';
+  try{ qrSvg = QRENC.svg(qrUrl, 180); }catch(_){ qrSvg = ''; }
+
+  // optionale Homepage-Vormerkung lokal ablegen (Etappe 2 pusht das)
+  if(homepage){
+    if(!energie){ toast('Für die Homepage ist eine Energieausweis-Angabe nötig (§ 87 GEG).'); return; }
+    try{
+      const rec = (await idbGet('settings','homepage_leerstand').catch(()=>null)) || {id:'homepage_leerstand', value:{}};
+      if(!rec.value || typeof rec.value!=='object') rec.value={};
+      rec.value[kennung] = {
+        id:kennung, objektId, weNr, titel:zimmerTitel,
+        stadt:(obj?.ort||'').replace(/^\d{5}\s*/,''), adr:obj?.name||'',
+        flaeche: flaeche?flaeche+' m²':'', zimmer, miete: kalt?aushangFmtEur(kalt)+' €':'',
+        nk: nk?aushangFmtEur(nk)+' €':'', status:'frei', energie, frei,
+        fotos: gewaehlt, vorgemerktAm: nowIso(),
+      };
+      rec.geaendert = nowIso();
+      await idbPut('settings', rec);
+      clearTimeout(window._syncTimer);
+      window._syncTimer = setTimeout(()=>syncToOneDrive(), 2500);
+      toast('Für Homepage vorgemerkt ✓ (Übertragung folgt in Etappe 2)');
+    }catch(e){ console.warn('Homepage-Vormerkung:', e); }
+  }
+
+  // Bild-Galerie-HTML
+  let galerieHtml = '';
+  const haupt = gewaehlt[0] || '';
+  const klein = gewaehlt.slice(1, 5);
+  const phHaupt = haupt
+    ? `<img src="${haupt}" alt="Hauptfoto">`
+    : `<div class="ph"><div>Foto folgt</div></div>`;
+  let kleinHtml = klein.map(f=>`<div><img src="${f}" alt="Foto"></div>`).join('');
+  if(grundriss) kleinHtml += `<div class="gr"><img src="${grundriss}" alt="Grundriss"><span class="grtag">Grundriss</span></div>`;
+  galerieHtml = `<div class="gal"><div class="main">${phHaupt}</div>${kleinHtml?`<div class="col">${kleinHtml}</div>`:''}</div>`;
+
+  // Eckdaten
+  const facts = [];
+  if(zimmer)  facts.push(['Zimmer', esc(zimmer)]);
+  if(flaeche) facts.push(['Wohnfläche', esc(String(flaeche).replace('.',','))+' <small>m²</small>']);
+  if(kalt)    facts.push(['Kaltmiete', aushangFmtEur(kalt)+' <small>€</small>']);
+  if(isFinite(warm)&&warm>0) facts.push(['Warm ca.', aushangFmtEur(warm)+' <small>€</small>']);
+  const factsHtml = facts.map(([l,v])=>`<div class="fact"><div class="lbl">${l}</div><div class="val">${v}</div></div>`).join('');
+
+  // Beschreibungszeilen
+  const desc = [];
+  if(lage)    desc.push(['Lage / Etage', esc(lage)]);
+  if(nk)      desc.push(['Nebenkosten', aushangFmtEur(nk)+' € (Vorauszahlung)']);
+  const ausstattung = [stamm.kueche?'Küche':'', stamm.bad?'Bad':'', stamm.diele?'Diele':''].filter(Boolean).join(', ');
+  if(ausstattung) desc.push(['Ausstattung', esc(ausstattung)]);
+  if(kaution!=null) desc.push(['Kaution', aushangFmtEur(kaution)+' € (3 Nettokaltmieten)']);
+  if(keller)  desc.push(['Keller', esc(keller)]);
+  if(frei)    desc.push(['Bezugsfrei', esc(frei)]);
+  const descHtml = desc.map(([l,v])=>`<div class="row"><b>${l}</b><span>${v}</span></div>`).join('');
+
+  const energieHtml = energie ? `<div class="energie">Energieausweis: ${esc(energie)}</div>` : '';
+  const datum = new Date().toLocaleDateString('de-DE');
+
+  const html = aushangDokumentHtml({
+    bk, zimmerTitel, adrObjekt, lage, frei, galerieHtml, factsHtml, descHtml,
+    energieHtml, qrSvg, datum, weNr
+  });
+
+  // Druckfenster öffnen
+  const w = window.open('', '_blank');
+  if(!w){ toast('Bitte Pop-ups erlauben, um den Aushang zu drucken.'); return; }
+  w.document.write(html);
+  w.document.close();
+  closeModal();
+}
+
+// reines HTML-Template (eine A4-Seite)
+function aushangDokumentHtml(d){
+  const absenderName = d.bk?.absender || d.bk?.name || 'Hausverwaltung Nadig Pfau';
+  const absZeilen = [
+    d.bk?.strasse||'', d.bk?.ort||'', d.bk?.email||''
+  ].filter(Boolean).map(z=>esc(z)).join('<br>');
+  return `<!DOCTYPE html><html lang="de"><head><meta charset="utf-8"><title>Aushang ${esc(absenderName)}</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:"Segoe UI",system-ui,sans-serif;color:#1f2937;line-height:1.45}
+  .sheet{width:210mm;min-height:297mm;padding:16mm 16mm 12mm;display:flex;flex-direction:column;margin:0 auto}
+  .head{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2.5px solid #185FA5;padding-bottom:10px}
+  .head .brand{font-size:19px;font-weight:800;color:#0f3f72}
+  .head .brand small{display:block;font-size:10.5px;font-weight:500;color:#6b7280;margin-top:1px}
+  .head .meta{text-align:right;font-size:10px;color:#6b7280;line-height:1.6}
+  .badge{display:inline-block;background:#e8f0f9;color:#0f3f72;font-size:11px;font-weight:700;padding:3px 11px;border-radius:20px;letter-spacing:.6px;text-transform:uppercase;margin:14px 0 6px}
+  .title{font-size:27px;font-weight:800;letter-spacing:.4px}
+  .subtitle{font-size:13px;color:#4b5563;font-weight:500;margin-bottom:13px}
+  .gal{display:grid;grid-template-columns:1.6fr 1fr;gap:8px;margin-bottom:13px;height:60mm}
+  .gal .main{border-radius:10px;overflow:hidden;background:#f6f7f9;border:1px solid #e5e7eb}
+  .gal .main img{width:100%;height:100%;object-fit:cover}
+  .gal .col{display:grid;grid-auto-rows:1fr;gap:8px}
+  .gal .col>div{border-radius:10px;overflow:hidden;background:#f6f7f9;border:1px solid #e5e7eb;position:relative}
+  .gal .col img{width:100%;height:100%;object-fit:cover}
+  .gal .grtag{position:absolute;top:6px;left:6px;background:rgba(31,41,55,.78);color:#fff;font-size:9px;font-weight:600;padding:2px 7px;border-radius:6px}
+  .ph{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#9ca3af;font-size:11px}
+  .facts{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:13px}
+  .fact{background:#f6f7f9;border:1px solid #e5e7eb;border-radius:10px;padding:9px 12px}
+  .fact .lbl{font-size:9.5px;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;font-weight:600}
+  .fact .val{font-size:18px;font-weight:800;color:#0f3f72;margin-top:2px}
+  .fact .val small{font-size:11px;font-weight:600;color:#4b5563}
+  .desc{font-size:12px;color:#4b5563;margin-bottom:11px;display:grid;grid-template-columns:1fr 1fr;gap:5px 22px}
+  .desc .row{display:flex;gap:8px;align-items:baseline}
+  .desc .row b{color:#1f2937;font-weight:600;min-width:96px;flex-shrink:0}
+  .energie{font-size:11px;color:#6b7280;border-top:1px dashed #e5e7eb;padding-top:8px;margin-bottom:12px}
+  .cta{display:grid;grid-template-columns:auto 1fr;gap:16px;align-items:center;background:#e8f0f9;border-radius:12px;padding:13px 18px;margin-bottom:12px}
+  .cta .qr{width:32mm;height:32mm;background:#fff;border-radius:10px;border:1px solid #e5e7eb;padding:5px}
+  .cta .qr svg{width:100%;height:100%;display:block}
+  .cta h3{font-size:15px;color:#0f3f72;font-weight:800;margin-bottom:3px}
+  .cta p{font-size:11.5px;color:#4b5563;margin-bottom:6px}
+  .cta .steps{display:flex;gap:14px;font-size:10.5px;color:#4b5563}
+  .cta .steps span{display:flex;align-items:center;gap:5px}
+  .cta .steps b{display:inline-flex;width:16px;height:16px;border-radius:50%;background:#185FA5;color:#fff;font-size:9px;align-items:center;justify-content:center;font-weight:700}
+  .tip{display:flex;align-items:center;gap:14px;border:1.5px dashed #b7791f;background:#fdf6e7;border-radius:12px;padding:12px 18px;margin-top:auto}
+  .tip .euro{font-size:32px;font-weight:800;color:#b7791f;line-height:1;flex-shrink:0}
+  .tip h4{font-size:13px;color:#b7791f;font-weight:800;margin-bottom:2px}
+  .tip p{font-size:10.5px;color:#4b5563;line-height:1.5}
+  .tip p b{color:#1f2937}
+  .foot{margin-top:11px;padding-top:8px;border-top:1px solid #e5e7eb;display:flex;justify-content:space-between;font-size:9.5px;color:#6b7280}
+  @media print{ .sheet{padding:14mm} @page{size:A4;margin:0} }
+</style></head><body>
+<div class="sheet">
+  <div class="head">
+    <div class="brand">${esc(absenderName)}<small>Hausverwaltung</small></div>
+    <div class="meta">${absZeilen}<br>Stand: ${esc(d.datum)}</div>
+  </div>
+  <span class="badge">Wohnung frei</span>
+  <div class="title">${esc(d.zimmerTitel)} zu vermieten</div>
+  <div class="subtitle">${esc(d.adrObjekt)}${d.lage?' · '+esc(d.lage):''}${d.frei?' · '+esc(d.frei):''}</div>
+  ${d.galerieHtml}
+  <div class="facts">${d.factsHtml}</div>
+  <div class="desc">${d.descHtml}</div>
+  ${d.energieHtml}
+  <div class="cta">
+    <div class="qr">${d.qrSvg}</div>
+    <div>
+      <h3>Interesse? Jetzt unkompliziert bewerben</h3>
+      <p>QR-Code mit dem Smartphone scannen und die Wohnung direkt online vormerken – ohne Papier, ohne Wartezeit.</p>
+      <div class="steps"><span><b>1</b> Code scannen</span><span><b>2</b> Daten eingeben</span><span><b>3</b> Absenden</span></div>
+    </div>
+  </div>
+  <div class="tip">
+    <div class="euro">100&nbsp;€</div>
+    <div>
+      <h4>Mieter empfehlen – Prämie sichern</h4>
+      <p>Sie kennen jemanden, der eine Wohnung sucht? Empfehlen Sie uns einen neuen Mieter. <b>Kommt ein Mietvertrag zustande, erhalten Sie als Dankeschön 100 €.</b> Die Prämie wird ausschließlich an Mieterinnen und Mieter unserer Hausverwaltung ausgezahlt. Bitte bei der Selbstauskunft im Feld „Empfohlen von“ Ihren Namen angeben.</p>
+    </div>
+  </div>
+  <div class="foot">
+    <span>${esc(absenderName)}${d.bk?.strasse?' · '+esc(d.bk.strasse):''}${d.bk?.ort?' · '+esc(d.bk.ort):''}</span>
+    <span>Alle Angaben ohne Gewähr · Irrtümer vorbehalten</span>
+  </div>
+</div>
+<script>setTimeout(function(){window.print();},400);<\/script>
+</body></html>`;
 }
 
 // Mieterwechsel rückgängig: einen Vormieter wieder zum aktuellen Mieter machen.
