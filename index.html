@@ -792,7 +792,7 @@ body.printing-active #printRoot{display:block!important}
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=28;
-const APP_VERSION = '2026-06-23-v120';
+const APP_VERSION = '2026-06-23-v121';
 /* v94 (19.06.2026): Etappe 1 – Lokale Benachrichtigungen erweitert (Termine + Maengel).
    - checkFaelligeAufgaben() prueft jetzt zusaetzlich:
      a) Termin-Erinnerungen: Termine mit gesetztem Erinnerungs-Vorlauf (1/2/7 Tage)
@@ -9060,6 +9060,7 @@ async function showMieter(id){
     <button class="btn btn-sm" onclick="modalWohnungsbilder('${m.objektId}','${esc(String(m.weNr||''))}')"><i class="ti ti-photo-scan"></i> Bilder</button>
     ${istVerwalter()?`<button class="btn btn-sm" onclick="modalSchluessel('${m.objektId}','${esc(String(m.weNr||''))}')"><i class="ti ti-key"></i> Schlüssel</button>`:''}
     ${istVerwalter()?`<button class="btn btn-sm" onclick="modalWohnungHeizNk('${m.objektId}','${esc(String(m.weNr||''))}')"><i class="ti ti-home-cog"></i> Wohnungsinfos</button>`:''}
+    ${(istVerwalter() && !m._vormieter && (m.leerstand || m.auszug || m.auszugISO))?`<button class="btn btn-sm" style="border-color:var(--copper);color:var(--copper-d)" onclick="modalAushangErstellen('${m.objektId}','${esc(String(m.weNr||''))}','${m.id}')"><i class="ti ti-printer"></i> Aushang „Wohnung frei“</button>`:''}
     <button class="btn btn-sm" onclick="druckeWohnungsgeberBescheinigung('${m.id}')"><i class="ti ti-file-certificate"></i> WGB</button>
     ${istVerwalter()?`<button class="btn btn-sm" onclick="modalMietbescheinigung('${m.id}')"><i class="ti ti-receipt-2"></i> Mietbescheinigung</button>`:''}
     <button class="btn btn-sm" onclick="modalBrief('${m.id}','${m.objektId}')"><i class="ti ti-mail"></i> Brief</button>
@@ -17325,9 +17326,15 @@ function mieterFormHTML(obj, m={}) {
         <input type="number" id="mKaution" value="${m.kaution||''}" step="0.01"></div>
     </div>
     <div class="f-row">
+      <div class="f"><label>Gekündigt am</label>
+        <input type="date" id="mGekuendigt" value="${m.gekuendigtAm||''}" onchange="mEditKuendigungChange()">
+        <div style="font-size:10px;color:var(--ink-40);margin-top:2px">Eingang der Mieter-Kündigung. Berechnet das Auszugsdatum automatisch (§ 573c Abs. 1 BGB, 3 Monate).</div></div>
       <div class="f"><label>Auszug</label>
         <input type="date" id="mAuszug" value="${m.auszug && m.auszug.includes('.')?
-          m.auszug.split('.').reverse().join('-'):m.auszug||''}"></div>
+          m.auszug.split('.').reverse().join('-'):m.auszug||''}">
+        <div id="mAuszugHint" style="font-size:10px;color:var(--copper-d);margin-top:2px"></div></div>
+    </div>
+    <div class="f-row">
       <div class="f"><label>TG-Stellplatz Nr.</label>
         <input type="text" id="mTgNr" value="${m.tgNr||''}"></div>
     </div>
@@ -17687,6 +17694,7 @@ async function saveEditMieter(id) {
     persListe.forEach(p=>{ if(!p.ab) p.ab=einzug; });
   }
   m.leerstand = document.getElementById('mLeerstand')?.checked||false;
+  m.gekuendigtAm = document.getElementById('mGekuendigt')?.value||'';
   m.personen_liste = persListe;
   // Anzeigename = Nachname(n) der Vertragspartner; sonst erste lebende Person.
   const lebend = persListe.filter(p=>!p.verstorben);
@@ -17941,6 +17949,85 @@ async function modalLeerstandWE(objektId, weNr, vormieterId){
 //  Absender oben rechts = Briefkopf der Gruppe (getBriefkopf).
 //  QR = Vormerk-Seite der Website (?angebot=Kennung).
 // ═══════════════════════════════════════════════════════════
+// ── Kündigungsfrist-Berechnung nach § 573c Abs. 1 BGB (Mieterkündigung) ───────
+// Mieter: stets 3 Monate. Kündigung bis einschl. 3. Werktag eines Monats wirkt
+// zum Ablauf des übernächsten Monats; später → ein Monat mehr.
+// Werktag = Mo–Sa ohne NRW-Feiertage (Samstag zählt mit, BGH VIII ZR 206/04).
+function _osterSonntag(jahr){
+  // Gauß'sche Osterformel
+  const a=jahr%19, b=Math.floor(jahr/100), c=jahr%100;
+  const d=Math.floor(b/4), e=b%4, f=Math.floor((b+8)/25);
+  const g=Math.floor((b-f+1)/3), h=(19*a+b-d-g+15)%30;
+  const i=Math.floor(c/4), k=c%4, l=(32+2*e+2*i-h-k)%7;
+  const m=Math.floor((a+11*h+22*l)/451);
+  const monat=Math.floor((h+l-7*m+114)/31), tag=((h+l-7*m+114)%31)+1;
+  return new Date(jahr, monat-1, tag);
+}
+function _nrwFeiertage(jahr){
+  const set=new Set();
+  const add=(mo,ta)=>set.add(`${jahr}-${String(mo).padStart(2,'0')}-${String(ta).padStart(2,'0')}`);
+  const addD=(dt)=>set.add(`${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`);
+  // Feste NRW-Feiertage
+  add(1,1);   // Neujahr
+  add(5,1);   // Tag der Arbeit
+  add(10,3);  // Tag der Deutschen Einheit
+  add(11,1);  // Allerheiligen (NRW)
+  add(12,25); add(12,26); // Weihnachten
+  // Bewegliche (von Ostern abhängig)
+  const os=_osterSonntag(jahr);
+  const rel=(d)=>{ const x=new Date(os); x.setDate(os.getDate()+d); return x; };
+  addD(rel(-2)); // Karfreitag
+  addD(rel(1));  // Ostermontag
+  addD(rel(39)); // Christi Himmelfahrt
+  addD(rel(50)); // Pfingstmontag
+  addD(rel(60)); // Fronleichnam (NRW)
+  return set;
+}
+function _istWerktag(dt){
+  const wd=dt.getDay();              // 0=So
+  if(wd===0) return false;           // Sonntag
+  const key=`${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
+  if(_nrwFeiertage(dt.getFullYear()).has(key)) return false;
+  return true;                       // Mo–Sa, kein Feiertag
+}
+function _dritterWerktag(jahr, monat0){
+  // monat0: 0-basiert. Liefert Date des 3. Werktags.
+  let d=new Date(jahr, monat0, 1), zaehl=0;
+  while(zaehl<3){
+    if(_istWerktag(d)) zaehl++;
+    if(zaehl<3) d.setDate(d.getDate()+1);
+  }
+  return d;
+}
+// Eingang: ISO 'YYYY-MM-DD'. Rückgabe: ISO des Auszugstags (= letzter Tag des Zielmonats).
+function berechneAuszugNachKuendigung(eingangISO){
+  if(!eingangISO || !/^\d{4}-\d{2}-\d{2}$/.test(eingangISO)) return '';
+  const [jy,jm,jd]=eingangISO.split('-').map(Number);
+  const eingang=new Date(jy, jm-1, jd);
+  const dw3=_dritterWerktag(jy, jm-1);
+  // innerhalb Karenz (Eingang <= 3. Werktag) → Ablauf übernächster Monat (+2),
+  // sonst (+3). Ende = letzter Tag des Zielmonats.
+  const plus = (eingang <= dw3) ? 2 : 3;
+  // letzter Tag = Tag 0 des Folgemonats des Zielmonats
+  const ziel = new Date(jy, (jm-1)+plus+1, 0);
+  const y=ziel.getFullYear(), m=String(ziel.getMonth()+1).padStart(2,'0'), t=String(ziel.getDate()).padStart(2,'0');
+  return `${y}-${m}-${t}`;
+}
+// Bei Änderung des "gekündigt am"-Feldes: Auszug automatisch füllen (überschreibbar)
+function mEditKuendigungChange(){
+  const kEl=document.getElementById('mGekuendigt');
+  const aEl=document.getElementById('mAuszug');
+  const hint=document.getElementById('mAuszugHint');
+  if(!kEl || !aEl) return;
+  const iso=kEl.value;
+  if(!iso){ if(hint) hint.textContent=''; return; }
+  const aus=berechneAuszugNachKuendigung(iso);
+  if(aus){
+    aEl.value=aus;
+    const d=new Date(aus);
+    if(hint) hint.innerHTML='<i class="ti ti-calculator"></i> Auszug nach § 573c Abs. 1 BGB berechnet ('+d.toLocaleDateString('de-DE')+'). Vorschlag – bei Kündigung um den Monatsanfang (3-Werktage-Karenz) und bei Nachmieter prüfen/änderbar.';
+  }
+}
 async function modalAushangErstellen(objektId, weNr, vormieterId){
   if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
   const obj   = getObj(objektId);
@@ -17948,6 +18035,19 @@ async function modalAushangErstellen(objektId, weNr, vormieterId){
   const vm    = vormieterId ? await idbGet('mieter', vormieterId).catch(()=>null) : null;
   const fotos = Array.isArray(stamm.fotos) ? stamm.fotos : [];
   const grundriss = stamm.grundriss || '';
+  // "Bezugsfrei ab"-Vorschlag: Auszugsdatum des geladenen Mieters (aktiv oder Vormieter).
+  // Liegt es in der Zukunft → "ab TT.MM.JJJJ"; ohne Datum → leer (Verwalter trägt "voraussichtlich" ein).
+  let freiAbVorschlag='';
+  if(vm){
+    const ausISO = vm.auszugISO || (vm.auszug && vm.auszug.includes('.') ? vm.auszug.split('.').reverse().join('-') : (vm.auszug||''));
+    if(ausISO && /^\d{4}-\d{2}-\d{2}$/.test(ausISO)){
+      const d=new Date(ausISO);
+      const heute=new Date(); heute.setHours(0,0,0,0);
+      // Bezugsfrei = Tag nach Auszug
+      const frei=new Date(d); frei.setDate(d.getDate()+1);
+      freiAbVorschlag = (d>=heute? 'ab ' : 'frei seit ') + frei.toLocaleDateString('de-DE');
+    }
+  }
 
   // Vorschlagswerte
   const vKalt = vm?.kaltmiete!=null ? vm.kaltmiete : (vm?.miete!=null ? vm.miete : '');
@@ -17986,7 +18086,7 @@ async function modalAushangErstellen(objektId, weNr, vormieterId){
       <div class="f"><label>NK-Vorauszahlung €</label><input type="number" id="ausNk" step="0.01" value="${esc(vNk)}" placeholder="z. B. 230"></div>
     </div>
     <div class="f-row">
-      <div class="f"><label>Bezugsfrei ab</label><input type="text" id="ausFrei" placeholder="z. B. ab 01.09.2026"></div>
+      <div class="f"><label>Bezugsfrei ab</label><input type="text" id="ausFrei" value="${freiAbVorschlag}" placeholder="z. B. ab 01.09.2026 oder „voraussichtlich ab …“"></div>
       <div class="f"><label>Keller / Abteil</label><input type="text" id="ausKeller" value="${esc(keller)}" placeholder="z. B. Kellerabteil Nr. 4"></div>
     </div>
     <div class="f"><label>Energieausweis-Angabe (Pflicht für Homepage, § 87 GEG)</label>
