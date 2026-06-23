@@ -792,7 +792,7 @@ body.printing-active #printRoot{display:block!important}
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=28;
-const APP_VERSION = '2026-06-22-v117';
+const APP_VERSION = '2026-06-23-v118';
 /* v94 (19.06.2026): Etappe 1 – Lokale Benachrichtigungen erweitert (Termine + Maengel).
    - checkFaelligeAufgaben() prueft jetzt zusaetzlich:
      a) Termin-Erinnerungen: Termine mit gesetztem Erinnerungs-Vorlauf (1/2/7 Tage)
@@ -3909,14 +3909,69 @@ async function saEncKeyLoeschen(){
 }
 // Hilfsfunktion: Modal schließen, dann Aktion (z. B. Posteingang öffnen)
 function closeAllModalsThen(fn){ try{ closeModal(); }catch(e){} setTimeout(()=>{ try{ fn&&fn(); }catch(e){} }, 60); }
+
+/* ── Selbstauskunft-Link (Token) senden ── */
+async function saTokInteressentBefuellen(){
+  const sel=document.getElementById('saTokInteressent');
+  if(!sel) return;
+  let liste=[];
+  try{ liste=await idbGetAll('interessenten'); }catch(e){ liste=[]; }
+  // nur Einträge mit E-Mail, neueste zuerst
+  liste=(liste||[]).filter(i=>i && i.email).sort((a,b)=>String(b.erstellt||'').localeCompare(String(a.erstellt||'')));
+  sel.innerHTML='<option value="">– manuell eingeben –</option>'+liste.map(i=>{
+    const name=esc((i.name||((i.vorname||'')+' '+(i.nachname||''))).trim()||i.email);
+    const obj=esc(i.objektName||'');
+    return `<option value="${esc(i.id)}" data-mail="${esc(i.email)}" data-objekt="${obj}">${name}${obj?' · '+obj:''}</option>`;
+  }).join('');
+}
+function saTokInteressentGewaehlt(){
+  const sel=document.getElementById('saTokInteressent');
+  if(!sel) return;
+  const opt=sel.options[sel.selectedIndex];
+  if(!opt || !opt.value){ return; }
+  const mail=opt.getAttribute('data-mail')||'';
+  const objekt=opt.getAttribute('data-objekt')||'';
+  const mi=document.getElementById('saTokMail'); if(mi && mail) mi.value=mail;
+  const oi=document.getElementById('saTokObjekt'); if(oi && objekt) oi.value=objekt;
+}
+async function saTokenSenden(){
+  const st=document.getElementById('saTokStatus');
+  const mail=(document.getElementById('saTokMail')?.value||'').trim();
+  const objekt=(document.getElementById('saTokObjekt')?.value||'').trim();
+  const key=(await idbGet('settings','backendKey').catch(()=>null))?.value;
+  if(!key){ if(st) st.innerHTML='<div style="font-size:12px;color:var(--red,#c0392b)">Kein Function-Key hinterlegt (oben speichern).</div>'; return; }
+  if(!mail || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(mail)){ if(st) st.innerHTML='<div style="font-size:12px;color:var(--red,#c0392b)">Bitte eine gültige E-Mail-Adresse eingeben.</div>'; return; }
+  if(st) st.innerHTML='<div style="font-size:12px;color:var(--ink-40)">Link wird gesendet …</div>';
+  try{
+    const res=await fetch(BACKEND_AZURE+'/api/send-token',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-functions-key':key},
+      body:JSON.stringify({ email:mail, objektName:objekt })
+    });
+    const j=await res.json().catch(()=>({}));
+    if(res.ok && j.ok!==false){
+      if(st) st.innerHTML='<div style="font-size:12px;color:var(--green,#2E7D52)"><i class="ti ti-circle-check"></i> Link an '+esc(mail)+' gesendet.</div>';
+      toast('Selbstauskunft-Link gesendet');
+      const oi=document.getElementById('saTokObjekt'); if(oi) oi.value='';
+      const mi=document.getElementById('saTokMail'); if(mi) mi.value='';
+      const sel=document.getElementById('saTokInteressent'); if(sel) sel.value='';
+    }else if(res.status===401){
+      if(st) st.innerHTML='<div style="font-size:12px;color:var(--red,#c0392b)">Function-Key ungültig (401).</div>';
+    }else{
+      if(st) st.innerHTML='<div style="font-size:12px;color:var(--red,#c0392b)">Senden fehlgeschlagen ('+res.status+').</div>';
+    }
+  }catch(e){
+    if(st) st.innerHTML='<div style="font-size:12px;color:var(--red,#c0392b)">Backend nicht erreichbar.</div>';
+  }
+}
 async function backendKeyTesten(){
   const val=(document.getElementById('backendKeyIn')?.value||'').trim();
   const st=document.getElementById('backendKeyStatus');
   if(!val){ if(st) st.innerHTML='<div style="font-size:12px;color:var(--ink-40)">Bitte zuerst einen Schlüssel eingeben.</div>'; return; }
   if(st) st.innerHTML='<div style="font-size:12px;color:var(--ink-40)">Verbindung wird geprüft …</div>';
   try{
-    // leichter, key-geschützter Aufruf (verändert nichts)
-    const res=await fetch(BACKEND_BASIS+'/api/inbox',{ headers:{'x-functions-key':val} });
+    // leichter, key-geschützter Aufruf (verändert nichts) – gegen die aktive Azure-URL
+    const res=await fetch(BACKEND_AZURE+'/api/inbox-sa',{ headers:{'x-functions-key':val} });
     if(res.ok){
       if(st) st.innerHTML='<div style="font-size:12px;color:var(--green,#2E7D52)"><i class="ti ti-circle-check"></i> Verbindung erfolgreich. Schlüssel ist gültig.</div>';
     }else if(res.status===401){
@@ -20063,7 +20118,7 @@ async function renderSettings(){
     ${istSysAdmin?`<div class="settings-card" data-tab="system">
       <div class="card-hdr"><i class="ti ti-plug-connected"></i> Website-Backend (Azure)</div>
       <p style="font-size:13px;color:var(--ink-40);margin-bottom:12px;line-height:1.6">
-        Für die direkte Übertragung des Wohnungsexports an das Mieterportal-Backend. Den Function-Key (Host-Schlüssel der Azure Function) hier hinterlegen. Er wird nur lokal auf diesem Gerät gespeichert und ausschließlich für Aufrufe an <code>${esc(BACKEND_BASIS)}</code> verwendet. Ohne Schlüssel funktioniert der JSON-Export weiterhin.
+        Für die direkte Übertragung an das Website-Backend. Den Function-Key (Host-Schlüssel der Azure Function) hier hinterlegen. Er wird nur lokal auf diesem Gerät gespeichert und ausschließlich für Aufrufe an <code>${esc(BACKEND_AZURE)}</code> verwendet. Ohne Schlüssel funktioniert der JSON-Export weiterhin.
       </p>
       <label style="font-size:12px;color:var(--ink-40);display:block;margin-bottom:4px">Function-Key</label>
       <div style="display:flex;gap:8px;align-items:center">
@@ -20093,6 +20148,22 @@ async function renderSettings(){
         <button class="btn" onclick="closeAllModalsThen(oeffneSelbstauskuenfte)"><i class="ti ti-inbox"></i> Posteingang öffnen</button>
       </div>
       <div id="saEncKeyStatus" style="margin-top:10px"></div>
+
+      <hr style="border:none;border-top:1px solid var(--line);margin:16px 0">
+      <div class="card-hdr" style="font-size:14px"><i class="ti ti-send"></i> Selbstauskunft-Link senden</div>
+      <p style="font-size:13px;color:var(--ink-40);margin:8px 0 12px;line-height:1.6">
+        Sendet einem Interessenten einen persönlichen Link zur vollständigen Selbstauskunft (gültig 7 Tage). E-Mail-Adresse manuell eingeben oder einen Interessenten auswählen.
+      </p>
+      <label style="font-size:12px;color:var(--ink-40);display:block;margin-bottom:4px">Interessent auswählen <span style="opacity:.7">(optional)</span></label>
+      <select id="saTokInteressent" onchange="saTokInteressentGewaehlt()" style="width:100%;margin-bottom:10px"><option value="">– manuell eingeben –</option></select>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <input type="email" id="saTokMail" placeholder="E-Mail-Adresse" style="flex:1;min-width:160px" autocomplete="off">
+        <input type="text" id="saTokObjekt" placeholder="Objekt / Wohnung" style="flex:1;min-width:160px">
+      </div>
+      <div style="margin-top:10px">
+        <button class="btn btn-primary" onclick="saTokenSenden()"><i class="ti ti-send"></i> Link senden</button>
+      </div>
+      <div id="saTokStatus" style="margin-top:10px"></div>
     </div>`:''}
 
     ${isAdmin?`<div class="settings-card" data-tab="objekte">
@@ -20261,7 +20332,7 @@ async function renderSettings(){
   if(isAdmin){ const pfEl=document.getElementById('portalFreigabeEl'); if(pfEl) pfEl.innerHTML=await renderPortalFreigabe(); }
   if(isAdmin){ const ssEl=document.getElementById('syncSchutzEl'); if(ssEl) ssEl.innerHTML=await renderSyncSchutz(); }
   if(isAdmin){ try{ await wohnungenExportInfo(); }catch(e){} }
-  if(isAdmin){ try{ await backendKeyLaden(); }catch(e){} try{ await saEncKeyLaden(); }catch(e){} }
+  if(isAdmin){ try{ await backendKeyLaden(); }catch(e){} try{ await saEncKeyLaden(); }catch(e){} try{ await saTokInteressentBefuellen(); }catch(e){} }
   await renderMeineSignatur();
   // Niimbot-Druckdichte vorselektieren
   try{
