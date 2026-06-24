@@ -794,7 +794,7 @@ body.printing-active #printRoot{display:block!important}
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=28;
-const APP_VERSION = '2026-06-24-v130';
+const APP_VERSION = '2026-06-24-v132';
 /* v94 (19.06.2026): Etappe 1 – Lokale Benachrichtigungen erweitert (Termine + Maengel).
    - checkFaelligeAufgaben() prueft jetzt zusaetzlich:
      a) Termin-Erinnerungen: Termine mit gesetztem Erinnerungs-Vorlauf (1/2/7 Tage)
@@ -1052,6 +1052,10 @@ const OBJ_MAP={
   'Zur Verlach 37':'verlach37','Amboßstr. 10':'amboss10','Marienburger Str. 22':'marien22',
 };
 const getObj=id=>OBJEKTE.find(o=>o.id===id);
+// Pseudo-Objekt für objektübergreifende Aufgaben ("Allgemein")
+const ALLGEMEIN_ID='allgemein';
+function istAllgemein(id){ return id===ALLGEMEIN_ID; }
+function objNameOderAllgemein(id){ return istAllgemein(id) ? 'Allgemein · alle Objekte' : (getObj(id)?.name||''); }
 // Dashboard-Standortgruppierung (P1) – BEWUSST getrennt von 'gruppe' (steuert Briefköpfe!).
 // label=Standortname, einzeln=true -> als normale Objektkarte ohne Gruppen-Ebene.
 const DASH_GRUPPEN=[
@@ -9734,7 +9738,7 @@ async function renderAufgaben(){
     return myIds.includes(x.objektId);
   }
 
-  const aufgaben=(await idbGetAll('aufgaben')).filter(a=>myIds.includes(a.objektId)).filter(aufgabeSichtbarFuerUser).filter(passFilter);
+  const aufgaben=(await idbGetAll('aufgaben')).filter(a=>istAllgemein(a.objektId)||myIds.includes(a.objektId)).filter(aufgabeSichtbarFuerUser).filter(passFilter);
   const maengelRaw=(await idbGetAll('maengel')).filter(m=>myIds.includes(m.objektId)).filter(passFilter);
   const altReps=(await idbGetAll('reparaturen')).filter(r=>myIds.includes(r.objektId)).filter(passFilter).map(r=>({...r,istReparatur:true,_altStore:true}));
   const maengel=[...maengelRaw,...altReps];
@@ -9828,7 +9832,7 @@ async function refreshAufgaben(){
 async function updateBadge(){
   const myObj=await getMyObjekte();
   const myIds=myObj.map(o=>o.id);
-  const auf=(await idbGetAll('aufgaben')).filter(a=>myIds.includes(a.objektId)&&a.status!=='erledigt');
+  const auf=(await idbGetAll('aufgaben')).filter(a=>(istAllgemein(a.objektId)||myIds.includes(a.objektId))&&a.status!=='erledigt');
   const mng=(await idbGetAll('maengel')).filter(m=>myIds.includes(m.objektId)&&m.status!=='behoben');
   const n=auf.length+mng.length;
   const badge=document.getElementById('navBadge');
@@ -9901,7 +9905,7 @@ function taskHTML(t) {
     <div class="t-body">
       <div class="t-title ${done?'done':''}">${t.titel}</div>
       <div class="t-meta">
-        <span>${obj?.name||''}</span>
+        <span>${istAllgemein(t.objektId)?'<i class="ti ti-world" style="font-size:11px;color:var(--copper)"></i> Allgemein':(obj?.name||'')}</span>
         ${t.weNr?`<span>WE ${t.weNr}${mieterFuerWe(t.objektId,t.weNr)?' · '+esc(mieterFuerWe(t.objektId,t.weNr)):''}</span>`:''}
         ${t.datum?`<span>${fmtDate(t.datum)}</span>`:''}
         <span class="chip chip-${t.prio==='hoch'?'err':t.prio==='mittel'?'warn':'ok'}" style="font-size:10px;padding:1px 6px">${t.prio||'–'}</span>
@@ -10240,7 +10244,7 @@ async function checkFaelligeAufgaben() {
   const morgenStr = morgen.toISOString().split('T')[0];
 
   const aufgaben = (await idbGetAll('aufgaben'))
-    .filter(a => myIds.includes(a.objektId) && a.status !== 'erledigt' && a.datum);
+    .filter(a => (istAllgemein(a.objektId)||myIds.includes(a.objektId)) && a.status !== 'erledigt' && a.datum);
 
   const faellig = aufgaben.filter(a => a.datum <= heute);
   const morgenFaellig = aufgaben.filter(a => a.datum === morgenStr);
@@ -10381,7 +10385,7 @@ function initNotifications() {
       const myIds = myObj.map(o=>o.id);
       const heute = today();
       const aufgaben = (await idbGetAll('aufgaben'))
-        .filter(a => myIds.includes(a.objektId) && a.status !== 'erledigt' && a.datum && a.datum <= heute);
+        .filter(a => (istAllgemein(a.objektId)||myIds.includes(a.objektId)) && a.status !== 'erledigt' && a.datum && a.datum <= heute);
       if (aufgaben.length > 0) showFaelligBanner(aufgaben.length);
     }, 2000);
   }
@@ -13633,7 +13637,7 @@ function mvVertragHTML(d){
       thead { display:table-header-group; }
     </style>`;
 
-  let h = '<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8"><title>Wohnraum-Mietvertrag</title>' + STYLE + '</head><body>';
+  let h = '<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8"><title>Wohnraum-Mietvertrag</title>' + STYLE + mvSammleAnlagenStyles(anl) + '</head><body>';
 
   // Briefkopf
   h += '<div class="mv-kopf"><b>' + mvEsc(d.briefkopfName) + '</b><br>' + mvEsc(d.briefkopfAnschrift) + '<br>' + mvEsc(d.briefkopfKontakt) + '</div>';
@@ -13783,9 +13787,25 @@ function mvAnlagenSeiten(anl, d){
     {key:'sepa', titel:'Anlage – SEPA-Lastschriftmandat',
       hinweis:'Das SEPA-Lastschriftmandat ist diesem Vertrag als gesonderte Anlage beigefügt und vom Mieter zu unterzeichnen.'},
   ];
+  // Für diese Keys liegt der geprüfte Volltext als Anlagen-Generator vor und wird
+  // als echte Anlagenseite eingebettet (statt Platzhalter). Das zugehörige CSS
+  // wird gesammelt und einmalig in den MV-Kopf injiziert (siehe mvSammleAnlagenStyles).
+  const VOLLTEXT = {
+    hausordnung: ()=>anlageHausordnungHtml(d?.objektId||'', '', false),
+    merkblatt:   ()=>anlageMerkblattHtml(d?.objektId||'', '', false),
+    dsgvo:       ()=>anlageDatenschutzHtml(d?.objektId||'', '', false),
+  };
+
   let out = '';
   ANLAGEN.forEach(a=>{
     if(!anl[a.key]) return;
+    if(VOLLTEXT[a.key]){
+      // Inneren Body der Anlage extrahieren und mit Seitenumbruch einbetten.
+      const full = VOLLTEXT[a.key]();
+      const inner = mvAnlageInnerBody(full);
+      out += '<div class="mv-pb anlage-vt">' + inner + '</div>';
+      return;
+    }
     // Energieausweis: vorhandene Kennwerte aus dem Entwurf mit ausgeben
     let extra = '';
     if(a.key==='energie'){
@@ -13805,6 +13825,32 @@ function mvAnlagenSeiten(anl, d){
       + '</div>';
   });
   return out;
+}
+
+// Extrahiert den <body>-Inhalt eines Anlagen-Dokuments (ohne <head>/<style>).
+function mvAnlageInnerBody(fullHtml){
+  const m = /<body[^>]*>([\s\S]*?)<\/body>/i.exec(fullHtml);
+  return m ? m[1] : fullHtml;
+}
+
+// Sammelt das <style> der Volltext-Anlagen, damit deren CSS-Klassen (.box, .ampel …)
+// auch im Mietvertrags-PDF greifen. Wird einmalig in den MV-<head> injiziert.
+function mvSammleAnlagenStyles(anl){
+  anl = anl || {};
+  if(!(anl.hausordnung || anl.merkblatt || anl.dsgvo)) return '';
+  // Eine der Anlagen liefert das vollständige Style-Set (alle teilen anlageRahmen).
+  const probe = anlageMerkblattHtml('', '', false);
+  const m = /<style>([\s\S]*?)<\/style>/i.exec(probe);
+  // Auf .anlage-vt scopen, damit die Anlagen-Styles den MV-Text nicht verändern.
+  if(!m) return '';
+  const scoped = m[1].replace(/(^|\})\s*([^{@}]+)\{/g, (full, br, sel)=>{
+    // @page und body unscoped lassen bzw. neutralisieren
+    const s = sel.trim();
+    if(s.startsWith('@')||s==='*'||s==='body') return br + ' .anlage-vt ' + (s==='body'?'':s) + '{';
+    const parts = s.split(',').map(x=>'.anlage-vt '+x.trim()).join(',');
+    return br + ' ' + parts + '{';
+  });
+  return '<style>'+scoped+'</style>';
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -17003,7 +17049,7 @@ async function exportExcel() {
   const myObj   = await getMyObjekte();
   const myIds   = myObj.map(o=>o.id);
   const mieter  = (await idbGetAll('mieter')).filter(m=>myIds.includes(m.objektId)).sort((a,b)=>a.objekt?.localeCompare(b.objekt)||Number(a.weNr)-Number(b.weNr));
-  const aufgaben= (await idbGetAll('aufgaben')).filter(a=>myIds.includes(a.objektId));
+  const aufgaben= (await idbGetAll('aufgaben')).filter(a=>istAllgemein(a.objektId)||myIds.includes(a.objektId));
   const maengel = (await idbGetAll('maengel')).filter(m=>myIds.includes(m.objektId));
   const reps    = (await idbGetAll('reparaturen')).filter(r=>myIds.includes(r.objektId));
 
@@ -17167,7 +17213,7 @@ async function runGlobalSearch(q) {
     });
 
     // Aufgaben
-    (await idbGetAll('aufgaben')).filter(a=>myIds.includes(a.objektId)).forEach(a=>{
+    (await idbGetAll('aufgaben')).filter(a=>istAllgemein(a.objektId)||myIds.includes(a.objektId)).forEach(a=>{
       if ((a.titel+' '+(a.beschreibung||'')).toLowerCase().includes(ql))
         results.push({type:'aufgabe', icon:'ti-checklist', color:'var(--amber)', label:a.titel, sub:getObj(a.objektId)?.name+' · '+a.status, action:`closeModal();showAufgabeDetail('${a.id}')`, id:a.id});
     });
@@ -17713,6 +17759,7 @@ async function modalAddAufgabe(mieterId,objektId){
   showModal(`
     <div class="m-title"><i class="ti ti-plus"></i> Neue Aufgabe</div>
     <div class="f"><label>Objekt</label><select id="aObjId">
+      <option value="${ALLGEMEIN_ID}" ${objektId===ALLGEMEIN_ID?'selected':''}>Allgemein (alle Objekte)</option>
       ${myObj.map(o=>`<option value="${o.id}" ${o.id===objektId?'selected':''}>${o.name}</option>`).join('')}
     </select></div>
     <div class="f"><label>Mieter (optional)</label><select id="aMietId">
@@ -21126,6 +21173,480 @@ async function renderKontrolle(){
     </p>`;
 }
 
+/* ═══════════════════════════════════════════════════════════
+   VERTRAGSANLAGEN als druckbares HTML (Volltext)
+   Genutzt vom Druckcenter (einzeln druckbar) UND als echte MV-Anlage
+   (statt Platzhalterseite). Wortlaut entspricht den geprüften
+   Word-/PDF-Vorlagen (Hausordnung_Anlage, Merkblatt_Heizen_Lueften_v2).
+   Platzhalter {{OBJEKT_ANSCHRIFT}} / {{WE_BEZEICHNUNG}} werden, falls
+   Objekt/WE bekannt, ersetzt – sonst als Leerzeile dargestellt.
+═══════════════════════════════════════════════════════════ */
+
+// Gemeinsamer Druck-Rahmen für Anlagen (A4, Nadig/Pfau-Stil)
+function anlageRahmen(titel, untertitel, innerHtml, fussSeiten){
+  return `<!DOCTYPE html><html lang="de"><head><meta charset="utf-8"><title>${esc(titel)}</title>
+<style>
+  @page { size:A4; margin:15mm 16mm 16mm 16mm; }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:Arial,"Segoe UI",system-ui,sans-serif;color:#1f2937;font-size:10.5pt;line-height:1.5}
+  h1{font-size:17pt;color:#0c447c;text-align:center;margin-bottom:2px;letter-spacing:.5px}
+  .sub{text-align:center;font-size:9.5pt;color:#666;font-style:italic;margin-bottom:14px}
+  .eyebrow{text-align:center;font-size:8.5pt;color:#888;text-transform:uppercase;letter-spacing:1px;margin-bottom:4px}
+  h2{font-size:11.5pt;color:#0c447c;margin:14px 0 4px;padding-bottom:3px;border-bottom:1.5px solid #0c447c}
+  p{margin:0 0 7px;text-align:justify}
+  ul{margin:0 0 8px 0;padding-left:0;list-style:none}
+  li{margin:0 0 4px 0;padding-left:14px;position:relative}
+  li:before{content:"–";position:absolute;left:0;color:#0c447c}
+  .box{border:1px solid #e2e8f0;border-radius:8px;padding:11px 14px;margin:8px 0;background:#f8fafc}
+  .box.warn{border-color:#d9a200;background:#fdf6e7}
+  .box b{color:#0c447c}
+  .ampel{margin:8px 0}
+  .ampel .row{display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:7px;margin-bottom:5px;background:#f6f7f9;border:1px solid #eef1f5}
+  .ampel .ic{width:22px;height:22px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:12px}
+  .ampel .t{flex:1}.ampel .t b{display:block;font-size:10pt}.ampel .t span{font-size:8.5pt;color:#666}
+
+  .ziele{display:flex;gap:8px;margin:10px 0}
+  .ziele .z{flex:1;text-align:center;border:1px solid #e2e8f0;border-radius:8px;padding:9px 4px;background:#f8fafc}
+  .ziele .z b{display:block;font-size:13pt;color:#0c447c}.ziele .z span{font-size:8pt;color:#666}
+  .thermo{display:flex;justify-content:center;gap:6px;margin:10px 0;flex-wrap:wrap}
+  .thermo .s{text-align:center;font-size:8pt;color:#666}
+  .thermo .s .c{width:38px;height:38px;border-radius:50%;border:2px solid #ccc;display:flex;align-items:center;justify-content:center;font-size:13pt;font-weight:700;margin:0 auto 2px}
+  .meta{font-size:9pt;color:#444;margin-bottom:12px;border:1px solid #e2e8f0;border-radius:6px;padding:7px 10px;background:#fafbfc}
+  .sig{margin-top:26px}
+  .sig .anerk{font-weight:700;margin-bottom:18px}
+  .sigrow{display:flex;gap:40px;margin-top:30px}
+  .sigline{flex:1;border-top:1px solid #333;padding-top:3px;font-size:8.5pt;color:#555}
+  .foot{margin-top:16px;text-align:center;font-size:8pt;color:#999;border-top:1px solid #ddd;padding-top:4px}
+  .pb{page-break-before:always}
+</style></head><body>${innerHtml}</body></html>`;
+}
+
+// Auto-Druck-Schnipsel (gleiche Technik wie MV)
+function anlageAutoDruck(){
+  return '<scr'+'ipt>(function(){var p=function(){setTimeout(function(){window.focus();window.print();},500);};if(document.readyState===\'complete\'){p();}else{window.addEventListener(\'load\',p);}})()</scr'+'ipt>';
+}
+
+// Objekt-/WE-Kopfzeile für Anlagen (leer, wenn nicht bekannt)
+function anlageMetaZeile(objektId, weNr){
+  let anschrift = '', we = '';
+  if(objektId){
+    const o = getObj(objektId);
+    if(o){ anschrift = [o.name, o.ort].filter(Boolean).join(', '); }
+  }
+  if(weNr!=null && String(weNr).trim()!=='') we = 'WE ' + String(weNr).trim();
+  return `<div class="meta"><b>Objekt:</b> ${esc(anschrift||'________________________')}　　<b>Wohnung:</b> ${esc(we||'____________')}</div>`;
+}
+
+// ── HAUSORDNUNG ───────────────────────────────────────────
+function anlageHausordnungHtml(objektId, weNr, autoDruck){
+  const meta = anlageMetaZeile(objektId, weNr);
+  const inner = `
+    <div class="eyebrow">Anlage zum Mietvertrag – Hausordnung</div>
+    <h1>HAUSORDNUNG</h1>
+    <div class="sub">Anlage und Bestandteil des Wohnraum-Mietvertrages</div>
+    ${meta}
+    <h2>§ 1 Geltung und Bedeutung</h2>
+    <p>Diese Hausordnung ist Bestandteil des Mietvertrages. Sie regelt das Zusammenleben aller Hausbewohner und dient dem Schutz des Hausfriedens, der Sicherheit und der Werterhaltung des Gebäudes. Jeder Mieter ist verpflichtet, sie einzuhalten und dafür Sorge zu tragen, dass auch Haushaltsangehörige, Besucher und beauftragte Dritte sie beachten.</p>
+    <p>Ein schuldhafter Verstoß stellt einen vertragswidrigen Gebrauch der Mietsache dar. Der Vermieter kann ihn abmahnen; bei fortgesetzten oder schwerwiegenden Verstößen kommt nach erfolgloser Abmahnung eine ordentliche oder außerordentliche Kündigung nach den §§ 543, 569, 573 BGB in Betracht.</p>
+    <h2>§ 2 Ruhezeiten und Lärmschutz</h2>
+    <p>Auf die Ruhe und das berechtigte Ruhebedürfnis der Mitbewohner ist jederzeit Rücksicht zu nehmen. Verbindlich gelten folgende Ruhezeiten, die den allgemeinen gesetzlichen Regelungen vorgehen:</p>
+    <ul>
+      <li>Nachtruhe: täglich von 22:00 bis 6:00 Uhr</li>
+      <li>Mittagsruhe: werktags von 13:00 bis 15:00 Uhr</li>
+      <li>Sonn- und Feiertage: ganztägige Ruhe</li>
+    </ul>
+    <p>Während der Ruhezeiten sind alle vermeidbaren Geräusche zu unterlassen, insbesondere lautes Musizieren, laute Tonwiedergabe (Musik, Fernsehen, Radio), lautstarke Gespräche und Telefonate, Türenschlagen sowie handwerkliche und maschinelle Tätigkeiten (Bohren, Hämmern, Staubsaugen, Waschen, Trocknen).</p>
+    <p>Außerhalb der Ruhezeiten ist die Zimmerlautstärke einzuhalten, soweit Geräusche in andere Wohnungen oder Gemeinschaftsbereiche dringen können. Das Abspielen von Musik und der Betrieb von Haushalts- und Unterhaltungsgeräten haben so zu erfolgen, dass Mitbewohner nicht unzumutbar gestört werden.</p>
+    <p>Kinderlärm sowie sozialadäquate Geräusche des alltäglichen Wohnens sind grundsätzlich hinzunehmen und stellen keinen Verstoß dar. Bei Feiern, die über das übliche Maß hinausgehen, sind die Nachbarn rechtzeitig zu informieren und die Ruhezeiten gleichwohl einzuhalten.</p>
+    <h2>§ 3 Treppenhaus, Flure und Gemeinschaftsflächen</h2>
+    <p>Treppenhäuser, Flure, Kellergänge, Zugangswege und sonstige gemeinschaftlich genutzte Flächen sind aus Brandschutz- und Sicherheitsgründen jederzeit frei und unverstellt zu halten. Das Abstellen oder Lagern von Gegenständen (Möbel, Kartons, Schuhregale, Pakete, Pflanzen u. Ä.) ist dort nicht gestattet.</p>
+    <p>Fahrräder, E-Scooter, Kinderwagen und ähnliche Gegenstände dürfen nur an den dafür vorgesehenen Stellen abgestellt werden. Mopeds, Motorräder und sonstige motorisierte Fahrzeuge dürfen nicht in der Wohnung, im Treppenhaus, in Fluren oder in Kellerräumen abgestellt werden.</p>
+    <p>Verunreinigungen der Gemeinschaftsflächen sind von dem Verursacher unverzüglich zu beseitigen. Schäden an gemeinschaftlichen Einrichtungen sind dem Vermieter umgehend anzuzeigen.</p>
+    <h2>§ 4 Reinigung und Winterdienst</h2>
+    <p>Soweit die Reinigung des Treppenhauses oder bestimmter Bereiche nicht über die Betriebskosten beauftragt ist, obliegt sie den Mietern nach der im Haus üblichen Reihenfolge. Zu reinigen sind insbesondere der eigene Treppenabschnitt, der Zugangsbereich vor der Wohnung sowie zugewiesene Gemeinschaftsbereiche.</p>
+    <p>Ist der Winterdienst (Schnee- und Eisbeseitigung auf den Zugangswegen) den Mietern übertragen, ist er in der üblichen Reihenfolge und in zumutbarem Umfang zu erfüllen. Balkone und zugängliche Außenflächen sind bei Schnee gefahrlos zu räumen.</p>
+    <h2>§ 5 Müllentsorgung</h2>
+    <p>Abfälle sind getrennt und ausschließlich in die dafür vorgesehenen Behälter zu entsorgen. Neben den Tonnen abgestellte Abfälle sind unverzüglich zu beseitigen. Sperrmüll, Elektrogeräte und Sonderabfälle sind vom Mieter eigenverantwortlich und auf eigene Kosten ordnungsgemäß zu entsorgen; sie dürfen nicht im Haus, im Keller oder bei den Mülltonnen abgestellt werden.</p>
+    <h2>§ 6 Sicherheit, Haustür und Brandschutz</h2>
+    <p>Die Haustür ist im Interesse aller Bewohner verschlossen zu halten, ohne dass der jederzeitige Zugang der Berechtigten beeinträchtigt wird. Flucht- und Rettungswege sind dauerhaft freizuhalten.</p>
+    <p>Das Lagern leicht entzündlicher, explosiver oder gefährlicher Stoffe (z. B. Benzin, Spiritus, Gasflaschen, Feuerwerkskörper) in Wohnungen, Kellern, auf Dachböden und in Gemeinschaftsräumen ist untersagt. Offenes Feuer und Rauchen sind in Kellern, auf Dachböden und in Gemeinschaftsflächen verboten. Asche darf nur vollständig erkaltet entsorgt werden.</p>
+    <p>Bei Gasgeruch ist sofort der Hauptabsperrhahn zu schließen, jede Zündquelle zu vermeiden und der Vermieter sowie das Gasversorgungsunternehmen zu verständigen. Bei Brand oder Explosion sind unverzüglich die Feuerwehr und der Vermieter zu informieren. Der Zugang für den Schornsteinfeger ist zu ermöglichen.</p>
+    <h2>§ 7 Grillen, Balkone und Außenbereiche</h2>
+    <p>Aus Fenstern, von Balkonen oder in Gemeinschaftsbereichen dürfen keine Gegenstände geworfen, gegossen oder ausgeschüttet werden. Blumenkästen sind sicher zu befestigen; beim Gießen ist darauf zu achten, dass kein Wasser auf darunterliegende Flächen oder Wohnungen gelangt.</p>
+    <p>Das Füttern von Tauben, Möwen und anderen Wildtieren auf dem Grundstück ist nicht gestattet. Grillen auf Balkonen ist ausschließlich mit Elektrogrill und nur so gestattet, dass Mitbewohner nicht durch Rauch, Gerüche oder Lärm belästigt werden; offenes Feuer sowie Holzkohle- und Gasgrills sind auf Balkonen untersagt. Die Brandschutzbestimmungen sind stets zu beachten.</p>
+    <h2>§ 8 Sorgfalts- und Obhutspflichten</h2>
+    <p>Der Mieter behandelt die Wohnung und die gemeinschaftlichen Einrichtungen schonend und pfleglich. Insbesondere ist er verpflichtet:</p>
+    <ul>
+      <li>für ausreichendes Heizen und Lüften zu sorgen, um Feuchtigkeits-, Schimmel- und Frostschäden zu vermeiden;</li>
+      <li>technische Anlagen für Gas, Wasser, Strom und Heizung sachgerecht zu nutzen und Störungen unverzüglich anzuzeigen;</li>
+      <li>Abflüsse vor Verstopfungen zu schützen und nur bestimmungsgemäß zu nutzen;</li>
+      <li>Fenster und Türen bei Unwetter, Sturm, Starkregen sowie bei längerer Abwesenheit geschlossen zu halten;</li>
+      <li>nur fachgerecht angeschlossene, funktionssichere Haushaltsgeräte zu betreiben;</li>
+      <li>Energie und Wasser sparsam zu verwenden und Zapfstellen, insbesondere bei Frostgefahr, zu schließen;</li>
+      <li>Schlüssel sorgfältig aufzubewahren und deren Verlust unverzüglich anzuzeigen.</li>
+    </ul>
+    <p>Während der Heizperiode ist ein ausreichender Frostschutz sicherzustellen; auch bei Abwesenheit darf die Heizung nicht vollständig abgestellt werden.</p>
+    <h2>§ 9 Tierhaltung</h2>
+    <p>Die Tierhaltung richtet sich nach den Vereinbarungen im Mietvertrag. Von gehaltenen Tieren dürfen keine unzumutbaren Störungen, Verunreinigungen oder Gefährdungen ausgehen. Verunreinigungen durch Tiere in Gemeinschaftsbereichen sind sofort zu beseitigen.</p>
+    <h2>§ 10 Haftung und Schlussbestimmung</h2>
+    <p>Der Mieter haftet im Rahmen der gesetzlichen Bestimmungen für Schäden, die durch schuldhafte Verstöße gegen diese Hausordnung entstehen. Die Hausordnung kann bei berechtigtem Interesse und unter Wahrung der gesetzlichen Vorgaben angepasst werden; Änderungen werden den Mietern in Textform mitgeteilt.</p>
+    <p>Sollte eine Bestimmung dieser Hausordnung unwirksam sein, bleibt die Wirksamkeit der übrigen Bestimmungen unberührt; an die Stelle der unwirksamen Bestimmung treten die gesetzlichen Vorschriften.</p>
+    <div class="sig">
+      <p class="anerk">Der Mieter bestätigt mit seiner Unterschrift, diese Hausordnung erhalten zu haben und sie als Bestandteil des Mietvertrages anzuerkennen.</p>
+      <div class="sigrow"><div class="sigline">Ort, Datum</div><div class="sigline">Mieter</div></div>
+    </div>
+    <div class="foot">Hausverwaltung Nadig / Pfau · Hausordnung</div>
+    ${autoDruck?anlageAutoDruck():''}`;
+  return anlageRahmen('Hausordnung', '', inner);
+}
+
+// ── MERKBLATT „RICHTIG HEIZEN UND LÜFTEN" ─────────────────
+function anlageMerkblattHtml(objektId, weNr, autoDruck){
+  const inner = `
+    <div class="eyebrow">Anlage zum Mietvertrag – Heizen und Lüften</div>
+    <h1>RICHTIG HEIZEN UND LÜFTEN</h1>
+    <div class="sub">Merkblatt zur Vermeidung von Schimmel und Feuchteschäden – Anlage zum Mietvertrag</div>
+    <p>Richtiges Heizen und Lüften schützt Ihre Gesundheit, Ihre Einrichtung und die Bausubstanz. Schimmel entsteht fast immer durch zu hohe Luftfeuchtigkeit in Verbindung mit zu kühlen Wänden. Mit wenigen Regeln lässt sich das zuverlässig vermeiden.</p>
+    <h2>Die vier wichtigsten Regeln auf einen Blick</h2>
+    <div class="box">
+      <p><b>① Stoßlüften statt kippen:</b> mehrmals täglich Fenster ganz öffnen, 3–10 Minuten im Winter. Das tauscht die feuchte Luft vollständig aus.</p>
+      <p><b>② Räume warm halten:</b> auch im Altbau nicht unter 20 °C auskühlen lassen – warme Luft nimmt Feuchtigkeit auf, kalte Wände begünstigen Schimmel.</p>
+      <p><b>③ Dauerhaftes Kippen vermeiden:</b> gekippte Fenster kühlen die Leibung aus, verbrauchen Energie und tauschen kaum Luft – die häufigste Schimmelursache.</p>
+      <p style="margin-bottom:0"><b>④ Feuchte sofort abführen:</b> nach Kochen, Duschen und Wäschetrocknen kräftig lüften; relative Luftfeuchte möglichst unter 50 % halten.</p>
+    </div>
+    <h2>Warum lüften so wichtig ist</h2>
+    <ul>
+      <li>Ein vierköpfiger Haushalt gibt täglich rund <b>12 Liter Wasser</b> als Dampf an die Raumluft ab – durch Atmen, Kochen, Duschen, Wäschetrocknen und Pflanzen.</li>
+      <li>Diese Feuchtigkeit wird in Textilien, Möbeln und Bauteilen zwischengespeichert und nur nach und nach wieder abgegeben. Einmaliges Lüften reicht deshalb nicht.</li>
+      <li>Beschlagene Fenster oder feuchte Wände sind ein deutliches Warnzeichen für zu hohe Luftfeuchtigkeit.</li>
+      <li>Beim Lüften immer einen vollständigen Luftaustausch herstellen – alte Luft raus, frische Luft rein.</li>
+    </ul>
+    <h2>Richtig lüften – so wirkt es</h2>
+    <div class="ampel">
+      <div class="row"><div class="ic" style="background:#2E7D52">✓</div><div class="t"><b>Quer-/Stoßlüften</b><span>Gegenüberliegende Fenster ganz auf, 3–10 Min.</span></div><div style="color:#2E7D52;font-weight:700;font-size:9pt">Sehr wirksam</div></div>
+      <div class="row"><div class="ic" style="background:#3b82f6">✓</div><div class="t"><b>Stoßlüften</b><span>Ein Fenster ganz auf, 5–10 Min.</span></div><div style="color:#3b82f6;font-weight:700;font-size:9pt">Wirksam</div></div>
+      <div class="row"><div class="ic" style="background:#d9a200">!</div><div class="t"><b>Fenster gekippt + Türen auf</b><span>Lange Kippstellung</span></div><div style="color:#d9a200;font-weight:700;font-size:9pt">Kaum Wirkung, Energieverlust</div></div>
+      <div class="row"><div class="ic" style="background:#dc2626">✕</div><div class="t"><b>Dauerhafte Kipplüftung</b><span>Fenster dauerhaft gekippt</span></div><div style="color:#dc2626;font-weight:700;font-size:9pt">Schimmelgefahr, untauglich</div></div>
+    </div>
+    <h2>Die wichtigsten Lüftungsregeln</h2>
+    <ul>
+      <li><b>Stoß- oder Querlüften statt Dauerkippen:</b> gegenüberliegende Fenster weit öffnen (Durchzug).</li>
+      <li>Lüftungsdauer: <b>im Sommer 20–30 Minuten, im Winter 3–10 Minuten</b> (kurz, aber vollständig).</li>
+      <li>Häufigkeit: bei normaler Nutzung etwa <b>3–4 mal täglich</b>.</li>
+      <li>Beim Stoßlüften die Heizkörperventile schließen, um Energie zu sparen.</li>
+      <li>Im Bad während des Duschens die Tür geschlossen halten, danach Fliesen abziehen und kräftig stoßlüften.</li>
+      <li>Beim und nach dem Kochen intensiv lüften, um Feuchtigkeit und Gerüche zu entfernen.</li>
+    </ul>
+    <div class="pb"></div>
+    <div class="eyebrow">Anlage zum Mietvertrag – Heizen und Lüften</div>
+    <h2 style="margin-top:6px">Richtig heizen in der Heizperiode</h2>
+    <p style="font-weight:700;color:#0c447c;margin-bottom:2px">Thermostat richtig einstellen</p>
+    <p style="font-size:9pt;color:#666">Die Zahl steht für die Wunschtemperatur – nicht für die Heizgeschwindigkeit. Voll aufdrehen macht es nicht schneller warm.</p>
+    <div class="thermo">
+      <div class="s"><div class="c" style="border-color:#3b82f6;color:#3b82f6">✲</div>ca. 7°C</div>
+      <div class="s"><div class="c" style="border-color:#60a5fa;color:#60a5fa">1</div>ca. 12°C</div>
+      <div class="s"><div class="c" style="border-color:#2E7D52;color:#2E7D52">2</div>ca. 16°C</div>
+      <div class="s"><div class="c" style="border-color:#2E7D52;color:#2E7D52;background:#eafaf1">3</div>ca. 20°C</div>
+      <div class="s"><div class="c" style="border-color:#d9a200;color:#d9a200">4</div>ca. 24°C</div>
+      <div class="s"><div class="c" style="border-color:#dc2626;color:#dc2626">5</div>ca. 28°C</div>
+    </div>
+    <p style="text-align:center;font-weight:700;color:#2E7D52;font-size:9.5pt;margin-bottom:10px">Empfohlen: Stufe 3 ≈ 20°C</p>
+    <ul>
+      <li>Räume – auch im Altbau – <b>nicht unter 20 °C</b> auskühlen lassen; warme Luft kann mehr Feuchtigkeit aufnehmen.</li>
+      <li>Auch das Schlafzimmer tagsüber auf <b>mindestens 20 °C</b> heizen und in das Lüften einbeziehen (pro Person entstehen nachts rund 1 Liter Feuchtigkeit).</li>
+      <li>Auch bei Abwesenheit die Wohnung gleichmäßig temperieren – die Heizung nicht vollständig abschalten (Schimmelgefahr).</li>
+      <li>Auch bei nebligem oder regnerischem Wetter lüften: Nach dem Aufheizen nimmt die Luft wieder reichlich Feuchtigkeit auf.</li>
+    </ul>
+    <h2>Zielwerte in der Heizperiode</h2>
+    <div class="ziele">
+      <div class="z"><b>min. 20°C</b><span>Raumtemperatur</span></div>
+      <div class="z"><b>max. 50%</b><span>rel. Luftfeuchte</span></div>
+      <div class="z"><b>3–4×</b><span>lüften pro Tag</span></div>
+      <div class="z"><b>ca. 12 L</b><span>Wasser/Tag (4 Pers.)</span></div>
+    </div>
+    <h2>Die häufigsten Fehler – unbedingt vermeiden</h2>
+    <div class="box warn">
+      <p><b>Dauerhafte Kipplüftung:</b> kühlt die Leibung aus, verschwendet Energie und führt zu Schimmel – bringt für den Luftwechsel fast nichts.</p>
+      <p><b>Schlafzimmer kaum heizen, Tür offen lassen:</b> feuchtwarme Luft schlägt sich an kalten Außenwänden nieder (Tauwasser, Schimmel).</p>
+      <p style="margin-bottom:0"><b>Zu viel Feuchte erzeugen:</b> Wäsche in der Wohnung trocknen, viele Pflanzen oder Aquarien ohne angepasstes Heiz- und Lüftungsverhalten.</p>
+    </div>
+    <h2>Praktische Hinweise im Altbau</h2>
+    <ul>
+      <li>Möbel an Außenwänden mit <b>8–10 cm Abstand</b> aufstellen, damit Luft zirkulieren kann.</li>
+      <li>Vorhänge mit mindestens 10 cm Abstand zur Wand, nicht in Außenwandecken; oben und unten je rund 30 cm Luft lassen.</li>
+      <li>Ein <b>Thermohygrometer</b> hilft bei der Kontrolle: relative Luftfeuchte möglichst unter 50 %, Raumtemperatur nicht unter 20 °C.</li>
+    </ul>
+    <div class="sig">
+      <p class="anerk">Empfangsbestätigung: Der Mieter bestätigt mit seiner Unterschrift, dieses Merkblatt erhalten und zur Kenntnis genommen zu haben.</p>
+      <div class="sigrow"><div class="sigline">Ort, Datum</div><div class="sigline">Mieter</div></div>
+    </div>
+    <div class="foot">Hausverwaltung Nadig / Pfau · Merkblatt Heizen und Lüften</div>
+    ${autoDruck?anlageAutoDruck():''}`;
+  return anlageRahmen('Richtig heizen und lüften', '', inner);
+}
+
+// ── DATENSCHUTZHINWEIS (Art. 13 DSGVO) ────────────────────
+function anlageDatenschutzHtml(objektId, weNr, autoDruck){
+  const bk = objektId ? getBriefkopf(objektId) : null;
+  const verantwortlich = (bk && (bk.absender||bk.name)) ? (bk.absender||bk.name) : 'Hausverwaltung Nadig / Pfau';
+  const anschrift = (bk && bk.strasse) ? [bk.strasse, bk.ort].filter(Boolean).join(', ') : 'Venloer Str. 20, 40477 Düsseldorf';
+  const mail = (bk && bk.email) ? bk.email : 'info@nadigpfau.de';
+  const inner = `
+    <div class="eyebrow">Anlage zum Mietvertrag – Datenschutz</div>
+    <h1>DATENSCHUTZHINWEIS</h1>
+    <div class="sub">Informationen zur Verarbeitung Ihrer personenbezogenen Daten nach Art. 13 DSGVO</div>
+    <h2>1. Verantwortlicher</h2>
+    <p>Verantwortlich für die Verarbeitung Ihrer personenbezogenen Daten ist:<br>
+    <b>${esc(verantwortlich)}</b><br>${esc(anschrift)}<br>E-Mail: ${esc(mail)}</p>
+    <h2>2. Zwecke und Rechtsgrundlagen der Verarbeitung</h2>
+    <p>Wir verarbeiten Ihre personenbezogenen Daten zur Begründung, Durchführung und Beendigung des Mietverhältnisses. Rechtsgrundlage ist die Erfüllung des Mietvertrages sowie die Anbahnung des Vertragsverhältnisses (Art. 6 Abs. 1 lit. b DSGVO). Soweit wir gesetzlich zur Verarbeitung verpflichtet sind – etwa zur Erstellung von Betriebskostenabrechnungen, zur Erfüllung steuer- und handelsrechtlicher Aufbewahrungspflichten oder zur Wohnungsgeberbestätigung nach § 19 BMG – erfolgt die Verarbeitung auf Grundlage von Art. 6 Abs. 1 lit. c DSGVO. In Einzelfällen stützen wir die Verarbeitung auf unser berechtigtes Interesse (Art. 6 Abs. 1 lit. f DSGVO), etwa zur Geltendmachung, Ausübung oder Verteidigung von Rechtsansprüchen.</p>
+    <h2>3. Kategorien verarbeiteter Daten</h2>
+    <p>Verarbeitet werden insbesondere Ihre Stammdaten (Name, Anschrift, Geburtsdatum, Kontaktdaten), Vertrags- und Abrechnungsdaten, Bankverbindung im Rahmen des SEPA-Lastschriftverfahrens sowie Daten, die im Verlauf des Mietverhältnisses anfallen (z. B. Zählerstände, Korrespondenz, Übergabeprotokolle).</p>
+    <h2>4. Empfänger</h2>
+    <p>Eine Weitergabe Ihrer Daten erfolgt nur, soweit dies zur Durchführung des Mietverhältnisses erforderlich oder gesetzlich vorgeschrieben ist – etwa an Versorgungs- und Abrechnungsunternehmen, beauftragte Handwerker und Dienstleister, Behörden sowie an Steuerberater. Eine Übermittlung in Drittländer außerhalb der EU/des EWR findet nicht statt.</p>
+    <h2>5. Speicherdauer</h2>
+    <p>Wir speichern Ihre Daten für die Dauer des Mietverhältnisses und darüber hinaus, solange gesetzliche Aufbewahrungspflichten bestehen oder Ansprüche aus dem Mietverhältnis geltend gemacht werden können. Nach Ablauf dieser Fristen werden die Daten gelöscht.</p>
+    <h2>6. Ihre Rechte</h2>
+    <p>Sie haben das Recht auf Auskunft (Art. 15 DSGVO), Berichtigung (Art. 16), Löschung (Art. 17), Einschränkung der Verarbeitung (Art. 18), Datenübertragbarkeit (Art. 20) sowie ein Widerspruchsrecht (Art. 21 DSGVO). Sie können sich zudem bei einer Datenschutz-Aufsichtsbehörde beschweren (Art. 77 DSGVO); zuständig ist die Landesbeauftragte für Datenschutz und Informationsfreiheit Nordrhein-Westfalen.</p>
+    <h2>7. Bereitstellungspflicht</h2>
+    <p>Die Bereitstellung der zur Vertragsdurchführung erforderlichen Daten ist für den Abschluss und die Durchführung des Mietvertrages notwendig. Ohne diese Daten kann das Mietverhältnis nicht begründet oder durchgeführt werden.</p>
+    <div class="sig">
+      <p class="anerk">Der Mieter bestätigt mit seiner Unterschrift, diesen Datenschutzhinweis erhalten zu haben.</p>
+      <div class="sigrow"><div class="sigline">Ort, Datum</div><div class="sigline">Mieter</div></div>
+    </div>
+    <div class="foot">Hausverwaltung Nadig / Pfau · Datenschutzhinweis nach Art. 13 DSGVO</div>
+    ${autoDruck?anlageAutoDruck():''}`;
+  return anlageRahmen('Datenschutzhinweis', '', inner);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   DRUCKCENTER (Einstellungen → Druckcenter)
+   Zwei Bereiche:
+   1) Vertragsanlagen einzeln druckbar (Hausordnung, Merkblatt, Datenschutz)
+   2) QR-Archiv: alle in der App erzeugten QR-Codes als Einzel-PDF
+      (Rundgang, Tätigkeit, Ventil, Wohnung/Aushang) – live generiert,
+      deterministisch identisch zu den Original-Etiketten.
+═══════════════════════════════════════════════════════════ */
+
+// Eine A4-Seite je QR (großer Code + Beschriftung), als Sammel-PDF druckbar.
+// Jede Seite hat page-break-after → im PDF eine Seite pro QR ("Einzel-PDF").
+function dcQrSeite(qrText, titel, unterzeile){
+  const svg = QRENC.svg(qrText, 600);
+  const dataUrl = 'data:image/svg+xml;base64,'+btoa(unescape(encodeURIComponent(svg)));
+  return `<div class="qrpage">
+    <div class="qrbox">
+      <img src="${dataUrl}" alt="QR">
+      <div class="qrtitel">${esc(titel)}</div>
+      ${unterzeile?`<div class="qrsub">${esc(unterzeile)}</div>`:''}
+      <div class="qrcode">${esc(qrText)}</div>
+    </div>
+  </div>`;
+}
+
+function dcQrDokument(seiten, dokTitel){
+  return `<!DOCTYPE html><html lang="de"><head><meta charset="utf-8"><title>${esc(dokTitel)}</title>
+<style>
+  @page{size:A4;margin:0}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:Arial,sans-serif}
+  .qrpage{width:210mm;height:297mm;display:flex;align-items:center;justify-content:center;page-break-after:always}
+  .qrpage:last-child{page-break-after:auto}
+  .qrbox{text-align:center;padding:20mm}
+  .qrbox img{width:120mm;height:120mm;display:block;margin:0 auto 8mm}
+  .qrtitel{font-size:22pt;font-weight:700;color:#0c447c;margin-bottom:3mm}
+  .qrsub{font-size:14pt;color:#444;margin-bottom:6mm}
+  .qrcode{font-size:9pt;color:#999;font-family:monospace;word-break:break-all}
+</style></head><body>${seiten.join('')}
+<scr${''}ipt>(function(){var p=function(){setTimeout(function(){window.focus();window.print();},500);};if(document.readyState==='complete'){p();}else{window.addEventListener('load',p);}})()</scr${''}ipt>
+</body></html>`;
+}
+
+// ── Druckcenter öffnen ────────────────────────────────────
+async function oeffneDruckcenter(){
+  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
+  showModal(`
+    <div class="m-title"><i class="ti ti-printer"></i> Druckcenter</div>
+    <div class="dc-tabs" style="display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap">
+      <button class="btn btn-sm btn-copper" id="dcTabAnl" onclick="dcTab('anlagen')"><i class="ti ti-file-text"></i> Vertragsanlagen</button>
+      <button class="btn btn-sm" id="dcTabQr" onclick="dcTab('qr')"><i class="ti ti-qrcode"></i> QR-Codes</button>
+    </div>
+    <div id="dcBody"></div>
+  `);
+  dcTab('anlagen');
+}
+
+function dcTab(tab){
+  document.getElementById('dcTabAnl')?.classList.toggle('btn-copper', tab==='anlagen');
+  document.getElementById('dcTabQr')?.classList.toggle('btn-copper', tab==='qr');
+  if(tab==='anlagen') dcRenderAnlagen();
+  else dcRenderQr();
+}
+
+// ── Bereich 1: Vertragsanlagen ────────────────────────────
+function dcRenderAnlagen(){
+  const body=document.getElementById('dcBody');
+  if(!body) return;
+  body.innerHTML=`
+    <p style="font-size:13px;color:var(--ink-40);margin-bottom:12px;line-height:1.6">
+      Die Anlagen zum Mietvertrag einzeln drucken. Es wird die geprüfte Vorlage verwendet; eine Objekt-/Wohnungszuordnung ist optional.
+    </p>
+    <div class="f"><label>Objekt / Wohnung (optional, für die Kopfzeile)</label>
+      <select id="dcAnlObj"><option value="">– ohne Zuordnung –</option>
+        ${OBJEKTE.map(o=>`<option value="${o.id}">${esc(o.name)}</option>`).join('')}
+      </select></div>
+    <div style="display:flex;flex-direction:column;gap:8px;margin-top:10px">
+      <button class="btn btn-full" onclick="dcDruckeAnlage('hausordnung')"><i class="ti ti-clipboard-list"></i> Hausordnung drucken</button>
+      <button class="btn btn-full" onclick="dcDruckeAnlage('merkblatt')"><i class="ti ti-droplet"></i> Merkblatt „Richtig heizen und lüften" drucken</button>
+      <button class="btn btn-full" onclick="dcDruckeAnlage('datenschutz')"><i class="ti ti-shield-lock"></i> Datenschutzhinweis (Art. 13 DSGVO) drucken</button>
+    </div>`;
+}
+
+function dcDruckeAnlage(art){
+  const objektId=document.getElementById('dcAnlObj')?.value||'';
+  let html='';
+  if(art==='hausordnung') html=anlageHausordnungHtml(objektId,'',false);
+  else if(art==='merkblatt') html=anlageMerkblattHtml(objektId,'',false);
+  else if(art==='datenschutz') html=anlageDatenschutzHtml(objektId,'',false);
+  if(html) printViaIframe(html);
+}
+
+// ── Bereich 2: QR-Codes ───────────────────────────────────
+async function dcRenderQr(){
+  const body=document.getElementById('dcBody');
+  if(!body) return;
+  body.innerHTML=`<div class="empty"><i class="ti ti-loader"></i><p>Lade QR-Quellen…</p></div>`;
+
+  const [myLg, myObj, ventile, kats] = await Promise.all([
+    getMyLiegenschaften(),
+    getMyObjekte(),
+    idbGetAll('ventile').catch(()=>[]),
+    getTaetigkeitKat(true).catch(()=>[]),
+  ]);
+  const myObjIds = myObj.map(o=>o.id);
+  const meineVentile = ventile.filter(v=>myObjIds.includes(v.objektId));
+  const katObj = kats.filter(k=>!k.allgemein);
+  const katAllg = kats.filter(k=>k.allgemein);
+
+  // Wohnungen je Objekt aus den Mieter-/Stammdaten ableiten
+  const mieter = await idbGetAll('mieter').catch(()=>[]);
+  const weMap = {};
+  mieter.filter(m=>myObjIds.includes(m.objektId) && m.weNr!=null && String(m.weNr).trim()!=='').forEach(m=>{
+    const key=m.objektId+'|'+String(m.weNr).trim();
+    if(!weMap[key]) weMap[key]={objektId:m.objektId, weNr:String(m.weNr).trim()};
+  });
+  const wohnungen = Object.values(weMap).sort((a,b)=> a.objektId.localeCompare(b.objektId) || (parseInt(a.weNr)||0)-(parseInt(b.weNr)||0));
+
+  body.innerHTML=`
+    <p style="font-size:13px;color:var(--ink-40);margin-bottom:12px;line-height:1.6">
+      Alle in der App verwendeten QR-Codes – jeweils als großseitiges PDF (eine Seite je Code). Die Inhalte sind identisch zu den Etiketten.
+    </p>
+
+    <div class="dc-sec">
+      <div class="card-hdr"><i class="ti ti-trash"></i> Müllrundgang (${myLg.length} Liegenschaften)</div>
+      <div class="f"><label>Liegenschaft</label><select id="dcRgLg">
+        ${myLg.map(l=>`<option value="${l.id}">${esc(l.name)}</option>`).join('')}
+      </select></div>
+      <div class="f-row" style="align-items:flex-end">
+        <div class="f"><label>Anzahl Wegpunkte</label><input type="number" id="dcRgN" value="6" min="1" max="30" style="max-width:120px"></div>
+        <button class="btn btn-copper" onclick="dcDruckeRundgang()"><i class="ti ti-printer"></i> Drucken</button>
+      </div>
+    </div>
+
+    <div class="dc-sec">
+      <div class="card-hdr"><i class="ti ti-clipboard-check"></i> Tätigkeits-QR – objektbezogen</div>
+      <p style="font-size:12px;color:var(--ink-40);margin-bottom:8px">${myObj.length} Objekte × ${katObj.length} Tätigkeiten = ${myObj.length*katObj.length} Codes</p>
+      <div class="f"><label>Objekt (leer = alle)</label><select id="dcTqObj"><option value="">– alle Objekte –</option>
+        ${myObj.map(o=>`<option value="${o.id}">${esc(o.name)}</option>`).join('')}
+      </select></div>
+      <button class="btn btn-copper btn-full" onclick="dcDruckeTaetigkeit(false)"><i class="ti ti-printer"></i> Objekt-Tätigkeiten drucken</button>
+    </div>
+
+    <div class="dc-sec">
+      <div class="card-hdr"><i class="ti ti-clipboard-check"></i> Tätigkeits-QR – allgemein</div>
+      <p style="font-size:12px;color:var(--ink-40);margin-bottom:8px">${myLg.length} Liegenschaften × ${katAllg.length} allgemeine Tätigkeiten = ${myLg.length*katAllg.length} Codes</p>
+      <button class="btn btn-copper btn-full" onclick="dcDruckeTaetigkeit(true)"><i class="ti ti-printer"></i> Allgemeine Tätigkeiten drucken</button>
+    </div>
+
+    <div class="dc-sec">
+      <div class="card-hdr"><i class="ti ti-pipe"></i> Absperrventile (${meineVentile.length})</div>
+      ${meineVentile.length
+        ? `<button class="btn btn-copper btn-full" onclick="dcDruckeVentile()"><i class="ti ti-printer"></i> Alle Ventil-QR drucken</button>`
+        : `<p style="font-size:12px;color:var(--ink-40)">Keine Ventile erfasst.</p>`}
+    </div>
+
+    <div class="dc-sec">
+      <div class="card-hdr"><i class="ti ti-home"></i> Wohnungs-QR (${wohnungen.length})</div>
+      ${wohnungen.length
+        ? `<button class="btn btn-copper btn-full" onclick="dcDruckeWohnungen()"><i class="ti ti-printer"></i> Alle Wohnungs-QR drucken</button>`
+        : `<p style="font-size:12px;color:var(--ink-40)">Keine Wohnungen erfasst.</p>`}
+    </div>
+  `;
+  // Daten für die Druck-Handler zwischenspeichern
+  window._dcData = { meineVentile, katObj, katAllg, myObj, myLg, wohnungen };
+}
+
+async function dcDruckeRundgang(){
+  const lgId=document.getElementById('dcRgLg')?.value;
+  const n=parseInt(document.getElementById('dcRgN')?.value)||6;
+  const lg=LIEGENSCHAFTEN.find(l=>l.id===lgId);
+  if(!lg){ toast('Bitte Liegenschaft wählen'); return; }
+  const seiten=[];
+  for(let i=1;i<=n;i++){
+    seiten.push(dcQrSeite('RUNDGANG:'+lgId+':'+i+':'+n, 'Müllrundgang '+i+'/'+n, lg.name+(i===1?' · Start':'')));
+  }
+  printViaIframe(dcQrDokument(seiten, 'Müllrundgang '+lg.name));
+  toast(n+' QR-Seiten erzeugt');
+}
+
+async function dcDruckeTaetigkeit(allgemein){
+  const d=window._dcData||{};
+  const seiten=[];
+  if(allgemein){
+    (d.myLg||[]).forEach(l=>{
+      (d.katAllg||[]).forEach(k=>{
+        seiten.push(dcQrSeite('TAETIGKEIT:'+k.id+':'+l.id, k.name, l.name));
+      });
+    });
+  } else {
+    const objFilter=document.getElementById('dcTqObj')?.value||'';
+    const objekte=(d.myObj||[]).filter(o=>!objFilter||o.id===objFilter);
+    objekte.forEach(o=>{
+      (d.katObj||[]).forEach(k=>{
+        seiten.push(dcQrSeite('TAETIGKEIT:'+k.id+':'+o.id, k.name, o.name));
+      });
+    });
+  }
+  if(!seiten.length){ toast('Nichts zu drucken'); return; }
+  printViaIframe(dcQrDokument(seiten, 'Tätigkeits-QR'));
+  toast(seiten.length+' QR-Seiten erzeugt');
+}
+
+async function dcDruckeVentile(){
+  const d=window._dcData||{};
+  const seiten=(d.meineVentile||[]).map(v=>{
+    const obj=getObj(v.objektId);
+    const t=(typeof ventilTyp==='function')?ventilTyp(v.typ):{label:v.typ};
+    return dcQrSeite('VENTIL:'+v.id, v.strang||'Ventil', [obj?.name, t?.label, v.lage].filter(Boolean).join(' · '));
+  });
+  if(!seiten.length){ toast('Keine Ventile'); return; }
+  printViaIframe(dcQrDokument(seiten, 'Ventil-QR'));
+  toast(seiten.length+' QR-Seiten erzeugt');
+}
+
+async function dcDruckeWohnungen(){
+  const d=window._dcData||{};
+  const seiten=(d.wohnungen||[]).map(w=>{
+    const obj=getObj(w.objektId);
+    const kennung=wohnungsKennung(w.objektId, w.weNr);
+    const url=PORTAL_BASIS+'?wohnung='+encodeURIComponent(kennung);
+    return dcQrSeite(url, (obj?.name||w.objektId)+' · WE '+w.weNr, kennung);
+  });
+  if(!seiten.length){ toast('Keine Wohnungen'); return; }
+  printViaIframe(dcQrDokument(seiten, 'Wohnungs-QR'));
+  toast(seiten.length+' QR-Seiten erzeugt');
+}
+
+
 async function renderSettings(){
   const setting=await idbGet('settings','lastImport').catch(()=>null);
   const el=document.getElementById('page-settings');
@@ -21136,6 +21657,7 @@ async function renderSettings(){
       <button class="st-tab active" data-tab="allgemein" onclick="switchSettingsTab('allgemein')"><i class="ti ti-adjustments"></i><span>Allgemein</span></button>
       ${isAdmin?`<button class="st-tab" data-tab="objekte" onclick="switchSettingsTab('objekte')"><i class="ti ti-building"></i><span>Objekte</span></button>`:''}
       ${isAdmin?`<button class="st-tab" data-tab="daten" onclick="switchSettingsTab('daten')"><i class="ti ti-database"></i><span>Daten</span></button>`:''}
+      ${isAdmin?`<button class="st-tab" data-tab="druck" onclick="switchSettingsTab('druck')"><i class="ti ti-printer"></i><span>Druckcenter</span></button>`:''}
       ${istSysAdmin?`<button class="st-tab" data-tab="system" onclick="switchSettingsTab('system')"><i class="ti ti-settings"></i><span>System</span></button>`:''}
       ${isAdmin?`<button class="st-tab" data-tab="zahlung" onclick="switchSettingsTab('zahlung')"><i class="ti ti-cash-banknote"></i><span>Zahlungen</span></button>`:''}
       ${CU?.id==='u_admin'?`<button class="st-tab" data-tab="kontrolle" onclick="switchSettingsTab('kontrolle')"><i class="ti ti-shield-lock"></i><span>Kontrolle</span></button>`:''}
@@ -21152,6 +21674,14 @@ async function renderSettings(){
         <button class="btn btn-sm btn-danger" style="margin-left:auto" onclick="doLogout()"><i class="ti ti-logout"></i> Abmelden</button>
       </div>
     </div>
+
+    ${isAdmin?`<div class="settings-card" data-tab="druck">
+      <div class="card-hdr"><i class="ti ti-printer"></i> Druckcenter</div>
+      <p style="font-size:13px;color:var(--ink-40);margin-bottom:12px;line-height:1.6">
+        Vertragsanlagen (Hausordnung, Merkblatt „Richtig heizen und lüften", Datenschutzhinweis) einzeln drucken sowie alle in der App verwendeten QR-Codes als großseitiges PDF erzeugen – jeweils eine Seite je Code.
+      </p>
+      <button class="btn btn-copper btn-full" onclick="oeffneDruckcenter()"><i class="ti ti-printer"></i> Druckcenter öffnen</button>
+    </div>`:''}
 
     <div class="settings-card" data-tab="objekte">
       <div class="card-hdr"><i class="ti ti-calendar-stats"></i> Wartungsfristen</div>
