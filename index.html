@@ -794,7 +794,7 @@ body.printing-active #printRoot{display:block!important}
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=28;
-const APP_VERSION = '2026-06-24-v134';
+const APP_VERSION = '2026-06-24-v135';
 /* v94 (19.06.2026): Etappe 1 – Lokale Benachrichtigungen erweitert (Termine + Maengel).
    - checkFaelligeAufgaben() prueft jetzt zusaetzlich:
      a) Termin-Erinnerungen: Termine mit gesetztem Erinnerungs-Vorlauf (1/2/7 Tage)
@@ -894,7 +894,7 @@ function openIDB(){
     const req=indexedDB.open(DB_NAME,DB_VER);
     req.onupgradeneeded=e=>{
       const db=e.target.result;
-      ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','fotos','wartung','zaehler','zaehlerstaende','versorger','versorger_archiv','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','sync_log','mieter_snapshots','branchenbuch','interessenten','od_dateien','buchungen','mietbescheinigungen','mv_entwuerfe','selbstauskuenfte'].forEach(s=>{
+      ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','fotos','wartung','zaehler','zaehlerstaende','versorger','versorger_archiv','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','ventile','ventilpruefung','taetigkeit_log','sync_log','mieter_snapshots','branchenbuch','interessenten','od_dateien','buchungen','mietbescheinigungen','mv_entwuerfe','selbstauskuenfte'].forEach(s=>{
         if(!db.objectStoreNames.contains(s)){
           const store=db.createObjectStore(s,{keyPath:'id'});
           if(s==='mieter'){store.createIndex('objektId','objektId');store.createIndex('weNr','weNr')}
@@ -921,7 +921,6 @@ function openIDB(){
           if(s==='abwesenheit'){store.createIndex('userId','userId')}
           if(s==='rechnungen'){store.createIndex('objektId','objektId');store.createIndex('mieterId','mieterId');store.createIndex('datum','datum')}
           if(s==='packliste'){store.createIndex('terminId','terminId')}
-          if(s==='meine_packliste'){store.createIndex('userId','userId')}
           if(s==='ventile'){store.createIndex('objektId','objektId')}
           if(s==='ventilpruefung'){store.createIndex('ventilId','ventilId')}
           if(s==='taetigkeit_log'){store.createIndex('userId','userId');store.createIndex('datum','datum')}
@@ -11660,7 +11659,7 @@ async function nkaGewaehlteSignaturen(){
   const out=[];
   for(const id of ids){
     const u=await idbGet('users',id).catch(()=>null);
-    if(u&&u.signatur) out.push({name:u.name||'', signatur:u.signatur});
+    if(u&&u.signatur) out.push({name:u.name||'', signatur:sigFuerDruck(u)});
   }
   return out;
 }
@@ -11832,7 +11831,7 @@ async function erstelleNKA(objektId, korrektur) {
   let sigListe=[];
   try{ sigListe = await nkaGewaehlteSignaturen(); }catch(e){}
   if(!sigListe.length){
-    try{ const u=await idbGet('users',CU?.id); const sg=u?.signatur||CU?.signatur||''; if(sg) sigListe=[{name:u?.name||bk.name,signatur:sg}]; }catch(e){}
+    try{ const u=await idbGet('users',CU?.id); const sg=sigFuerDruck(u)||CU?.signaturMitLinie||CU?.signatur||''; if(sg) sigListe=[{name:u?.name||bk.name,signatur:sg}]; }catch(e){}
   }
   // Gruß-Block-HTML mit 1 oder 2 Unterschriften nebeneinander
   let grussHTML;
@@ -12412,7 +12411,7 @@ function nkaLgSigToggle(userId, checked){
 }
 async function nkaLgGewaehlteSignaturen(){
   const ids=(window._nkaLgSigIds||[]).slice(0,2); const out=[];
-  for(const id of ids){ const u=await idbGet('users',id).catch(()=>null); if(u&&u.signatur) out.push({name:u.name||'',signatur:u.signatur}); }
+  for(const id of ids){ const u=await idbGet('users',id).catch(()=>null); if(u&&u.signatur) out.push({name:u.name||'',signatur:sigFuerDruck(u)}); }
   return out;
 }
 
@@ -12565,7 +12564,7 @@ async function erstelleNKALiegenschaft(lgId, korrektur){
   // Unterschriften
   const today=new Date().toLocaleDateString('de-DE');
   let sigListe=[]; try{ sigListe=await nkaLgGewaehlteSignaturen(); }catch(e){}
-  if(!sigListe.length){ try{ const u=await idbGet('users',CU?.id); if(u?.signatur) sigListe=[{name:u.name||'',signatur:u.signatur}]; }catch(e){} }
+  if(!sigListe.length){ try{ const u=await idbGet('users',CU?.id); if(u?.signatur) sigListe=[{name:u.name||'',signatur:sigFuerDruck(u)}]; }catch(e){} }
 
   // Einzelbriefe
   let briefeHTML='';
@@ -14870,7 +14869,7 @@ function mbSigToggle(userId){
 async function mbGewaehlteSignaturen(){
   const ids=(window._mbSigUserIds||[]).slice(0,2);
   const out=[];
-  for(const id of ids){ const u=await idbGet('users',id).catch(()=>null); if(u&&u.signatur) out.push({name:u.name||'', signatur:u.signatur}); }
+  for(const id of ids){ const u=await idbGet('users',id).catch(()=>null); if(u&&u.signatur) out.push({name:u.name||'', signatur:sigFuerDruck(u)}); }
   return out;
 }
 
@@ -14881,7 +14880,7 @@ async function erstelleMietbescheinigung(mieterId){
   const bk=getBriefkopf(m.objektId);
   // Punkt 2.2: gewählte Unterschrift(en); Fallback eigene, dann leer
   let sigListe=await mbGewaehlteSignaturen();
-  if(!sigListe.length){ try{ const u=await idbGet('users',CU?.id); const sg=u?.signatur||CU?.signatur||''; if(sg) sigListe=[{name:u?.name||bk.name, signatur:sg}]; }catch(e){} }
+  if(!sigListe.length){ try{ const u=await idbGet('users',CU?.id); const sg=sigFuerDruck(u)||CU?.signaturMitLinie||CU?.signatur||''; if(sg) sigListe=[{name:u?.name||bk.name, signatur:sg}]; }catch(e){} }
 
   const v=id=>document.getElementById(id);
   const val=id=>v(id)?.value||'';
@@ -14969,7 +14968,7 @@ async function erstelleMietbescheinigung(mieterId){
       <div>${esc(bk.ort?bk.ort.replace(/^\d+\s*/,''):'')}, den ${heute}</div>
       <div class="mb-sig-wrap">
         ${sigListe.length
-          ? sigListe.map(sg=>`<div class="mb-sig-line"><img src="${sg.signatur}" style="max-height:42px;display:block;margin:0 auto -2px;position:relative;z-index:1"><div style="border-top:1px solid #333;padding-top:2px;font-size:9px;color:#555">${esc(sg.name||'Unterschrift / Stempel')}</div></div>`).join('')
+          ? sigListe.map(sg=>`<div class="mb-sig-line"><img src="${sg.signatur}" style="max-height:46px;display:block;margin:0 auto 1px;position:relative;z-index:1"><div style="padding-top:2px;font-size:9px;color:#555">${esc(sg.name||'Unterschrift / Stempel')}</div></div>`).join('')
           : `<div class="mb-sig-line"><div style="border-top:1px solid #333;padding-top:2px;font-size:9px;color:#555">Unterschrift / Stempel</div></div>`}
       </div>
     </div>`;
@@ -15087,7 +15086,7 @@ function wgbSigToggle(userId){
 async function wgbGewaehlteSignaturen(){
   const ids=(window._wgbSigUserIds||[]).slice(0,2);
   const out=[];
-  for(const id of ids){ const u=await idbGet('users',id).catch(()=>null); if(u&&u.signatur) out.push({name:u.name||'', signatur:u.signatur}); }
+  for(const id of ids){ const u=await idbGet('users',id).catch(()=>null); if(u&&u.signatur) out.push({name:u.name||'', signatur:sigFuerDruck(u)}); }
   return out;
 }
 
@@ -15194,8 +15193,8 @@ oder zur Verfügung zu stellen, obwohl ein tatsächlicher Bezug der Wohnung wede
 <div class="sig-area">
   ${(sigListe&&sigListe.length)
     ? sigListe.map(sg=>`<div class="sig-box" style="border-top:none">
-        <img src="${sg.signatur}" style="max-height:46px;display:block;margin:0 auto -2px;position:relative;z-index:1">
-        <div style="border-top:1px solid #333;padding-top:4px">Ort, Datum: ${heute}<br>${esc(sg.name||'')} – Wohnungsgeber</div>
+        <img src="${sg.signatur}" style="max-height:50px;display:block;margin:0 auto 2px;position:relative;z-index:1">
+        <div style="padding-top:2px">Ort, Datum: ${heute}<br>${esc(sg.name||'')} – Wohnungsgeber</div>
       </div>`).join('')
     : `<div class="sig-box" style="border-top:none">
         <div style="height:38px"></div>
@@ -15647,7 +15646,7 @@ function briefSigToggle(userId, checked){
 async function briefGewaehlteSignaturen(){
   const ids=(window._briefSigUserIds||[]).slice(0,2);
   const out=[];
-  for(const id of ids){ const u=await idbGet('users',id).catch(()=>null); if(u&&u.signatur) out.push({name:u.name||'',signatur:u.signatur}); }
+  for(const id of ids){ const u=await idbGet('users',id).catch(()=>null); if(u&&u.signatur) out.push({name:u.name||'',signatur:sigFuerDruck(u)}); }
   return out;
 }
 
@@ -21859,6 +21858,7 @@ async function renderSettings(){
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
         <button class="btn btn-copper" onclick="document.getElementById('sigUploadIn').click()"><i class="ti ti-upload"></i> Unterschrift hochladen</button>
         <button class="btn" onclick="modalSignaturZeichnen()"><i class="ti ti-pencil"></i> Zeichnen</button>
+        <button class="btn" id="sigLinieBtn" onclick="modalSignaturLinie()" style="display:none"><i class="ti ti-line"></i> Linie festlegen</button>
         <button class="btn btn-danger btn-sm" id="sigDelBtn" onclick="deleteMeineSignatur()" style="display:none"><i class="ti ti-trash"></i> Entfernen</button>
       </div>
     </div>
@@ -22017,23 +22017,130 @@ async function renderSettings(){
   }
 }
 
+/* ── Druck-Signatur: bevorzugt Variante MIT eingebrannter Linie ── */
+function sigFuerDruck(u){
+  if(!u) return '';
+  return u.signaturMitLinie || u.signatur || '';
+}
+
+/* ── Linien-Variante erzeugen: dünne, gerade, schwarze Linie an gewählter Höhe einbrennen ── */
+function signaturLinieEinbrennen(dataUrl, posProzent){
+  return new Promise(resolve=>{
+    const img=new Image();
+    img.onload=()=>{
+      const w=img.width, h=img.height;
+      const c=document.createElement('canvas'); c.width=w; c.height=h;
+      const ctx=c.getContext('2d');
+      ctx.drawImage(img,0,0);
+      // Linienstärke proportional zur Höhe, mind. 2 px, dünn gehalten
+      const lw=Math.max(2, Math.round(h*0.022));
+      const y=Math.round(h*(posProzent/100));
+      ctx.strokeStyle='#1e2a4a';     // dasselbe dunkle Tintenblau wie die Signatur
+      ctx.lineWidth=lw;
+      ctx.lineCap='round';
+      ctx.beginPath();
+      ctx.moveTo(Math.round(w*0.01), y);
+      ctx.lineTo(Math.round(w*0.99), y);
+      ctx.stroke();
+      resolve(c.toDataURL('image/png'));
+    };
+    img.onerror=()=>resolve(dataUrl);
+    img.src=dataUrl;
+  });
+}
+
+let _sigLiniePos=62; // Standard-Höhe der Linie in %
+async function modalSignaturLinie(){
+  const u=await idbGet('users',CU.id).catch(()=>null);
+  const basis=u?.signatur;
+  if(!basis){ toast('Bitte zuerst eine Unterschrift hinterlegen'); return; }
+  _sigLiniePos=62;
+  showModal(`
+    <div class="m-title"><i class="ti ti-line"></i> Unterschriftslinie festlegen</div>
+    <p style="font-size:12.5px;color:var(--ink-60);margin-bottom:12px;line-height:1.6">
+      Schieben Sie die Linie an die gewünschte Höhe. Sie wird dünn, gerade und in Unterschriftsfarbe
+      über die gesamte Breite eingebrannt und auf Dokumenten anstelle der reinen Unterschrift verwendet.
+    </p>
+    <div style="position:relative;border:1px solid var(--ink-10);border-radius:8px;background:#fff;padding:10px">
+      <div id="sigLinieBox" style="position:relative;display:inline-block;width:100%;text-align:center">
+        <img id="sigLinieImg" src="${basis}" style="max-height:140px;max-width:100%;display:block;margin:0 auto">
+        <div id="sigLinieMark" style="position:absolute;left:0;right:0;height:2px;background:#d11;opacity:.85;pointer-events:none"></div>
+      </div>
+    </div>
+    <div style="margin-top:14px">
+      <label style="font-size:12px;color:var(--ink-60);display:block;margin-bottom:4px">Höhe der Linie</label>
+      <input type="range" id="sigLiniePos" min="5" max="98" value="62" style="width:100%"
+        oninput="sigLinieUpdate(this.value)">
+    </div>
+    <div style="display:flex;gap:8px;margin-top:16px">
+      <button class="btn" style="flex:1" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-copper" style="flex:1" onclick="sigLinieSpeichern()"><i class="ti ti-check"></i> Speichern</button>
+    </div>
+  `);
+  setTimeout(()=>sigLinieUpdate(62),60);
+}
+function sigLinieUpdate(val){
+  _sigLiniePos=Number(val);
+  const img=document.getElementById('sigLinieImg');
+  const mark=document.getElementById('sigLinieMark');
+  if(!img||!mark) return;
+  // Marker relativ zur tatsächlich gerenderten Bildhöhe positionieren
+  const top=img.offsetTop + img.offsetHeight*(_sigLiniePos/100);
+  mark.style.top=top+'px';
+}
+async function sigLinieSpeichern(){
+  const u=await idbGet('users',CU.id).catch(()=>null);
+  if(!u?.signatur){ toast('Keine Unterschrift vorhanden'); return; }
+  toast('Linie wird eingebrannt …');
+  const mitLinie=await signaturLinieEinbrennen(u.signatur, _sigLiniePos);
+  u.signaturMitLinie=mitLinie; u.geaendert=now();
+  await idbPut('users',u);
+  CU.signaturMitLinie=mitLinie;
+  clearTimeout(window._syncTimer);
+  window._syncTimer=setTimeout(()=>syncToOneDrive(),3000);
+  closeModal();
+  await renderMeineSignatur();
+  toast('Unterschriftslinie gespeichert ✓');
+}
+async function deleteSignaturLinie(){
+  const u=await idbGet('users',CU.id).catch(()=>null);
+  if(u){ delete u.signaturMitLinie; u.geaendert=now(); await idbPut('users',u); }
+  delete CU.signaturMitLinie;
+  clearTimeout(window._syncTimer);
+  window._syncTimer=setTimeout(()=>syncToOneDrive(),3000);
+  await renderMeineSignatur();
+  toast('Linien-Variante entfernt');
+}
+
 /* ── Benutzer-Unterschrift (für Protokolle / NKA) ── */
 async function renderMeineSignatur(){
   const view=document.getElementById('meineSigView');
   if(!view||!CU) return;
   const u=await idbGet('users',CU.id).catch(()=>null);
   const sig=u?.signatur;
+  const sigL=u?.signaturMitLinie;
   const delBtn=document.getElementById('sigDelBtn');
   if(sig){
-    view.innerHTML=`<div style="border:1px solid var(--ink-10);border-radius:8px;padding:10px;background:#fff;text-align:center">
-      <img src="${sig}" style="max-height:80px;max-width:100%">
-    </div>`;
+    view.innerHTML=`<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+      <div style="border:1px solid var(--ink-10);border-radius:8px;padding:10px;background:#fff;text-align:center">
+        <div style="font-size:10px;color:var(--ink-40);margin-bottom:4px">Original</div>
+        <img src="${sig}" style="max-height:70px;max-width:100%">
+      </div>
+      <div style="border:1px solid ${sigL?'var(--copper)':'var(--ink-10)'};border-radius:8px;padding:10px;background:#fff;text-align:center">
+        <div style="font-size:10px;color:${sigL?'var(--copper)':'var(--ink-40)'};margin-bottom:4px">Für Dokumente (mit Linie)</div>
+        ${sigL?`<img src="${sigL}" style="max-height:70px;max-width:100%">`
+              :`<div style="font-size:11px;color:var(--ink-40);padding:18px 4px">Noch nicht erzeugt</div>`}
+      </div>
+    </div>
+    <div style="font-size:11px;color:var(--ink-40);margin-top:8px;line-height:1.5">${sigL?'Auf Dokumenten wird die Variante <strong>mit Linie</strong> verwendet.':'Solange keine Linien-Variante erzeugt ist, wird auf Dokumenten die Original-Unterschrift verwendet.'}</div>`;
     if(delBtn) delBtn.style.display='inline-flex';
+    const lb=document.getElementById('sigLinieBtn'); if(lb) lb.style.display='inline-flex';
   } else {
     view.innerHTML=`<div style="border:1px dashed var(--ink-20);border-radius:8px;padding:18px;text-align:center;color:var(--ink-40);font-size:13px">
       <i class="ti ti-signature" style="font-size:22px;display:block;margin-bottom:4px"></i> Noch keine Unterschrift hinterlegt
     </div>`;
     if(delBtn) delBtn.style.display='none';
+    const lb=document.getElementById('sigLinieBtn'); if(lb) lb.style.display='none';
   }
 }
 
@@ -22319,7 +22426,7 @@ async function delUser(id){
 async function exportBackup(){
   if(!istSystemAdmin()){ toast('Nur für Administratoren'); return; }
   const backup={};
-  for(const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','versicherungen','versorger_archiv','od_dateien','buchungen','mietbescheinigungen','mv_entwuerfe','selbstauskuenfte']){
+  for(const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','versicherungen','versorger_archiv','od_dateien','buchungen','mietbescheinigungen','mv_entwuerfe','selbstauskuenfte']){
     backup[s]=await idbGetAll(s);
   }
   backup.exportedAt=now();backup.version=2;
@@ -22524,7 +22631,7 @@ async function importBackupAusfuehren(modus){
   const backup = window._pendingBackup;
   if(!backup){ toast('Keine Backup-Datei geladen'); closeModal(); return; }
   closeModal();
-  const alleStores=['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','versorger_archiv','od_dateien','buchungen','mietbescheinigungen','mv_entwuerfe','selbstauskuenfte'];
+  const alleStores=['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','versorger_archiv','od_dateien','buchungen','mietbescheinigungen','mv_entwuerfe','selbstauskuenfte'];
   try{
     await erstelleMieterSnapshot('vor Import ('+modus+')');
     if(modus==='ersetzen'){
@@ -22783,7 +22890,7 @@ async function syncToOneDrive() {
     } catch(e){ /* offline o. 404: normaler Upload-Weg unten */ }
 
     const backup = {};
-    for (const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','versorger_archiv','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch','sync_log','interessenten','versicherungen','od_dateien','buchungen','mietbescheinigungen','mv_entwuerfe','selbstauskuenfte']) {
+    for (const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','versorger_archiv','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','ventile','ventilpruefung','taetigkeit_log','branchenbuch','sync_log','interessenten','versicherungen','od_dateien','buchungen','mietbescheinigungen','mv_entwuerfe','selbstauskuenfte']) {
       backup[s] = await idbGetAll(s);
     }
     backup.updatedAt = new Date().toISOString();
@@ -22878,7 +22985,7 @@ async function syncFromOneDrive() {
       await idbPut('settings', { id:'tombstones', value: mergedTomb });
 
       // Merge: ID-basiert, nur übernehmen wenn remote neuer oder lokal fehlt
-      const mergeStores = ['protokolle','aufgaben','maengel','reparaturen','dokumente','nka_archiv','einkaufsliste','wartung','termine','zaehler','zaehlerstaende','versorger','versorger_archiv','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','meine_packliste','ventile','ventilpruefung','taetigkeit_log','branchenbuch','sync_log','interessenten','od_dateien','mietbescheinigungen','mv_entwuerfe','selbstauskuenfte'];
+      const mergeStores = ['protokolle','aufgaben','maengel','reparaturen','dokumente','nka_archiv','einkaufsliste','wartung','termine','zaehler','zaehlerstaende','versorger','versorger_archiv','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','ventile','ventilpruefung','taetigkeit_log','branchenbuch','sync_log','interessenten','od_dateien','mietbescheinigungen','mv_entwuerfe','selbstauskuenfte'];
       for (const s of mergeStores) {
         if (!backup[s]) continue;
         const tombS = mergedTomb[s] || {};
@@ -24811,80 +24918,6 @@ async function modalPacklistenTermine(){
     <div class="m-title"><i class="ti ti-backpack"></i> Packlisten anstehender Termine</div>
     <div style="max-height:60vh;overflow:auto">${body}</div>
     <button class="btn btn-full" style="margin-top:12px" onclick="closeModal()">Schließen</button>`);
-}
-
-/* ═══════════════════════════════════════════════════════════
-   MEINE PACKLISTE – persönlich & privat (nur eigener Benutzer)
-═══════════════════════════════════════════════════════════ */
-async function modalMeinePackliste(){
-  const items=(await idbGetAll('meine_packliste','userId',CU?.id).catch(()=>[]))
-    .sort((a,b)=>(a.erledigt?1:0)-(b.erledigt?1:0) || (a.erstelltIso||'').localeCompare(b.erstelltIso||''));
-  const offen=items.filter(i=>!i.erledigt).length;
-  let liste = items.length
-    ? items.map(i=>meinePackRow(i)).join('')
-    : `<div class="empty"><i class="ti ti-backpack"></i><p>Deine Packliste ist leer</p></div>`;
-  showModal(`
-    <div class="m-title"><i class="ti ti-backpack"></i> Meine Packliste</div>
-    <div style="font-size:12px;color:var(--ink-60);margin-bottom:12px">Nur für dich sichtbar · ${items.length} Einträge · ${offen} offen</div>
-    <div class="f" style="margin-bottom:10px">
-      <div style="display:flex;gap:6px">
-        <input type="text" id="mpNeu" placeholder="z. B. Leiter, Akkuschrauber, Schlüssel 181" spellcheck="true" lang="de" style="flex:1"
-          onkeydown="if(event.key==='Enter')meinePackAdd()">
-        <button class="btn btn-copper" onclick="meinePackAdd()"><i class="ti ti-plus"></i></button>
-      </div>
-    </div>
-    <div id="meinePackListe" style="max-height:55vh;overflow-y:auto">${liste}</div>
-    ${items.some(i=>i.erledigt)?`<button class="btn btn-sm" style="margin-top:8px;width:100%" onclick="meinePackClearDone()"><i class="ti ti-eraser"></i> Erledigte entfernen</button>`:''}
-    <button class="btn btn-full" style="margin-top:8px" onclick="closeModal()">Schließen</button>
-  `);
-}
-function meinePackRow(i){
-  const erl=!!i.erledigt;
-  return `<div style="display:flex;align-items:center;gap:10px;border:1px solid var(--ink-10);border-radius:8px;padding:9px 10px;margin-bottom:6px;${erl?'background:var(--ink-05)':''}">
-    <button onclick="meinePackToggle('${i.id}')" style="flex-shrink:0;width:26px;height:26px;border-radius:7px;border:2px solid ${erl?'var(--green,#2E7D52)':'var(--ink-20)'};background:${erl?'var(--green,#2E7D52)':'#fff'};display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0">
-      ${erl?'<i class="ti ti-check" style="color:#fff;font-size:15px"></i>':''}
-    </button>
-    <div style="flex:1;min-width:0;font-size:14px;font-weight:600;${erl?'text-decoration:line-through;color:var(--ink-40)':''}">${esc(i.artikel)}</div>
-    <button class="btn btn-sm btn-danger" onclick="meinePackDelete('${i.id}')"><i class="ti ti-x"></i></button>
-  </div>`;
-}
-async function meinePackRefresh(){
-  const el=document.getElementById('meinePackListe');
-  if(!el) return;
-  const items=(await idbGetAll('meine_packliste','userId',CU?.id).catch(()=>[]))
-    .sort((a,b)=>(a.erledigt?1:0)-(b.erledigt?1:0) || (a.erstelltIso||'').localeCompare(b.erstelltIso||''));
-  el.innerHTML = items.length ? items.map(i=>meinePackRow(i)).join('') : `<div class="empty"><i class="ti ti-backpack"></i><p>Deine Packliste ist leer</p></div>`;
-}
-async function meinePackAdd(){
-  const inp=document.getElementById('mpNeu');
-  const artikel=inp?.value?.trim();
-  if(!artikel){ return; }
-  await idbPut('meine_packliste', {
-    id:uid(), userId:CU?.id, artikel,
-    erledigt:false, erstelltIso:nowIso(), geaendert:nowIso(),
-  });
-  if(inp) inp.value='';
-  syncSoon();
-  await meinePackRefresh();
-  if(inp) inp.focus();
-}
-async function meinePackToggle(id){
-  const i=await idbGet('meine_packliste', id); if(!i) return;
-  i.erledigt=!i.erledigt; i.geaendert=nowIso();
-  await idbPut('meine_packliste', i);
-  syncSoon();
-  await meinePackRefresh();
-}
-async function meinePackDelete(id){
-  await deleteMitTombstone('meine_packliste', id);
-  syncSoon();
-  await meinePackRefresh();
-}
-async function meinePackClearDone(){
-  const items=(await idbGetAll('meine_packliste','userId',CU?.id).catch(()=>[])).filter(i=>i.erledigt);
-  for(const i of items) await deleteMitTombstone('meine_packliste', i.id);
-  syncSoon();
-  await modalMeinePackliste();
 }
 
 async function modalPackliste(terminId){
