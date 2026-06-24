@@ -22,7 +22,7 @@
   --copper:#185FA5;--copper-l:#2874C0;--copper-d:#0C447C;--copper-bg:#EEF4FB;
   /* Pfauenauge-Hellblau als Highlight */
   --highlight:#85B7EB;--highlight-bg:#E8F2FB;
-  --green:#2E7D52;--green-l:#E6F4EC;
+  --green:#2E7D52;--green-l:#E6F4EC;--success:#2E7D52;--line:#D9E2EE;
   --red:#C0392B;--red-l:#FDECEA;
   --amber:#D4820A;--amber-l:#FEF3E2;
   --white:#FFF;--surface:#F0F5FB;
@@ -672,27 +672,29 @@ body.printing-active #printRoot{display:block!important}
     <div id="page-zeit" class="page"></div>
     <div id="page-urlaub" class="page"></div>
     <div id="page-rechnungen" class="page"></div>
+    <div id="page-mail" class="page"></div>
     <div id="page-settings" class="page"></div>
     <div id="page-branchenbuch" class="page"><div id="branchenbuchView" data-view="branchenbuch"></div></div>
   </div>
 
   <div class="bottom-nav">
     <button class="nav-btn active" id="nav-dash" onclick="nav('dash')">
-      <i class="ti ti-layout-dashboard"></i><span>Dashboard</span>
+      <i class="ti ti-layout-dashboard"></i><span>Start</span>
     </button>
     <button class="nav-btn" id="nav-aufgaben" onclick="nav('aufgaben')">
-      <i class="ti ti-checklist"></i><span>Aufgaben</span>
+      <i class="ti ti-checklist"></i><span>ToDo</span>
       <div class="nav-badge" id="navBadge" style="display:none" onclick="event.stopPropagation();navToMaengel()"></div>
     </button>
     <button class="nav-btn" id="nav-kalender" onclick="nav('kalender')">
       <i class="ti ti-calendar-event"></i><span>Kalender</span>
       <div class="nav-badge" id="kalBadge" style="display:none"></div>
     </button>
-    <button class="nav-btn" id="nav-protokoll" onclick="nav('protokoll-archiv')">
-      <i class="ti ti-clipboard-list"></i><span>Protokolle</span>
+    <button class="nav-btn" id="nav-mail" onclick="nav('mail')">
+      <i class="ti ti-inbox"></i><span>Mail</span>
+      <div class="nav-badge" id="mailBadge" style="display:none"></div>
     </button>
-    <button class="nav-btn" id="nav-settings" onclick="nav('settings')">
-      <i class="ti ti-settings"></i><span>Einstellungen</span>
+    <button class="nav-btn" id="nav-settings" onclick="nav('settings')" title="Einstellungen" aria-label="Einstellungen">
+      <i class="ti ti-settings"></i>
     </button>
   </div>
 </div>
@@ -792,7 +794,7 @@ body.printing-active #printRoot{display:block!important}
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=28;
-const APP_VERSION = '2026-06-24-v126';
+const APP_VERSION = '2026-06-24-v130';
 /* v94 (19.06.2026): Etappe 1 – Lokale Benachrichtigungen erweitert (Termine + Maengel).
    - checkFaelligeAufgaben() prueft jetzt zusaetzlich:
      a) Termin-Erinnerungen: Termine mit gesetztem Erinnerungs-Vorlauf (1/2/7 Tage)
@@ -1344,7 +1346,7 @@ function nav(id,title,sub,push=true){
   document.getElementById('page-'+id)?.classList.add('active');
   const TITLES={dash:'Dashboard',aufgaben:'Aufgaben & Mängel',settings:'Einstellungen',
                 objekt:'Objekt',mieter:'Mieter',protokoll:'Übergabeprotokoll',
-                'protokoll-archiv':'Protokoll-Archiv',
+                'protokoll-archiv':'Protokoll-Archiv','mail':'Posteingang',
                 'kalender':'Kalender','wartung':'Wartungsfristen','lager':'Lager & Material','urlaub':'Urlaub','rechnungen':'Rechnungen','branchenbuch':'Branchenbuch'};
   document.getElementById('hdrTitle').textContent=title||TITLES[id]||id;
   document.getElementById('hdrSub').textContent=sub||'';
@@ -1361,6 +1363,7 @@ function nav(id,title,sub,push=true){
     history.replaceState({navId:'dash'}, '', window.location.pathname);
   }
   if(id==='branchenbuch'){ const el=document.getElementById('branchenbuchView'); if(el) renderBranchenbuch(el); }
+  if(id==='mail'){ renderMail(); }
   curPage=id;
 }
 
@@ -1490,10 +1493,11 @@ async function renderDash() {
     <button class="qa-btn" onclick="modalAddAufgabe(null,null)"><i class="ti ti-plus"></i> ToDo</button>
     <button class="qa-btn" onclick="nav('lager')"><i class="ti ti-package"></i> Lager</button>
     <button class="qa-btn" onclick="newProtokoll()"><i class="ti ti-clipboard-check"></i> Neues Protokoll</button>
+    <button class="qa-btn" onclick="nav('protokoll-archiv')"><i class="ti ti-clipboard-list"></i> Protokolle</button>
     <button class="qa-btn copper" onclick="nav('zeit')"><i class="ti ti-clock"></i> Zeiterfassung</button>
     <button class="qa-btn" onclick="nav('wartung')"><i class="ti ti-calendar-stats"></i> Wartung</button>
     <button class="qa-btn" onclick="nav('branchenbuch')"><i class="ti ti-address-book"></i> Branchenbuch</button>
-    <button class="qa-btn" onclick="modalMeinePackliste()"><i class="ti ti-backpack"></i> Meine Packliste</button>
+    <button class="qa-btn" onclick="modalPacklistenTermine()"><i class="ti ti-backpack"></i> Packliste</button>
     ${istVerwalter()?`<button class="qa-btn" onclick="nav('rechnungen')"><i class="ti ti-file-invoice"></i> Rechnungen</button>`:''}
   </div>`;
 
@@ -1567,40 +1571,6 @@ async function renderDash() {
       </div>`).join('')}
       ${dringend.length>3?`<div style="font-size:12px;color:var(--ink-40);padding-top:6px;cursor:pointer" onclick="nav('aufgaben')">+${dringend.length-3} weitere anzeigen</div>`:''}
     </div>`;
-  }
-
-  // Packlisten anstehender Termine (inkl. heute) – nur befüllte Listen, direkt bearbeitbar (P6)
-  {
-    const heute = today();
-    const kommendeTermine = (await idbGetAll('termine'))
-      .filter(t => t.datum && t.datum >= heute && t.status!=='abgesagt' && (!t.objektId || myObj.some(o=>o.id===t.objektId)))
-      .sort((a,b)=> a.datum.localeCompare(b.datum) || (a.uhrzeit||'').localeCompare(b.uhrzeit||''));
-    const mitPackliste = [];
-    for (const t of kommendeTermine) {
-      const pa = await packlisteAnzahl(t.id);
-      if (pa.gesamt > 0) mitPackliste.push({ t, pa });
-    }
-    if (mitPackliste.length) {
-      html += `<div class="card" style="margin-bottom:12px;border-color:var(--copper)">
-        <div class="card-hdr" style="color:var(--copper)"><i class="ti ti-backpack"></i> Packlisten anstehender Termine (${mitPackliste.length})</div>
-        ${mitPackliste.slice(0,5).map(({t,pa})=>{
-          const obj = t.objektId ? getObj(t.objektId) : null;
-          const dat = new Date(t.datum+'T12:00:00').toLocaleDateString('de-DE',{weekday:'short',day:'numeric',month:'short'});
-          const fertig = pa.offen===0;
-          const c = fertig ? 'var(--green)' : 'var(--copper)';
-          return `<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--ink-10);cursor:pointer" onclick="modalPackliste('${t.id}')">
-            <div style="width:6px;height:6px;border-radius:50%;background:${c};flex-shrink:0"></div>
-            <div style="flex:1;min-width:0">
-              <div style="font-size:13px;font-weight:600;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(t.titel||'Termin')}</div>
-              <div style="font-size:11px;color:var(--ink-40)">${dat}${obj?' · '+esc(obj.name):''}</div>
-            </div>
-            <span class="chip chip-${fertig?'ok':'warn'}" style="font-size:10px;padding:1px 7px;white-space:nowrap">${fertig?'komplett':pa.offen+' offen'} / ${pa.gesamt}</span>
-            <i class="ti ti-chevron-right" style="font-size:13px;color:var(--ink-40)"></i>
-          </div>`;
-        }).join('')}
-        ${mitPackliste.length>5?`<div style="font-size:12px;color:var(--ink-40);padding-top:6px;cursor:pointer" onclick="nav('kalender')">+${mitPackliste.length-5} weitere im Kalender</div>`:''}
-      </div>`;
-    }
   }
 
   // Letzte Protokolle
@@ -3936,6 +3906,199 @@ async function saAlsInteressentImportieren(id){
   // aus der Liste entfernen
   const karte=document.getElementById('saDetail_'+id);
   if(karte && karte.parentElement) karte.parentElement.style.display='none';
+}
+
+/* ═══════════════════════════════════════════════════════════
+   P9 – MAIL-TAB: Posteingang (Selbstauskünfte + Website-Nachrichten)
+        + Token-Versand. Nutzt vorhandene SA-Funktionen.
+═══════════════════════════════════════════════════════════ */
+async function renderMail(){
+  const el = document.getElementById('page-mail');
+  if(!el) return;
+  if(!istVerwalter()){
+    el.innerHTML = '<div class="empty"><i class="ti ti-lock"></i><p>Der Posteingang ist nur für Verwalter verfügbar.</p></div>';
+    return;
+  }
+  const tab = window._mailTab || 'sa';
+  el.innerHTML = `
+    <div class="tab-bar" style="margin-bottom:12px">
+      <button class="tab-btn ${tab==='sa'?'active':''}" onclick="setMailTab('sa')"><i class="ti ti-file-description"></i> Selbstauskünfte <span id="mailCountSa"></span></button>
+      <button class="tab-btn ${tab==='nachrichten'?'active':''}" onclick="setMailTab('nachrichten')"><i class="ti ti-message"></i> Nachrichten <span id="mailCountMsg"></span></button>
+      <button class="tab-btn ${tab==='token'?'active':''}" onclick="setMailTab('token')"><i class="ti ti-send"></i> Link senden</button>
+    </div>
+    <div id="mailBody"><p style="font-size:13px;color:var(--ink-40)">Lade …</p></div>`;
+  const body = document.getElementById('mailBody');
+  if(tab==='sa')               await mailRenderSA(body);
+  else if(tab==='nachrichten') await mailRenderNachrichten(body);
+  else                         await mailRenderToken(body);
+}
+
+function setMailTab(t){ window._mailTab = t; renderMail(); }
+
+// ── Selbstauskünfte (aus /api/inbox-sa) ──
+async function mailRenderSA(body){
+  const key=(await idbGet('settings','backendKey').catch(()=>null))?.value;
+  if(!key){
+    body.innerHTML='<div class="empty"><i class="ti ti-key-off"></i><p>Kein Backend-Schlüssel hinterlegt. Bitte unter „Einstellungen → System → Website-Backend" den Function-Key speichern.</p></div>';
+    return;
+  }
+  const encKey=await saEncKeyHolen();
+  if(!encKey){
+    body.innerHTML='<div class="empty"><i class="ti ti-lock-off"></i><p>Kein Entschlüsselungs-Schlüssel (SA_ENC_KEY) hinterlegt. Bitte unter „Einstellungen → System" speichern.</p></div>';
+    return;
+  }
+  let liste=[];
+  try{
+    const res=await fetch(BACKEND_AZURE+'/api/inbox-sa',{ headers:{'x-functions-key':key} });
+    if(!res.ok){ body.innerHTML='<div class="empty"><i class="ti ti-alert-circle"></i><p>Abruf fehlgeschlagen ('+res.status+').</p></div>'; return; }
+    liste=await res.json().catch(()=>[]);
+  }catch(e){
+    body.innerHTML='<div class="empty"><i class="ti ti-wifi-off"></i><p>Backend nicht erreichbar.</p></div>';
+    return;
+  }
+  const cnt=document.getElementById('mailCountSa'); if(cnt) cnt.textContent=liste.length?'('+liste.length+')':'';
+  if(!liste.length){ body.innerHTML='<div class="empty"><i class="ti ti-inbox"></i><p>Keine neuen Selbstauskünfte.</p></div>'; return; }
+  window._saInbox = {};
+  let html='';
+  for(const e of liste){
+    window._saInbox[e.id]=e;
+    const dt=e.zeitstempel?new Date(e.zeitstempel).toLocaleString('de-DE'):'';
+    html+=`<div style="border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:10px;background:var(--white)">
+      <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap">
+        <div><b>${esc(e.anzeigeName||'(ohne Namen)')}</b><br>
+          <span style="font-size:12px;color:var(--ink-40)">${esc(e.objektName||'')} · ${esc(dt)}</span></div>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+        <button class="btn btn-sm" onclick="saDetailZeigen('${e.id}')"><i class="ti ti-eye"></i> Anzeigen</button>
+        <button class="btn btn-sm btn-primary" onclick="saAlsInteressentImportieren('${e.id}')"><i class="ti ti-user-plus"></i> Als Interessent</button>
+      </div>
+      <div id="saDetail_${e.id}" style="margin-top:10px"></div>
+    </div>`;
+  }
+  body.innerHTML=html;
+}
+
+// ── Website-Nachrichten (aus /api/inbox – Kontaktformular). Robust, falls Endpunkt fehlt. ──
+async function mailRenderNachrichten(body){
+  const key=(await idbGet('settings','backendKey').catch(()=>null))?.value;
+  if(!key){
+    body.innerHTML='<div class="empty"><i class="ti ti-key-off"></i><p>Kein Backend-Schlüssel hinterlegt.</p></div>';
+    return;
+  }
+  let liste=[];
+  try{
+    const res=await fetch(BACKEND_AZURE+'/api/inbox',{ headers:{'x-functions-key':key} });
+    if(res.ok) liste=await res.json().catch(()=>[]);
+    else if(res.status!==404){ body.innerHTML='<div class="empty"><i class="ti ti-alert-circle"></i><p>Abruf fehlgeschlagen ('+res.status+').</p></div>'; return; }
+  }catch(e){
+    body.innerHTML='<div class="empty"><i class="ti ti-wifi-off"></i><p>Backend nicht erreichbar.</p></div>';
+    return;
+  }
+  const cnt=document.getElementById('mailCountMsg'); if(cnt) cnt.textContent=liste.length?'('+liste.length+')':'';
+  if(!liste.length){ body.innerHTML='<div class="empty"><i class="ti ti-message-off"></i><p>Keine neuen Nachrichten.</p></div>'; return; }
+  let html='';
+  for(const n of liste){
+    const dt=n.zeitstempel||n.erstellt?new Date(n.zeitstempel||n.erstellt).toLocaleString('de-DE'):'';
+    const name=n.name||[n.vorname,n.nachname].filter(Boolean).join(' ')||'(ohne Namen)';
+    html+=`<div style="border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:10px;background:var(--white)">
+      <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap">
+        <div><b>${esc(name)}</b><br><span style="font-size:12px;color:var(--ink-40)">${esc(n.email||'')}${n.telefon?' · '+esc(n.telefon):''} · ${esc(dt)}</span></div>
+      </div>
+      ${n.objektName||n.objekt?`<div style="font-size:12px;color:var(--ink-60);margin-top:6px"><i class="ti ti-building"></i> ${esc(n.objektName||n.objekt)}</div>`:''}
+      ${n.nachricht||n.text?`<div style="font-size:13px;color:var(--ink);margin-top:8px;white-space:pre-wrap;line-height:1.5">${esc(n.nachricht||n.text)}</div>`:''}
+      ${n.email?`<div style="margin-top:10px"><a class="btn btn-sm btn-primary" href="mailto:${esc(n.email)}"><i class="ti ti-mail-forward"></i> Antworten</a></div>`:''}
+    </div>`;
+  }
+  body.innerHTML=html;
+}
+
+// ── Token-Versand (Selbstauskunft-Link) ──
+async function mailRenderToken(body){
+  // Eigene IDs (mt*) statt der Settings-IDs, damit beide Formulare unabhängig funktionieren.
+  body.innerHTML=`
+    <div style="background:var(--white);border:1px solid var(--ink-10);border-radius:var(--radius);padding:14px">
+      <p style="font-size:13px;color:var(--ink-60);margin-bottom:12px;line-height:1.6">
+        Sendet einem Interessenten einen persönlichen Link zur vollständigen Selbstauskunft (gültig 7 Tage). E-Mail-Adresse manuell eingeben oder einen Interessenten auswählen.
+      </p>
+      <label style="font-size:12px;color:var(--ink-40);display:block;margin-bottom:4px">Interessent auswählen <span style="opacity:.7">(optional)</span></label>
+      <select id="mtTokInteressent" onchange="mailTokInteressentGewaehlt()" style="width:100%;margin-bottom:10px"><option value="">– manuell eingeben –</option></select>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <input type="email" id="mtTokMail" placeholder="E-Mail-Adresse" style="flex:1;min-width:160px" autocomplete="off">
+        <input type="text" id="mtTokObjekt" placeholder="Objekt / Wohnung" style="flex:1;min-width:160px">
+      </div>
+      <div style="margin-top:10px">
+        <button class="btn btn-primary" onclick="mailTokenSenden()"><i class="ti ti-send"></i> Link senden</button>
+      </div>
+      <div id="mtTokStatus" style="margin-top:10px"></div>
+    </div>`;
+  await mailTokInteressentBefuellen();
+}
+
+// Dropdown der Mail-Token-UI befüllen (eigene IDs)
+async function mailTokInteressentBefuellen(){
+  const sel=document.getElementById('mtTokInteressent');
+  if(!sel) return;
+  let liste=[];
+  try{ liste=await idbGetAll('interessenten'); }catch(e){ liste=[]; }
+  liste=(liste||[]).filter(i=>i && i.email).sort((a,b)=>String(b.erstellt||'').localeCompare(String(a.erstellt||'')));
+  sel.innerHTML='<option value="">– manuell eingeben –</option>'+liste.map(i=>{
+    const vn=(i.vorname||'').trim();
+    const nn=(i.nachname||'').trim() || (i.name||'').replace(vn,'').trim();
+    const name=esc((i.name||((vn+' '+nn).trim())).trim()||i.email);
+    const obj=esc(i.objektName||'');
+    return `<option value="${esc(i.id)}" data-mail="${esc(i.email)}" data-objekt="${obj}" data-vorname="${esc(vn)}" data-nachname="${esc(nn)}" data-telefon="${esc(i.telefon||'')}">${name}${obj?' · '+obj:''}</option>`;
+  }).join('');
+}
+
+// Auswahl im Mail-Dropdown übernehmen (füllt Mail/Objekt, merkt Vormerk-Daten)
+function mailTokInteressentGewaehlt(){
+  const sel=document.getElementById('mtTokInteressent');
+  if(!sel) return;
+  const opt=sel.options[sel.selectedIndex];
+  if(!opt || !opt.value){ _saTokGewaehlt=null; return; }
+  const mailEl=document.getElementById('mtTokMail');
+  const objEl=document.getElementById('mtTokObjekt');
+  if(mailEl) mailEl.value=opt.getAttribute('data-mail')||'';
+  if(objEl)  objEl.value =opt.getAttribute('data-objekt')||'';
+  _saTokGewaehlt={
+    vorname:opt.getAttribute('data-vorname')||'',
+    nachname:opt.getAttribute('data-nachname')||'',
+    telefon:opt.getAttribute('data-telefon')||'',
+    email:opt.getAttribute('data-mail')||''
+  };
+}
+
+// Token aus der Mail-Seite senden (eigene IDs; gleiche Backend-Logik wie saTokenSenden)
+async function mailTokenSenden(){
+  const mail=(document.getElementById('mtTokMail')?.value||'').trim();
+  const objekt=(document.getElementById('mtTokObjekt')?.value||'').trim();
+  const statusEl=document.getElementById('mtTokStatus');
+  const setSt=(html)=>{ if(statusEl) statusEl.innerHTML=html; };
+  if(!mail || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(mail)){ setSt('<span style="color:var(--red,#c0392b);font-size:13px">Bitte gültige E-Mail-Adresse eingeben.</span>'); return; }
+  const key=(await idbGet('settings','backendKey').catch(()=>null))?.value;
+  if(!key){ setSt('<span style="color:var(--red,#c0392b);font-size:13px">Kein Backend-Schlüssel hinterlegt.</span>'); return; }
+  let vormerkung=null;
+  if(_saTokGewaehlt && _saTokGewaehlt.email && _saTokGewaehlt.email.toLowerCase()===mail.toLowerCase()){
+    vormerkung={ vorname:_saTokGewaehlt.vorname, nachname:_saTokGewaehlt.nachname, telefon:_saTokGewaehlt.telefon, email:mail };
+  }
+  setSt('<span style="color:var(--ink-40);font-size:13px">Sende Link …</span>');
+  try{
+    const res=await fetch(BACKEND_AZURE+'/api/send-token',{
+      method:'POST', headers:{'Content-Type':'application/json','x-functions-key':key},
+      body:JSON.stringify({ email:mail, objektName:objekt, vormerkung })
+    });
+    if(res.ok){
+      setSt('<span style="color:var(--success,#1e7e34);font-size:13px"><i class="ti ti-check"></i> Link gesendet an '+esc(mail)+'.</span>');
+      const me=document.getElementById('mtTokMail'); if(me) me.value='';
+      const oe=document.getElementById('mtTokObjekt'); if(oe) oe.value='';
+      const se=document.getElementById('mtTokInteressent'); if(se) se.value='';
+      _saTokGewaehlt=null;
+    } else {
+      setSt('<span style="color:var(--red,#c0392b);font-size:13px">Versand fehlgeschlagen ('+res.status+').</span>');
+    }
+  }catch(e){
+    setSt('<span style="color:var(--red,#c0392b);font-size:13px">Backend nicht erreichbar.</span>');
+  }
 }
 
 /* ── Function-Key-Verwaltung (Settings → System) ── */
@@ -9670,6 +9833,32 @@ async function updateBadge(){
   const n=auf.length+mng.length;
   const badge=document.getElementById('navBadge');
   if(badge){badge.style.display=n?'flex':'none';badge.textContent=n>99?'99+':n;}
+  updateMailBadge();
+}
+
+// P9 – Mail-Badge: Anzahl offener Selbstauskünfte (+ Website-Nachrichten).
+// Schlank gehalten: nur für Verwalter mit hinterlegtem Backend-Key; Fehler werden ignoriert.
+let _mailBadgeLetzter = 0;
+async function updateMailBadge(){
+  const badge=document.getElementById('mailBadge');
+  if(!badge) return;
+  if(!istVerwalter()){ badge.style.display='none'; return; }
+  // höchstens alle 2 Minuten neu abrufen
+  if(Date.now()-_mailBadgeLetzter < 120000) return;
+  _mailBadgeLetzter = Date.now();
+  const key=(await idbGet('settings','backendKey').catch(()=>null))?.value;
+  if(!key){ badge.style.display='none'; return; }
+  let n=0;
+  try{
+    const r1=await fetch(BACKEND_AZURE+'/api/inbox-sa',{ headers:{'x-functions-key':key} });
+    if(r1.ok){ const l=await r1.json().catch(()=>[]); n+=Array.isArray(l)?l.length:0; }
+  }catch(e){}
+  try{
+    const r2=await fetch(BACKEND_AZURE+'/api/inbox',{ headers:{'x-functions-key':key} });
+    if(r2.ok){ const l=await r2.json().catch(()=>[]); n+=Array.isArray(l)?l.length:0; }
+  }catch(e){}
+  badge.style.display = n?'flex':'none';
+  badge.textContent = n>99?'99+':n;
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -10214,6 +10403,7 @@ const DOK_TYPEN = [
   {val:'mieterhoehung',label:'Mieterhöhung',    icon:'ti-trending-up'},
   {val:'wgb',     label:'Wohnungsgeberbescheinigung',icon:'ti-file-certificate'},
   {val:'protokoll',label:'Übergabeprotokoll',   icon:'ti-clipboard-check'},
+  {val:'aushang', label:'Aushang „Wohnung frei“', icon:'ti-printer'},
   {val:'sonstiges',label:'Sonstiges',           icon:'ti-paperclip'},
 ];
 
@@ -10228,7 +10418,12 @@ const DOK_TYPEN = [
 // Dokumenttypen, die überhaupt für das Mieterportal freigegeben werden dürfen.
 // Sensible Typen (Ausweis, SEPA-Mandat, interne Fotos/Pläne) sind bewusst
 // NICHT enthalten und können nie an den Mieter ausgeliefert werden.
-const PORTAL_DOK_TYPEN = ['vertrag','nka','abrechnung','wgb','brief','mieterhoehung'];
+// Mieterbezogene Dok-Typen, die bei Token-Login automatisch sichtbar sind (P8).
+// Bewusst OHNE 'ausweis' und 'lastschrift' (besonders sensibel: § 20 PAuswG, Bankdaten) –
+// diese nur, wenn pro Dokument ausdrücklich freigegeben (Override).
+const PORTAL_DOK_TYPEN = ['vertrag','nka','abrechnung','wgb','brief','mieterhoehung','protokoll','wohnungsbild','foto','sonstiges'];
+// Sensible Typen: NIE per Auto-/Typ-Default, nur per ausdrücklichem Einzel-Override.
+const PORTAL_DOK_SENSIBEL = ['ausweis','lastschrift'];
 
 // Generelle Typ-Voreinstellung aus settings lesen (Default: false = gesperrt).
 async function getPortalTypDefaults(){
@@ -10257,9 +10452,17 @@ async function setPortalTypDefault(typ, freigegeben){
 //   - Typ nicht portalfähig → immer false
 function istPortalFreigegeben(dok, typDefaults){
   if(!dok || !dok.mieterId) return false;            // nur mieterbezogene Dok.
-  if(!PORTAL_DOK_TYPEN.includes(dok.typ)) return false;
+  // Entwürfe nie ausliefern (Brief-/MV-Entwürfe liegen i.d.R. in 'mv_entwuerfe';
+  // dieses Flag fängt versehentlich im dokumente-Store markierte Entwürfe sicher ab).
+  if(dok.entwurf === true || dok.status === 'draft') return false;
+  // Einzel-Override gewinnt immer (erlaubt auch gezielte Freigabe sensibler Typen).
   if(dok.portalFreigabe === true)  return true;
   if(dok.portalFreigabe === false) return false;
+  // Sensible Typen ohne Override: gesperrt.
+  if(PORTAL_DOK_SENSIBEL.includes(dok.typ)) return false;
+  // Unkritische mieterbezogene Typen: automatisch sichtbar (P8 – „alles über sich außer Entwürfe").
+  if(PORTAL_DOK_TYPEN.includes(dok.typ)) return true;
+  // Unbekannter Typ: zur Sicherheit gesperrt, sofern kein expliziter Typ-Default greift.
   return typDefaults[dok.typ] === true;
 }
 
@@ -10268,15 +10471,35 @@ function istPortalFreigegeben(dok, typDefaults){
 // die Auslieferung/Authentifizierung übernimmt später die Brücke.
 async function portalDokumenteFuerMieter(mieterId){
   if(!mieterId) return [];
-  const [alle, typDefaults] = await Promise.all([
+  const [alle, typDefaults, mieter] = await Promise.all([
     idbGetAll('dokumente'),
-    getPortalTypDefaults()
+    getPortalTypDefaults(),
+    idbGet('mieter', mieterId).catch(()=>null)
   ]);
-  return alle
-    .filter(d => d.mieterId === mieterId && istPortalFreigegeben(d, typDefaults))
+
+  // 1) Mieterbezogene Dokumente nach Freigabe-Politik
+  const mieterDok = alle
+    .filter(d => d.mieterId === mieterId && istPortalFreigegeben(d, typDefaults));
+
+  // 2) Grundriss/Pläne der eigenen Wohnung (wohnungsgebunden, mieterId=null) immer mitliefern (P8)
+  let planDok = [];
+  if (mieter && mieter.objektId && mieter.weNr != null) {
+    const weKey = String(mieter.weNr).replace(/\W/g,'');
+    planDok = alle.filter(d =>
+      d.typ === 'plan' &&
+      d.objektId === mieter.objektId &&
+      String(d.weNr).replace(/\W/g,'') === weKey
+    );
+  }
+
+  // zusammenführen, Duplikate per id vermeiden
+  const seen = new Set();
+  return [...mieterDok, ...planDok]
+    .filter(d => { if(seen.has(d.id)) return false; seen.add(d.id); return true; })
     .map(d => ({
-      id:d.id, typ:d.typ, name:d.name, erstellt:d.erstellt||d.erstellt,
-      mimeType:d.mimeType, objektId:d.objektId||null
+      id:d.id, typ:d.typ, name:d.name, erstellt:d.erstellt||null,
+      mimeType:d.mimeType, objektId:d.objektId||null,
+      wohnungsplan: d.typ==='plan' && !d.mieterId
     }));
 }
 
@@ -10313,6 +10536,42 @@ async function archiviereMieterDokument({mieterId, objektId, typ, name, html, mi
     console.warn('Archivierung fehlgeschlagen:', e);
     return null;
   }
+}
+
+/* ═══════════════════════════════════════════════════════════
+   AUSHANG-ABLAGE: „Wohnung frei"-Aushang als wohnungsgebundenes
+   HTML-Dokument im 'dokumente'-Store. Anders als archiviereMieterDokument
+   NICHT mieterId-gebunden (mieterId:null) – der Aushang gehört zur Wohnung,
+   nicht zum (Vor-)Mieter. Wird daher von portalDokumenteFuerMieter NICHT
+   ans Mieterportal ausgeliefert (weder mieterbezogen noch typ 'plan').
+   Deterministische id pro Wohnung → erneute Erzeugung ersetzt den alten Aushang.
+═══════════════════════════════════════════════════════════ */
+async function archiviereAushangDokument({objektId, weNr, html, zimmerTitel}){
+  try{
+    const kennung = (typeof wohnungsKennung==='function') ? wohnungsKennung(objektId, weNr) : (objektId+'-WE'+weNr);
+    const id = 'aushang_' + kennung.replace(/\W/g,'_');
+    const obj = (typeof getObj==='function') ? getObj(objektId) : null;
+    const titel = 'Aushang „Wohnung frei" – ' + (zimmerTitel||'Wohnung') + (obj?.name?(' · '+obj.name):'');
+    const entry = {
+      id,
+      objektId: objektId || null,
+      mieterId: null,
+      weNr: String(weNr||''),
+      typ: 'aushang',
+      name: titel,
+      erstellt: now(),
+      ersteller: (typeof CU!=='undefined' && CU?.name) ? CU.name : '',
+      mimeType: 'text/html',
+      istHtml: true,
+      data: 'data:text/html;charset=utf-8,' + encodeURIComponent(html),
+      size: new Blob([html]).size,
+      geaendert: nowIso()
+    };
+    await idbPut('dokumente', entry);
+    clearTimeout(window._syncTimer);
+    window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
+    return id;
+  }catch(e){ console.warn('Aushang-Ablage fehlgeschlagen:', e); return null; }
 }
 
 // Archiviertes HTML-Dokument in neuem Fenster öffnen (Ansicht / Druck / Weiterleitung)
@@ -12944,19 +13203,25 @@ const PORTAL_TYP_LABEL = {
 };
 
 async function renderPortalFreigabe(){
-  const defs = await getPortalTypDefaults();
-  let h = '<div style="display:flex;flex-direction:column;gap:6px">';
-  PORTAL_DOK_TYPEN.forEach(typ=>{
-    const on = defs[typ]===true;
-    h += `<label style="display:flex;align-items:center;gap:10px;background:var(--white);border:1px solid var(--ink-10);border-radius:var(--radius);padding:10px 12px;cursor:pointer">
-      <input type="checkbox" ${on?'checked':''} onchange="onPortalTypToggle('${typ}',this.checked)" style="width:18px;height:18px;flex-shrink:0">
-      <span style="flex:1;font-size:13px;font-weight:600;color:var(--ink)">${PORTAL_TYP_LABEL[typ]||typ}</span>
-      <span style="font-size:11px;color:${on?'var(--success)':'var(--ink-40)'}">${on?'freigegeben':'gesperrt'}</span>
-    </label>`;
-  });
-  h += '</div>';
-  h += '<div style="font-size:11px;color:var(--ink-40);margin-top:8px;line-height:1.5"><i class="ti ti-info-circle"></i> Persönliche Schreiben und Mieterhöhungen sollten nur nach Prüfung im Einzelfall freigegeben werden. Eine generelle Freigabe gilt für alle Mieter und alle vorhandenen Dokumente dieses Typs.</div>';
-  return h;
+  // P8 – neue Freigabe-Politik (Default-Deny für sensible Daten, Auto-Frei für eigene Dokumente).
+  const autoTypen = PORTAL_DOK_TYPEN.map(t=>PORTAL_TYP_LABEL[t]||t).join(', ');
+  const sensTypen = PORTAL_DOK_SENSIBEL.map(t=>PORTAL_TYP_LABEL[t]||t).join(', ');
+  return `
+  <div style="font-size:13px;color:var(--ink);line-height:1.6">
+    <div style="background:var(--white);border:1px solid var(--ink-10);border-radius:var(--radius);padding:12px 14px;margin-bottom:8px">
+      <div style="font-weight:700;margin-bottom:6px"><i class="ti ti-lock-open" style="color:var(--success)"></i> Mit Token automatisch sichtbar</div>
+      <div style="font-size:12px;color:var(--ink-60)">Der angemeldete Mieter sieht alle ihn betreffenden Dokumente dieser Art: ${esc(autoTypen)}. Zusätzlich der Grundriss seiner Wohnung. Brief- und Vertragsentwürfe sind ausgeschlossen.</div>
+    </div>
+    <div style="background:var(--white);border:1px solid var(--ink-10);border-radius:var(--radius);padding:12px 14px;margin-bottom:8px">
+      <div style="font-weight:700;margin-bottom:6px"><i class="ti ti-shield-lock" style="color:var(--amber)"></i> Gesperrt (nur per Einzelfreigabe)</div>
+      <div style="font-size:12px;color:var(--ink-60)">${esc(sensTypen)} bleiben verborgen, bis du sie bei einem konkreten Dokument ausdrücklich freigibst (§ 20 PAuswG, Bankdaten).</div>
+    </div>
+    <div style="background:var(--white);border:1px solid var(--ink-10);border-radius:var(--radius);padding:12px 14px">
+      <div style="font-weight:700;margin-bottom:6px"><i class="ti ti-photo" style="color:var(--copper)"></i> Immer öffentlich (ohne Token)</div>
+      <div style="font-size:12px;color:var(--ink-60)">Grundrisse und Aushänge zur Wohnungsvermarktung – diese enthalten keine personenbezogenen Mieterdaten.</div>
+    </div>
+    <div style="font-size:11px;color:var(--ink-40);margin-top:10px;line-height:1.5"><i class="ti ti-info-circle"></i> Einzelne Dokumente kannst du in der jeweiligen Mieterakte gezielt freigeben oder sperren (Override). Vor dem Echtbetrieb des Mieterportals sollte das Datenschutzkonzept anwaltlich geprüft werden.</div>
+  </div>`;
 }
 
 async function onPortalTypToggle(typ, checked){
@@ -18556,6 +18821,10 @@ async function aushangErzeugen(objektId, weNr){
     energieHtml, qrSvg, datum, weNr
   });
 
+  // Aushang zusätzlich als wohnungsgebundenes Dokument ablegen (Objekt-Dokumente,
+  // abrufbar/weiterleitbar, gesynct). Nicht blockierend fürs Drucken.
+  archiviereAushangDokument({objektId, weNr, html, zimmerTitel});
+
   // Druckfenster öffnen
   const w = window.open('', '_blank');
   if(!w){ toast('Bitte Pop-ups erlauben, um den Aushang zu drucken.'); return; }
@@ -23927,6 +24196,50 @@ async function packlisteAnzahl(terminId){
   const items=await idbGetAll('packliste','terminId',terminId).catch(()=>[]);
   const offen=items.filter(i=>!i.erledigt).length;
   return { gesamt:items.length, offen };
+}
+
+/* ═══════════════════════════════════════════════════════════
+   PACKLISTEN ANSTEHENDER TERMINE – Übersicht im eigenen Fenster
+   (ersetzt den früheren Dashboard-Block; Button „Packliste" auf Start)
+═══════════════════════════════════════════════════════════ */
+async function modalPacklistenTermine(){
+  const myObj = await getMyObjekte();
+  const heute = today();
+  const kommendeTermine = (await idbGetAll('termine'))
+    .filter(t => t.datum && t.datum >= heute && t.status!=='abgesagt' && (!t.objektId || myObj.some(o=>o.id===t.objektId)))
+    .sort((a,b)=> a.datum.localeCompare(b.datum) || (a.uhrzeit||'').localeCompare(b.uhrzeit||''));
+  const mitPackliste = [];
+  for (const t of kommendeTermine) {
+    const pa = await packlisteAnzahl(t.id);
+    if (pa.gesamt > 0) mitPackliste.push({ t, pa });
+  }
+
+  let body;
+  if (!mitPackliste.length) {
+    body = `<div class="empty"><i class="ti ti-backpack"></i><p>Keine Packlisten für anstehende Termine.</p>
+      <div style="font-size:12px;color:var(--ink-40);margin-top:6px">Packlisten legst du beim jeweiligen Termin im Kalender an.</div></div>`;
+  } else {
+    body = mitPackliste.map(({t,pa})=>{
+      const obj = t.objektId ? getObj(t.objektId) : null;
+      const dat = new Date(t.datum+'T12:00:00').toLocaleDateString('de-DE',{weekday:'short',day:'numeric',month:'short'});
+      const fertig = pa.offen===0;
+      const c = fertig ? 'var(--green)' : 'var(--copper)';
+      return `<div style="display:flex;align-items:center;gap:8px;padding:11px 4px;border-bottom:1px solid var(--ink-10);cursor:pointer" onclick="closeModal();modalPackliste('${t.id}')">
+        <div style="width:7px;height:7px;border-radius:50%;background:${c};flex-shrink:0"></div>
+        <div style="flex:1;min-width:0">
+          <div style="font-size:14px;font-weight:600;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(t.titel||'Termin')}</div>
+          <div style="font-size:12px;color:var(--ink-40)">${dat}${obj?' · '+esc(obj.name):''}</div>
+        </div>
+        <span class="chip chip-${fertig?'ok':'warn'}" style="font-size:10px;padding:1px 7px;white-space:nowrap">${fertig?'komplett':pa.offen+' offen'} / ${pa.gesamt}</span>
+        <i class="ti ti-chevron-right" style="font-size:15px;color:var(--ink-40)"></i>
+      </div>`;
+    }).join('');
+  }
+
+  showModal(`
+    <div class="m-title"><i class="ti ti-backpack"></i> Packlisten anstehender Termine</div>
+    <div style="max-height:60vh;overflow:auto">${body}</div>
+    <button class="btn btn-full" style="margin-top:12px" onclick="closeModal()">Schließen</button>`);
 }
 
 /* ═══════════════════════════════════════════════════════════
