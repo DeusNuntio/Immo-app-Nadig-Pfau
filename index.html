@@ -792,7 +792,7 @@ body.printing-active #printRoot{display:block!important}
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=28;
-const APP_VERSION = '2026-06-23-v124';
+const APP_VERSION = '2026-06-24-v126';
 /* v94 (19.06.2026): Etappe 1 – Lokale Benachrichtigungen erweitert (Termine + Maengel).
    - checkFaelligeAufgaben() prueft jetzt zusaetzlich:
      a) Termin-Erinnerungen: Termine mit gesetztem Erinnerungs-Vorlauf (1/2/7 Tage)
@@ -1050,6 +1050,16 @@ const OBJ_MAP={
   'Zur Verlach 37':'verlach37','Amboßstr. 10':'amboss10','Marienburger Str. 22':'marien22',
 };
 const getObj=id=>OBJEKTE.find(o=>o.id===id);
+// Dashboard-Standortgruppierung (P1) – BEWUSST getrennt von 'gruppe' (steuert Briefköpfe!).
+// label=Standortname, einzeln=true -> als normale Objektkarte ohne Gruppen-Ebene.
+const DASH_GRUPPEN=[
+  {id:'DUS', label:'Düsseldorf',          objektIds:['ruhrt41','mind23','mind25']},
+  {id:'MG',  label:'Mönchengladbach',     objektIds:['kyff28','kyff30','kyff32']},
+  {id:'KR',  label:'Krefeld',             objektIds:['inr181','inr183','inr185','wilm7','wilm9','wilm11','wilm13']},
+  {id:'MON', label:'Monheim am Rhein',    objektIds:['marien22'], einzeln:true},
+  {id:'HIL', label:'Hilden',              objektIds:['verlach37'], einzeln:true},
+  {id:'AMB', label:'Amboßstr. 10',        objektIds:['amboss10'], einzeln:true},
+];
 const GRUPPE_LABEL={duesseldorf:'Düsseldorf',mg:'Mönchengladbach',krefeld:'Krefeld',monheim:'Monheim am Rhein',pfau:'Pfau (Amboßstr.)'};
 
 /* ═══════════════════════════════════════════════════════════
@@ -1485,7 +1495,6 @@ async function renderDash() {
     <button class="qa-btn" onclick="nav('branchenbuch')"><i class="ti ti-address-book"></i> Branchenbuch</button>
     <button class="qa-btn" onclick="modalMeinePackliste()"><i class="ti ti-backpack"></i> Meine Packliste</button>
     ${istVerwalter()?`<button class="qa-btn" onclick="nav('rechnungen')"><i class="ti ti-file-invoice"></i> Rechnungen</button>`:''}
-    ${istSystemAdmin()?`<button class="qa-btn" onclick="nav('settings')"><i class="ti ti-upload"></i> Excel-Import</button>`:''}
   </div>`;
 
   // Fällige Wartungsfristen
@@ -1542,23 +1551,61 @@ async function renderDash() {
     }
   }
 
-  // Dringende Punkte
-  const dringend = [...myAuf.filter(a=>a.prio==='hoch'), ...myMng.filter(m=>m.schwere==='schwerwiegend')];
+  // Dringende Punkte – mit Typ-Markierung für klickbare Navigation (P4)
+  const dringend = [
+    ...myAuf.filter(a=>a.prio==='hoch').map(a=>({...a,_typ:'aufgabe'})),
+    ...myMng.filter(m=>m.schwere==='schwerwiegend').map(m=>({...m,_typ:'mangel'}))
+  ];
   if (dringend.length) {
     html += `<div class="card" style="border-color:var(--red);margin-bottom:12px">
       <div class="card-hdr" style="color:var(--red)"><i class="ti ti-alert-triangle"></i> Dringend (${dringend.length})</div>
-      ${dringend.slice(0,3).map(d=>`<div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--ink-10)">
+      ${dringend.slice(0,3).map(d=>`<div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--ink-10);cursor:pointer" onclick="${d._typ==='mangel'?`showMangelDetail('${d.id}')`:`showAufgabeDetail('${d.id}')`}">
         <div style="width:6px;height:6px;border-radius:50%;background:var(--red);flex-shrink:0"></div>
         <div style="flex:1;font-size:13px;color:var(--ink)">${d.titel}</div>
         <div style="font-size:11px;color:var(--ink-40)">${getObj(d.objektId)?.name||''}</div>
+        <i class="ti ti-chevron-right" style="font-size:13px;color:var(--ink-40)"></i>
       </div>`).join('')}
       ${dringend.length>3?`<div style="font-size:12px;color:var(--ink-40);padding-top:6px;cursor:pointer" onclick="nav('aufgaben')">+${dringend.length-3} weitere anzeigen</div>`:''}
     </div>`;
   }
 
+  // Packlisten anstehender Termine (inkl. heute) – nur befüllte Listen, direkt bearbeitbar (P6)
+  {
+    const heute = today();
+    const kommendeTermine = (await idbGetAll('termine'))
+      .filter(t => t.datum && t.datum >= heute && t.status!=='abgesagt' && (!t.objektId || myObj.some(o=>o.id===t.objektId)))
+      .sort((a,b)=> a.datum.localeCompare(b.datum) || (a.uhrzeit||'').localeCompare(b.uhrzeit||''));
+    const mitPackliste = [];
+    for (const t of kommendeTermine) {
+      const pa = await packlisteAnzahl(t.id);
+      if (pa.gesamt > 0) mitPackliste.push({ t, pa });
+    }
+    if (mitPackliste.length) {
+      html += `<div class="card" style="margin-bottom:12px;border-color:var(--copper)">
+        <div class="card-hdr" style="color:var(--copper)"><i class="ti ti-backpack"></i> Packlisten anstehender Termine (${mitPackliste.length})</div>
+        ${mitPackliste.slice(0,5).map(({t,pa})=>{
+          const obj = t.objektId ? getObj(t.objektId) : null;
+          const dat = new Date(t.datum+'T12:00:00').toLocaleDateString('de-DE',{weekday:'short',day:'numeric',month:'short'});
+          const fertig = pa.offen===0;
+          const c = fertig ? 'var(--green)' : 'var(--copper)';
+          return `<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--ink-10);cursor:pointer" onclick="modalPackliste('${t.id}')">
+            <div style="width:6px;height:6px;border-radius:50%;background:${c};flex-shrink:0"></div>
+            <div style="flex:1;min-width:0">
+              <div style="font-size:13px;font-weight:600;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(t.titel||'Termin')}</div>
+              <div style="font-size:11px;color:var(--ink-40)">${dat}${obj?' · '+esc(obj.name):''}</div>
+            </div>
+            <span class="chip chip-${fertig?'ok':'warn'}" style="font-size:10px;padding:1px 7px;white-space:nowrap">${fertig?'komplett':pa.offen+' offen'} / ${pa.gesamt}</span>
+            <i class="ti ti-chevron-right" style="font-size:13px;color:var(--ink-40)"></i>
+          </div>`;
+        }).join('')}
+        ${mitPackliste.length>5?`<div style="font-size:12px;color:var(--ink-40);padding-top:6px;cursor:pointer" onclick="nav('kalender')">+${mitPackliste.length-5} weitere im Kalender</div>`:''}
+      </div>`;
+    }
+  }
+
   // Letzte Protokolle
   // Offene Entwürfe
-  const drafts = prots.filter(p=>myObj.some(o=>o.id===p.objektId)&&p.status==='draft')
+  const drafts = prots.filter(p=>!p._papierkorb&&myObj.some(o=>o.id===p.objektId)&&p.status==='draft')
     .sort((a,b)=>new Date(b.erstellt)-new Date(a.erstellt));
   if (drafts.length) {
     html += `<div class="card" style="margin-bottom:12px;border-color:var(--amber)">
@@ -1572,7 +1619,7 @@ async function renderDash() {
   }
 
   const lastProts = prots
-    .filter(p=>myObj.some(o=>o.id===p.objektId)&&p.status!=='draft')
+    .filter(p=>!p._papierkorb&&myObj.some(o=>o.id===p.objektId)&&p.status!=='draft')
     .sort((a,b)=>new Date(b.erstellt)-new Date(a.erstellt))
     .slice(0,3);
   if (lastProts.length) {
@@ -1588,33 +1635,88 @@ async function renderDash() {
 
   // Objekte
   html += `<div class="s-hdr"><div class="s-title">Meine Objekte</div></div>`;
-  const gruppen = {};
-  myObj.forEach(o => { if(!gruppen[o.nr]) gruppen[o.nr]=[]; gruppen[o.nr].push(o); });
-  for (const nr of Object.keys(gruppen).sort()) {
-    for (const obj of gruppen[nr]) {
-      const cnt    = myMieter.filter(m=>m.objektId===obj.id).length;
-      const aufCnt = myAuf.filter(a=>a.objektId===obj.id).length;
-      const mngCnt = myMng.filter(m=>m.objektId===obj.id).length;
-      const hoch   = myAuf.filter(a=>a.objektId===obj.id&&a.prio==='hoch').length;
-      html += `<div class="obj-card" onclick="showObjekt('${obj.id}')">
-        <div class="obj-icon ${obj.color}"><i class="ti ti-building"></i></div>
+
+  // Objektkarte als HTML (P1 – wiederverwendbar für Gruppen & Einzelobjekte)
+  const objCardHtml = (obj) => {
+    const cnt    = myMieter.filter(m=>m.objektId===obj.id).length;
+    const aufCnt = myAuf.filter(a=>a.objektId===obj.id).length;
+    const mngCnt = myMng.filter(m=>m.objektId===obj.id).length;
+    const hoch   = myAuf.filter(a=>a.objektId===obj.id&&a.prio==='hoch').length;
+    return `<div class="obj-card" onclick="showObjekt('${obj.id}')">
+      <div class="obj-icon ${obj.color}"><i class="ti ti-building"></i></div>
+      <div class="obj-body">
+        <div class="obj-name">${obj.name}</div>
+        <div class="obj-meta">${obj.ort}</div>
+        <div class="obj-chips">
+          <span class="chip chip-gray">${cnt} Mieter</span>
+          ${hoch?`<span class="chip chip-err"><i class="ti ti-alert-triangle" style="font-size:10px"></i> ${hoch} dringend</span>`:''}
+          ${aufCnt?`<span class="chip chip-warn">${aufCnt} Aufgabe${aufCnt!==1?'n':''}</span>`:''}
+          ${mngCnt?`<span class="chip chip-err">${mngCnt} Mangel${mngCnt!==1?'':''}</span>`:''}
+          ${!aufCnt&&!mngCnt?'<span class="chip chip-ok">Alles OK</span>':''}
+        </div>
+      </div>
+      <i class="ti ti-chevron-right" style="color:var(--ink-20);font-size:20px;flex-shrink:0"></i>
+    </div>`;
+  };
+
+  const myObjIds = new Set(myObj.map(o=>o.id));
+
+  if (!istVerwalter()) {
+    // Hausmeister: keine Standort-Ebene, Objekte direkt (nach nr sortiert)
+    [...myObj].sort((a,b)=>a.nr-b.nr).forEach(obj => { html += objCardHtml(obj); });
+  } else {
+    // Verwalter: Standortgruppen mit summierten Zählern; DUS/MG/KR aufklappbar, Einzelobjekte direkt
+    window._dashGrpOffen = window._dashGrpOffen || {};
+    for (const grp of DASH_GRUPPEN) {
+      const objs = grp.objektIds.map(getObj).filter(o => o && myObjIds.has(o.id));
+      if (!objs.length) continue;
+
+      if (grp.einzeln && objs.length === 1) {
+        html += objCardHtml(objs[0]);
+        continue;
+      }
+
+      // Summen über die Gruppe
+      const mietSum = objs.reduce((n,o)=>n+myMieter.filter(m=>m.objektId===o.id).length,0);
+      const aufSum  = objs.reduce((n,o)=>n+myAuf.filter(a=>a.objektId===o.id).length,0);
+      const mngSum  = objs.reduce((n,o)=>n+myMng.filter(m=>m.objektId===o.id).length,0);
+      const hochSum = objs.reduce((n,o)=>n+myAuf.filter(a=>a.objektId===o.id&&a.prio==='hoch').length,0);
+      const offen   = !!window._dashGrpOffen[grp.id];
+
+      html += `<div class="obj-card" style="cursor:pointer" onclick="dashGrpToggle('${grp.id}')">
+        <div class="obj-icon" style="background:var(--ink-05);color:var(--ink-60)"><i class="ti ti-map-pin"></i></div>
         <div class="obj-body">
-          <div class="obj-name">${obj.name}</div>
-          <div class="obj-meta">${obj.ort}</div>
+          <div class="obj-name">${esc(grp.label)} <span style="font-weight:500;color:var(--ink-40);font-size:13px">· ${objs.length} Objekte</span></div>
           <div class="obj-chips">
-            <span class="chip chip-gray">${cnt} Mieter</span>
-            ${hoch?`<span class="chip chip-err"><i class="ti ti-alert-triangle" style="font-size:10px"></i> ${hoch} dringend</span>`:''}
-            ${aufCnt?`<span class="chip chip-warn">${aufCnt} Aufgabe${aufCnt!==1?'n':''}</span>`:''}
-            ${mngCnt?`<span class="chip chip-err">${mngCnt} Mangel${mngCnt!==1?'':''}</span>`:''}
-            ${!aufCnt&&!mngCnt?'<span class="chip chip-ok">Alles OK</span>':''}
+            <span class="chip chip-gray">${mietSum} Mieter</span>
+            ${hochSum?`<span class="chip chip-err"><i class="ti ti-alert-triangle" style="font-size:10px"></i> ${hochSum} dringend</span>`:''}
+            ${aufSum?`<span class="chip chip-warn">${aufSum} Aufgabe${aufSum!==1?'n':''}</span>`:''}
+            ${mngSum?`<span class="chip chip-err">${mngSum} Mangel${mngSum!==1?'':''}</span>`:''}
+            ${!aufSum&&!mngSum?'<span class="chip chip-ok">Alles OK</span>':''}
           </div>
         </div>
-        <i class="ti ti-chevron-right" style="color:var(--ink-20);font-size:20px;flex-shrink:0"></i>
+        <i class="ti ti-chevron-${offen?'down':'right'}" style="color:var(--ink-40);font-size:20px;flex-shrink:0"></i>
+      </div>
+      <div id="dashGrp-${grp.id}" style="display:${offen?'block':'none'};padding-left:10px;border-left:2px solid var(--ink-10);margin:2px 0 8px 14px">
+        ${objs.map(o=>objCardHtml(o)).join('')}
       </div>`;
     }
   }
   el.innerHTML = html;
   stempelTimerStart();
+}
+
+// P1 – Standortgruppe auf dem Dashboard auf-/zuklappen (ohne Full-Re-Render)
+function dashGrpToggle(grpId){
+  window._dashGrpOffen = window._dashGrpOffen || {};
+  const offen = !window._dashGrpOffen[grpId];
+  window._dashGrpOffen[grpId] = offen;
+  const box = document.getElementById('dashGrp-'+grpId);
+  if(box) box.style.display = offen ? 'block' : 'none';
+  // Chevron des zugehörigen Gruppen-Headers drehen
+  const head = box ? box.previousElementSibling : null;
+  const chev = head ? head.querySelector('i.ti[class*="chevron"]') : null;
+  if(chev){ chev.className = 'ti ti-chevron-'+(offen?'down':'right'); chev.style.color='var(--ink-40)'; chev.style.fontSize='20px'; chev.style.flexShrink='0'; }
 }
 
 
@@ -8748,7 +8850,7 @@ async function renderObjMaengel(el){
   else{
     const alle=[...maengel,...reps];
     const istErl=x=>x.status==='behoben'||x.status==='erledigt';
-    const offen=alle.filter(x=>!istErl(x)).sort((a,b)=>new Date(b.erstellt)-new Date(a.erstellt));
+    const offen=alle.filter(x=>!istErl(x)).sort((a,b)=>schwerePrio(a.schwere)-schwerePrio(b.schwere) || new Date(b.erstellt)-new Date(a.erstellt));
     const erl  =alle.filter(istErl).sort((a,b)=>new Date(b.erstellt)-new Date(a.erstellt));
     offen.forEach(m=>h+=mangelHTML(m));
     if(erl.length){
@@ -9000,7 +9102,7 @@ async function showMieter(id){
   const _stamm=(await idbGet('objekt_stamm',m.objektId).catch(()=>null))||{};
   const aufgaben=(await idbGetAll('aufgaben')).filter(a=>a.mieterId===id&&a.status!=='erledigt');
   const maengel=(await idbGetAll('maengel')).filter(x=>x.mieterId===id&&x.status!=='behoben');
-  const prots=(await idbGetAll('protokolle')).filter(p=>p.mieterId===id);
+  const prots=(await idbGetAll('protokolle')).filter(p=>!p._papierkorb&&p.mieterId===id);
   const tg=m.tgNr?(await idbGet('tg',m.tgNr).catch(()=>null)):null;
   const ini=initials(m.mieter);
   const el=document.getElementById('page-mieter');
@@ -9518,7 +9620,7 @@ async function renderAufgaben(){
   <div id="auf-maengel" style="display:none">`;
   if(!maengel.length){h+=`<div class="empty"><i class="ti ti-mood-smile"></i><p>Keine Mängel erfasst</p></div>`;}
   else {
-    offMng.sort((a,b)=>new Date(b.erstellt)-new Date(a.erstellt)).forEach(m=>h+=mangelHTML(m));
+    offMng.sort((a,b)=>schwerePrio(a.schwere)-schwerePrio(b.schwere) || new Date(b.erstellt)-new Date(a.erstellt)).forEach(m=>h+=mangelHTML(m));
     if(erlMng.length && !flt.hideDone){
       h+=`<div class="s-hdr" style="margin-top:16px"><div class="s-title" style="font-size:14px;color:var(--ink-40)">Behoben (${erlMng.length})</div></div>`;
       erlMng.sort((a,b)=>new Date(b.erstellt)-new Date(a.erstellt)).forEach(m=>h+=mangelHTML(m));
@@ -12434,13 +12536,21 @@ ${briefeHTML}
 }
 
 async function renderProtokollArchiv() {
+  await bereinigeProtokollPapierkorb(); // P3: alte Papierkorb-Einträge automatisch entfernen
   const myObj  = await getMyObjekte();
   const myIds  = myObj.map(o=>o.id);
-  const alle   = (await idbGetAll('protokolle'))
-    .filter(p => myIds.includes(p.objektId) && p.status !== 'draft')
+  const proAlle= (await idbGetAll('protokolle')).filter(p => myIds.includes(p.objektId));
+  // P3: Papierkorb-Einträge (für alle sichtbar) getrennt führen
+  const imPapierkorb = proAlle.filter(p => p._papierkorb);
+  const alle   = proAlle
+    .filter(p => !p._papierkorb && p.status !== 'draft')
     .sort((a,b) => new Date(b.datum||b.erstellt) - new Date(a.datum||a.erstellt));
 
   const el = document.getElementById('page-protokoll-archiv');
+
+  // P3: Ansicht-Umschalter (Protokolle / Papierkorb)
+  const ansicht = window._archivAnsicht || 'liste';
+  if (ansicht === 'papierkorb') { renderProtokollPapierkorb(el, imPapierkorb); return; }
 
   // Filter-Status
   const filterObjId = window._archivFilter?.objId || 'all';
@@ -12462,6 +12572,10 @@ async function renderProtokollArchiv() {
   const anzZwischen = gefiltert.filter(p=>(p.art||'').includes('Zwischen')).length;
 
   let h = `
+  <div class="tab-bar" style="margin-bottom:12px">
+    <button class="tab-btn active" onclick="setArchivAnsicht('liste')">Protokolle (${alle.length})</button>
+    <button class="tab-btn" onclick="setArchivAnsicht('papierkorb')"><i class="ti ti-trash"></i> Papierkorb${imPapierkorb.length?' ('+imPapierkorb.length+')':''}</button>
+  </div>
   <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:14px">
     <div class="stat"><div class="stat-n" style="font-size:22px">${anzAuszug}</div><div class="stat-l">Auszüge</div></div>
     <div class="stat"><div class="stat-n" style="font-size:22px">${anzEinzug}</div><div class="stat-l">Einzüge</div></div>
@@ -12566,19 +12680,128 @@ function setArchivFilter(key, val, btn) {
   renderProtokollArchiv();
 }
 
+// P3 – zwischen Protokoll-Liste und Papierkorb umschalten
+function setArchivAnsicht(v){ window._archivAnsicht = v; renderProtokollArchiv(); }
+
+// P3 – Papierkorb-Ansicht: für alle sichtbar, Wiederherstellen + endgültig löschen
+function renderProtokollPapierkorb(el, eintraege){
+  const liste = [...eintraege].sort((a,b)=> new Date(b.geloeschtAm||0) - new Date(a.geloeschtAm||0));
+  let h = `
+  <div class="tab-bar" style="margin-bottom:12px">
+    <button class="tab-btn" onclick="setArchivAnsicht('liste')">Protokolle</button>
+    <button class="tab-btn active" onclick="setArchivAnsicht('papierkorb')"><i class="ti ti-trash"></i> Papierkorb${liste.length?' ('+liste.length+')':''}</button>
+  </div>
+  <div style="font-size:12px;color:var(--ink-60);background:var(--ink-05);border-radius:8px;padding:9px 11px;margin-bottom:12px;display:flex;align-items:flex-start;gap:8px">
+    <i class="ti ti-info-circle" style="color:var(--copper);font-size:15px;flex-shrink:0;margin-top:1px"></i>
+    <div>Gelöschte Protokolle bleiben ${PAPIERKORB_TAGE} Tage hier und werden danach automatisch endgültig entfernt. Bis dahin kannst du sie wiederherstellen.</div>
+  </div>`;
+
+  if (!liste.length) {
+    h += `<div class="empty"><i class="ti ti-trash-off"></i><p>Der Papierkorb ist leer.</p></div>`;
+    el.innerHTML = h; return;
+  }
+
+  liste.forEach(p => {
+    const obj = getObj(p.objektId);
+    const geloescht = p.geloeschtAm ? new Date(p.geloeschtAm) : null;
+    const restTage = geloescht ? Math.max(0, PAPIERKORB_TAGE - Math.floor((Date.now()-geloescht.getTime())/86400000)) : PAPIERKORB_TAGE;
+    h += `<div style="background:var(--white);border:1px solid var(--ink-10);border-radius:var(--radius);
+      padding:11px 13px;margin-bottom:7px;display:flex;gap:10px;align-items:center">
+      <div style="width:8px;height:8px;border-radius:50%;background:var(--ink-20);flex-shrink:0"></div>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:14px;font-weight:600;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
+          ${p.mieterName||'–'} · WE ${p.weNr||'?'}
+        </div>
+        <div style="font-size:12px;color:var(--ink-40);margin-top:2px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <span>${obj?.name||p.objektName||'–'}</span>
+          <span>${fmtDate(p.datum)}</span>
+          <span class="chip chip-gray" style="font-size:10px;padding:1px 6px">${p.art||'Übergabe'}</span>
+          <span class="chip ${restTage<=3?'chip-err':'chip-warn'}" style="font-size:10px;padding:1px 6px">noch ${restTage} Tag${restTage!==1?'e':''}</span>
+        </div>
+      </div>
+      <div style="display:flex;gap:5px;flex-shrink:0">
+        <button class="btn btn-sm" onclick="protokollWiederherstellen('${p.id}')" title="Wiederherstellen">
+          <i class="ti ti-rotate-ccw"></i>
+        </button>
+        <button class="btn btn-sm btn-danger" onclick="protokollEndgueltigLoeschen('${p.id}')" title="Endgültig löschen">
+          <i class="ti ti-trash-x"></i>
+        </button>
+      </div>
+    </div>`;
+  });
+  el.innerHTML = h;
+}
+
+const PAPIERKORB_TAGE = 14; // Aufbewahrung im Papierkorb, dann automatisch endgültig gelöscht (P3)
+
+// P3 – Soft-Delete: Protokoll in den Papierkorb verschieben (statt hart löschen).
+// Fotos bleiben erhalten, bis das Protokoll endgültig gelöscht wird.
 async function deleteProtokoll(id) {
-  if (!confirm('Protokoll wirklich löschen?')) return;
-  await idbDelete('protokolle', id);
-  // verknüpfte Einzelfoto-Sicherungen mit entfernen
-  try {
-    const tmp = await idbGetAll('fotos', 'protId', id);
-    for (const fo of tmp) await idbDelete('fotos', fo.id).catch(()=>{});
-  } catch(e) { console.warn('Foto-Aufräumung (Löschung):', e); }
+  if (!confirm('Protokoll in den Papierkorb verschieben?\n\nEs wird nach ' + PAPIERKORB_TAGE + ' Tagen automatisch endgültig gelöscht und kann bis dahin wiederhergestellt werden.')) return;
+  const p = await idbGet('protokolle', id);
+  if (!p) return;
+  p._papierkorb = true;
+  p.geloeschtAm = nowIso();
+  p.geaendert   = nowIso(); // aktueller Stempel, damit der Papierkorb-Status sauber über Geräte synct
+  await idbPut('protokolle', p);
   clearTimeout(window._syncTimer);
   window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
   await renderProtokollArchiv();
   await renderDash();
-  toast('Protokoll gelöscht');
+  toast('Protokoll in den Papierkorb verschoben');
+}
+
+// P3 – Protokoll aus dem Papierkorb wiederherstellen
+async function protokollWiederherstellen(id) {
+  const p = await idbGet('protokolle', id);
+  if (!p) return;
+  delete p._papierkorb;
+  delete p.geloeschtAm;
+  p.geaendert = nowIso();
+  await idbPut('protokolle', p);
+  clearTimeout(window._syncTimer);
+  window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
+  await renderProtokollArchiv();
+  await renderDash();
+  toast('Protokoll wiederhergestellt ✓');
+}
+
+// P3 – Protokoll endgültig löschen (mit Tombstone, damit es per Sync nicht zurückkehrt)
+async function protokollEndgueltigLoeschen(id) {
+  if (!confirm('Protokoll ENDGÜLTIG löschen?\n\nDies kann nicht rückgängig gemacht werden.')) return;
+  // verknüpfte Einzelfoto-Sicherungen mit entfernen
+  try {
+    const tmp = await idbGetAll('fotos', 'protId', id);
+    for (const fo of tmp) await idbDelete('fotos', fo.id).catch(()=>{});
+  } catch(e) { console.warn('Foto-Aufräumung (endgültige Löschung):', e); }
+  await deleteMitTombstone('protokolle', id);
+  clearTimeout(window._syncTimer);
+  window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
+  await renderProtokollArchiv();
+  await renderDash();
+  toast('Protokoll endgültig gelöscht');
+}
+
+// P3 – Papierkorb aufräumen: Protokolle älter als PAPIERKORB_TAGE endgültig (mit Tombstone) löschen.
+// Idempotent; wird beim Öffnen des Archivs aufgerufen.
+async function bereinigeProtokollPapierkorb() {
+  try {
+    const grenze = Date.now() - PAPIERKORB_TAGE*86400000;
+    const alle = await idbGetAll('protokolle');
+    let n = 0;
+    for (const p of alle) {
+      if (!p || !p._papierkorb || !p.geloeschtAm) continue;
+      const t = new Date(p.geloeschtAm).getTime();
+      if (isNaN(t) || t > grenze) continue;
+      try {
+        const fotos = await idbGetAll('fotos', 'protId', p.id);
+        for (const fo of fotos) await idbDelete('fotos', fo.id).catch(()=>{});
+      } catch(e) {}
+      await deleteMitTombstone('protokolle', p.id);
+      n++;
+    }
+    if (n) console.log('Papierkorb bereinigt:', n, 'Protokoll(e) endgültig gelöscht');
+  } catch(e) { console.warn('Papierkorb-Bereinigung:', e); }
 }
 
 
@@ -13781,7 +14004,7 @@ async function mvRenderSchluessel(){
     if(w && w.schluessel && Object.values(w.schluessel).some(n=>Number(n)>0)){ soll=w.schluessel; quelle='Wohnungsdatenbank'; }
     else {
       try{
-        const prots=(await idbGetAll('protokolle')).filter(p=>p.objektId===objektId && String(p.weNr)===String(weNr) && p.schluessel);
+        const prots=(await idbGetAll('protokolle')).filter(p=>!p._papierkorb && p.objektId===objektId && String(p.weNr)===String(weNr) && p.schluessel);
         prots.sort((a,b)=>new Date(b.datum||0)-new Date(a.datum||0));
         if(prots[0] && prots[0].schluessel){ soll=prots[0].schluessel; quelle='letztes Übergabeprotokoll'; }
       }catch(_){}
@@ -16697,7 +16920,7 @@ async function runGlobalSearch(q) {
     });
 
     // Protokolle
-    (await idbGetAll('protokolle')).filter(p=>myIds.includes(p.objektId)).forEach(p=>{
+    (await idbGetAll('protokolle')).filter(p=>!p._papierkorb&&myIds.includes(p.objektId)).forEach(p=>{
       if ((p.mieterName+' '+p.objektName+' WE '+(p.weNr||'')).toLowerCase().includes(ql))
         results.push({type:'protokoll', icon:'ti-clipboard-check', color:'var(--green)', label:(p.mieterName||'–')+' · WE '+(p.weNr||'?'), sub:p.objektName+' · '+fmtDate(p.datum), action:`closeModal();editProtokoll('${p.id}')`, id:p.id});
     });
@@ -16938,11 +17161,55 @@ async function kalDayClick(dateStr) {
   const myIds  = myObj.map(o=>o.id);
   const termine= (await idbGetAll('termine')).filter(t=>t.datum===dateStr&&(!t.objektId||myIds.includes(t.objektId))&&t.status!=='abgesagt');
   const d = new Date(dateStr+'T12:00:00').toLocaleDateString('de-DE',{weekday:'long',day:'numeric',month:'long'});
-  if (!termine.length) { modalAddTermin(dateStr); return; }
+
+  // Feiertag/Sondertag dieses Tages (P2)
+  const ftName = freierTagName(dateStr);
+
+  // Geburtstage dieses Tages (P2): Monat+Tag der lebenden Bewohner abgleichen
+  const mmdd = dateStr.slice(5); // 'MM-DD'
+  let geburtstage = [];
+  try {
+    const mieterAlle = (await idbGetAll('mieter')).filter(m=>!m._vormieter && myIds.includes(m.objektId));
+    for(const m of mieterAlle){
+      const personen=(m.personen_liste||[]).filter(p=>p&&p.name&&p.geburtsdatum&&!p.verstorben);
+      for(const p of personen){
+        const g=new Date(p.geburtsdatum); if(isNaN(g)) continue;
+        const pm=String(g.getMonth()+1).padStart(2,'0');
+        const pd=String(g.getDate()).padStart(2,'0');
+        if(pm+'-'+pd!==mmdd) continue;
+        const jahr=Number(dateStr.slice(0,4));
+        const alter=jahr - g.getFullYear();
+        const obj=getObj(m.objektId);
+        geburtstage.push({name:p.name, alter:(alter>0&&alter<130?alter:null), info:(obj?.name||'')+(m.weNr?' · WE '+m.weNr:'')});
+      }
+    }
+  } catch(e){ console.warn('Geburtstage Tagesklick:',e); }
+
+  // Info-Blöcke für Feiertag/Geburtstage
+  let anlassHtml = '';
+  if(ftName){
+    anlassHtml += `<div style="display:flex;align-items:center;gap:8px;background:var(--amber-l,#fdf6e7);border:1px solid var(--amber,#b7791f);border-radius:8px;padding:9px 11px;margin-bottom:8px">
+      <i class="ti ti-confetti" style="color:var(--amber,#b7791f);font-size:17px;flex-shrink:0"></i>
+      <div style="font-size:13px;font-weight:600;color:var(--amber,#b7791f)">${esc(ftName)}</div></div>`;
+  }
+  for(const gb of geburtstage){
+    anlassHtml += `<div style="display:flex;align-items:center;gap:8px;background:#fbeef4;border:1px solid #c2557f;border-radius:8px;padding:9px 11px;margin-bottom:8px">
+      <span style="font-size:17px;flex-shrink:0">🎂</span>
+      <div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600;color:#a23e68">${esc(gb.name)}${gb.alter?' ('+gb.alter+' Jahre)':''}</div>
+      ${gb.info?`<div style="font-size:11px;color:var(--ink-40)">${esc(gb.info)}</div>`:''}</div></div>`;
+  }
+
+  // Wenn weder echte Termine noch Anlässe -> direkt neuen Termin anlegen
+  if (!termine.length && !anlassHtml) { modalAddTermin(dateStr); return; }
+
+  const termineHtml = termine.length
+    ? termine.sort((a,b)=>a.uhrzeit?.localeCompare(b.uhrzeit||'')).map(t=>terminHTML(t)).join('')
+    : '';
 
   showModal(`
     <div class="m-title"><i class="ti ti-calendar-event"></i> ${d}</div>
-    ${termine.sort((a,b)=>a.uhrzeit?.localeCompare(b.uhrzeit||'')).map(t=>terminHTML(t)).join('')}
+    ${anlassHtml}
+    ${termineHtml}
     <button class="btn btn-copper btn-full" style="margin-top:10px" onclick="closeModal();modalAddTermin('${dateStr}')">
       <i class="ti ti-plus"></i> Neuer Termin an diesem Tag
     </button>
@@ -17679,7 +17946,7 @@ async function mieterZuVormieter(alt, neu) {
   alt.auszug = alt.auszug || neu.einzug;
   // Neue Adresse aus letztem Protokoll des alten Mieters ziehen
   try {
-    const prots = (await idbGetAll('protokolle')).filter(p=>p.mieterId===alt.id);
+    const prots = (await idbGetAll('protokolle')).filter(p=>!p._papierkorb&&p.mieterId===alt.id);
     const letzt = prots.sort((a,b)=>new Date(b.datum||0)-new Date(a.datum||0))[0];
     const adr = letzt?.neueAdresse || letzt?.neue_anschrift || letzt?.mieterNeueAdresse;
     if (adr && !alt.neueAdresse) alt.neueAdresse = adr;
@@ -19505,7 +19772,7 @@ async function startProt(){
   closeModal();
   // Prüfe ob bereits ein Draft für dieses Objekt/Mieter existiert
   const bestehendeDrafts=(await idbGetAll('protokolle'))
-    .filter(p=>p.status==='draft'&&p.objektId===objId&&(p.mieterId===mietId||(!p.mieterId&&!mietId)));
+    .filter(p=>!p._papierkorb&&p.status==='draft'&&p.objektId===objId&&(p.mieterId===mietId||(!p.mieterId&&!mietId)));
   if(bestehendeDrafts.length>0){
     const draft=bestehendeDrafts.sort((a,b)=>new Date(b.erstellt)-new Date(a.erstellt))[0];
     const step=draft._draftStep||0;
@@ -23206,6 +23473,7 @@ function initials(name){
   return (name||'').split(/[\s,]+/).filter(Boolean).map(w=>w[0]).slice(0,2).join('').toUpperCase()||'?';
 }
 function prioPrio(p){return p==='hoch'?0:p==='mittel'?1:2;}
+function schwerePrio(sw){return sw==='schwerwiegend'?0:sw==='mittel'?1:2;}
 function toast(msg,dur=2400){
   const t=document.getElementById('toastEl');
   t.textContent=msg;t.classList.add('show');
