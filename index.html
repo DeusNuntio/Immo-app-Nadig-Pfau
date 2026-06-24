@@ -794,7 +794,7 @@ body.printing-active #printRoot{display:block!important}
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=28;
-const APP_VERSION = '2026-06-24-v135';
+const APP_VERSION = '2026-06-25-v136';
 /* v94 (19.06.2026): Etappe 1 – Lokale Benachrichtigungen erweitert (Termine + Maengel).
    - checkFaelligeAufgaben() prueft jetzt zusaetzlich:
      a) Termin-Erinnerungen: Termine mit gesetztem Erinnerungs-Vorlauf (1/2/7 Tage)
@@ -2204,7 +2204,7 @@ function zsFotoVorschau(dataUrl){
 
 // Zählerstand-Foto über das robuste In-App-Kamera-Overlay (kein PWA-Reload)
 function openCamZaehlerstand(){
-  pPhotoRoom=null; window._zaehlerIdx=null; window._mangelPhotos=null;
+  pPhotoRoom=null;pPhotoCond=null; window._zaehlerIdx=null; window._mangelPhotos=null;
   window._lagerCamActive=false; window._mangelEditCamActive=false;
   window._zsCamActive=true;
   if(typeof openCam==='function'){ openCam(); }
@@ -7197,7 +7197,7 @@ async function onLagerFoto(input){
 // Lager-Foto über das robuste In-App-Kamera-Overlay (getUserMedia, kein PWA-Reload)
 function openCamLager(){
   // konkurrierende Foto-Kontexte zurücksetzen, damit processPhoto den Lager-Zweig nimmt
-  pPhotoRoom=null;
+  pPhotoRoom=null;pPhotoCond=null;
   window._zaehlerIdx=null;
   window._mangelPhotos=null;
   window._lagerCamActive=true;
@@ -8968,22 +8968,54 @@ async function renderObjMieter(el){
 
 async function renderObjProtokolle(el){
   const prots=(await idbGetAll('protokolle','objektId',currentObjId))
+    .filter(p=>!p._papierkorb)
     .sort((a,b)=>new Date(b.datum)-new Date(a.datum));
   let h=`<button class="btn btn-copper btn-full" style="margin-bottom:12px" onclick="newProtokollForObj('${currentObjId}')">
     <i class="ti ti-plus"></i> Neues Protokoll
   </button>`;
-  if(!prots.length){h+='<div class="empty"><i class="ti ti-clipboard"></i><p>Noch keine Protokolle</p></div>';}
-  else prots.forEach(p=>{
-    h+=`<div class="prot-item" onclick="editProtokoll('${p.id}')">
-      <div class="prot-icon"><i class="ti ti-clipboard-check"></i></div>
-      <div class="prot-body">
-        <div class="prot-title">${p.mieterName||'–'} · WE ${p.weNr||'?'}</div>
-        <div class="prot-sub">${fmtDate(p.datum)} · <span class="chip chip-${p.art?.includes('Auszug')?'warn':'ok'}" style="font-size:10px;padding:1px 6px">${p.art||'Übergabe'}</span></div>
-      </div>
-      <button class="btn btn-sm" onclick="event.stopPropagation();printProt('${p.id}')"><i class="ti ti-printer"></i></button>
-    </div>`;
-  });
+  const drafts=prots.filter(p=>p.status==='draft');
+  const fertig=prots.filter(p=>p.status!=='draft');
+  if(!prots.length){ h+='<div class="empty"><i class="ti ti-clipboard"></i><p>Noch keine Protokolle</p></div>'; }
+  if(drafts.length){
+    h+=`<div class="card-hdr" style="color:var(--amber);margin:4px 0 8px"><i class="ti ti-clipboard"></i> Angefangene Entwürfe (${drafts.length})</div>`;
+    drafts.forEach(p=>{
+      h+=`<div class="prot-item" style="border-left:3px solid var(--amber)" onclick="editProtokoll('${p.id}')">
+        <div class="prot-icon"><i class="ti ti-clipboard"></i></div>
+        <div class="prot-body">
+          <div class="prot-title">${p.mieterName||'(kein Mieter)'} · WE ${p.weNr||'?'}</div>
+          <div class="prot-sub">${fmtDate(p.datum)} · <span class="chip chip-warn" style="font-size:10px;padding:1px 6px">Entwurf · Schritt ${(p._draftStep||0)+1}</span> · ${p.art||'Übergabe'}</div>
+        </div>
+        <button class="btn btn-sm btn-danger" title="Entwurf löschen" onclick="event.stopPropagation();loescheProtEntwurf('${p.id}')"><i class="ti ti-trash"></i></button>
+      </div>`;
+    });
+  }
+  if(fertig.length){
+    if(drafts.length) h+=`<div class="card-hdr" style="margin:14px 0 8px"><i class="ti ti-clipboard-check"></i> Abgeschlossen (${fertig.length})</div>`;
+    fertig.forEach(p=>{
+      h+=`<div class="prot-item" onclick="editProtokoll('${p.id}')">
+        <div class="prot-icon"><i class="ti ti-clipboard-check"></i></div>
+        <div class="prot-body">
+          <div class="prot-title">${p.mieterName||'–'} · WE ${p.weNr||'?'}</div>
+          <div class="prot-sub">${fmtDate(p.datum)} · <span class="chip chip-${p.art?.includes('Auszug')?'warn':'ok'}" style="font-size:10px;padding:1px 6px">${p.art||'Übergabe'}</span></div>
+        </div>
+        <button class="btn btn-sm" onclick="event.stopPropagation();printProt('${p.id}')"><i class="ti ti-printer"></i></button>
+      </div>`;
+    });
+  }
   el.innerHTML=h;
+}
+
+// Angefangenen Protokoll-Entwurf in den Papierkorb verschieben (mit Bestätigung).
+async function loescheProtEntwurf(id){
+  const p=await idbGet('protokolle',id); if(!p) return;
+  if(!confirm(`Angefangenen Entwurf „${p.mieterName||'ohne Mieter'} · WE ${p.weNr||'?'}" wirklich löschen?\n\nEr wird in den Papierkorb verschoben und kann dort wiederhergestellt werden.`)) return;
+  p._papierkorb=true; p.geloeschtAm=now();
+  await idbPut('protokolle',p);
+  bcSend('protokoll_saved',{id});
+  toast('Entwurf in den Papierkorb verschoben ✓');
+  if(curPage==='objekt') await renderObjTab('protokolle');
+  clearTimeout(window._syncTimer);
+  window._syncTimer=setTimeout(()=>syncToOneDrive(),2000);
 }
 
 async function renderObjAufgaben(el){
@@ -9736,8 +9768,14 @@ async function renderAufgaben(){
     if(lgObjIds) return lgObjIds.includes(x.objektId);
     return myIds.includes(x.objektId);
   }
+  // Aufgaben-Filter lässt objektübergreifende "Allgemein"-Aufgaben durch,
+  // solange nicht bewusst auf ein einzelnes Objekt/Standort gefiltert wird.
+  function passFilterAuf(x){
+    if(istAllgemein(x.objektId)) return !flt.obj && !lgObjIds;
+    return passFilter(x);
+  }
 
-  const aufgaben=(await idbGetAll('aufgaben')).filter(a=>istAllgemein(a.objektId)||myIds.includes(a.objektId)).filter(aufgabeSichtbarFuerUser).filter(passFilter);
+  const aufgaben=(await idbGetAll('aufgaben')).filter(a=>istAllgemein(a.objektId)||myIds.includes(a.objektId)).filter(aufgabeSichtbarFuerUser).filter(passFilterAuf);
   const maengelRaw=(await idbGetAll('maengel')).filter(m=>myIds.includes(m.objektId)).filter(passFilter);
   const altReps=(await idbGetAll('reparaturen')).filter(r=>myIds.includes(r.objektId)).filter(passFilter).map(r=>({...r,istReparatur:true,_altStore:true}));
   const maengel=[...maengelRaw,...altReps];
@@ -10209,15 +10247,36 @@ async function mangelErledigenSpeichern(id, store){
   m.kommentare.push({ autor:CU?.name||'–', datum:now(), text:'Als erledigt markiert'+(_erledigtFoto?' (mit Foto-Nachweis)':'') });
   _erledigtFoto=null;
   await idbPut(store,m); bcSend('mangel_changed',{id});
+  if(store==='maengel') await syncEinzugNachMangelStatus(id);
   closeModal();
   // Falls die Detailansicht offen war, neu zeichnen, sonst Listen aktualisieren
   await refreshAufgaben(); if(curPage==='objekt') await renderObjTab('maengel');
   await renderDash(); toast('Mangel erledigt ✓');
 }
+// Entfernt einen Mangel aus allen offenen Einzugsprotokoll-Entwürfen, sobald er
+// behoben oder gelöscht wurde. Abnahmeprotokolle (Quelle) bleiben unberührt.
+async function syncEinzugNachMangelStatus(mangelId){
+  if(!mangelId) return;
+  try{
+    const prots=await idbGetAll('protokolle');
+    for(const p of prots){
+      if(p._papierkorb||p.status==='fertig') continue;
+      if(!Array.isArray(p.uebernommeneMaengel)||!p._quelleAbnahmeId) continue;
+      const vorher=p.uebernommeneMaengel.length;
+      p.uebernommeneMaengel=p.uebernommeneMaengel.filter(m=>m.quelleMangelId!==mangelId);
+      if(p.uebernommeneMaengel.length!==vorher){
+        await idbPut('protokolle',p);
+        if(PD&&PD.id===p.id){ PD.uebernommeneMaengel=p.uebernommeneMaengel; }
+      }
+    }
+  }catch(e){ console.warn('Einzug-Sync nach Mangelstatus:', e); }
+}
+
 async function deleteMangel(id){
   let store='maengel';
   if(!(await idbGet('maengel',id))){ if(await idbGet('reparaturen',id).catch(()=>null)) store='reparaturen'; }
   await idbDelete(store,id); bcSend('mangel_changed',{id});
+  await syncEinzugNachMangelStatus(id);
   await refreshAufgaben(); toast('Mangel gelöscht');
 }
 async function toggleReparatur(id){
@@ -19889,7 +19948,7 @@ function delMangelFoto(i){
   }
 }
 
-function openPhotoForMangel(){pPhotoRoom=null;window._zaehlerIdx=null;window._zsCamActive=false;window._lagerCamActive=false;window._mangelEditCamActive=false;window._mangelPhotos=window._mangelPhotos||[];openCam();}
+function openPhotoForMangel(){pPhotoRoom=null;pPhotoCond=null;window._zaehlerIdx=null;window._zsCamActive=false;window._lagerCamActive=false;window._mangelEditCamActive=false;window._mangelPhotos=window._mangelPhotos||[];openCam();}
 
 async function cancelMangel(){
   // Verworfene Mangel-Erfassung: temporäre Fotos aufräumen
@@ -19996,7 +20055,8 @@ const PROT_STEPS=['Objekt','Räume','Zähler','Schlüssel','Mängel','Unterschri
 let PD=null; // protokoll draft
 let pRoomIdx=0;
 let pSigPads={};
-let pPhotoRoom=null;
+let pPhotoRoom=null;pPhotoCond=null;
+let pPhotoCond=null; // {room,cond} – Foto gezielt für ein Bauteil
 
 async function newProtokoll(){
   const myObj=await getMyObjekte();
@@ -20038,6 +20098,17 @@ async function newProtokollForMieter(mieterId){
   const m=await idbGet('mieter',mieterId);
   if(!m) return;
   closeModal();
+  // Vorhandenen Entwurf dieses Mieters direkt weiterbearbeiten (statt neu zu starten)
+  const drafts=(await idbGetAll('protokolle'))
+    .filter(p=>!p._papierkorb&&p.status==='draft'&&p.objektId===m.objektId&&p.mieterId===mieterId)
+    .sort((a,b)=>new Date(b.erstellt||b.datum||0)-new Date(a.erstellt||a.datum||0));
+  if(drafts.length){
+    PD={...drafts[0]}; pRoomIdx=0;
+    await restoreFotosForPD();
+    toast('Angefangenen Entwurf geöffnet');
+    renderProt(PD._draftStep||0);
+    return;
+  }
   PD=await buildPD(m.objektId,mieterId,'Auszug – Rückgabe durch Mieter');
   renderProt(0);
 }
@@ -20070,6 +20141,25 @@ async function restoreFotosForPD(){
           PD.raeume[room].photos.push(fo.data);
           PD.raeume[room].photoIds.push(fo.id);
           ergaenzt = true;
+        }
+      }
+    } else if (fo.slot.startsWith('cond:')) {
+      const rest = fo.slot.slice(5);
+      const sepi = rest.indexOf('::');
+      if (sepi > 0) {
+        const room = rest.slice(0, sepi);
+        const cond = rest.slice(sepi + 2);
+        const rd = PD.raeume && PD.raeume[room];
+        if (rd) {
+          rd.condPhotos = rd.condPhotos || {};
+          rd.condPhotoIds = rd.condPhotoIds || {};
+          rd.condPhotos[cond] = rd.condPhotos[cond] || [];
+          rd.condPhotoIds[cond] = rd.condPhotoIds[cond] || [];
+          if (!rd.condPhotoIds[cond].includes(fo.id)) {
+            rd.condPhotos[cond].push(fo.data);
+            rd.condPhotoIds[cond].push(fo.id);
+            ergaenzt = true;
+          }
         }
       }
     } else if (fo.slot.startsWith('zaehler:')) {
@@ -20123,7 +20213,7 @@ async function buildPD(objId,mietId,art){
     flaeche:m?.flaeche||'',art,
     datum:today(),uhrzeitStart:'',uhrzeitEnd:'',
     vermName:CU?.name||'',vermFunktion:istVerwalter()?'Eigentümer / Hausverwaltung':'Hausmeister',
-    zeugeName:'',zeugeFunktion:'',
+    zeugeName:'',zeugeFunktion:'',mieter2Name:'',
     raeume:Object.fromEntries(ROOMS.map(r=>[r,{conditions:{},notes:'',photos:[]}])),
     zaehler:[{typ:'Stromzähler',nr:'',stand:'',einheit:'kWh'},{typ:'Gaszähler',nr:'',stand:'',einheit:'m³'},
              {typ:'Wasserzähler kalt',nr:'',stand:'',einheit:'m³'},{typ:'Wasserzähler warm',nr:'',stand:'',einheit:'m³'}],
@@ -20133,9 +20223,65 @@ async function buildPD(objId,mietId,art){
     schoenheit:'Nicht erforderlich',
     gesamtzustand:'Gut – ordnungsgemäß übergeben',
     vereinbarungen:'',
-    sigVermieter:meineSig,sigMieter:'',sigZeuge:'',
+    sigVermieter:meineSig,sigMieter:'',sigMieter2:'',sigZeuge:'',
     status:'draft',erstellt:now(),
   };
+}
+
+// Erzeugt nach Abschluss eines Abnahme-/Auszugsprotokolls automatisch ein Einzugsprotokoll
+// für dieselbe Wohnung. Räume, Zustände, Bauteil-Fotos, Zähler, Schlüssel und sonstige
+// Punkte werden übernommen. Mängel aus der Abnahme werden referenziert (quelleMangelId),
+// NICHT als Store-Dublette angelegt. Das Abnahmeprotokoll bleibt unverändert.
+async function erzeugeEinzugsprotokoll(abnahme){
+  // Räume tief kopieren (inkl. condPhotos), aber temporäre Einzelfoto-IDs verwerfen
+  const raeumeKopie={};
+  for(const rn of Object.keys(abnahme.raeume||{})){
+    const r=abnahme.raeume[rn]||{};
+    raeumeKopie[rn]={
+      vorhanden:r.vorhanden,
+      conditions:JSON.parse(JSON.stringify(r.conditions||{})),
+      condNotes:JSON.parse(JSON.stringify(r.condNotes||{})),
+      condPhotos:JSON.parse(JSON.stringify(r.condPhotos||{})),
+      notes:r.notes||'',
+      photos:(r.photos||[]).slice(),
+    };
+  }
+  // Übernommene Mängel: Referenz auf die in der Abnahme gespeicherten Mangel-Einträge
+  const uebernommene=(abnahme._autoMaengel||[]).map(m=>({
+    quelleMangelId:m.id,
+    quelleProtId:abnahme.id,
+    titel:m.titel,
+    beschreibung:m.beschreibung||'',
+    fotos:(m.fotos||[]).slice(),
+    nummer:m.nummer||'',
+  }));
+  let meineSig='';
+  try{ const u=await idbGet('users',CU?.id); meineSig=u?.signatur||CU?.signatur||''; }catch(e){}
+  const einzug={
+    id:uid(), objektId:abnahme.objektId, mieterId:null,
+    objektName:abnahme.objektName||'', objektOrt:abnahme.objektOrt||'',
+    weNr:abnahme.weNr||'', etage:abnahme.etage||'',
+    mieterName:'', mieterNeu:'', mietKontakt:'', mieter2Name:'',
+    flaeche:abnahme.flaeche||'', art:'Einzug – Übergabe an Mieter',
+    datum:today(), uhrzeitStart:'', uhrzeitEnd:'',
+    vermName:CU?.name||'', vermFunktion:istVerwalter()?'Eigentümer / Hausverwaltung':'Hausmeister',
+    zeugeName:'', zeugeFunktion:'',
+    raeume:raeumeKopie,
+    zaehler:JSON.parse(JSON.stringify(abnahme.zaehler||[])),
+    schluessel:JSON.parse(JSON.stringify(abnahme.schluessel||{wohnung:2,haus:1,bk:1,keller:0,garage:0,sonstige:0})),
+    schluesselHinweis:abnahme.schluesselHinweis||'',
+    tgNr:abnahme.tgNr||'', tgMiete:abnahme.tgMiete||'',
+    schoenheit:'Nicht erforderlich',
+    gesamtzustand:'Gut – ordnungsgemäß übergeben',
+    vereinbarungen:'',
+    sigVermieter:meineSig, sigMieter:'', sigMieter2:'', sigZeuge:'',
+    uebernommeneMaengel:uebernommene,
+    _quelleAbnahmeId:abnahme.id,
+    status:'draft', _draftStep:0, erstellt:now(),
+  };
+  await idbPut('protokolle', einzug);
+  toast('Einzugsprotokoll automatisch angelegt – im Reiter „Protokolle" sichtbar');
+  return einzug;
 }
 
 function renderProt(step){
@@ -20167,13 +20313,31 @@ function renderProt(step){
     ${step<PROT_STEPS.length-1
       ?`<button class="btn btn-copper btn-full" onclick="renderProt(${step+1})">Weiter <i class="ti ti-arrow-right"></i></button>`
       :`<button class="btn btn-success btn-full btn-lg" onclick="finishProt()"><i class="ti ti-printer"></i> Abschließen & Drucken</button>`}
-  </div>`;
+  </div>
+  <div style="margin-top:10px"><button class="btn btn-full" onclick="speichereProtUndSchliessen()"><i class="ti ti-device-floppy"></i> Speichern & schließen (später weiter)</button></div>`;
 
   document.getElementById('page-protokoll').innerHTML=
     `<div class="steps">${stepsH}</div>`+getProtStep(step)+nav2;
 
   if(step===1) renderProtRaeume();
   if(step===5){ pSigPads={}; setTimeout(initSigs,200); }
+}
+
+// Aktuellen Protokoll-Entwurf sichern und den Wizard verlassen (Weiterarbeiten später möglich).
+async function speichereProtUndSchliessen(){
+  if(!PD){ nav('objekt'); return; }
+  // Auf dem Unterschriften-Schritt evtl. gezeichnete Sigs aus den Canvas übernehmen
+  try{ ['sigV','sigM','sigM2','sigZ'].forEach(id=>{ if(document.getElementById(id)) saveSigToMemory(id); }); }catch(e){}
+  if(!PD._adminEditOriginal){ PD.status='draft'; }
+  try{ await idbPut('protokolle', PD); }catch(e){ console.warn('Speichern&Schließen:', e); }
+  const objId = PD.objektId;
+  try{ localStorage.removeItem('openProtokoll'); }catch(e){}
+  PD=null;
+  toast('Entwurf gespeichert – du kannst später weitermachen ✓');
+  clearTimeout(window._syncTimer);
+  window._syncTimer=setTimeout(()=>syncToOneDrive(),2000);
+  if(objId){ await showObjekt(objId); await renderObjTab('protokolle'); }
+  else { nav('dashboard','Übersicht',''); }
 }
 
 function getProtStep(step){
@@ -20212,6 +20376,7 @@ function getProtStep(step){
         <div class="f"><label>Mieter</label><input value="${d.mieterName}" onchange="PD.mieterName=this.value"></div>
         <div class="f"><label>Telefon / Kontakt</label><input value="${d.mietKontakt}" onchange="PD.mietKontakt=this.value"></div>
       </div>
+      <div class="f"><label>2. Mieter (optional)</label><input value="${d.mieter2Name||''}" onchange="PD.mieter2Name=this.value" placeholder="Name des zweiten Mieters"></div>
       <div class="f"><label>Neue Adresse des Mieters</label><input value="${d.mieterNeu}" onchange="PD.mieterNeu=this.value" placeholder="Straße, PLZ Ort"></div>
       <div class="f-row">
         <div class="f"><label>Weitere Person (Zeuge)</label><input value="${d.zeugeName}" onchange="PD.zeugeName=this.value"></div>
@@ -20292,6 +20457,12 @@ function getProtStep(step){
       <canvas class="sig-pad" id="sigM"></canvas>
       <div class="sig-row"><button class="btn btn-sm btn-danger" onclick="clearSig('sigM')"><i class="ti ti-trash"></i> Löschen</button></div>
     </div>
+    ${d.mieter2Name?`<div class="f" style="margin-top:12px"><label style="margin-bottom:6px">2. Mieter: ${d.mieter2Name}</label>
+      ${d.sigMieter2?`<div style="font-size:12px;color:var(--green);margin-bottom:6px"><i class="ti ti-circle-check"></i> Bereits unterschrieben – nur neu zeichnen, wenn Änderung gewünscht</div>
+        <div style="border:1px solid var(--ink-10);border-radius:8px;padding:8px;background:#fff;text-align:center;margin-bottom:8px"><img src="${d.sigMieter2}" style="max-height:60px;max-width:100%"></div>`:''}
+      <canvas class="sig-pad" id="sigM2"></canvas>
+      <div class="sig-row"><button class="btn btn-sm btn-danger" onclick="clearSig('sigM2')"><i class="ti ti-trash"></i> Löschen</button></div>
+    </div>`:''}
     ${d.zeugeName?`<div class="f" style="margin-top:12px"><label style="margin-bottom:6px">Zeuge: ${d.zeugeName}</label>
       ${d.sigZeuge?`<div style="font-size:12px;color:var(--green);margin-bottom:6px"><i class="ti ti-circle-check"></i> Bereits unterschrieben – nur neu zeichnen, wenn Änderung gewünscht</div>
         <div style="border:1px solid var(--ink-10);border-radius:8px;padding:8px;background:#fff;text-align:center;margin-bottom:8px"><img src="${d.sigZeuge}" style="max-height:60px;max-width:100%"></div>`:''}
@@ -20353,6 +20524,13 @@ function renderProtRaeume(){
         placeholder="Bemerkung zu ${c}..."
         style="width:100%;margin-top:4px;padding:6px 8px;border:1px solid var(--ink-10);border-radius:6px;font-size:12px;font-family:var(--font);resize:vertical;min-height:52px"
         onchange="setRoomCondNote('${rn}','${c}',this.value)">${noteVal}</textarea>`:''}
+      ${showNote?(()=>{
+        const cps=(rd.condPhotos&&rd.condPhotos[c])||[];
+        return `<div style="margin-top:5px">
+          ${cps.length?`<div class="ph-grid" style="margin-bottom:5px">${cps.map((p,pi)=>`<div class="ph-thumb"><img src="${p}"><button class="ph-del" onclick="delCondPhoto('${rn}','${c.replace(/'/g,"\\'")}',${pi})">✕</button></div>`).join('')}</div>`:''}
+          <button class="btn btn-sm" onclick="openCondCam('${rn}','${c.replace(/'/g,"\\'")}')"><i class="ti ti-camera"></i> Foto zu „${c}"</button>
+        </div>`;
+      })():''}
     </div>`;
   });
   condH+=`</div>`;
@@ -20416,8 +20594,19 @@ function setRoomCondNote(room,cond,val){
   if(!PD.raeume[room].condNotes) PD.raeume[room].condNotes={};
   PD.raeume[room].condNotes[cond]=val;
 }
-function openRoomCam(room){pPhotoRoom=room;window._zaehlerIdx=null;window._mangelPhotos=null;window._zsCamActive=false;window._lagerCamActive=false;window._mangelEditCamActive=false;openCam();}
-function openZaehlerCam(idx){window._zaehlerIdx=idx;pPhotoRoom=null;window._mangelPhotos=null;window._zsCamActive=false;window._lagerCamActive=false;window._mangelEditCamActive=false;openCam();}
+function openRoomCam(room){pPhotoRoom=room;pPhotoCond=null;window._zaehlerIdx=null;window._mangelPhotos=null;window._zsCamActive=false;window._lagerCamActive=false;window._mangelEditCamActive=false;openCam();}
+// Foto gezielt zu einem Bauteil/Zustand aufnehmen (z. B. „Elektro / Schalter")
+function openCondCam(room,cond){pPhotoCond={room,cond};pPhotoRoom=null;window._zaehlerIdx=null;window._mangelPhotos=null;window._zsCamActive=false;window._lagerCamActive=false;window._mangelEditCamActive=false;openCam();}
+function delCondPhoto(room,cond,i){
+  const rd=PD&&PD.raeume&&PD.raeume[room]; if(!rd||!rd.condPhotos||!rd.condPhotos[cond])return;
+  const fid=rd.condPhotoIds&&rd.condPhotoIds[cond]&&rd.condPhotoIds[cond][i];
+  if(fid){ idbDelete('fotos',fid).catch(()=>{}); rd.condPhotoIds[cond].splice(i,1); }
+  rd.condPhotos[cond].splice(i,1);
+  if(!PD._adminEditOriginal) PD.status='draft';
+  idbPut('protokolle',PD).catch(e=>console.warn('Draft nach Bauteilfoto-Löschung:',e));
+  renderProtRaeume();
+}
+function openZaehlerCam(idx){window._zaehlerIdx=idx;pPhotoRoom=null;pPhotoCond=null;window._mangelPhotos=null;window._zsCamActive=false;window._lagerCamActive=false;window._mangelEditCamActive=false;openCam();}
 function delZaehlerFoto(i){
   if (!PD || !PD.zaehler || !PD.zaehler[i]) return;
   const fid = PD.zaehler[i].fotoId;
@@ -20441,6 +20630,22 @@ function delRoomPhoto(room,idx){
 
 function buildMangelSummary(){
   let h='';
+  // Aus der Abnahme übernommene Mängel (nur im Einzugsprotokoll) – einzeln entfernbar
+  const ueb=PD.uebernommeneMaengel||[];
+  if(ueb.length){
+    h+=`<div style="background:#fff7e6;border:1px solid var(--amber);border-radius:8px;padding:10px;margin-bottom:10px">
+      <div style="font-weight:700;font-size:12px;color:var(--amber);margin-bottom:6px"><i class="ti ti-arrow-down-circle"></i> Aus der Abnahme übernommen (${ueb.length})</div>
+      <div style="font-size:11px;color:var(--ink-40);margin-bottom:7px">Bereits behobene Mängel kannst du hier entfernen. Wird ein Mangel in der Mängelliste auf „behoben" gesetzt, verschwindet er hier automatisch.</div>
+      ${ueb.map((m,i)=>`<div style="display:flex;align-items:flex-start;gap:8px;padding:6px 0;border-bottom:1px solid #f0e2c2">
+        <div style="flex:1">
+          <div style="font-size:12px;font-weight:600">${esc(m.titel||'Mangel')}${m.nummer?` <span style="color:var(--ink-40);font-weight:400">· Nr. ${esc(String(m.nummer))}</span>`:''}</div>
+          ${m.beschreibung?`<div style="font-size:11px;color:var(--ink-40)">${esc(m.beschreibung)}</div>`:''}
+          ${m.fotos&&m.fotos.length?`<div style="font-size:10px;color:var(--ink-40);margin-top:2px"><i class="ti ti-camera" style="font-size:10px"></i> ${m.fotos.length} Foto(s)</div>`:''}
+        </div>
+        <button class="btn btn-sm btn-danger" title="Aus Einzugsprotokoll entfernen" onclick="entferneUebernommenenMangel(${i})"><i class="ti ti-x"></i></button>
+      </div>`).join('')}
+    </div>`;
+  }
   ROOMS.forEach(r=>{
     const d=PD.raeume[r];
     const bads=CONDS.filter(c=>d.conditions[c]&&d.conditions[c]!=='Einwandfrei'&&d.conditions[c]!=='Entfällt');
@@ -20460,10 +20665,22 @@ function buildMangelSummary(){
   </div>`;
 }
 
+// Entfernt einen aus der Abnahme übernommenen Mangel NUR aus dem Einzugsprotokoll.
+// Das Abnahmeprotokoll und der Mangel-Eintrag in der Mängelliste bleiben unberührt.
+function entferneUebernommenenMangel(i){
+  if(!PD||!Array.isArray(PD.uebernommeneMaengel)) return;
+  const m=PD.uebernommeneMaengel[i]; if(!m) return;
+  if(!confirm(`Übernommenen Mangel „${m.titel||''}" aus diesem Einzugsprotokoll entfernen?\n\nDas Abnahmeprotokoll und die Mängelliste bleiben unverändert.`)) return;
+  PD.uebernommeneMaengel.splice(i,1);
+  if(!PD._adminEditOriginal) PD.status='draft';
+  idbPut('protokolle',PD).catch(e=>console.warn('Draft nach Mangel-Entfernung:',e));
+  renderProt(4);
+}
+
 /* ── SIGNATUREN ── */
 function initSigs(){
   populateSigAdminPick();
-  ['sigV','sigM','sigZ'].forEach(id=>{
+  ['sigV','sigM','sigM2','sigZ'].forEach(id=>{
     const c=document.getElementById(id);
     if(!c||pSigPads[id]) return;
     const dpr=window.devicePixelRatio||1;
@@ -20517,7 +20734,7 @@ function restoreSigToCanvas(id){
   if(!PD) return;
   const c=document.getElementById(id);
   if(!c) return;
-  const key = id==='sigV'?'sigVermieter':id==='sigM'?'sigMieter':'sigZeuge';
+  const key = id==='sigV'?'sigVermieter':id==='sigM'?'sigMieter':id==='sigM2'?'sigMieter2':'sigZeuge';
   const dataUrl = PD[key];
   if(!dataUrl) return;
   const img=new Image();
@@ -20535,7 +20752,7 @@ function clearSig(id){
   if(c){
     c.getContext('2d').clearRect(0,0,c.width,c.height);
     // Gespeicherte Sig löschen
-    const key = id==='sigV'?'sigVermieter':id==='sigM'?'sigMieter':'sigZeuge';
+    const key = id==='sigV'?'sigVermieter':id==='sigM'?'sigMieter':id==='sigM2'?'sigMieter2':'sigZeuge';
     if(PD) PD[key]='';
   }
 }
@@ -20550,16 +20767,16 @@ function saveSigToMemory(id) {
   for(let px=0;px<data.length;px+=4){
     if(data[px+3]>0&&(data[px]<250||data[px+1]<250||data[px+2]<250)){hasContent=true;break;}
   }
-  const key = id==='sigV'?'sigVermieter':id==='sigM'?'sigMieter':'sigZeuge';
+  const key = id==='sigV'?'sigVermieter':id==='sigM'?'sigMieter':id==='sigM2'?'sigMieter2':'sigZeuge';
   PD[key] = hasContent ? c.toDataURL('image/png') : '';
 }
 
 async function finishProt(){
   // Unterschriften final speichern (Fallback: nochmal aus Canvas lesen)
-  ['sigV','sigM','sigZ'].forEach(id=>{
+  ['sigV','sigM','sigM2','sigZ'].forEach(id=>{
     saveSigToMemory(id);
     // Falls PD noch keine Sig hat, aus Canvas nachlesen
-    const key = id==='sigV'?'sigVermieter':id==='sigM'?'sigMieter':'sigZeuge';
+    const key = id==='sigV'?'sigVermieter':id==='sigM'?'sigMieter':id==='sigM2'?'sigMieter2':'sigZeuge';
     if (!PD[key]) {
       const c=document.getElementById(id);
       if(c){
@@ -20621,9 +20838,14 @@ async function finishProt(){
         if(note && note.trim()){
           m.beschreibung = note.trim();
         }
-        // Zugehörige Raum-Fotos als Daten-URLs übernehmen
-        if(rd?.photoIds?.length){
-          m.fotos = m.fotos||[];
+        m.fotos = m.fotos||[];
+        // 1) Gezielt dem Bauteil zugeordnete Fotos übernehmen (Daten-URLs liegen direkt in PD)
+        const cps = rd?.condPhotos?.[cond];
+        if(Array.isArray(cps)){
+          for(const ph of cps){ if(ph && !m.fotos.includes(ph)) m.fotos.push(ph); }
+        }
+        // 2) Falls für dieses Bauteil kein eigenes Foto da ist, Raum-Fotos als Fallback
+        if(!m.fotos.length && rd?.photoIds?.length){
           for(const fid of rd.photoIds){
             try{ const fo=await idbGet('fotos', fid); if(fo?.data && !m.fotos.includes(fo.data)) m.fotos.push(fo.data); }catch(e){}
           }
@@ -20634,6 +20856,11 @@ async function finishProt(){
     toast(`Protokoll gespeichert ✓ – ${PD._autoMaengel.length} Mängel übernommen`);
   } else {
     toast('Protokoll gespeichert ✓');
+  }
+  // Bei einem Auszugs-/Abnahmeprotokoll automatisch ein Einzugsprotokoll für dieselbe Wohnung erzeugen
+  if(String(PD.art||'').includes('Auszug') && !PD._einzugErzeugt){
+    try{ await erzeugeEinzugsprotokoll(PD); PD._einzugErzeugt=true; await idbPut('protokolle',PD); }
+    catch(e){ console.warn('Einzugsprotokoll-Erzeugung:', e); }
   }
   bcSend('protokoll_saved',{id:PD.id});
   clearTimeout(window._syncTimer);
@@ -20685,6 +20912,12 @@ async function viewProtokoll(id){
         <span style="color:${col};font-weight:600">${esc(val)}</span>
         ${note?`<span style="flex:1;color:var(--ink-40);font-style:italic">${esc(note)}</span>`:''}
       </div>`;
+      const cps=rd.condPhotos?.[c];
+      if(Array.isArray(cps)&&cps.length){
+        rows+=`<div style="display:flex;flex-wrap:wrap;gap:5px;margin:3px 0 6px">`;
+        cps.forEach((ph,pi)=>{ rows+=`<img src="${ph}" onclick="openFoto('${ph}','${esc(rn)} – ${esc(c)} ${pi+1}')" style="width:56px;height:56px;object-fit:cover;border-radius:6px;cursor:pointer;border:1px solid var(--ink-10)">`; });
+        rows+=`</div>`;
+      }
     }
     if(!any) rows+=`<div style="font-size:12px;color:var(--ink-40)">Einwandfrei</div>`;
     if(rd.photos?.length){
@@ -20734,9 +20967,11 @@ async function viewProtokoll(id){
     <div class="card-hdr" style="margin:10px 0 6px"><i class="ti ti-door"></i> Räume & Zustand</div>
     ${roomsH||'<div style="font-size:12px;color:var(--ink-40)">Keine Angaben</div>'}
     ${zaehlerH?`<div class="card-hdr" style="margin:14px 0 6px"><i class="ti ti-gauge"></i> Zählerstände</div>${zaehlerH}`:''}
+    ${(p.uebernommeneMaengel&&p.uebernommeneMaengel.length)?`<div class="card-hdr" style="margin:14px 0 6px"><i class="ti ti-arrow-down-circle"></i> Aus der Abnahme übernommene Mängel</div>
+      ${p.uebernommeneMaengel.map(m=>`<div style="font-size:12px;padding:4px 0;border-bottom:1px solid var(--ink-05)"><strong>${esc(m.titel||'–')}</strong>${m.nummer?` <span style="color:var(--ink-40)">· Nr. ${esc(String(m.nummer))}</span>`:''}${m.beschreibung?`<br><span style="color:var(--ink-40)">${esc(m.beschreibung)}</span>`:''}</div>`).join('')}`:''}
     ${p.notes||p.vereinbarungen?`<div class="card-hdr" style="margin:14px 0 6px"><i class="ti ti-note"></i> Anmerkungen</div><div style="font-size:12px;color:var(--ink-60)">${esc(p.vereinbarungen||'')}</div>`:''}
-    ${(p.sigVermieter||p.sigMieter||p.sigZeuge)?`<div class="card-hdr" style="margin:14px 0 6px"><i class="ti ti-signature"></i> Unterschriften</div>
-      <div style="display:flex;gap:12px;flex-wrap:wrap">${sig('Vermieter',p.sigVermieter)}${sig('Mieter',p.sigMieter)}${sig('Zeuge',p.sigZeuge)}</div>`:''}
+    ${(p.sigVermieter||p.sigMieter||p.sigMieter2||p.sigZeuge)?`<div class="card-hdr" style="margin:14px 0 6px"><i class="ti ti-signature"></i> Unterschriften</div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap">${sig('Vermieter',p.sigVermieter)}${sig('Mieter',p.sigMieter)}${p.mieter2Name?sig('2. Mieter',p.sigMieter2):''}${sig('Zeuge',p.sigZeuge)}</div>`:''}
     ${aendH}
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:16px">
       <button class="btn btn-sm btn-copper" onclick="printProt('${id}')"><i class="ti ti-printer"></i> PDF / Drucken</button>
@@ -20851,6 +21086,12 @@ async function printProtHTML(d) {
       const col = val==='Einwandfrei'?'#2E7D52':val==='Beschädigt'?'#C0392B':val==='Entfällt'?'#888':'#D4820A';
       const note = rd.condNotes?.[c]||'';
       roomRows += `<tr><td style="padding:3px 8px;border:1px solid #dde;font-size:10px;width:38%">${c}</td><td style="padding:3px 8px;border:1px solid #dde;font-size:10px;color:${col};font-weight:600;width:28%">${val}</td><td style="padding:3px 8px;border:1px solid #dde;font-size:10px;width:34%;color:#333">${note}</td></tr>`;
+      const cps = rd.condPhotos?.[c];
+      if (Array.isArray(cps) && cps.length) {
+        let imgs='';
+        for (const ph of cps){ const comp=await compressImg(ph); imgs+=`<img src="${comp}" style="width:70px;height:52px;object-fit:cover;border-radius:3px;border:1px solid #ccd;margin:2px">`; }
+        roomRows += `<tr><td colspan="3" style="padding:4px 8px;border:1px solid #dde"><div style="font-size:8px;font-weight:700;color:#777;margin-bottom:2px">Fotos zu „${c}"</div><div style="display:flex;flex-wrap:wrap;gap:3px">${imgs}</div></td></tr>`;
+      }
     }
     if (rd.notes) roomRows += `<tr><td colspan="3" style="padding:3px 8px;border:1px solid #dde;font-size:10px;font-style:italic;color:#555">Hinweis: ${rd.notes}</td></tr>`;
 
@@ -20918,6 +21159,12 @@ tr{page-break-inside:avoid}
   <th style="text-align:left;padding:3px 8px;background:#e8f0fe;border:1px solid #ccd;font-size:10px">Anzahl</th>
 </tr></thead><tbody>${tgRow}${keyRows}</tbody></table>
 ${d.schluesselHinweis?`<p style="font-size:10px;color:#555;margin:3px 0;font-style:italic">Hinweis: ${d.schluesselHinweis}</p>`:''}
+${(d.uebernommeneMaengel&&d.uebernommeneMaengel.length)?`<h2>Aus der Abnahme übernommene Mängel</h2>
+<table><thead><tr>
+  <th style="text-align:left;padding:3px 8px;background:#e8f0fe;border:1px solid #ccd;font-size:10px;width:30%">Mangel</th>
+  <th style="text-align:left;padding:3px 8px;background:#e8f0fe;border:1px solid #ccd;font-size:10px">Beschreibung</th>
+  <th style="text-align:left;padding:3px 8px;background:#e8f0fe;border:1px solid #ccd;font-size:10px;width:12%">Nr.</th>
+</tr></thead><tbody>${d.uebernommeneMaengel.map(m=>`<tr><td style="padding:3px 8px;border:1px solid #dde;font-size:10px;font-weight:600">${m.titel||'–'}</td><td style="padding:3px 8px;border:1px solid #dde;font-size:10px">${m.beschreibung||'–'}</td><td style="padding:3px 8px;border:1px solid #dde;font-size:10px">${m.nummer||'–'}</td></tr>`).join('')}</tbody></table>`:''}
 <h2>Gesamtbeurteilung & Vereinbarungen</h2><div class="meta" style="grid-template-columns:1fr 1fr">
   <div class="mi"><strong>Gesamtzustand</strong>${d.gesamtzustand||'–'}</div>
   <div class="mi"><strong>Schönheitsreparaturen</strong>${d.schoenheit||'–'}</div>
@@ -20928,6 +21175,7 @@ ${d.vereinbarungen?`<div style="background:#f0f4f9;border-radius:3px;padding:6px
 <div class="sigs">
   <div class="sig-box">${d.sigVermieter?`<img src="${d.sigVermieter}">`:'<div style="height:65px;border:1px dashed #ccd"></div>'}<p><strong>${d.vermName||'Vermieter'}</strong><br>${d.vermFunktion||''}<br>Datum: ${datum}</p></div>
   <div class="sig-box">${d.sigMieter?`<img src="${d.sigMieter}">`:'<div style="height:65px;border:1px dashed #ccd"></div>'}<p><strong>${d.mieterName||'Mieter'}</strong><br>&nbsp;<br>Datum: ${datum}</p></div>
+  ${d.mieter2Name?`<div class="sig-box">${d.sigMieter2?`<img src="${d.sigMieter2}">`:'<div style="height:65px;border:1px dashed #ccd"></div>'}<p><strong>${d.mieter2Name}</strong><br>2. Mieter<br>Datum: ${datum}</p></div>`:''}
 </div>
 ${d.zeugeName&&d.sigZeuge?`<div style="max-width:50%;margin-top:8px"><div class="sig-box"><img src="${d.sigZeuge}"><p><strong>${d.zeugeName}</strong><br>${d.zeugeFunktion||'Zeuge'}<br>Datum: ${datum}</p></div></div>`:''}
 ${(d.aenderungen&&d.aenderungen.length)?`<div style="margin-top:12px;padding:8px 10px;border:1.5px solid #C0392B;border-radius:5px">
@@ -25524,7 +25772,7 @@ async function onMangelEditFoto(input){
 
 // In-App-Kamera für Mangel-Bearbeitung (kein PWA-Reload)
 function openCamMangelEdit(){
-  pPhotoRoom=null; window._zaehlerIdx=null; window._mangelPhotos=null; window._lagerCamActive=false;
+  pPhotoRoom=null;pPhotoCond=null; window._zaehlerIdx=null; window._mangelPhotos=null; window._lagerCamActive=false;
   window._mangelEditCamActive=true;
   if(typeof openCam==='function'){ openCam(); }
   else { document.getElementById('em_fotoIn')?.click(); }
@@ -25819,7 +26067,28 @@ async function processPhoto(data) {
       if(document.getElementById('camOverlay')?.style.display==='flex') closeCam();
       return;
     }
-    if (pPhotoRoom) {
+    if (pPhotoCond) {
+      const {room,cond}=pPhotoCond;
+      if (PD && PD.raeume && PD.raeume[room]) {
+        const fotoId = uid();
+        try {
+          await idbPut('fotos', { id: fotoId, protId: PD.id, slot: 'cond:'+room+'::'+cond, data, erstellt: now() });
+        } catch(e){ console.warn('Bauteilfoto-Sicherung:', e); toast('Foto konnte nicht gesichert werden – bitte erneut'); return; }
+        const rd=PD.raeume[room];
+        rd.condPhotos = rd.condPhotos || {};
+        rd.condPhotoIds = rd.condPhotoIds || {};
+        rd.condPhotos[cond] = rd.condPhotos[cond] || [];
+        rd.condPhotoIds[cond] = rd.condPhotoIds[cond] || [];
+        rd.condPhotos[cond].push(data);
+        rd.condPhotoIds[cond].push(fotoId);
+        if(!PD._adminEditOriginal) PD.status='draft';
+        try { await idbPut('protokolle', PD); } catch(e){ console.warn('Draft nach Bauteilfoto:', e); }
+        pPhotoCond=null;
+        renderProtRaeume();
+        if(document.getElementById('camOverlay')?.style.display==='flex') closeCam();
+        toast('Foto dem Bauteil zugeordnet ✓');
+      }
+    } else if (pPhotoRoom) {
       if (PD && PD.raeume && PD.raeume[pPhotoRoom]) {
         const fotoId = uid();
         try {
