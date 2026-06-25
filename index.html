@@ -794,7 +794,7 @@ body.printing-active #printRoot{display:block!important}
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=28;
-const APP_VERSION = '2026-06-25-v136';
+const APP_VERSION = '2026-06-25-v137';
 /* v94 (19.06.2026): Etappe 1 – Lokale Benachrichtigungen erweitert (Termine + Maengel).
    - checkFaelligeAufgaben() prueft jetzt zusaetzlich:
      a) Termin-Erinnerungen: Termine mit gesetztem Erinnerungs-Vorlauf (1/2/7 Tage)
@@ -9018,6 +9018,23 @@ async function loescheProtEntwurf(id){
   window._syncTimer=setTimeout(()=>syncToOneDrive(),2000);
 }
 
+// Protokoll aus der Mieter-Detailansicht löschen (Entwurf ODER fertig) und dort bleiben.
+async function loescheProtEntwurfMieter(id, mieterId){
+  const p=await idbGet('protokolle',id); if(!p) return;
+  const istEntwurf = p.status==='draft';
+  const txt = istEntwurf
+    ? `Angefangenen Entwurf „${p.art||'Übergabe'} · WE ${p.weNr||'?'}" wirklich löschen?\n\nEr wird in den Papierkorb verschoben.`
+    : `Abgeschlossenes Protokoll „${p.art||'Übergabe'} · ${fmtDate(p.datum)} · WE ${p.weNr||'?'}" wirklich löschen?\n\nEs wird in den Papierkorb verschoben und kann dort wiederhergestellt werden.`;
+  if(!confirm(txt)) return;
+  p._papierkorb=true; p.geloeschtAm=now();
+  await idbPut('protokolle',p);
+  bcSend('protokoll_saved',{id});
+  toast('Protokoll in den Papierkorb verschoben ✓');
+  if(typeof showMieter==='function') await showMieter(mieterId);
+  clearTimeout(window._syncTimer);
+  window._syncTimer=setTimeout(()=>syncToOneDrive(),2000);
+}
+
 async function renderObjAufgaben(el){
   await ladeMieterWeCache();
   const aufgaben=await idbGetAll('aufgaben','objektId',currentObjId);
@@ -9451,10 +9468,16 @@ async function showMieter(id){
   if(prots.length){
     h+=`<div class="card" style="margin-top:12px"><div class="card-hdr"><i class="ti ti-clipboard"></i> Protokolle</div>`;
     prots.sort((a,b)=>new Date(b.datum)-new Date(a.datum)).forEach(p=>{
-      h+=`<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--ink-10)">
-        <div><div style="font-weight:600;font-size:13px">${p.art||'Übergabe'} · ${fmtDate(p.datum)}</div>
-          <div style="font-size:11px;color:var(--ink-40)">WE ${p.weNr||'?'}</div></div>
-        <button class="btn btn-sm" onclick="printProt('${p.id}')"><i class="ti ti-printer"></i> PDF</button>
+      const istEntwurf = p.status==='draft';
+      h+=`<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 0;border-bottom:1px solid var(--ink-10)${istEntwurf?';border-left:3px solid var(--amber);padding-left:8px':''}">
+        <div onclick="editProtokoll('${p.id}')" style="flex:1;min-width:0;cursor:pointer">
+          <div style="font-weight:600;font-size:13px">${p.art||'Übergabe'} · ${fmtDate(p.datum)}</div>
+          <div style="font-size:11px;color:var(--ink-40)">WE ${p.weNr||'?'}${istEntwurf?` · <span style="color:var(--amber)">Entwurf · Schritt ${(p._draftStep||0)+1}</span>`:''}${p._quelleAbnahmeId?' · <i class="ti ti-arrow-down-circle" style="font-size:11px"></i> aus Abnahme':''}</div>
+        </div>
+        ${istEntwurf
+          ?`<button class="btn btn-sm btn-danger" title="Entwurf löschen" onclick="event.stopPropagation();loescheProtEntwurfMieter('${p.id}','${id}')"><i class="ti ti-trash"></i></button>`
+          :`<button class="btn btn-sm" onclick="event.stopPropagation();printProt('${p.id}')"><i class="ti ti-printer"></i> PDF</button>
+            <button class="btn btn-sm btn-danger" title="Protokoll löschen" onclick="event.stopPropagation();loescheProtEntwurfMieter('${p.id}','${id}')"><i class="ti ti-trash"></i></button>`}
       </div>`;
     });
     h+=`</div>`;
