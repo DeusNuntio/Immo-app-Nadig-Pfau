@@ -694,7 +694,7 @@ body.printing-active #printRoot{display:block!important}
       <div class="nav-badge" id="mailBadge" style="display:none"></div>
     </button>
     <button class="nav-btn" id="nav-settings" onclick="nav('settings')" title="Einstellungen" aria-label="Einstellungen">
-      <i class="ti ti-settings"></i>
+      <i class="ti ti-settings"></i><span>Config</span>
     </button>
   </div>
 </div>
@@ -794,7 +794,7 @@ body.printing-active #printRoot{display:block!important}
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=28;
-const APP_VERSION = '2026-06-25-v138';
+const APP_VERSION = '2026-06-25-v139';
 /* v94 (19.06.2026): Etappe 1 – Lokale Benachrichtigungen erweitert (Termine + Maengel).
    - checkFaelligeAufgaben() prueft jetzt zusaetzlich:
      a) Termin-Erinnerungen: Termine mit gesetztem Erinnerungs-Vorlauf (1/2/7 Tage)
@@ -1372,6 +1372,10 @@ function nav(id,title,sub,push=true){
 
 // Android Zurück-Button abfangen
 window.addEventListener('popstate', function(e) {
+  // Wenn Foto-Vollansicht offen → nur diese schließen
+  if(document.getElementById('fotoOverlay')?.classList.contains('open')){
+    closeFotoOverlay(); return;
+  }
   // Wenn Kamera offen → Kamera schließen
   if(document.getElementById('camOverlay')?.style.display==='flex'){
     closeCam(); history.pushState({}, '', window.location.pathname); return;
@@ -20351,6 +20355,14 @@ async function erzeugeEinzugsprotokoll(abnahme){
 function renderProt(step){
   nav('protokoll','Übergabeprotokoll',`Schritt ${step+1} / ${PROT_STEPS.length}`);
   pSigPads={};
+  // Mieterliste der Wohnung für das Auswahl-Dropdown (Step 0) vorbereiten
+  if(PD && step===0 && PD.objektId){
+    idbGetAll('mieter','objektId',PD.objektId).then(list=>{
+      window._protMieterListe=(list||[]).filter(m=>!m._vormieter);
+      const sel=document.getElementById('protMieterSelect');
+      if(sel) befuelleProtMieterDropdown();
+    }).catch(()=>{ window._protMieterListe=[]; });
+  }
   // Draft nach jedem Schritt automatisch speichern
   if (PD) {
     if (PD._adminEditOriginal) {
@@ -20378,19 +20390,82 @@ function renderProt(step){
       ?`<button class="btn btn-copper btn-full" onclick="renderProt(${step+1})">Weiter <i class="ti ti-arrow-right"></i></button>`
       :`<button class="btn btn-success btn-full btn-lg" onclick="finishProt()"><i class="ti ti-printer"></i> Abschließen & Drucken</button>`}
   </div>
-  <div style="margin-top:10px"><button class="btn btn-full" onclick="speichereProtUndSchliessen()"><i class="ti ti-device-floppy"></i> Speichern & schließen (später weiter)</button></div>`;
+  <div class="f-row" style="margin-top:10px">
+    <button class="btn btn-full" onclick="speichereProtUndSchliessen()"><i class="ti ti-device-floppy"></i> Speichern & schließen</button>
+    <button class="btn btn-full btn-danger" onclick="protAbbrechen()"><i class="ti ti-x"></i> Abbrechen</button>
+  </div>`;
 
   document.getElementById('page-protokoll').innerHTML=
     `<div class="steps">${stepsH}</div>`+getProtStep(step)+nav2;
 
   if(step===1) renderProtRaeume();
   if(step===5){ pSigPads={}; setTimeout(initSigs,200); }
+  if(step===0){ setTimeout(befuelleProtMieterDropdown, 60); }
+}
+
+// Füllt das Mieter-Auswahl-Dropdown im Protokoll-Schritt 0 mit den Mietern der Wohnung.
+function befuelleProtMieterDropdown(){
+  const sel=document.getElementById('protMieterSelect');
+  if(!sel) return;
+  const list=window._protMieterListe||[];
+  let opts='<option value="">– bitte wählen / manuell eingeben –</option>';
+  list.forEach(m=>{
+    const label=(m.mieter||m.name||'(ohne Name)')+(m.weNr?` · WE ${m.weNr}`:'')+(m._zukuenftig?' · künftig':'')+(m.leerstand?' · Leerstand':'');
+    const sel2=(PD&&PD.mieterId===m.id)?' selected':'';
+    opts+=`<option value="${m.id}"${sel2}>${esc(label)}</option>`;
+  });
+  sel.innerHTML=opts;
+}
+
+// Übernimmt den gewählten Mieter (inkl. Vor-/Nachname-Trennung bei zwei Vertragspartnern).
+async function protMieterGewaehlt(mieterId){
+  if(!mieterId || !PD) return;
+  const m=(window._protMieterListe||[]).find(x=>x.id===mieterId) || await idbGet('mieter',mieterId).catch(()=>null);
+  if(!m) return;
+  // Vertragspartner aus personen_liste trennen
+  let name1='', name2='';
+  const lebend=(m.personen_liste||[]).filter(p=>p && p.name && !p.verstorben);
+  const vp=lebend.filter(p=>p.vertragspartner);
+  const basis = vp.length ? vp : lebend;
+  if(basis.length){ name1=(basis[0].name||'').trim(); if(basis.length>1) name2=(basis[1].name||'').trim(); }
+  if(!name1) name1=(m.mieter||'').trim();
+  PD.mieterId=m.id;
+  PD.mieterName=name1;
+  PD.mieter2Name=name2;
+  PD.mietKontakt=m.telefon||PD.mietKontakt||'';
+  if(m.weNr) PD.weNr=m.weNr;
+  // Eingabefelder live aktualisieren
+  const i1=document.getElementById('protMieterNameInput'); if(i1) i1.value=name1;
+  const i2=document.getElementById('protMieter2NameInput'); if(i2) i2.value=name2;
+  const ik=document.getElementById('protMietKontaktInput'); if(ik) ik.value=PD.mietKontakt;
+  if(!PD._adminEditOriginal){ PD.status='draft'; idbPut('protokolle',PD).catch(()=>{}); }
+  toast(name2?'Beide Mieter übernommen':'Mieter übernommen');
+}
+
+// Protokoll-Erstellung abbrechen und verwerfen (Entwurf wird NICHT gespeichert).
+async function protAbbrechen(){
+  if(!PD){ nav('dashboard','Übersicht',''); return; }
+  // Admin-Bearbeitung eines fertigen Protokolls: Original niemals löschen, nur Wizard verlassen
+  if(PD._adminEditOriginal){
+    const objId=PD.objektId; PD=null;
+    if(objId) await showObjekt(objId); else nav('dashboard','Übersicht','');
+    toast('Bearbeitung abgebrochen');
+    return;
+  }
+  if(!confirm('Protokoll wirklich abbrechen?\n\nAlle Eingaben dieses Protokolls gehen verloren und werden nicht gespeichert.')) return;
+  const objId=PD.objektId;
+  const id=PD.id;
+  PD=null;
+  // Bereits als Draft gespeicherten Zwischenstand entfernen (Hard-Delete, da bewusst verworfen)
+  try{ await idbDelete('protokolle', id); }catch(e){ console.warn('Abbrechen-Löschung:', e); }
+  try{ localStorage.removeItem('openProtokoll'); }catch(e){}
+  toast('Protokoll verworfen');
+  if(objId) await showObjekt(objId); else nav('dashboard','Übersicht','');
 }
 
 // Aktuellen Protokoll-Entwurf sichern und den Wizard verlassen (Weiterarbeiten später möglich).
 async function speichereProtUndSchliessen(){
   if(!PD){ nav('dashboard','Übersicht',''); return; }
-  // Auf dem Unterschriften-Schritt evtl. gezeichnete Sigs aus den Canvas übernehmen
   try{ ['sigV','sigM','sigM2','sigZ'].forEach(id=>{ if(document.getElementById(id)) saveSigToMemory(id); }); }catch(e){}
   if(!PD._adminEditOriginal){ PD.status='draft'; }
   try{ await idbPut('protokolle', PD); }catch(e){ console.warn('Speichern&Schließen:', e); }
@@ -20442,11 +20517,17 @@ function getProtStep(step){
         <div class="f"><label>Vermieter / Verwalter</label><input value="${d.vermName}" onchange="PD.vermName=this.value"></div>
         <div class="f"><label>Funktion</label><input value="${d.vermFunktion}" onchange="PD.vermFunktion=this.value"></div>
       </div>
-      <div class="f-row">
-        <div class="f"><label>Mieter</label><input value="${d.mieterName}" onchange="PD.mieterName=this.value"></div>
-        <div class="f"><label>Telefon / Kontakt</label><input value="${d.mietKontakt}" onchange="PD.mietKontakt=this.value"></div>
+      <div class="f">
+        <label>Mieter aus Wohnung übernehmen</label>
+        <select id="protMieterSelect" onchange="protMieterGewaehlt(this.value)" style="width:100%;padding:9px;border:1px solid var(--ink-10);border-radius:8px;font-size:14px;font-family:var(--font);background:#fff">
+          <option value="">– bitte wählen / manuell eingeben –</option>
+        </select>
       </div>
-      <div class="f"><label>2. Mieter (optional)</label><input value="${d.mieter2Name||''}" onchange="PD.mieter2Name=this.value" placeholder="Name des zweiten Mieters"></div>
+      <div class="f-row">
+        <div class="f"><label>Mieter</label><input id="protMieterNameInput" value="${d.mieterName}" onchange="PD.mieterName=this.value"></div>
+        <div class="f"><label>Telefon / Kontakt</label><input id="protMietKontaktInput" value="${d.mietKontakt}" onchange="PD.mietKontakt=this.value"></div>
+      </div>
+      <div class="f"><label>2. Mieter (optional)</label><input id="protMieter2NameInput" value="${d.mieter2Name||''}" onchange="PD.mieter2Name=this.value" placeholder="Name des zweiten Mieters"></div>
       <div class="f"><label>Neue Adresse des Mieters</label><input value="${d.mieterNeu}" onchange="PD.mieterNeu=this.value" placeholder="Straße, PLZ Ort"></div>
       <div class="f-row">
         <div class="f"><label>Weitere Person (Zeuge)</label><input value="${d.zeugeName}" onchange="PD.zeugeName=this.value"></div>
@@ -21277,10 +21358,16 @@ ${(d.aenderungen&&d.aenderungen.length)?`<div style="margin-top:12px;padding:8px
 
 </body></html>`);
   win.document.close();
-  // Wie alle anderen Dokumente direkt über die Vorschau drucken (zuverlässig auf
-  // Samsung-PWA). Der frühere Umweg über printViaIframe erzeugte teils leere Seiten.
+  // Identischer, erprobter Druckweg wie Mietbescheinigung/Brief: eingebettetes
+  // Auto-Print-Script + Dateiname. druckHTML zeigt die Vorschau (Script wird dort
+  // entfernt) und druckt beim Button-Klick zuverlässig auf Samsung-PWA.
+  const dateiname = 'Protokoll_'+(d.objektName||'').replace(/[^\wäöüÄÖÜ]+/g,'_')+'_WE'+(d.weNr||'');
+  let finalHtml = win._html.replace('</body></html>',
+    '<scr'+'ipt>(function(){var p=function(){setTimeout(function(){window.focus();window.print();},500);};if(document.readyState===\'complete\'){p();}else{window.addEventListener(\'load\',p);}})()</scr'+'ipt></body></html>');
   if(typeof druckHTML==='function'){
-    druckHTML(win._html, 'Übergabeprotokoll – '+(d.objektName||'')+' WE '+(d.weNr||''));
+    druckHTML(finalHtml, 'Übergabeprotokoll – '+(d.objektName||'')+' WE '+(d.weNr||''), dateiname);
+  } else if(typeof oeffneDruckDokument==='function'){
+    oeffneDruckDokument(finalHtml, 'Übergabeprotokoll');
   } else {
     printViaIframe(win._html);
   }
@@ -25583,6 +25670,8 @@ async function openFoto(src, caption='') {
   document.getElementById('fotoOverlayImg').src = src;
   document.getElementById('fotoOverlayCaption').textContent = caption;
   document.getElementById('fotoOverlay').classList.add('open');
+  // History-Eintrag, damit die Zurück-Taste die Vollansicht schließt (nicht die Seite verlässt)
+  try{ history.pushState({fotoOpen:true}, '', window.location.pathname); }catch(_){}
 }
 function closeFotoOverlay() {
   document.getElementById('fotoOverlay').classList.remove('open');
