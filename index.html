@@ -794,7 +794,7 @@ body.printing-active #printRoot{display:block!important}
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=28;
-const APP_VERSION = '2026-06-26-v140';
+const APP_VERSION = '2026-06-28-v141';
 /* v94 (19.06.2026): Etappe 1 – Lokale Benachrichtigungen erweitert (Termine + Maengel).
    - checkFaelligeAufgaben() prueft jetzt zusaetzlich:
      a) Termin-Erinnerungen: Termine mit gesetztem Erinnerungs-Vorlauf (1/2/7 Tage)
@@ -1413,6 +1413,7 @@ async function initApp(){
   updateBadge();
   initMSAL();
   initNotifications();
+  initMailPoller();
   updateKalBadge();
   pruefeMonatsuebertrag();
   // Vergessene Zeiterfassung: spätestens 00:00 auto-beendet → Korrektur erzwingen
@@ -4013,10 +4014,34 @@ async function mailRenderNachrichten(body){
       </div>
       ${n.objektName||n.objekt?`<div style="font-size:12px;color:var(--ink-60);margin-top:6px"><i class="ti ti-building"></i> ${esc(n.objektName||n.objekt)}</div>`:''}
       ${n.nachricht||n.text?`<div style="font-size:13px;color:var(--ink);margin-top:8px;white-space:pre-wrap;line-height:1.5">${esc(n.nachricht||n.text)}</div>`:''}
-      ${n.email?`<div style="margin-top:10px"><a class="btn btn-sm btn-primary" href="mailto:${esc(n.email)}"><i class="ti ti-mail-forward"></i> Antworten</a></div>`:''}
+      <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+        ${n.email?`<a class="btn btn-sm btn-primary" href="mailto:${esc(n.email)}"><i class="ti ti-mail-forward"></i> Antworten</a>`:''}
+        <button class="btn btn-sm" onclick="mailNachrichtErledigt('${esc(n.id||'')}', this)"><i class="ti ti-check"></i> Erledigt</button>
+      </div>
     </div>`;
   }
   body.innerHTML=html;
+}
+
+// Website-Nachricht als gelesen/verarbeitet markieren (optimistisch).
+// Backend-Route robust: /api/inbox-mark-read; Fehler/404 werden ignoriert, Eintrag verschwindet trotzdem.
+async function mailNachrichtErledigt(id, btn){
+  if(!id){ toast('Keine ID'); return; }
+  const karte = btn && btn.closest ? btn.closest('div[style*="border"]') : null;
+  // optimistisch ausblenden
+  if(karte) karte.style.display='none';
+  const key=(await idbGet('settings','backendKey').catch(()=>null))?.value;
+  if(key){
+    try{
+      await fetch(BACKEND_AZURE+'/api/inbox-mark-read',{
+        method:'POST', headers:{'Content-Type':'application/json','x-functions-key':key},
+        body:JSON.stringify({ id })
+      });
+    }catch(_){}
+  }
+  toast('Als erledigt markiert ✓');
+  _mailBadgeLetzter = 0;            // Badge sofort neu zählen lassen
+  updateMailBadge();
 }
 
 // ── Token-Versand (Selbstauskunft-Link) ──
@@ -9907,6 +9932,7 @@ async function updateBadge(){
 // P9 – Mail-Badge: Anzahl offener Selbstauskünfte (+ Website-Nachrichten).
 // Schlank gehalten: nur für Verwalter mit hinterlegtem Backend-Key; Fehler werden ignoriert.
 let _mailBadgeLetzter = 0;
+let _mailLetztStand = null;   // {sa, msg} vom letzten Abruf – für In-App-Notifier
 async function updateMailBadge(){
   const badge=document.getElementById('mailBadge');
   if(!badge) return;
@@ -9916,17 +9942,51 @@ async function updateMailBadge(){
   _mailBadgeLetzter = Date.now();
   const key=(await idbGet('settings','backendKey').catch(()=>null))?.value;
   if(!key){ badge.style.display='none'; return; }
-  let n=0;
+  let sa=0, msg=0;
   try{
     const r1=await fetch(BACKEND_AZURE+'/api/inbox-sa',{ headers:{'x-functions-key':key} });
-    if(r1.ok){ const l=await r1.json().catch(()=>[]); n+=Array.isArray(l)?l.length:0; }
+    if(r1.ok){ const l=await r1.json().catch(()=>[]); sa=Array.isArray(l)?l.length:0; }
   }catch(e){}
   try{
     const r2=await fetch(BACKEND_AZURE+'/api/inbox',{ headers:{'x-functions-key':key} });
-    if(r2.ok){ const l=await r2.json().catch(()=>[]); n+=Array.isArray(l)?l.length:0; }
+    if(r2.ok){ const l=await r2.json().catch(()=>[]); msg=Array.isArray(l)?l.length:0; }
   }catch(e){}
+  const n = sa + msg;
   badge.style.display = n?'flex':'none';
   badge.textContent = n>99?'99+':n;
+  // In-App-Notifier: nur bei echtem Anstieg gegenüber vorigem Abruf,
+  // nicht beim allerersten Stand und nicht, während der Mail-Tab offen ist.
+  if(_mailLetztStand){
+    const neuSa  = Math.max(0, sa  - _mailLetztStand.sa);
+    const neuMsg = Math.max(0, msg - _mailLetztStand.msg);
+    if((neuSa+neuMsg)>0 && curPage!=='mail'){
+      const teile=[];
+      if(neuSa)  teile.push(neuSa +' neue '+(neuSa===1 ?'Selbstauskunft':'Selbstauskünfte'));
+      if(neuMsg) teile.push(neuMsg+' neue '+(neuMsg===1?'Nachricht':'Nachrichten'));
+      mailNotifierBanner(teile.join(' · '));
+    }
+  }
+  _mailLetztStand = { sa, msg };
+}
+
+// Dezentes, tappbares In-App-Banner (nur bei geöffneter App). Kein Service-Worker.
+function mailNotifierBanner(text){
+  try{
+    let b=document.getElementById('mailNotifier');
+    if(!b){
+      b=document.createElement('div');
+      b.id='mailNotifier';
+      b.style.cssText='position:fixed;left:50%;transform:translateX(-50%);bottom:78px;z-index:9999;'
+        +'background:var(--accent,#185FA5);color:#fff;padding:11px 16px;border-radius:24px;'
+        +'box-shadow:0 4px 16px rgba(0,0,0,.25);font-size:13px;font-weight:600;cursor:pointer;'
+        +'display:flex;align-items:center;gap:8px;max-width:90vw';
+      b.onclick=()=>{ b.remove(); if(typeof nav==='function') nav('mail'); };
+      document.body.appendChild(b);
+    }
+    b.innerHTML='<i class="ti ti-mail"></i> '+esc(text)+' <span style="opacity:.7;font-weight:400">· öffnen</span>';
+    clearTimeout(b._t);
+    b._t=setTimeout(()=>{ if(b&&b.parentElement) b.remove(); }, 8000);
+  }catch(_){}
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -10456,6 +10516,16 @@ async function requestNotificationPermission() {
 }
 
 // Tägliche Prüfung beim App-Start
+// Mail-Poller: prüft bei geöffneter App alle 2 Min auf neue Selbstauskünfte/Nachrichten.
+// Keine echten Push-Benachrichtigungen – nur In-App, solange die App sichtbar ist.
+let _mailPollTimer=null;
+function initMailPoller(){
+  if(_mailPollTimer) return;
+  const tick=()=>{ if(document.visibilityState==='visible') updateMailBadge(); };
+  tick();
+  _mailPollTimer=setInterval(tick, 130000); // knapp über der 2-Min-Drossel in updateMailBadge
+}
+
 function initNotifications() {
   if (!('Notification' in window)) return;
   if (Notification.permission === 'granted') {
@@ -26515,6 +26585,9 @@ document.addEventListener('visibilitychange', () => {
     if(!PD._adminEditOriginal) PD.status = 'draft';
     idbPut('protokolle', PD).catch(e => console.warn('Auto-Sicherung (hidden):', e));
     try { localStorage.setItem('openProtokoll', JSON.stringify({ id: PD.id, step: PD._draftStep||0, ts: Date.now() })); } catch(e) {}
+  }
+  if (document.visibilityState === 'visible' && typeof updateMailBadge === 'function') {
+    updateMailBadge();
   }
 });
 
