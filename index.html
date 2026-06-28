@@ -794,7 +794,7 @@ body.printing-active #printRoot{display:block!important}
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=28;
-const APP_VERSION = '2026-06-25-v137';
+const APP_VERSION = '2026-06-25-v138';
 /* v94 (19.06.2026): Etappe 1 – Lokale Benachrichtigungen erweitert (Termine + Maengel).
    - checkFaelligeAufgaben() prueft jetzt zusaetzlich:
      a) Termin-Erinnerungen: Termine mit gesetztem Erinnerungs-Vorlauf (1/2/7 Tage)
@@ -20228,15 +20228,28 @@ async function buildPD(objId,mietId,art){
   // Hinterlegte Unterschrift des aktuellen Benutzers automatisch übernehmen
   let meineSig='';
   try{ const u=await idbGet('users',CU?.id); meineSig=u?.signatur||CU?.signatur||''; }catch(e){}
+  // Mehrere Mieter getrennt erfassen: Vertragspartner aus personen_liste auf
+  // Mieter 1 (mieterName) und Mieter 2 (mieter2Name) aufteilen, jeweils "Vorname Nachname".
+  let name1='', name2='';
+  if(m){
+    const lebend=(m.personen_liste||[]).filter(p=>p && p.name && !p.verstorben);
+    const vp=lebend.filter(p=>p.vertragspartner);
+    const basis = vp.length ? vp : lebend;
+    if(basis.length){
+      name1=(basis[0].name||'').trim();
+      if(basis.length>1) name2=(basis[1].name||'').trim();
+    }
+    if(!name1) name1=(m.mieter||'').trim();
+  }
   return {
     id:uid(),objektId:objId,mieterId:mietId,
     objektName:obj?.name||'',objektOrt:obj?.ort||'',
     weNr:m?.weNr||'',etage:m?.etage||'',
-    mieterName:m?.mieter||'',mieterNeu:'',mietKontakt:m?.telefon||'',
+    mieterName:name1,mieterNeu:'',mietKontakt:m?.telefon||'',
     flaeche:m?.flaeche||'',art,
     datum:today(),uhrzeitStart:'',uhrzeitEnd:'',
     vermName:CU?.name||'',vermFunktion:istVerwalter()?'Eigentümer / Hausverwaltung':'Hausmeister',
-    zeugeName:'',zeugeFunktion:'',mieter2Name:'',
+    zeugeName:'',zeugeFunktion:'',mieter2Name:name2,
     raeume:Object.fromEntries(ROOMS.map(r=>[r,{conditions:{},notes:'',photos:[]}])),
     zaehler:[{typ:'Stromzähler',nr:'',stand:'',einheit:'kWh'},{typ:'Gaszähler',nr:'',stand:'',einheit:'m³'},
              {typ:'Wasserzähler kalt',nr:'',stand:'',einheit:'m³'},{typ:'Wasserzähler warm',nr:'',stand:'',einheit:'m³'}],
@@ -20278,6 +20291,34 @@ async function erzeugeEinzugsprotokoll(abnahme){
     fotos:(m.fotos||[]).slice(),
     nummer:m.nummer||'',
   }));
+  // Zusätzlich: alle nicht-einwandfreien Bauteilzustände mit Notiz ODER Foto übernehmen,
+  // auch wenn dafür kein formaler "Beschädigt"-Mangel angelegt wurde. So gehen Mängel,
+  // die nur als Zustand+Foto erfasst wurden, im Einzugsprotokoll nicht verloren.
+  const schonErfasst=new Set(uebernommene.map(u=>u.titel));
+  const OK_ZUSTAENDE=new Set(['Einwandfrei','Entfällt','','Nicht vorhanden']);
+  for(const rn of Object.keys(abnahme.raeume||{})){
+    const r=abnahme.raeume[rn]||{};
+    const conds=r.conditions||{};
+    for(const cond of Object.keys(conds)){
+      const val=conds[cond];
+      if(OK_ZUSTAENDE.has(val)) continue;
+      const titel=rn+' – '+cond;
+      if(schonErfasst.has(titel)) continue;
+      const note=(r.condNotes&&r.condNotes[cond])||'';
+      const fotos=(r.condPhotos&&Array.isArray(r.condPhotos[cond]))?r.condPhotos[cond].slice():[];
+      // Nur übernehmen, wenn es etwas Konkretes gibt (Notiz, Foto) oder ein Schaden-Zustand
+      if(!note && !fotos.length && val!=='Beschädigt' && val!=='Renovierungsbedarf') continue;
+      uebernommene.push({
+        quelleMangelId:null,
+        quelleProtId:abnahme.id,
+        titel,
+        beschreibung:note?note.trim():('Zustand: '+val),
+        fotos,
+        nummer:'',
+      });
+      schonErfasst.add(titel);
+    }
+  }
   let meineSig='';
   try{ const u=await idbGet('users',CU?.id); meineSig=u?.signatur||CU?.signatur||''; }catch(e){}
   const einzug={
@@ -20603,7 +20644,7 @@ function setRoomCondFull(room,cond,val){
     const existing=(PD._autoMaengel||[]).find(m=>m.titel===titel);
     if(!existing){
       const mangel={
-        id:uid(),type:'mangel',
+        id:uid(),type:'mangel',protId:PD.id,
         objektId:PD.objektId,mieterId:PD.mieterId||null,
         weNr:PD.weNr||'',
         titel,schwere:'mittel',
@@ -21004,9 +21045,25 @@ async function viewProtokoll(id){
     ${aendH}
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:16px">
       <button class="btn btn-sm btn-copper" onclick="printProt('${id}')"><i class="ti ti-printer"></i> PDF / Drucken</button>
+      ${String(p.art||'').includes('Auszug')?`<button class="btn btn-sm" onclick="einzugAusAbnahme('${id}')"><i class="ti ti-arrow-down-circle"></i> Einzugsprotokoll erzeugen</button>`:''}
       ${istAdmin?`<button class="btn btn-sm" onclick="adminEditProtokoll('${id}')"><i class="ti ti-edit"></i> Ändern (Admin)</button>`:''}
       <button class="btn btn-sm" onclick="closeModal()">Schließen</button>
     </div>`);
+}
+
+// Erzeugt nachträglich ein (weiteres) Einzugsprotokoll aus einem abgeschlossenen
+// Abnahmeprotokoll – z. B. wenn der automatisch angelegte Entwurf gelöscht wurde
+// oder ein neuer für andere Mieter gebraucht wird.
+async function einzugAusAbnahme(id){
+  const p=await idbGet('protokolle',id);
+  if(!p){ return; }
+  if(!confirm('Aus diesem Abnahmeprotokoll ein neues Einzugsprotokoll erzeugen?\n\nAlle Räume, Zustände, Fotos und Mängel werden übernommen. Das Abnahmeprotokoll bleibt unverändert.')) return;
+  try{
+    const ez=await erzeugeEinzugsprotokoll(p);
+    closeModal();
+    toast('Einzugsprotokoll erzeugt – wird geöffnet');
+    if(ez&&ez.id) await editProtokoll(ez.id);
+  }catch(e){ console.warn('Einzug aus Abnahme:', e); toast('Konnte nicht erzeugt werden'); }
 }
 
 // Admin-Bearbeitung eines fertigen Protokolls: Wizard öffnen, Originalzustand merken
@@ -21169,6 +21226,7 @@ tr{page-break-inside:avoid}
   <div class="mi"><strong>Art</strong>${d.art||'–'}</div>
   <div class="mi"><strong>Vermieter / Verwalter</strong>${d.vermName}${d.vermFunktion?' ('+d.vermFunktion+')':''}</div>
   <div class="mi"><strong>Mieter</strong>${d.mieterName||'–'}${d.mietKontakt?' · '+d.mietKontakt:''}</div>
+  ${d.mieter2Name?`<div class="mi"><strong>2. Mieter</strong>${d.mieter2Name}</div>`:''}
   ${d.mieterNeu?`<div class="mi"><strong>Neue Adresse</strong>${d.mieterNeu}</div>`:'<div></div>'}
   ${d.tgNr?`<div class="mi"><strong>TG-Stellplatz</strong>Nr. ${d.tgNr}</div>`:''}
   ${d.zeugeName?`<div class="mi"><strong>Zeuge</strong>${d.zeugeName}${d.zeugeFunktion?' ('+d.zeugeFunktion+')':''}</div>`:''}
@@ -21219,7 +21277,13 @@ ${(d.aenderungen&&d.aenderungen.length)?`<div style="margin-top:12px;padding:8px
 
 </body></html>`);
   win.document.close();
-  printViaIframe(win._html);
+  // Wie alle anderen Dokumente direkt über die Vorschau drucken (zuverlässig auf
+  // Samsung-PWA). Der frühere Umweg über printViaIframe erzeugte teils leere Seiten.
+  if(typeof druckHTML==='function'){
+    druckHTML(win._html, 'Übergabeprotokoll – '+(d.objektName||'')+' WE '+(d.weNr||''));
+  } else {
+    printViaIframe(win._html);
+  }
 }
 
 /* ═══════════════════════════════════════════════════════════
