@@ -793,8 +793,8 @@ body.printing-active #printRoot{display:block!important}
 /* ═══════════════════════════════════════════════════════════
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
-const DB_NAME='immo_v2', DB_VER=28;
-const APP_VERSION = '2026-06-28-v141';
+const DB_NAME='immo_v2', DB_VER=29;
+const APP_VERSION = '2026-06-28-v142';
 /* v94 (19.06.2026): Etappe 1 – Lokale Benachrichtigungen erweitert (Termine + Maengel).
    - checkFaelligeAufgaben() prueft jetzt zusaetzlich:
      a) Termin-Erinnerungen: Termine mit gesetztem Erinnerungs-Vorlauf (1/2/7 Tage)
@@ -894,7 +894,7 @@ function openIDB(){
     const req=indexedDB.open(DB_NAME,DB_VER);
     req.onupgradeneeded=e=>{
       const db=e.target.result;
-      ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','fotos','wartung','zaehler','zaehlerstaende','versorger','versorger_archiv','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','ventile','ventilpruefung','taetigkeit_log','sync_log','mieter_snapshots','branchenbuch','interessenten','od_dateien','buchungen','mietbescheinigungen','mv_entwuerfe','selbstauskuenfte'].forEach(s=>{
+      ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','fotos','wartung','zaehler','zaehlerstaende','versorger','versorger_archiv','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','ventile','ventilpruefung','taetigkeit_log','sync_log','mieter_snapshots','branchenbuch','interessenten','od_dateien','buchungen','mietbescheinigungen','mv_entwuerfe','selbstauskuenfte','tenant_mails'].forEach(s=>{
         if(!db.objectStoreNames.contains(s)){
           const store=db.createObjectStore(s,{keyPath:'id'});
           if(s==='mieter'){store.createIndex('objektId','objektId');store.createIndex('weNr','weNr')}
@@ -929,6 +929,7 @@ function openIDB(){
           if(s==='mietbescheinigungen'){store.createIndex('mieterId','mieterId');store.createIndex('objektId','objektId')}
           if(s==='mv_entwuerfe'){store.createIndex('mieterId','mieterId');store.createIndex('objektId','objektId')}
           if(s==='selbstauskuenfte'){store.createIndex('objektId','objektId');store.createIndex('status','status')}
+          if(s==='tenant_mails'){store.createIndex('mieterId','mieterId');store.createIndex('objektId','objektId')}
         }
       });
     };
@@ -3932,12 +3933,16 @@ async function renderMail(){
     <div class="tab-bar" style="margin-bottom:12px">
       <button class="tab-btn ${tab==='sa'?'active':''}" onclick="setMailTab('sa')"><i class="ti ti-file-description"></i> Selbstauskünfte <span id="mailCountSa"></span></button>
       <button class="tab-btn ${tab==='nachrichten'?'active':''}" onclick="setMailTab('nachrichten')"><i class="ti ti-message"></i> Nachrichten <span id="mailCountMsg"></span></button>
+      <button class="tab-btn ${tab==='mieter'?'active':''}" onclick="setMailTab('mieter')"><i class="ti ti-mail-fast"></i> Mieter-Mail</button>
       <button class="tab-btn ${tab==='token'?'active':''}" onclick="setMailTab('token')"><i class="ti ti-send"></i> Link senden</button>
+      <button class="tab-btn ${tab==='papierkorb'?'active':''}" onclick="setMailTab('papierkorb')"><i class="ti ti-trash"></i> Papierkorb</button>
     </div>
     <div id="mailBody"><p style="font-size:13px;color:var(--ink-40)">Lade …</p></div>`;
   const body = document.getElementById('mailBody');
   if(tab==='sa')               await mailRenderSA(body);
   else if(tab==='nachrichten') await mailRenderNachrichten(body);
+  else if(tab==='mieter')      await mailRenderMieterMail(body);
+  else if(tab==='papierkorb')  await mailRenderPapierkorb(body);
   else                         await mailRenderToken(body);
 }
 
@@ -4131,6 +4136,149 @@ async function mailTokenSenden(){
   }catch(e){
     setSt('<span style="color:var(--red,#c0392b);font-size:13px">Backend nicht erreichbar.</span>');
   }
+}
+
+/* ════════════════════════════════════════════════════════════════
+   Mieter-Mail (Tenant-Mail) – App-Seite
+   Versand über Backend /api/send-mail (Function-Key). Jede gesendete
+   Mail wird im Store tenant_mails protokolliert (mit Sync).
+   ════════════════════════════════════════════════════════════════ */
+async function mailRenderMieterMail(body){
+  // Mieterliste mit E-Mail
+  let mieter=[]; try{ mieter=await idbGetAll('mieter'); }catch(e){ mieter=[]; }
+  const mitMail=(mieter||[]).filter(m=>m && m.email && !istWohnungFaktischLeer(m)).sort((a,b)=>String(hauptmieterNameVoll(a)||'').localeCompare(String(hauptmieterNameVoll(b)||'')));
+  const opts=mitMail.map(m=>{
+    const obj=getObj(m.objektId);
+    const lbl=`${hauptmieterNameVoll(m)} · ${obj?.name||''} WE ${esc(String(m.weNr||''))}`;
+    return `<option value="${esc(m.id)}" data-mail="${esc(m.email)}" data-objekt="${esc(m.objektId||'')}">${esc(lbl)}</option>`;
+  }).join('');
+  // letzte gesendete Mails
+  let verlauf=[]; try{ verlauf=await idbGetAll('tenant_mails'); }catch(e){ verlauf=[]; }
+  verlauf=(verlauf||[]).filter(x=>x&&!x._papierkorb).sort((a,b)=>String(b.gesendet||'').localeCompare(String(a.gesendet||''))).slice(0,8);
+
+  body.innerHTML=`
+    <div style="background:var(--white);border:1px solid var(--ink-10);border-radius:var(--radius);padding:14px">
+      <p style="font-size:13px;color:var(--ink-60);margin-bottom:12px;line-height:1.6">
+        Schreiben Sie einem Mieter direkt aus der App. Versand über <code>info@nadigpfau.de</code>. Die Mail wird hier protokolliert.
+      </p>
+      <label style="font-size:12px;color:var(--ink-40);display:block;margin-bottom:4px">Empfänger (Mieter)</label>
+      <select id="tmMieter" onchange="tenantMailMieterGewaehlt()" style="width:100%;margin-bottom:8px">
+        <option value="">– Mieter wählen –</option>${opts}
+      </select>
+      <div class="f"><label>E-Mail-Adresse</label>
+        <input type="email" id="tmMail" placeholder="wird aus Auswahl gefüllt" autocomplete="off"></div>
+      <div class="f"><label>Betreff</label>
+        <input type="text" id="tmBetreff" placeholder="z. B. Ankündigung Heizungswartung"></div>
+      <div class="f"><label>Nachricht</label>
+        <textarea id="tmText" spellcheck="true" lang="de" style="min-height:160px" placeholder="Sehr geehrte/r …"></textarea></div>
+      <label style="font-size:12px;display:flex;align-items:center;gap:6px;margin:4px 0 10px">
+        <input type="checkbox" id="tmSig" checked> Grußformel & Absender automatisch anhängen</label>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-primary" onclick="tenantMailSenden()"><i class="ti ti-send"></i> Senden</button>
+      </div>
+      <div id="tmStatus" style="margin-top:10px"></div>
+    </div>
+    ${verlauf.length?`
+    <div style="margin-top:16px">
+      <div class="f-section-title"><i class="ti ti-history"></i> Zuletzt gesendet</div>
+      ${verlauf.map(v=>`
+        <div style="background:var(--white);border:1px solid var(--ink-10);border-radius:10px;padding:10px 12px;margin-bottom:6px">
+          <div style="font-size:13px;font-weight:600">${esc(v.betreff||'(ohne Betreff)')}</div>
+          <div style="font-size:11px;color:var(--ink-40)">an ${esc(v.empfaengerName||v.email||'')} · ${v.gesendet?new Date(v.gesendet).toLocaleString('de-DE'):''} ${v.status==='fehler'?'· <span style="color:#b91c1c">nicht zugestellt</span>':'· ✓'}</div>
+        </div>`).join('')}
+    </div>`:''}`;
+}
+
+function tenantMailMieterGewaehlt(){
+  const sel=document.getElementById('tmMieter');
+  const opt=sel?.options[sel.selectedIndex];
+  const mailEl=document.getElementById('tmMail');
+  if(mailEl && opt) mailEl.value=opt.getAttribute('data-mail')||'';
+}
+
+async function tenantMailSenden(){
+  const sel=document.getElementById('tmMieter');
+  const opt=sel?.options[sel.selectedIndex];
+  const mieterId=sel?.value||'';
+  const empfaengerName=opt?opt.textContent.split(' · ')[0]:'';
+  const mail=(document.getElementById('tmMail')?.value||'').trim();
+  const betreff=(document.getElementById('tmBetreff')?.value||'').trim();
+  let text=(document.getElementById('tmText')?.value||'').trim();
+  const mitSig=document.getElementById('tmSig')?.checked;
+  const st=(h)=>{ const e=document.getElementById('tmStatus'); if(e) e.innerHTML=h; };
+  if(!mail || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(mail)){ st('<span style="color:#b91c1c;font-size:13px">Bitte gültige E-Mail-Adresse.</span>'); return; }
+  if(!betreff){ st('<span style="color:#b91c1c;font-size:13px">Bitte einen Betreff angeben.</span>'); return; }
+  if(!text){ st('<span style="color:#b91c1c;font-size:13px">Bitte einen Text eingeben.</span>'); return; }
+  if(mitSig){
+    text += '\n\nMit freundlichen Grüßen\nNadig Pfau Hausverwaltung\ninfo@nadigpfau.de';
+  }
+  st('<span style="font-size:13px;color:var(--ink-40)">Wird gesendet …</span>');
+  const key=(await idbGet('settings','backendKey').catch(()=>null))?.value;
+  const rec={
+    id:'tm_'+Date.now().toString(36),
+    mieterId, objektId:(opt?.getAttribute('data-objekt'))||'',
+    empfaengerName, email:mail, betreff, text,
+    gesendet:new Date().toISOString(), status:'offen', geaendert:now()
+  };
+  try{
+    const res=await fetch(BACKEND_AZURE+'/api/send-mail',{
+      method:'POST', headers:{'Content-Type':'application/json','x-functions-key':key||''},
+      body:JSON.stringify({ to:mail, subject:betreff, text })
+    });
+    if(res.ok){ rec.status='gesendet'; st('<span style="color:#15803d;font-size:13px">Gesendet ✓</span>'); }
+    else { rec.status='fehler'; st('<span style="color:#b91c1c;font-size:13px">Backend-Fehler ('+res.status+'). Als Entwurf protokolliert.</span>'); }
+  }catch(e){
+    rec.status='fehler';
+    st('<span style="color:#b91c1c;font-size:13px">Versand nicht möglich (Endpunkt /api/send-mail noch nicht aktiv). Protokolliert.</span>');
+  }
+  try{ await idbPut('tenant_mails', rec); }catch(e){}
+  clearTimeout(window._syncTimer); window._syncTimer=setTimeout(()=>syncToOneDrive(),3000);
+  if(rec.status==='gesendet'){
+    ['tmBetreff','tmText'].forEach(id=>{ const e=document.getElementById(id); if(e) e.value=''; });
+  }
+  renderMail();
+}
+
+/* ── Papierkorb: gelöschte Website-Nachrichten (serverseitig via /api/inbox-trash) ── */
+async function mailRenderPapierkorb(body){
+  body.innerHTML='<p style="font-size:13px;color:var(--ink-40)">Lade Papierkorb …</p>';
+  const key=(await idbGet('settings','backendKey').catch(()=>null))?.value;
+  let liste=[];
+  try{
+    const res=await fetch(BACKEND_AZURE+'/api/inbox-trash',{ headers:{'x-functions-key':key||''} });
+    if(res.ok) liste=await res.json().catch(()=>[]);
+  }catch(e){}
+  if(!Array.isArray(liste)) liste=[];
+  if(!liste.length){
+    body.innerHTML=`<div class="empty"><i class="ti ti-trash"></i><p>Papierkorb ist leer.</p>
+      <p style="font-size:11px;color:var(--ink-40)">Erledigte/gelöschte Nachrichten erscheinen hier 30 Tage lang und können wiederhergestellt werden. Setzt den Endpunkt <code>/api/inbox-trash</code> voraus.</p></div>`;
+    return;
+  }
+  body.innerHTML=liste.map(n=>`
+    <div style="background:var(--white);border:1px solid var(--ink-10);border-radius:10px;padding:11px 13px;margin-bottom:7px">
+      <div style="font-size:13px;font-weight:600">${esc(n.name||n.email||'Nachricht')}</div>
+      <div style="font-size:12px;color:var(--ink-60);margin:4px 0">${esc((n.nachricht||n.text||'').slice(0,200))}</div>
+      <div style="font-size:11px;color:var(--ink-40)">gelöscht: ${n.geloescht?new Date(n.geloescht).toLocaleDateString('de-DE'):'—'}</div>
+      <div style="margin-top:8px;display:flex;gap:8px">
+        <button class="btn btn-sm" onclick="mailPapierkorbAktion('${esc(n.id||'')}','restore',this)"><i class="ti ti-arrow-back-up"></i> Wiederherstellen</button>
+        <button class="btn btn-sm btn-danger" onclick="mailPapierkorbAktion('${esc(n.id||'')}','delete',this)"><i class="ti ti-trash-x"></i> Endgültig löschen</button>
+      </div>
+    </div>`).join('');
+}
+
+async function mailPapierkorbAktion(id, aktion, btn){
+  if(!id) return;
+  const karte=btn&&btn.closest?btn.closest('div[style*="border"]'):null;
+  if(karte) karte.style.display='none';
+  const key=(await idbGet('settings','backendKey').catch(()=>null))?.value;
+  try{
+    await fetch(BACKEND_AZURE+'/api/inbox-trash',{
+      method:'POST', headers:{'Content-Type':'application/json','x-functions-key':key||''},
+      body:JSON.stringify({ id, aktion })
+    });
+  }catch(e){}
+  toast(aktion==='restore'?'Wiederhergestellt ✓':'Endgültig gelöscht ✓');
+  _mailBadgeLetzter=0; updateMailBadge();
 }
 
 /* ── Function-Key-Verwaltung (Settings → System) ── */
@@ -8155,6 +8303,14 @@ async function aktiviereFaelligeMieterwechsel() {
 ═══════════════════════════════════════════════════════════ */
 const HEIZUNG_ARTEN=['Gas-Zentralheizung','Öl-Zentralheizung','Fernwärme','Wärmepumpe','Gasetagenheizung','Nachtspeicher (Strom)','Pellet/Holz','Sonstige'];
 
+// ── Energieausweis nach GEG (§ 80 = Vertrag/Aushändigung, § 87 = Pflichtangaben im Inserat) ──
+// Strukturierte Pflichtangaben je Gebäude (in objekt_stamm.energieausweis).
+const ENERGIE_AUSWEISTYP = ['Verbrauchsausweis','Bedarfsausweis'];
+const ENERGIE_TRAEGER    = ['Gas','Öl','Fernwärme','Strom','Wärmepumpe (Strom)','Holz/Pellet','Sonstige'];
+const ENERGIE_KLASSEN    = ['A+','A','B','C','D','E','F','G','H'];
+// Pflichtangaben im Inserat (§ 87 GEG): Ausweistyp, Endenergiekennwert + Einheit,
+// wesentlicher Energieträger, Baujahr, Energieeffizienzklasse (bei Ausstellung ab 01.05.2014).
+
 // €/m² (Kaltmiete) eines Mieters + Ampelvergleich zum Mietspiegel.
 // Mietspiegel = ortsübliche Vergleichsmiete (netto kalt) je m² laut objekt_stamm.
 // Toleranz ±3 %: darunter rot, innerhalb grau (≈ ortsüblich), darüber grün.
@@ -8274,6 +8430,31 @@ async function saveSchluessel(objektId, weNr){
   toast('Schlüsselbestand gespeichert ✓');
 }
 
+// Baut aus den strukturierten Energiedaten den Pflicht-Anzeigetext (§ 87 GEG) für Inserat/Aushang.
+function energieausweisText(e){
+  if(!e) return '';
+  const t=[];
+  if(e.typ)      t.push(e.typ);
+  if(e.kennwert) t.push(e.kennwert+' '+(e.einheit||'kWh/(m²·a)'));
+  if(e.traeger)  t.push(e.traeger);
+  if(e.baujahr)  t.push('Bj. '+e.baujahr);
+  if(e.klasse)   t.push('Klasse '+e.klasse);
+  return t.join(' · ');
+}
+
+// Warnt, wenn der Energieausweis abgelaufen ist oder in < 3 Monaten abläuft.
+// Energieausweise sind nach GEG 10 Jahre ab Ausstellung gültig.
+function energieausweisWarnung(e){
+  if(!e || !e.gueltigBis) return '';
+  const bis=new Date(e.gueltigBis+'T00:00:00');
+  if(isNaN(bis)) return '';
+  const heute=new Date(); heute.setHours(0,0,0,0);
+  const tage=Math.round((bis-heute)/86400000);
+  if(tage<0)  return 'Energieausweis abgelaufen (seit '+bis.toLocaleDateString('de-DE')+') – Neuausstellung vor Vermietung/Inserat erforderlich.';
+  if(tage<=90) return 'Energieausweis läuft in '+tage+' Tagen ab ('+bis.toLocaleDateString('de-DE')+') – Neuausstellung einplanen.';
+  return '';
+}
+
 async function modalGebaeudeStamm(objektId){
   if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
   const obj=getObj(objektId);
@@ -8341,6 +8522,40 @@ async function modalGebaeudeStamm(objektId){
       <div style="font-size:10px;color:var(--ink-40);margin-top:2px">Hinweis für den Mieter, wie der Verwendungszweck anzugeben ist.</div></div>
     <div class="f"><label>Notiz (optional)</label>
       <textarea id="gsNotiz" spellcheck="true" lang="de" style="min-height:50px" placeholder="z. B. Dachsanierung 2021, neue Fenster ...">${esc(s.notiz||'')}</textarea></div>
+
+    <div class="f-section-title" style="margin-top:14px"><i class="ti ti-certificate"></i> Energieausweis (§ 80 / § 87 GEG)</div>
+    <div style="font-size:11px;color:var(--ink-40);margin:-4px 0 8px;line-height:1.4">Gilt für das gesamte Gebäude. Diese Angaben sind Pflicht bei Vermietung (Aushändigung, § 80) und in Immobilienanzeigen (§ 87). Werte aus dem amtlichen Ausweis übernehmen.${(function(){const e=s.energieausweis||{};const w=energieausweisWarnung(e);return w?'<br><span style=\"color:#b91c1c;font-weight:600\">'+esc(w)+'</span>':'';})()}</div>
+    <div class="f-row">
+      <div class="f"><label>Ausweistyp</label>
+        <select id="gsEnTyp"><option value="">– bitte wählen –</option>
+          ${ENERGIE_AUSWEISTYP.map(t=>`<option value="${t}" ${(s.energieausweis||{}).typ===t?'selected':''}>${t}</option>`).join('')}
+        </select></div>
+      <div class="f"><label>Wesentlicher Energieträger</label>
+        <select id="gsEnTraeger"><option value="">– bitte wählen –</option>
+          ${ENERGIE_TRAEGER.map(t=>`<option value="${t}" ${(s.energieausweis||{}).traeger===t?'selected':''}>${t}</option>`).join('')}
+        </select></div>
+    </div>
+    <div class="f-row">
+      <div class="f"><label>Endenergie-Kennwert</label>
+        <input type="number" id="gsEnKennwert" step="0.1" value="${(s.energieausweis||{}).kennwert||''}" placeholder="z. B. 118"></div>
+      <div class="f"><label>Einheit</label>
+        <input type="text" id="gsEnEinheit" value="${esc((s.energieausweis||{}).einheit||'kWh/(m²·a)')}" placeholder="kWh/(m²·a)"></div>
+    </div>
+    <div class="f-row">
+      <div class="f"><label>Energieeffizienzklasse</label>
+        <select id="gsEnKlasse"><option value="">– keine –</option>
+          ${ENERGIE_KLASSEN.map(k=>`<option value="${k}" ${(s.energieausweis||{}).klasse===k?'selected':''}>${k}</option>`).join('')}
+        </select></div>
+      <div class="f"><label>Baujahr (laut Ausweis)</label>
+        <input type="number" id="gsEnBaujahr" step="1" value="${(s.energieausweis||{}).baujahr||''}" placeholder="z. B. 1971"></div>
+    </div>
+    <div class="f-row">
+      <div class="f"><label>Ausstelldatum</label>
+        <input type="date" id="gsEnAusstell" value="${esc((s.energieausweis||{}).ausstellDatum||'')}"></div>
+      <div class="f"><label>Gültig bis</label>
+        <input type="date" id="gsEnGueltig" value="${esc((s.energieausweis||{}).gueltigBis||'')}"></div>
+    </div>
+
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="saveGebaeudeStamm('${objektId}')"><i class="ti ti-check"></i> Speichern</button>
       <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
@@ -8389,6 +8604,16 @@ async function saveGebaeudeStamm(objektId){
     ktoBank:document.getElementById('gsKtoBank')?.value?.trim()||'',
     ktoZweck:document.getElementById('gsKtoZweck')?.value?.trim()||'',
     notiz:document.getElementById('gsNotiz')?.value?.trim()||'',
+    energieausweis:{
+      typ:        document.getElementById('gsEnTyp')?.value||'',
+      traeger:    document.getElementById('gsEnTraeger')?.value||'',
+      kennwert:   document.getElementById('gsEnKennwert')?.value?.trim()||'',
+      einheit:    document.getElementById('gsEnEinheit')?.value?.trim()||'',
+      klasse:     document.getElementById('gsEnKlasse')?.value||'',
+      baujahr:    document.getElementById('gsEnBaujahr')?.value?.trim()||'',
+      ausstellDatum: document.getElementById('gsEnAusstell')?.value||'',
+      gueltigBis: document.getElementById('gsEnGueltig')?.value||'',
+    },
     geaendert:now(),
   };
   await idbPut('objekt_stamm',rec);
@@ -18860,7 +19085,7 @@ async function modalAushangErstellen(objektId, weNr, vormieterId){
       <div class="f"><label>Keller / Abteil</label><input type="text" id="ausKeller" value="${esc(keller)}" placeholder="z. B. Kellerabteil Nr. 4"></div>
     </div>
     <div class="f"><label>Energieausweis-Angabe (Pflicht für Homepage, § 87 GEG)</label>
-      <input type="text" id="ausEnergie" value="${esc(stamm.energie||'')}" placeholder="z. B. Verbrauchsausweis · 118 kWh/(m²·a) · Gas · Bj. 1971 · Klasse D"></div>
+      <input type="text" id="ausEnergie" value="${esc(stamm.energie || energieausweisText(stamm.energieausweis) || '')}" placeholder="z. B. Verbrauchsausweis · 118 kWh/(m²·a) · Gas · Bj. 1971 · Klasse D"></div>
 
     <div class="f-section-title" style="margin-top:10px"><i class="ti ti-photo"></i> Bilder für den Aushang</div>
     ${fotoWahl}
@@ -22924,7 +23149,7 @@ async function delUser(id){
 async function exportBackup(){
   if(!istSystemAdmin()){ toast('Nur für Administratoren'); return; }
   const backup={};
-  for(const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','versicherungen','versorger_archiv','od_dateien','buchungen','mietbescheinigungen','mv_entwuerfe','selbstauskuenfte']){
+  for(const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','versicherungen','versorger_archiv','od_dateien','buchungen','mietbescheinigungen','mv_entwuerfe','selbstauskuenfte','tenant_mails']){
     backup[s]=await idbGetAll(s);
   }
   backup.exportedAt=now();backup.version=2;
@@ -23129,7 +23354,7 @@ async function importBackupAusfuehren(modus){
   const backup = window._pendingBackup;
   if(!backup){ toast('Keine Backup-Datei geladen'); closeModal(); return; }
   closeModal();
-  const alleStores=['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','versorger_archiv','od_dateien','buchungen','mietbescheinigungen','mv_entwuerfe','selbstauskuenfte'];
+  const alleStores=['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','versorger_archiv','od_dateien','buchungen','mietbescheinigungen','mv_entwuerfe','selbstauskuenfte','tenant_mails'];
   try{
     await erstelleMieterSnapshot('vor Import ('+modus+')');
     if(modus==='ersetzen'){
@@ -23388,7 +23613,7 @@ async function syncToOneDrive() {
     } catch(e){ /* offline o. 404: normaler Upload-Weg unten */ }
 
     const backup = {};
-    for (const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','versorger_archiv','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','ventile','ventilpruefung','taetigkeit_log','branchenbuch','sync_log','interessenten','versicherungen','od_dateien','buchungen','mietbescheinigungen','mv_entwuerfe','selbstauskuenfte']) {
+    for (const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','versorger_archiv','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','ventile','ventilpruefung','taetigkeit_log','branchenbuch','sync_log','interessenten','versicherungen','od_dateien','buchungen','mietbescheinigungen','mv_entwuerfe','selbstauskuenfte','tenant_mails']) {
       backup[s] = await idbGetAll(s);
     }
     backup.updatedAt = new Date().toISOString();
@@ -23483,7 +23708,7 @@ async function syncFromOneDrive() {
       await idbPut('settings', { id:'tombstones', value: mergedTomb });
 
       // Merge: ID-basiert, nur übernehmen wenn remote neuer oder lokal fehlt
-      const mergeStores = ['protokolle','aufgaben','maengel','reparaturen','dokumente','nka_archiv','einkaufsliste','wartung','termine','zaehler','zaehlerstaende','versorger','versorger_archiv','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','ventile','ventilpruefung','taetigkeit_log','branchenbuch','sync_log','interessenten','od_dateien','mietbescheinigungen','mv_entwuerfe','selbstauskuenfte'];
+      const mergeStores = ['protokolle','aufgaben','maengel','reparaturen','dokumente','nka_archiv','einkaufsliste','wartung','termine','zaehler','zaehlerstaende','versorger','versorger_archiv','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','ventile','ventilpruefung','taetigkeit_log','branchenbuch','sync_log','interessenten','od_dateien','mietbescheinigungen','mv_entwuerfe','selbstauskuenfte','tenant_mails'];
       for (const s of mergeStores) {
         if (!backup[s]) continue;
         const tombS = mergedTomb[s] || {};
