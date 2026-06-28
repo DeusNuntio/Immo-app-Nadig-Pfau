@@ -794,7 +794,7 @@ body.printing-active #printRoot{display:block!important}
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=28;
-const APP_VERSION = '2026-06-25-v139';
+const APP_VERSION = '2026-06-26-v140';
 /* v94 (19.06.2026): Etappe 1 – Lokale Benachrichtigungen erweitert (Termine + Maengel).
    - checkFaelligeAufgaben() prueft jetzt zusaetzlich:
      a) Termin-Erinnerungen: Termine mit gesetztem Erinnerungs-Vorlauf (1/2/7 Tage)
@@ -21365,7 +21365,7 @@ ${(d.aenderungen&&d.aenderungen.length)?`<div style="margin-top:12px;padding:8px
   let finalHtml = win._html.replace('</body></html>',
     '<scr'+'ipt>(function(){var p=function(){setTimeout(function(){window.focus();window.print();},500);};if(document.readyState===\'complete\'){p();}else{window.addEventListener(\'load\',p);}})()</scr'+'ipt></body></html>');
   if(typeof druckHTML==='function'){
-    druckHTML(finalHtml, 'Übergabeprotokoll – '+(d.objektName||'')+' WE '+(d.weNr||''), dateiname);
+    druckHTML(finalHtml, 'Übergabeprotokoll – '+(d.objektName||'')+' WE '+(d.weNr||''), dateiname, true);
   } else if(typeof oeffneDruckDokument==='function'){
     oeffneDruckDokument(finalHtml, 'Übergabeprotokoll');
   } else {
@@ -24669,13 +24669,18 @@ function zaSollIst(buchungen, mieterListe, monate){
 // Hält das aktuell in der Vorschau angezeigte Dokument für den Druck-Button bereit.
 let _dvAktuellesHtml = '';
 let _dvDateiname = '';
+let _dvBlobDruck = false; // wenn true: Druck über eigenständigen Blob-Tab statt #printRoot
 
 // Öffnet zuerst eine sichtbare Vorschau. Gedruckt wird erst über den Button.
 // titel ist optional und erscheint in der Kopfleiste der Vorschau.
-function druckHTML(html, titel, dateiname){
+// blobDruck=true: beim Drucken wird das vollständige HTML in einem neuen Tab geöffnet
+//   (zuverlässig für eigenständige Dokumente wie das Protokoll, die im #printRoot-Weg
+//   leer blieben). Das HTML muss dann ein eingebettetes window.print()-Script enthalten.
+function druckHTML(html, titel, dateiname, blobDruck){
   try{
     _dvAktuellesHtml = html;
     _dvDateiname = dateiname || '';
+    _dvBlobDruck = !!blobDruck;
     const ov = document.getElementById('druckVorschau');
     const fr = document.getElementById('dvFrame');
     const tt = document.getElementById('dvTitel');
@@ -24713,9 +24718,19 @@ function schliesseDruckVorschau(){
 function druckVorschauDrucken(){
   const html = _dvAktuellesHtml;
   const name = _dvDateiname;
+  const blob = _dvBlobDruck;
   schliesseDruckVorschau();
   // kurze Verzögerung, damit das Overlay sicher aus dem Layout ist
-  setTimeout(()=>{ _druckJetzt(html, name); }, 60);
+  setTimeout(()=>{
+    // Eigenständige Dokumente (Protokoll): vollständiges HTML in neuem Tab öffnen.
+    // Das HTML enthält ein eigenes window.print()-Script -> Tab druckt automatisch.
+    if(blob && typeof oeffneDruckDokument==='function'){
+      const ok=oeffneDruckDokument(html, name||'Dokument');
+      if(ok) return;
+      // Falls Popup blockiert: Fallback auf In-Page-Druck
+    }
+    _druckJetzt(html, name);
+  }, 60);
 }
 
 // IN-PAGE-DRUCK (Kern): rendert das Dokument in #printRoot und druckt das Fenster.
