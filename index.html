@@ -1332,6 +1332,16 @@ async function setupDiagnose(){
         }
       } catch(e){ log.push('D3) downloadUrl FEHLER (vermutl. CSP): ' + (e&&e.message||e)); }
     }
+    // D4) Neuer Range-Download über odLadeDatei
+    try {
+      const obj = await odLadeDatei(token);
+      if(obj === null){ log.push('D4) odLadeDatei: Datei nicht gefunden (404)'); }
+      else {
+        const u = Array.isArray(obj.users) ? obj.users.length : '(kein users-Feld)';
+        log.push('D4) odLadeDatei: OK ✓  users darin: ' + u);
+        if(Array.isArray(obj.users)) log.push('   Namen: ' + obj.users.map(x=>x&&x.name).filter(Boolean).join(', '));
+      }
+    } catch(e){ log.push('D4) odLadeDatei FEHLER: ' + (e&&e.message||e)); }
     if(out){ out.textContent=log.join('\n'); }
     return;
     // (alter Code unten bleibt unerreichbar)
@@ -23760,6 +23770,46 @@ async function msalLogout() {
   renderSettings();
 };
 
+// ── Robuster Datei-Download (umgeht :/content-Redirect bei großen Dateien) ──
+// Microsoft Graph leitet :/content bei großen Dateien auf eine fremde Download-
+// Domain um; der Browser blockt das wegen CSP ("Failed to fetch"). Lösung:
+// Erst Metadaten holen (Größe), dann die Datei in Byte-Bereichen direkt vom
+// graph.microsoft.com-Endpunkt laden (Range-Requests leiten nicht um).
+// Rückgabe: geparstes JSON-Objekt oder null (404). Wirft bei echten Fehlern.
+async function odLadeDatei(token){
+  // Metadaten: existiert die Datei? Wie groß?
+  const metaR = await fetch('https://graph.microsoft.com/v1.0/me/drive/root:/NadigPfau/immo_daten.json?$select=size,name',
+    {headers:{'Authorization':'Bearer '+token}});
+  if (metaR.status === 404) return null;
+  if (!metaR.ok) throw new Error('Meta HTTP '+metaR.status);
+  const meta = await metaR.json();
+  const size = meta.size || 0;
+
+  // Kleine Dateien (<4MB): direkter Versuch über :/content (kein Redirect erwartet).
+  if (size > 0 && size <= 4*1024*1024) {
+    try {
+      const r = await fetch(OD_FILE_URL, {headers:{'Authorization':'Bearer '+token}});
+      if (r.ok) return await r.json();
+    } catch(_){ /* fällt unten auf Range zurück */ }
+  }
+
+  // Große Dateien: in 4-MB-Blöcken per Range laden, bleibt auf graph.microsoft.com.
+  const CHUNK = 4*1024*1024;
+  let text = '';
+  for (let start = 0; start < size; start += CHUNK) {
+    const end = Math.min(start + CHUNK - 1, size - 1);
+    const cr = await fetch(OD_FILE_URL, {
+      headers:{ 'Authorization':'Bearer '+token, 'Range':`bytes=${start}-${end}` }
+    });
+    // 206 Partial Content erwartet; 200 (ganze Datei) ebenfalls ok
+    if (cr.status !== 206 && cr.status !== 200) throw new Error('Range HTTP '+cr.status+' @'+start);
+    text += await cr.text();
+    if (cr.status === 200) break; // Server hat alles auf einmal geliefert
+  }
+  if (!text) throw new Error('Leerer Datei-Inhalt');
+  return JSON.parse(text);
+}
+
 // ── Sync zu OneDrive ──────────────────────────────────────
 async function syncToOneDrive() {
   if (syncInProgress) return;
@@ -23773,9 +23823,8 @@ async function syncToOneDrive() {
     // Sonst könnte ein Gerät mit veralteten Daten fremde neuere Änderungen (z. B. neu
     // erfasste Telefonnummern) plattmachen.
     try {
-      const head = await fetch(OD_FILE_URL, {headers:{'Authorization':'Bearer '+token}});
-      if (head.ok) {
-        const remote = await head.json();
+      const remote = await odLadeDatei(token);
+      if (remote) {
         const ls = await idbGet('settings','lastSync').catch(()=>null);
         const localSync = ls?.value||'';
         if ((remote.updatedAt||'') > localSync) {
@@ -23835,11 +23884,8 @@ async function syncFromOneDrive() {
   if (!token) return;
   setSyncStatus('pending');
   try {
-    const r = await fetch(OD_FILE_URL,
-      {headers:{'Authorization':'Bearer '+token}});
-    if (r.status === 404) { await syncToOneDrive(); return; }
-    if (!r.ok) throw new Error('HTTP '+r.status);
-    const backup = await r.json();
+    const backup = await odLadeDatei(token);
+    if (backup === null) { await syncToOneDrive(); return; }
     const remoteTime = backup.updatedAt||'';
     const ls = await idbGet('settings','lastSync').catch(()=>null);
     const localTime  = ls?.value||'';
