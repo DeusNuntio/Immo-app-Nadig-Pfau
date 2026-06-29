@@ -1274,10 +1274,35 @@ async function setupDiagnose(){
   try {
     const token = await odGetToken();
     log.push('Token vorhanden: ' + (token ? 'JA' : 'NEIN'));
+    log.push('Token-Länge: ' + (token ? token.length : 0));
+    log.push('Token-Typ: ' + (typeof token));
+    try {
+      log.push('odTokens im Speicher: ' + (window.odTokens||odTokens ? 'JA' : 'NEIN'));
+      const ot = (typeof odTokens!=='undefined') ? odTokens : null;
+      if(ot){
+        log.push('  access_token gesetzt: ' + (ot.access_token ? 'JA('+String(ot.access_token).length+')' : 'NEIN'));
+        log.push('  refresh_token gesetzt: ' + (ot.refresh_token ? 'JA' : 'NEIN'));
+        log.push('  expires_at in s: ' + Math.round((ot.expires_at - Date.now())/1000));
+      }
+    } catch(e){ log.push('odTokens-Check Fehler: '+e.message); }
     if(!token){ if(out) out.textContent=log.join('\n'); return; }
+    // Gestaffelte Tests: welcher Graph-Aufruf bricht?
+    async function testGet(label, url){
+      try {
+        const rr = await fetch(url, {headers:{'Authorization':'Bearer '+token}});
+        log.push(label + ': HTTP ' + rr.status);
+        return rr;
+      } catch(err){
+        log.push(label + ': FEHLER ' + (err && err.message || err));
+        return null;
+      }
+    }
+    await testGet('A) /me', 'https://graph.microsoft.com/v1.0/me');
+    await testGet('B) /me/drive', 'https://graph.microsoft.com/v1.0/me/drive');
+    await testGet('C) Ordner NadigPfau', 'https://graph.microsoft.com/v1.0/me/drive/root:/NadigPfau:/children');
     log.push('Datei-URL: ' + OD_FILE_URL);
     const r = await fetch(OD_FILE_URL, {headers:{'Authorization':'Bearer '+token}});
-    log.push('HTTP-Status: ' + r.status);
+    log.push('D) Datei HTTP-Status: ' + r.status);
     if(r.status===404){ log.push('→ Datei existiert NICHT in OneDrive (NadigPfau/immo_daten.json fehlt).'); if(out) out.textContent=log.join('\n'); return; }
     if(!r.ok){ log.push('→ Fehler beim Laden.'); if(out) out.textContent=log.join('\n'); return; }
     const backup = await r.json();
