@@ -636,6 +636,8 @@ body.printing-active #printRoot{display:block!important}
         <i class="ti ti-cloud"></i> Mit OneDrive verbinden
       </button>
       <div id="setupStatus" style="font-size:13px;color:var(--ink-40);text-align:center;min-height:20px"></div>
+      <button class="btn btn-full" style="margin-top:10px;background:#444;color:#fff" data-action-click="setupDiagnose"><i class="ti ti-stethoscope"></i> Diagnose: OneDrive prüfen</button>
+      <pre id="setupDiagOut" style="display:none;text-align:left;font-size:11px;background:#f4f4f4;padding:10px;border-radius:8px;margin-top:8px;white-space:pre-wrap;word-break:break-all;max-height:300px;overflow:auto"></pre>
       <div id="setupFirstAdmin" style="display:none;margin-top:14px"></div>
     </div>
   </div>
@@ -1263,6 +1265,43 @@ async function setupLadeBenutzerNachSync(){
   // OneDrive ist leer (allererste Einrichtung überhaupt) → ersten Admin anlegen
   setupZeigeErstAdmin();
 }
+
+// DIAGNOSE: zeigt den echten Zustand der OneDrive-Sync-Datei im Klartext.
+async function setupDiagnose(){
+  const out=document.getElementById('setupDiagOut');
+  if(out){ out.style.display='block'; out.textContent='Prüfe …'; }
+  const log=[];
+  try {
+    const token = await odGetToken();
+    log.push('Token vorhanden: ' + (token ? 'JA' : 'NEIN'));
+    if(!token){ if(out) out.textContent=log.join('\n'); return; }
+    log.push('Datei-URL: ' + OD_FILE_URL);
+    const r = await fetch(OD_FILE_URL, {headers:{'Authorization':'Bearer '+token}});
+    log.push('HTTP-Status: ' + r.status);
+    if(r.status===404){ log.push('→ Datei existiert NICHT in OneDrive (NadigPfau/immo_daten.json fehlt).'); if(out) out.textContent=log.join('\n'); return; }
+    if(!r.ok){ log.push('→ Fehler beim Laden.'); if(out) out.textContent=log.join('\n'); return; }
+    const backup = await r.json();
+    log.push('updatedAt: ' + (backup.updatedAt||'(leer)'));
+    log.push('updatedBy: ' + (backup.updatedBy||'(leer)'));
+    const us = Array.isArray(backup.users) ? backup.users : null;
+    log.push('users im Backup: ' + (us===null ? 'KEIN users-Feld!' : us.length + ' Stück'));
+    if(us && us.length){
+      log.push('Benutzernamen: ' + us.map(u=>u && u.name).filter(Boolean).join(', '));
+      log.push('aktiv-Status: ' + us.map(u=>u && (u.aktiv!==false?'aktiv':'INAKTIV')).join(', '));
+    }
+    const mi = Array.isArray(backup.mieter) ? backup.mieter.length : '(kein Feld)';
+    log.push('mieter im Backup: ' + mi);
+    // lokaler Stand
+    const lu = (await idbGetAll('users').catch(()=>[]));
+    log.push('users lokal (IDB): ' + lu.length + ' Stück');
+    const ls = await idbGet('settings','lastSync').catch(()=>null);
+    log.push('lokaler lastSync: ' + (ls?.value||'(leer)'));
+  } catch(e){
+    log.push('AUSNAHME: ' + (e && e.message || e));
+  }
+  if(out) out.textContent=log.join('\n');
+}
+registerActions({ setupDiagnose });
 
 // Formular zum Anlegen des allerersten Admins (nur wenn OneDrive leer ist)
 function setupZeigeErstAdmin(){
