@@ -795,7 +795,7 @@ body.printing-active #printRoot{display:block!important}
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=30;
-const APP_VERSION = '2026-06-29-v144';
+const APP_VERSION = '2026-06-29-v145';
 /* v94 (19.06.2026): Etappe 1 – Lokale Benachrichtigungen erweitert (Termine + Maengel).
    - checkFaelligeAufgaben() prueft jetzt zusaetzlich:
      a) Termin-Erinnerungen: Termine mit gesetztem Erinnerungs-Vorlauf (1/2/7 Tage)
@@ -6422,6 +6422,55 @@ async function deleteMitTombstone(store, id){
   rec.value[store] = rec.value[store] || {};
   rec.value[store][id] = nowIso();
   await idbPut('settings', rec);
+}
+
+// ── Testdaten-Bereinigung: NKA- & WGB-Dokumente + Test-Protokolle entfernen ──
+// Löscht per Tombstone, damit der Sync sie NICHT wieder einspielt.
+// Behält: Protokolle für Kyffhäuser 30 (kyff30) sowie alle Nicht-NKA/WGB-Dokumente.
+async function testdatenBereinigenVorschau(){
+  const docs = await idbGetAll('dokumente').catch(()=>[]);
+  const protos = await idbGetAll('protokolle').catch(()=>[]);
+  const nka = docs.filter(d => (d.typ||d.kategorie)==='nka');
+  const wgb = docs.filter(d => (d.typ||d.kategorie)==='wgb');
+  const protoLoesch = protos.filter(p => String(p.objektId||p.objekt||'') !== 'kyff30');
+  const protoBleibt = protos.filter(p => String(p.objektId||p.objekt||'') === 'kyff30');
+  return { nka, wgb, protoLoesch, protoBleibt };
+}
+
+async function testdatenBereinigenModal(){
+  if(!istVerwalter()){ toast('Nur für Admins'); return; }
+  const v = await testdatenBereinigenVorschau();
+  const anzahl = v.nka.length + v.wgb.length + v.protoLoesch.length;
+  if(anzahl === 0){ showModal('<h3>Testdaten bereinigen</h3><p>Keine Testdaten gefunden – nichts zu löschen.</p><button class="btn btn-full" onclick="closeModal()">OK</button>'); return; }
+  let html = '<h3 style="margin:0 0 12px"><i class="ti ti-trash"></i> Testdaten bereinigen</h3>';
+  html += '<p style="line-height:1.7">Folgendes wird <b>endgültig gelöscht</b> (mit Sync-Schutz, kommt nicht zurück):</p>';
+  html += '<ul style="line-height:1.9;margin:8px 0 12px;padding-left:20px">';
+  html += '<li><b>'+v.nka.length+'</b> Nebenkostenabrechnungen (Testläufe)</li>';
+  html += '<li><b>'+v.wgb.length+'</b> Wohnungsgeberbescheinigungen (Testläufe)</li>';
+  html += '<li><b>'+v.protoLoesch.length+'</b> Test-Protokolle (alle außer Kyffhäuser 30)</li>';
+  html += '</ul>';
+  html += '<p style="line-height:1.7;color:var(--ink-60);font-size:13px">Erhalten bleiben: <b>'+v.protoBleibt.length+'</b> Protokolle Kyffhäuser 30 sowie alle Verträge, Briefe, Pläne und Wohnungsbilder.</p>';
+  html += '<div style="display:flex;gap:8px;margin-top:16px">';
+  html += '<button class="btn" style="flex:1" onclick="closeModal()">Abbrechen</button>';
+  html += '<button class="btn btn-danger" style="flex:1" onclick="testdatenBereinigenAusfuehren()">Jetzt löschen</button>';
+  html += '</div>';
+  showModal(html);
+}
+
+async function testdatenBereinigenAusfuehren(){
+  const v = await testdatenBereinigenVorschau();
+  showModal('<h3>Bereinige …</h3><div id="bereinigeProg" style="font-size:14px;line-height:1.8">Starte …</div>');
+  const prog = ()=>document.getElementById('bereinigeProg');
+  let n = 0;
+  const gesamt = v.nka.length + v.wgb.length + v.protoLoesch.length;
+  for(const d of v.nka){ await deleteMitTombstone('dokumente', d.id); n++; if(n%10===0&&prog()) prog().innerHTML='Gelöscht: '+n+' / '+gesamt; }
+  for(const d of v.wgb){ await deleteMitTombstone('dokumente', d.id); n++; if(n%10===0&&prog()) prog().innerHTML='Gelöscht: '+n+' / '+gesamt; }
+  for(const p of v.protoLoesch){ await deleteMitTombstone('protokolle', p.id); n++; if(prog()) prog().innerHTML='Gelöscht: '+n+' / '+gesamt; }
+  if(prog()) prog().innerHTML='Gelöscht: '+n+' / '+gesamt+' ✓<br>Synchronisiere …';
+  let syncMsg='';
+  try { if(typeof syncToOneDrive==='function'){ await syncToOneDrive(); syncMsg='Sync abgeschlossen ✓'; } }
+  catch(e){ syncMsg='Bitte einmal manuell synchronisieren.'; }
+  showModal('<h3>Bereinigung abgeschlossen</h3><p style="line-height:1.8"><b>'+n+'</b> Testdatensätze gelöscht.<br>'+syncMsg+'</p><p style="font-size:13px;color:var(--ink-60)">Die Sync-Datei ist jetzt deutlich kleiner. Andere Geräte (Handy) sollten sich wieder verbinden können.</p><button class="btn btn-full" style="margin-top:8px" onclick="closeModal();location.reload()">Fertig &amp; neu laden</button>');
 }
 
 // ── Arbeitszeiten vor einem Stichdatum löschen (für Bereinigung der Testdaten) ──
@@ -22643,6 +22692,7 @@ async function renderSettings(){
       ${isAdmin?`<button class="btn btn-full" onclick="modalTaetigkeitenVerwalten()"><i class="ti ti-settings"></i> Tätigkeiten verwalten</button>`:''}
       <button class="btn btn-full" ${isAdmin?'style="margin-top:8px"':''} onclick="modalTaetigkeitQRListe()"><i class="ti ti-qrcode"></i> Alle Tätigkeits-QR-Codes drucken</button>
       ${isAdmin?`<button class="btn btn-full btn-danger" style="margin-top:8px" onclick="modalZeitenBereinigen()"><i class="ti ti-trash"></i> Testzeiten bereinigen (vor Stichtag)</button>`:''}
+      ${isAdmin?`<button class="btn btn-full btn-danger" style="margin-top:8px" onclick="testdatenBereinigenModal()"><i class="ti ti-file-shredder"></i> Test-Dokumente &amp; -Protokolle bereinigen</button>`:''}
     </div>
 
     ${isAdmin?`<div class="settings-card" data-tab="daten">
