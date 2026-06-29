@@ -1300,7 +1300,41 @@ async function setupDiagnose(){
     await testGet('A) /me', 'https://graph.microsoft.com/v1.0/me');
     await testGet('B) /me/drive', 'https://graph.microsoft.com/v1.0/me/drive');
     await testGet('C) Ordner NadigPfau', 'https://graph.microsoft.com/v1.0/me/drive/root:/NadigPfau:/children');
-    log.push('Datei-URL: ' + OD_FILE_URL);
+    // D1) Metadaten der Datei (kein Redirect, liefert Größe + downloadUrl)
+    let dlUrl = null;
+    try {
+      const mr = await fetch('https://graph.microsoft.com/v1.0/me/drive/root:/NadigPfau/immo_daten.json?$select=size,name,@microsoft.graph.downloadUrl', {headers:{'Authorization':'Bearer '+token}});
+      log.push('D1) Metadaten: HTTP ' + mr.status);
+      if(mr.ok){
+        const meta = await mr.json();
+        log.push('   Dateigröße: ' + (meta.size!=null ? (meta.size + ' Bytes ('+(meta.size/1024/1024).toFixed(2)+' MB)') : '?'));
+        dlUrl = meta['@microsoft.graph.downloadUrl'] || null;
+        log.push('   downloadUrl vorhanden: ' + (dlUrl ? 'JA' : 'NEIN'));
+        if(dlUrl){ log.push('   downloadUrl-Domain: ' + (dlUrl.split('/')[2]||'?')); }
+      }
+    } catch(e){ log.push('D1) Metadaten FEHLER: ' + (e&&e.message||e)); }
+
+    // D2) Download via :/content (aktueller Weg)
+    try {
+      const r = await fetch(OD_FILE_URL, {headers:{'Authorization':'Bearer '+token}});
+      log.push('D2) :/content HTTP-Status: ' + r.status);
+    } catch(e){ log.push('D2) :/content FEHLER: ' + (e&&e.message||e)); }
+
+    // D3) Download via downloadUrl (CSP-Test: fremde Domain)
+    if(dlUrl){
+      try {
+        const r3 = await fetch(dlUrl);
+        log.push('D3) downloadUrl HTTP-Status: ' + r3.status);
+        if(r3.ok){
+          const txt = await r3.text();
+          log.push('   geladene Größe: ' + txt.length + ' Zeichen');
+          try { const j=JSON.parse(txt); const u=Array.isArray(j.users)?j.users.length:'?'; log.push('   users darin: '+u); } catch(_){ log.push('   JSON-Parse fehlgeschlagen'); }
+        }
+      } catch(e){ log.push('D3) downloadUrl FEHLER (vermutl. CSP): ' + (e&&e.message||e)); }
+    }
+    if(out){ out.textContent=log.join('\n'); }
+    return;
+    // (alter Code unten bleibt unerreichbar)
     const r = await fetch(OD_FILE_URL, {headers:{'Authorization':'Bearer '+token}});
     log.push('D) Datei HTTP-Status: ' + r.status);
     if(r.status===404){ log.push('→ Datei existiert NICHT in OneDrive (NadigPfau/immo_daten.json fehlt).'); if(out) out.textContent=log.join('\n'); return; }
