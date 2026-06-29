@@ -11273,11 +11273,52 @@ async function saveDok(objektId, mieterId) {
   reader.readAsDataURL(file);
 }
 
+// WEG A: Liefert die DataURL eines Dokuments. Für migrierte Dokumente (data
+// ausgelagert nach OneDrive) wird die Datei bei Bedarf nachgeladen und für die
+// Sitzung im Speicher zwischengespeichert. Erfordert Online-Verbindung.
+window._dokCache = window._dokCache || {};
+async function dokDatenHolen(d){
+  if(!d) return null;
+  if(typeof d.data === 'string' && d.data.startsWith('data:')) return d.data; // nicht migriert
+  if(window._dokCache[d.id]) return window._dokCache[d.id];                   // Session-Cache
+  if(!(d.migriert && (d.odItemId || d.odPfad))) return null;                  // nichts zum Laden
+  // Download-Link von Graph holen
+  try {
+    let url = null;
+    if(d.odItemId){
+      const meta = await odGraph(`/me/drive/items/${d.odItemId}?$select=@microsoft.graph.downloadUrl`);
+      url = meta && meta['@microsoft.graph.downloadUrl'];
+    }
+    if(!url && d.odPfad){
+      const meta = await odGraph(`/me/drive/root:/${encodeURI(d.odPfad)}:/?$select=@microsoft.graph.downloadUrl`);
+      url = meta && meta['@microsoft.graph.downloadUrl'];
+    }
+    if(!url) throw new Error('Kein Download-Link');
+    const resp = await fetch(url);
+    if(!resp.ok) throw new Error('HTTP '+resp.status);
+    const blob = await resp.blob();
+    const dataUrl = await new Promise((res,rej)=>{
+      const fr = new FileReader();
+      fr.onload = ()=>res(fr.result);
+      fr.onerror = ()=>rej(new Error('Lesefehler'));
+      fr.readAsDataURL(blob);
+    });
+    window._dokCache[d.id] = dataUrl;
+    return dataUrl;
+  } catch(e){
+    console.warn('dokDatenHolen:', e);
+    toast('Dokument konnte nicht geladen werden (online?): '+e.message);
+    return null;
+  }
+}
+
 async function downloadDok(id) {
   const d = await idbGet('dokumente', id);
   if (!d) return;
+  const data = await dokDatenHolen(d);
+  if (!data) return;
   const a = document.createElement('a');
-  a.href = d.data;
+  a.href = data;
   a.download = d.name + (d.mimeType?.includes('pdf')?'.pdf':d.mimeType?.includes('image')?'.jpg':'');
   a.click();
 }
@@ -11285,9 +11326,11 @@ async function downloadDok(id) {
 // Dokument über das native Teilen-Menü weiterleiten (Mail, WhatsApp, …) mit Download-Fallback
 async function dokTeilen(id) {
   const d = await idbGet('dokumente', id);
-  if (!d || !d.data) { toast('Kein Dokument vorhanden'); return; }
+  if (!d) { toast('Kein Dokument vorhanden'); return; }
+  const data = await dokDatenHolen(d);
+  if (!data) { toast('Kein Dokument vorhanden'); return; }
   try {
-    const res = await fetch(d.data);
+    const res = await fetch(data);
     const blob = await res.blob();
     const isPdf = (d.mimeType||'').includes('pdf');
     const ext = isPdf ? '.pdf' : (d.mimeType||'').includes('image') ? '.jpg' : '';
@@ -11299,13 +11342,13 @@ async function dokTeilen(id) {
     }
     // Fallback: herunterladen
     const a = document.createElement('a');
-    a.href = d.data; a.download = safeName+ext;
+    a.href = data; a.download = safeName+ext;
     document.body.appendChild(a); a.click(); a.remove();
     toast('Heruntergeladen – kann jetzt weitergeleitet werden');
   } catch(e) {
     if (e && e.name === 'AbortError') return; // Nutzer hat abgebrochen
     console.warn('dokTeilen:', e);
-    try { const a=document.createElement('a'); a.href=d.data; a.download=(d.name||'Dokument'); a.click(); }
+    try { const a=document.createElement('a'); a.href=data; a.download=(d.name||'Dokument'); a.click(); }
     catch(_){ toast('Teilen nicht möglich'); }
   }
 }
@@ -22763,6 +22806,7 @@ async function renderSettings(){
         <button class="btn btn-sm" onclick="syncFromOneDriveForce()"><i class="ti ti-cloud-download"></i> Vom Server laden (erzwingen)</button>
         <button class="btn btn-sm" onclick="odBrowserOeffnen()"><i class="ti ti-folders"></i> Dateien (Ordnerbaum)</button>
         <button class="btn btn-sm" onclick="speicherAnalyse()"><i class="ti ti-chart-bar"></i> Speicher-Analyse</button>
+        <button class="btn btn-sm" onclick="migriereDokumente()"><i class="ti ti-cloud-upload"></i> Dokumente auslagern</button>
         <button class="btn btn-sm btn-danger" onclick="msalLogout()"><i class="ti ti-logout"></i> Microsoft-Konto abmelden</button>
       </div>` : `
       <p style="font-size:13px;color:var(--ink-40);margin-bottom:12px;line-height:1.6">
@@ -23807,6 +23851,107 @@ async function speicherAnalyse(){
   showModal(html);
 }
 
+/* ═══════════════════════════════════════════════════════════
+   WEG A – Dokument-Auslagerung nach OneDrive
+   Migriert base64-Dokumente aus dem 'dokumente'-Store in einzelne
+   OneDrive-Dateien (NadigPfau/Dokumente/<id>.<ext>). Im Record bleibt
+   nur noch die Referenz (odItemId/odPfad), das schwere data-Feld wird
+   entfernt. Dadurch schrumpft die Sync-Datei drastisch.
+   Sicher: Upload zuerst, data wird erst nach Erfolg entfernt.
+═══════════════════════════════════════════════════════════ */
+const OD_DOK_ORDNER = 'NadigPfau/Dokumente';
+
+function _mimeZuExt(mime){
+  const m = {
+    'application/pdf':'pdf','image/jpeg':'jpg','image/jpg':'jpg','image/png':'png',
+    'image/gif':'gif','image/webp':'webp','image/heic':'heic',
+    'application/msword':'doc','application/vnd.openxmlformats-officedocument.wordprocessingml.document':'docx',
+    'application/vnd.ms-excel':'xls','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':'xlsx',
+    'text/plain':'txt'
+  };
+  return m[String(mime||'').toLowerCase()] || 'bin';
+}
+
+// Zerlegt eine DataURL in {mime, bytes}. Gibt null, wenn kein base64-data.
+function _dataUrlZuBytes(dataUrl){
+  if(typeof dataUrl !== 'string') return null;
+  const m = dataUrl.match(/^data:([^;]*);base64,(.*)$/s);
+  if(!m) return null;
+  try {
+    const bytes = Uint8Array.from(atob(m[2]), c=>c.charCodeAt(0));
+    return { mime: m[1] || 'application/octet-stream', bytes };
+  } catch(e){ return null; }
+}
+
+async function migriereDokumente(){
+  if(!odTokens || !odTokens.access_token){
+    showModal('<h3>Dokumente auslagern</h3><p>Bitte zuerst mit OneDrive anmelden.</p><button class="btn btn-full" onclick="closeModal()">OK</button>');
+    return;
+  }
+  if(!confirm('Alle eingebetteten Dokumente nach OneDrive auslagern?\n\nDie Dokumente bleiben voll nutzbar, werden aber nicht mehr in der Sync-Datei mitgeführt. Das verkleinert die Synchronisierung erheblich.\n\nVorgang am besten am PC ausführen und nicht unterbrechen.')) return;
+
+  const alle = await idbGetAll('dokumente').catch(()=>[]);
+  const offen = alle.filter(d =>
+    d && typeof d.data === 'string' && d.data.startsWith('data:')
+    && !d.istHtml                          // generierte Schreiben bleiben lokal (klein, Druckfunktion)
+    && !d.data.startsWith('data:text/html') // HTML-Inhalte nicht auslagern
+  );
+  if(!offen.length){
+    showModal('<h3>Dokumente auslagern</h3><p>Keine eingebetteten Dokumente gefunden – nichts zu tun.</p><button class="btn btn-full" onclick="closeModal()">OK</button>');
+    return;
+  }
+
+  showModal('<h3>Dokumente werden ausgelagert …</h3><div id="migProg" style="font-size:14px;line-height:1.8">Vorbereitung …</div>');
+  const prog = ()=>document.getElementById('migProg');
+
+  try { await odEnsureFolder(OD_DOK_ORDNER); }
+  catch(e){ if(prog()) prog().innerHTML = 'Ordner konnte nicht angelegt werden: '+e.message; return; }
+
+  let ok=0, fehler=0, uebersprungen=0;
+  const fehlerListe=[];
+  for(let i=0;i<offen.length;i++){
+    const d = offen[i];
+    if(prog()) prog().innerHTML = `Lade hoch … <b>${i+1} / ${offen.length}</b><br>${ok} erledigt, ${fehler} Fehler`;
+    const parsed = _dataUrlZuBytes(d.data);
+    if(!parsed){ uebersprungen++; continue; }
+    const ext = _mimeZuExt(d.mimeType || parsed.mime);
+    const zielPfad = `${OD_DOK_ORDNER}/${d.id}.${ext}`;
+    try {
+      const up = await odGraph(
+        `/me/drive/root:/${encodeURI(zielPfad)}:/content`,
+        { method:'PUT',
+          headers:{'Content-Type': d.mimeType || parsed.mime || 'application/octet-stream'},
+          body: parsed.bytes });
+      // Referenz setzen, data entfernen – erst NACH erfolgreichem Upload
+      const upd = { ...d,
+        odItemId: up.id || '',
+        odPfad: zielPfad,
+        migriert: true,
+        data: undefined };
+      delete upd.data;
+      await idbPut('dokumente', upd);
+      ok++;
+    } catch(e){
+      fehler++;
+      fehlerListe.push((d.name||d.id)+': '+e.message);
+    }
+  }
+
+  // Nach Migration: Upload des (jetzt schlanken) Sync-Stands erzwingen
+  let syncHinweis='';
+  try { await syncToOneDrive(); syncHinweis='Sync-Datei wurde aktualisiert.'; }
+  catch(e){ syncHinweis='Hinweis: Bitte einmal „Jetzt synchronisieren" drücken.'; }
+
+  let html = '<h3>Auslagerung abgeschlossen</h3>';
+  html += `<p style="line-height:1.8"><b>${ok}</b> Dokumente ausgelagert${fehler?`, <b style="color:var(--red,#c33)">${fehler} Fehler</b>`:''}${uebersprungen?`, ${uebersprungen} übersprungen`:''}.</p>`;
+  html += `<p style="font-size:13px;color:var(--ink-60)">${syncHinweis}</p>`;
+  if(fehlerListe.length){
+    html += '<details style="margin-top:8px"><summary style="cursor:pointer">Fehlerdetails</summary><pre style="font-size:11px;white-space:pre-wrap">'+fehlerListe.slice(0,20).map(esc).join('\n')+'</pre></details>';
+  }
+  html += '<button class="btn btn-full" style="margin-top:12px" onclick="closeModal();speicherAnalyse()">Speicher-Analyse zeigen</button>';
+  showModal(html);
+}
+
 async function syncFromOneDriveForce(){
   if(!confirm('Daten vom Server (OneDrive) laden und mit den lokalen Daten zusammenführen?\n\nGefüllte Felder werden dabei nicht durch leere überschrieben.')) return;
   window._forceSyncDownload = true;
@@ -23879,6 +24024,18 @@ async function syncFromOneDrive() {
           const remoteStamp = item.geaendert||item.updatedAt||item.erstellt||'';
           if (tombS[item.id] && !(remoteStamp && remoteStamp > tombS[item.id])) continue;
           const local = await idbGet(s, item.id).catch(()=>null);
+          // WEG A – Dokumente: Ist eine Seite bereits ausgelagert (migriert), darf der
+          // generische Merge das schwere data-Feld NICHT wieder zurückholen. Der
+          // migrierte Zustand (Referenz statt base64) gewinnt; data bleibt entfernt.
+          if (s === 'dokumente' && ((local && local.migriert) || (item && item.migriert))) {
+            const {merged} = mergeRecord(local, item);
+            merged.migriert = true;
+            merged.odItemId = (item && item.odItemId) || (local && local.odItemId) || merged.odItemId || '';
+            merged.odPfad   = (item && item.odPfad)   || (local && local.odPfad)   || merged.odPfad   || '';
+            delete merged.data;
+            await idbPut(s, merged,{keepStamp:true});
+            continue;
+          }
           // Feldsicher zusammenführen: gefüllte Werte werden nie durch leere überschrieben.
           const {merged} = mergeRecord(local, item);
           await idbPut(s, merged,{keepStamp:true});
@@ -26131,7 +26288,7 @@ async function openFoto(src, caption='') {
   // Dokument-ID? Dann Bild aus IDB laden
   if (caption === 'dok' && src && !src.startsWith('data:')) {
     const d = await idbGet('dokumente', src).catch(()=>null);
-    if (d) { src = d.data; caption = d.name; }
+    if (d) { src = await dokDatenHolen(d) || d.data; caption = d.name; }
   }
   // Zählerstand-Foto aus IDB laden
   if (caption === 'zaehlerstand' && src && !src.startsWith('data:')) {
