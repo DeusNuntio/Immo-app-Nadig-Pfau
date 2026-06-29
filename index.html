@@ -636,8 +636,6 @@ body.printing-active #printRoot{display:block!important}
         <i class="ti ti-cloud"></i> Mit OneDrive verbinden
       </button>
       <div id="setupStatus" style="font-size:13px;color:var(--ink-40);text-align:center;min-height:20px"></div>
-      <button class="btn btn-full" style="margin-top:10px;background:#444;color:#fff" data-action-click="setupDiagnose"><i class="ti ti-stethoscope"></i> Diagnose: OneDrive prüfen</button>
-      <pre id="setupDiagOut" style="display:none;text-align:left;font-size:11px;background:#f4f4f4;padding:10px;border-radius:8px;margin-top:8px;white-space:pre-wrap;word-break:break-all;overflow:visible"></pre>
       <div id="setupFirstAdmin" style="display:none;margin-top:14px"></div>
     </div>
   </div>
@@ -1266,159 +1264,7 @@ async function setupLadeBenutzerNachSync(){
   setupZeigeErstAdmin();
 }
 
-// DIAGNOSE: zeigt den echten Zustand der OneDrive-Sync-Datei im Klartext.
-async function setupDiagnose(){
-  const out=document.getElementById('setupDiagOut');
-  if(out){ out.style.display='block'; out.textContent='Prüfe …'; }
-  const log=[];
-  try {
-    const token = await odGetToken();
-    log.push('Token vorhanden: ' + (token ? 'JA' : 'NEIN'));
-    log.push('Token-Länge: ' + (token ? token.length : 0));
-    log.push('Token-Typ: ' + (typeof token));
-    try {
-      log.push('odTokens im Speicher: ' + (window.odTokens||odTokens ? 'JA' : 'NEIN'));
-      const ot = (typeof odTokens!=='undefined') ? odTokens : null;
-      if(ot){
-        log.push('  access_token gesetzt: ' + (ot.access_token ? 'JA('+String(ot.access_token).length+')' : 'NEIN'));
-        log.push('  refresh_token gesetzt: ' + (ot.refresh_token ? 'JA' : 'NEIN'));
-        log.push('  expires_at in s: ' + Math.round((ot.expires_at - Date.now())/1000));
-      }
-    } catch(e){ log.push('odTokens-Check Fehler: '+e.message); }
-    if(!token){ if(out) out.textContent=log.join('\n'); return; }
-    // Gestaffelte Tests: welcher Graph-Aufruf bricht?
-    async function testGet(label, url){
-      try {
-        const rr = await fetch(url, {headers:{'Authorization':'Bearer '+token}});
-        log.push(label + ': HTTP ' + rr.status);
-        return rr;
-      } catch(err){
-        log.push(label + ': FEHLER ' + (err && err.message || err));
-        return null;
-      }
-    }
-    await testGet('A) /me', 'https://graph.microsoft.com/v1.0/me');
-    await testGet('B) /me/drive', 'https://graph.microsoft.com/v1.0/me/drive');
-    await testGet('C) Ordner NadigPfau', 'https://graph.microsoft.com/v1.0/me/drive/root:/NadigPfau:/children');
-    // D1) Metadaten der Datei (kein Redirect, liefert Größe + downloadUrl)
-    let dlUrl = null;
-    try {
-      const mr = await fetch('https://graph.microsoft.com/v1.0/me/drive/root:/NadigPfau/immo_daten.json?$select=size,name,@microsoft.graph.downloadUrl', {headers:{'Authorization':'Bearer '+token}});
-      log.push('D1) Metadaten: HTTP ' + mr.status);
-      if(mr.ok){
-        const meta = await mr.json();
-        log.push('   Dateigröße: ' + (meta.size!=null ? (meta.size + ' Bytes ('+(meta.size/1024/1024).toFixed(2)+' MB)') : '?'));
-        dlUrl = meta['@microsoft.graph.downloadUrl'] || null;
-        log.push('   downloadUrl vorhanden: ' + (dlUrl ? 'JA' : 'NEIN'));
-        if(dlUrl){ log.push('   downloadUrl-Domain: ' + (dlUrl.split('/')[2]||'?')); }
-      }
-    } catch(e){ log.push('D1) Metadaten FEHLER: ' + (e&&e.message||e)); }
 
-    // D2) Download via :/content (aktueller Weg)
-    try {
-      const r = await fetch(OD_FILE_URL, {headers:{'Authorization':'Bearer '+token}});
-      log.push('D2) :/content HTTP-Status: ' + r.status);
-    } catch(e){ log.push('D2) :/content FEHLER: ' + (e&&e.message||e)); }
-
-    // D3) Download via downloadUrl (CSP-Test: fremde Domain)
-    if(dlUrl){
-      try {
-        const r3 = await fetch(dlUrl);
-        log.push('D3) downloadUrl HTTP-Status: ' + r3.status);
-        if(r3.ok){
-          const txt = await r3.text();
-          log.push('   geladene Größe: ' + txt.length + ' Zeichen');
-          try { const j=JSON.parse(txt); const u=Array.isArray(j.users)?j.users.length:'?'; log.push('   users darin: '+u); } catch(_){ log.push('   JSON-Parse fehlgeschlagen'); }
-        }
-      } catch(e){ log.push('D3) downloadUrl FEHLER (vermutl. CSP): ' + (e&&e.message||e)); }
-    }
-    // E) Store-Größen-Analyse: was füllt die Datei?
-    try {
-      log.push('');
-      log.push('=== Store-Größen (lokal) ===');
-      const stores = ['fotos','protokolle','dokumente','mieter','objekt_stamm','nka_archiv','rechnungen','mietbescheinigungen','mv_entwuerfe','zaehlerstaende','buchungen'];
-      const groessen = [];
-      for(const st of stores){
-        try {
-          const all = await idbGetAll(st).catch(()=>[]);
-          const bytes = JSON.stringify(all).length;
-          groessen.push([st, all.length, bytes]);
-        } catch(_){}
-      }
-      groessen.sort((a,b)=>b[2]-a[2]);
-      for(const [st,n,by] of groessen){
-        const mb = (by/1024/1024);
-        log.push('  ' + st + ': ' + n + ' Einträge, ' + (mb>=0.1 ? mb.toFixed(2)+' MB' : Math.round(by/1024)+' KB'));
-      }
-      // Foto-Detail: größte Einzelfotos
-      const fotos = await idbGetAll('fotos').catch(()=>[]);
-      if(fotos.length){
-        const groesste = fotos.map(f=>({id:f.id, kb: Math.round((JSON.stringify(f).length)/1024)})).sort((a,b)=>b.kb-a.kb).slice(0,3);
-        log.push('  größte Fotos: ' + groesste.map(g=>g.kb+'KB').join(', '));
-      }
-    } catch(e){ log.push('E) Analyse-Fehler: ' + (e&&e.message||e)); }
-
-    // D4) :/content mit manuellem Redirect-Handling untersuchen
-    try {
-      const rm = await fetch(OD_FILE_URL, {
-        headers:{'Authorization':'Bearer '+token},
-        redirect:'manual'
-      });
-      log.push('D4) :/content (manual): type=' + rm.type + ' status=' + rm.status);
-      const loc = rm.headers.get('Location');
-      log.push('   Location-Header: ' + (loc ? (loc.split('/')[2]||loc.slice(0,40)) : '(keiner/opaque)'));
-    } catch(e){ log.push('D4) manual FEHLER: ' + (e&&e.message||e)); }
-
-    // D5) Range bytes=0-1023 (winziger Block) – isoliert testen
-    try {
-      const r5 = await fetch(OD_FILE_URL, {
-        headers:{'Authorization':'Bearer '+token,'Range':'bytes=0-1023'}
-      });
-      log.push('D5) Range 0-1023: HTTP ' + r5.status);
-      if(r5.ok || r5.status===206){ const t=await r5.text(); log.push('   erste Zeichen: ' + t.slice(0,40).replace(/\n/g,' ')); }
-    } catch(e){ log.push('D5) Range FEHLER: ' + (e&&e.message||e)); }
-
-    // D6) Alternativ über driveItem-ID + content (anderer URL-Stil)
-    try {
-      const idR = await fetch('https://graph.microsoft.com/v1.0/me/drive/root:/NadigPfau/immo_daten.json?$select=id',{headers:{'Authorization':'Bearer '+token}});
-      if(idR.ok){
-        const idJson = await idR.json();
-        log.push('D6) Item-ID: ' + (idJson.id ? idJson.id.slice(0,12)+'…' : '?'));
-        if(idJson.id){
-          const cR = await fetch('https://graph.microsoft.com/v1.0/me/drive/items/'+idJson.id+'/content',{headers:{'Authorization':'Bearer '+token,'Range':'bytes=0-1023'}});
-          log.push('   items/{id}/content Range: HTTP ' + cR.status);
-        }
-      }
-    } catch(e){ log.push('D6) FEHLER: ' + (e&&e.message||e)); }
-    if(out){ out.textContent=log.join('\n'); }
-    return;
-    // (alter Code unten bleibt unerreichbar)
-    const r = await fetch(OD_FILE_URL, {headers:{'Authorization':'Bearer '+token}});
-    log.push('D) Datei HTTP-Status: ' + r.status);
-    if(r.status===404){ log.push('→ Datei existiert NICHT in OneDrive (NadigPfau/immo_daten.json fehlt).'); if(out) out.textContent=log.join('\n'); return; }
-    if(!r.ok){ log.push('→ Fehler beim Laden.'); if(out) out.textContent=log.join('\n'); return; }
-    const backup = await r.json();
-    log.push('updatedAt: ' + (backup.updatedAt||'(leer)'));
-    log.push('updatedBy: ' + (backup.updatedBy||'(leer)'));
-    const us = Array.isArray(backup.users) ? backup.users : null;
-    log.push('users im Backup: ' + (us===null ? 'KEIN users-Feld!' : us.length + ' Stück'));
-    if(us && us.length){
-      log.push('Benutzernamen: ' + us.map(u=>u && u.name).filter(Boolean).join(', '));
-      log.push('aktiv-Status: ' + us.map(u=>u && (u.aktiv!==false?'aktiv':'INAKTIV')).join(', '));
-    }
-    const mi = Array.isArray(backup.mieter) ? backup.mieter.length : '(kein Feld)';
-    log.push('mieter im Backup: ' + mi);
-    // lokaler Stand
-    const lu = (await idbGetAll('users').catch(()=>[]));
-    log.push('users lokal (IDB): ' + lu.length + ' Stück');
-    const ls = await idbGet('settings','lastSync').catch(()=>null);
-    log.push('lokaler lastSync: ' + (ls?.value||'(leer)'));
-  } catch(e){
-    log.push('AUSNAHME: ' + (e && e.message || e));
-  }
-  if(out) out.textContent=log.join('\n');
-}
-registerActions({ setupDiagnose });
 
 // Formular zum Anlegen des allerersten Admins (nur wenn OneDrive leer ist)
 function setupZeigeErstAdmin(){
@@ -22916,6 +22762,7 @@ async function renderSettings(){
         <button class="btn btn-copper" onclick="syncFromOneDrive()"><i class="ti ti-refresh"></i> Jetzt synchronisieren</button>
         <button class="btn btn-sm" onclick="syncFromOneDriveForce()"><i class="ti ti-cloud-download"></i> Vom Server laden (erzwingen)</button>
         <button class="btn btn-sm" onclick="odBrowserOeffnen()"><i class="ti ti-folders"></i> Dateien (Ordnerbaum)</button>
+        <button class="btn btn-sm" onclick="speicherAnalyse()"><i class="ti ti-chart-bar"></i> Speicher-Analyse</button>
         <button class="btn btn-sm btn-danger" onclick="msalLogout()"><i class="ti ti-logout"></i> Microsoft-Konto abmelden</button>
       </div>` : `
       <p style="font-size:13px;color:var(--ink-40);margin-bottom:12px;line-height:1.6">
@@ -23920,6 +23767,46 @@ async function syncToOneDrive() {
 // Erzwingt den Download vom Server (umgeht den Zeitstempel-Vergleich).
 // Nützlich, wenn ein Gerät einen falschen lastSync-Stand hat und deshalb
 // neuere Server-Daten nicht zieht. Der Merge bleibt feldsicher.
+// Speicher-Analyse: zeigt, welcher Store die Sync-Datei füllt. Hilft, große
+// Brocken (v. a. ungekomprimierte Fotos) zu finden.
+async function speicherAnalyse(){
+  const alle = ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','versorger_archiv','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','od_dateien','fotos','mietbescheinigungen','mv_entwuerfe','selbstauskuenfte','tenant_mails','buchungen'];
+  const zeilen = [];
+  let gesamt = 0;
+  for(const st of alle){
+    try {
+      const all = await idbGetAll(st).catch(()=>[]);
+      if(!all.length) continue;
+      const bytes = JSON.stringify(all).length;
+      gesamt += bytes;
+      zeilen.push({ st, n: all.length, bytes });
+    } catch(_){}
+  }
+  zeilen.sort((a,b)=>b.bytes-a.bytes);
+  const fmt = b => b>=1048576 ? (b/1048576).toFixed(2)+' MB' : Math.round(b/1024)+' KB';
+  let html = '<div style="text-align:left;font-size:13px;line-height:1.7">';
+  html += '<h3 style="margin:0 0 12px">Speicher-Analyse</h3>';
+  html += '<p style="margin:0 0 10px"><b>Gesamt: '+fmt(gesamt)+'</b> (entspricht ungefähr der Sync-Dateigröße)</p>';
+  html += '<table style="width:100%;border-collapse:collapse">';
+  for(const z of zeilen.slice(0,12)){
+    const anteil = Math.round(z.bytes/gesamt*100);
+    html += '<tr><td style="padding:3px 0">'+z.st+'</td><td style="text-align:right;padding:3px 8px">'+z.n+'×</td><td style="text-align:right;padding:3px 0;font-weight:600">'+fmt(z.bytes)+'</td><td style="text-align:right;color:var(--ink-40);padding:3px 0 3px 8px">'+anteil+'%</td></tr>';
+  }
+  html += '</table>';
+  // Foto-Detail
+  try {
+    const fotos = await idbGetAll('fotos').catch(()=>[]);
+    if(fotos.length){
+      const sizes = fotos.map(f=>JSON.stringify(f).length).sort((a,b)=>b-a);
+      const schnitt = Math.round(sizes.reduce((s,x)=>s+x,0)/sizes.length/1024);
+      html += '<p style="margin:12px 0 0;font-size:12px;color:var(--ink-60)">Fotos: '+fotos.length+' Stück, Ø '+schnitt+' KB, größtes '+Math.round(sizes[0]/1024)+' KB</p>';
+    }
+  } catch(_){}
+  html += '</div>';
+  html += '<button class="btn btn-full" style="margin-top:14px" onclick="closeModal()">Schließen</button>';
+  showModal(html);
+}
+
 async function syncFromOneDriveForce(){
   if(!confirm('Daten vom Server (OneDrive) laden und mit den lokalen Daten zusammenführen?\n\nGefüllte Felder werden dabei nicht durch leere überschrieben.')) return;
   window._forceSyncDownload = true;
