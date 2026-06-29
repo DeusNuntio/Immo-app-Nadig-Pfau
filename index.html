@@ -637,7 +637,7 @@ body.printing-active #printRoot{display:block!important}
       </button>
       <div id="setupStatus" style="font-size:13px;color:var(--ink-40);text-align:center;min-height:20px"></div>
       <button class="btn btn-full" style="margin-top:10px;background:#444;color:#fff" data-action-click="setupDiagnose"><i class="ti ti-stethoscope"></i> Diagnose: OneDrive prüfen</button>
-      <pre id="setupDiagOut" style="display:none;text-align:left;font-size:11px;background:#f4f4f4;padding:10px;border-radius:8px;margin-top:8px;white-space:pre-wrap;word-break:break-all;max-height:300px;overflow:auto"></pre>
+      <pre id="setupDiagOut" style="display:none;text-align:left;font-size:11px;background:#f4f4f4;padding:10px;border-radius:8px;margin-top:8px;white-space:pre-wrap;word-break:break-all;overflow:visible"></pre>
       <div id="setupFirstAdmin" style="display:none;margin-top:14px"></div>
     </div>
   </div>
@@ -1332,16 +1332,64 @@ async function setupDiagnose(){
         }
       } catch(e){ log.push('D3) downloadUrl FEHLER (vermutl. CSP): ' + (e&&e.message||e)); }
     }
-    // D4) Neuer Range-Download über odLadeDatei
+    // E) Store-Größen-Analyse: was füllt die Datei?
     try {
-      const obj = await odLadeDatei(token);
-      if(obj === null){ log.push('D4) odLadeDatei: Datei nicht gefunden (404)'); }
-      else {
-        const u = Array.isArray(obj.users) ? obj.users.length : '(kein users-Feld)';
-        log.push('D4) odLadeDatei: OK ✓  users darin: ' + u);
-        if(Array.isArray(obj.users)) log.push('   Namen: ' + obj.users.map(x=>x&&x.name).filter(Boolean).join(', '));
+      log.push('');
+      log.push('=== Store-Größen (lokal) ===');
+      const stores = ['fotos','protokolle','dokumente','mieter','objekt_stamm','nka_archiv','rechnungen','mietbescheinigungen','mv_entwuerfe','zaehlerstaende','buchungen'];
+      const groessen = [];
+      for(const st of stores){
+        try {
+          const all = await idbGetAll(st).catch(()=>[]);
+          const bytes = JSON.stringify(all).length;
+          groessen.push([st, all.length, bytes]);
+        } catch(_){}
       }
-    } catch(e){ log.push('D4) odLadeDatei FEHLER: ' + (e&&e.message||e)); }
+      groessen.sort((a,b)=>b[2]-a[2]);
+      for(const [st,n,by] of groessen){
+        const mb = (by/1024/1024);
+        log.push('  ' + st + ': ' + n + ' Einträge, ' + (mb>=0.1 ? mb.toFixed(2)+' MB' : Math.round(by/1024)+' KB'));
+      }
+      // Foto-Detail: größte Einzelfotos
+      const fotos = await idbGetAll('fotos').catch(()=>[]);
+      if(fotos.length){
+        const groesste = fotos.map(f=>({id:f.id, kb: Math.round((JSON.stringify(f).length)/1024)})).sort((a,b)=>b.kb-a.kb).slice(0,3);
+        log.push('  größte Fotos: ' + groesste.map(g=>g.kb+'KB').join(', '));
+      }
+    } catch(e){ log.push('E) Analyse-Fehler: ' + (e&&e.message||e)); }
+
+    // D4) :/content mit manuellem Redirect-Handling untersuchen
+    try {
+      const rm = await fetch(OD_FILE_URL, {
+        headers:{'Authorization':'Bearer '+token},
+        redirect:'manual'
+      });
+      log.push('D4) :/content (manual): type=' + rm.type + ' status=' + rm.status);
+      const loc = rm.headers.get('Location');
+      log.push('   Location-Header: ' + (loc ? (loc.split('/')[2]||loc.slice(0,40)) : '(keiner/opaque)'));
+    } catch(e){ log.push('D4) manual FEHLER: ' + (e&&e.message||e)); }
+
+    // D5) Range bytes=0-1023 (winziger Block) – isoliert testen
+    try {
+      const r5 = await fetch(OD_FILE_URL, {
+        headers:{'Authorization':'Bearer '+token,'Range':'bytes=0-1023'}
+      });
+      log.push('D5) Range 0-1023: HTTP ' + r5.status);
+      if(r5.ok || r5.status===206){ const t=await r5.text(); log.push('   erste Zeichen: ' + t.slice(0,40).replace(/\n/g,' ')); }
+    } catch(e){ log.push('D5) Range FEHLER: ' + (e&&e.message||e)); }
+
+    // D6) Alternativ über driveItem-ID + content (anderer URL-Stil)
+    try {
+      const idR = await fetch('https://graph.microsoft.com/v1.0/me/drive/root:/NadigPfau/immo_daten.json?$select=id',{headers:{'Authorization':'Bearer '+token}});
+      if(idR.ok){
+        const idJson = await idR.json();
+        log.push('D6) Item-ID: ' + (idJson.id ? idJson.id.slice(0,12)+'…' : '?'));
+        if(idJson.id){
+          const cR = await fetch('https://graph.microsoft.com/v1.0/me/drive/items/'+idJson.id+'/content',{headers:{'Authorization':'Bearer '+token,'Range':'bytes=0-1023'}});
+          log.push('   items/{id}/content Range: HTTP ' + cR.status);
+        }
+      }
+    } catch(e){ log.push('D6) FEHLER: ' + (e&&e.message||e)); }
     if(out){ out.textContent=log.join('\n'); }
     return;
     // (alter Code unten bleibt unerreichbar)
