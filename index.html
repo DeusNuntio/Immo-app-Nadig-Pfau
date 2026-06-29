@@ -636,6 +636,8 @@ body.printing-active #printRoot{display:block!important}
         <i class="ti ti-cloud"></i> Mit OneDrive verbinden
       </button>
       <div id="setupStatus" style="font-size:13px;color:var(--ink-40);text-align:center;min-height:20px"></div>
+      <button class="btn btn-full" style="margin-top:10px;background:#444;color:#fff" data-action-click="setupCheck"><i class="ti ti-stethoscope"></i> Status prüfen (Daten sicher?)</button>
+      <pre id="setupCheckOut" style="display:none;text-align:left;font-size:12px;background:#f4f4f4;padding:12px;border-radius:8px;margin-top:8px;white-space:pre-wrap;word-break:break-word"></pre>
       <div id="setupFirstAdmin" style="display:none;margin-top:14px"></div>
     </div>
   </div>
@@ -1263,6 +1265,51 @@ async function setupLadeBenutzerNachSync(){
   // OneDrive ist leer (allererste Einrichtung überhaupt) → ersten Admin anlegen
   setupZeigeErstAdmin();
 }
+
+// STATUS-CHECK: Sind die Daten sicher? Lokal + OneDrive prüfen, ohne etwas zu verändern.
+async function setupCheck(){
+  const out = document.getElementById('setupCheckOut');
+  if(out){ out.style.display='block'; out.textContent='Prüfe …'; }
+  const log = [];
+  try {
+    // 1) Lokale Daten (IndexedDB) – sind Benutzer/Mieter/Dokumente noch da?
+    const lu = await idbGetAll('users').catch(()=>[]);
+    const lm = await idbGetAll('mieter').catch(()=>[]);
+    const ld = await idbGetAll('dokumente').catch(()=>[]);
+    log.push('— LOKAL (dieses Gerät) —');
+    log.push('Benutzer: ' + lu.length + (lu.length? ' ('+lu.map(u=>u&&u.name).filter(Boolean).slice(0,5).join(', ')+')' : ''));
+    log.push('Mieter: ' + lm.length + ', Dokumente: ' + ld.length);
+    const migr = ld.filter(d=>d&&d.migriert).length;
+    log.push('davon ausgelagert (migriert): ' + migr);
+
+    // 2) OneDrive-Datei
+    const token = await odGetToken();
+    log.push('');
+    log.push('— ONEDRIVE —');
+    if(!token){ log.push('Nicht angemeldet – bitte erst „Mit OneDrive verbinden".'); if(out) out.textContent=log.join('\n'); return; }
+    const mr = await fetch('https://graph.microsoft.com/v1.0/me/drive/root:/NadigPfau/immo_daten.json?$select=size,lastModifiedDateTime', {headers:{'Authorization':'Bearer '+token}});
+    if(mr.status===404){ log.push('Sync-Datei existiert NICHT (404).'); if(out) out.textContent=log.join('\n'); return; }
+    if(!mr.ok){ log.push('Metadaten-Fehler HTTP '+mr.status); if(out) out.textContent=log.join('\n'); return; }
+    const meta = await mr.json();
+    log.push('Dateigröße: ' + (meta.size/1024/1024).toFixed(2) + ' MB');
+    log.push('zuletzt geändert: ' + (meta.lastModifiedDateTime||'?'));
+
+    // 3) Lässt sich die Datei jetzt sauber laden? (mit dem Byte-sicheren Loader)
+    try {
+      const obj = await odLadeDatei(token);
+      if(obj===null){ log.push('Laden: Datei nicht gefunden'); }
+      else {
+        const ru = Array.isArray(obj.users)?obj.users.length:'(kein users-Feld!)';
+        log.push('Laden: OK ✓  Benutzer in Datei: ' + ru);
+        if(Array.isArray(obj.users)&&obj.users.length) log.push('  Namen: '+obj.users.map(x=>x&&x.name).filter(Boolean).slice(0,5).join(', '));
+        log.push('  Mieter in Datei: ' + (Array.isArray(obj.mieter)?obj.mieter.length:'?'));
+        log.push('  Dokumente in Datei: ' + (Array.isArray(obj.dokumente)?obj.dokumente.length:'?'));
+      }
+    } catch(e){ log.push('Laden FEHLER: ' + (e&&e.message||e) + '  → Datei evtl. beschädigt'); }
+  } catch(e){ log.push('AUSNAHME: ' + (e&&e.message||e)); }
+  if(out){ out.textContent=log.join('\n'); }
+}
+registerActions({ setupCheck });
 
 
 
@@ -23733,19 +23780,27 @@ async function odLadeDatei(token){
   }
 
   // Große Dateien: in 4-MB-Blöcken per Range laden, bleibt auf graph.microsoft.com.
+  // WICHTIG: Als BYTES sammeln, nicht als Text. Ein Range-Schnitt kann mitten in
+  // einem UTF-8-Mehrbyte-Zeichen (Umlaute!) liegen; per-Block-Textdekodierung würde
+  // das JSON zerstören. Daher erst alle Bytes sammeln, dann EINMAL als UTF-8 dekodieren.
   const CHUNK = 4*1024*1024;
-  let text = '';
+  const teile = [];
   for (let start = 0; start < size; start += CHUNK) {
     const end = Math.min(start + CHUNK - 1, size - 1);
     const cr = await fetch(OD_FILE_URL, {
       headers:{ 'Authorization':'Bearer '+token, 'Range':`bytes=${start}-${end}` }
     });
-    // 206 Partial Content erwartet; 200 (ganze Datei) ebenfalls ok
     if (cr.status !== 206 && cr.status !== 200) throw new Error('Range HTTP '+cr.status+' @'+start);
-    text += await cr.text();
+    const buf = new Uint8Array(await cr.arrayBuffer());
+    teile.push(buf);
     if (cr.status === 200) break; // Server hat alles auf einmal geliefert
   }
-  if (!text) throw new Error('Leerer Datei-Inhalt');
+  if (!teile.length) throw new Error('Leerer Datei-Inhalt');
+  // Bytes zusammenfügen
+  let gesamt = 0; for(const t of teile) gesamt += t.length;
+  const alle = new Uint8Array(gesamt);
+  let off = 0; for(const t of teile){ alle.set(t, off); off += t.length; }
+  const text = new TextDecoder('utf-8').decode(alle);
   return JSON.parse(text);
 }
 
