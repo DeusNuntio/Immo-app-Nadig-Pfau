@@ -795,7 +795,7 @@ body.printing-active #printRoot{display:block!important}
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=30;
-const APP_VERSION = '2026-06-29-v145';
+const APP_VERSION = '2026-06-29-v145b';
 /* v94 (19.06.2026): Etappe 1 – Lokale Benachrichtigungen erweitert (Termine + Maengel).
    - checkFaelligeAufgaben() prueft jetzt zusaetzlich:
      a) Termin-Erinnerungen: Termine mit gesetztem Erinnerungs-Vorlauf (1/2/7 Tage)
@@ -1199,10 +1199,20 @@ async function setupConnectOneDrive(){
 async function setupLadeBenutzerNachSync(){
   const st=document.getElementById('setupStatus');
   if(st){ st.textContent='Daten werden aus OneDrive geladen …'; st.style.color='var(--ink-40)'; }
+  let ladeFehler = '';
   try {
-    if(typeof syncFromOneDrive==='function') await syncFromOneDrive();
-  } catch(e){ console.warn('Setup-Sync:', e); }
+    // Erststart: Download erzwingen, damit verwaister lastSync-Stand nicht blockiert.
+    window._forceSyncDownload = true;
+    try {
+      if(typeof syncFromOneDrive==='function') await syncFromOneDrive();
+    } finally { window._forceSyncDownload = false; }
+  } catch(e){ console.warn('Setup-Sync:', e); ladeFehler = (e && e.message) || String(e); }
   const users=(await idbGetAll('users').catch(()=>[])).filter(u=>u.aktiv!==false);
+  if(!users.length && ladeFehler && st){
+    // Fehler sichtbar machen (am Handy keine Konsole verfügbar)
+    st.textContent = 'Ladefehler: ' + ladeFehler;
+    st.style.color = 'var(--red, #c33)';
+  }
   if(users.length){
     // Benutzer vorhanden → zur normalen Anmeldung
     showScreen('loginScreen');
@@ -23722,6 +23732,45 @@ async function syncToOneDrive() {
 // Erzwingt den Download vom Server (umgeht den Zeitstempel-Vergleich).
 // Nützlich, wenn ein Gerät einen falschen lastSync-Stand hat und deshalb
 // neuere Server-Daten nicht zieht. Der Merge bleibt feldsicher.
+// Robuster Datei-Download: lädt die Sync-Datei Byte-sicher per Range-Requests.
+// Umgeht den :/content-Redirect (der auf manchen Geräten "Failed to fetch" wirft)
+// und vermeidet UTF-8-Fehler (Range-Schnitt mitten im Umlaut), indem ERST alle
+// Bytes gesammelt und DANN einmal als UTF-8 dekodiert werden.
+// Rückgabe: geparstes Objekt, oder null bei 404. Wirft bei echten Fehlern.
+async function odLadeDatei(token){
+  const metaR = await fetch('https://graph.microsoft.com/v1.0/me/drive/root:/NadigPfau/immo_daten.json?$select=size',
+    {headers:{'Authorization':'Bearer '+token}});
+  if (metaR.status === 404) return null;
+  if (!metaR.ok) throw new Error('Meta HTTP '+metaR.status);
+  const meta = await metaR.json();
+  const size = meta.size || 0;
+
+  // Kleine Dateien: direkter Versuch.
+  if (size > 0 && size <= 4*1024*1024) {
+    try {
+      const r = await fetch(OD_FILE_URL, {headers:{'Authorization':'Bearer '+token}});
+      if (r.ok) return await r.json();
+    } catch(_){}
+  }
+  // Größere Dateien: in 4-MB-Blöcken als BYTES laden, am Ende einmal UTF-8-dekodieren.
+  const CHUNK = 4*1024*1024;
+  const teile = [];
+  for (let start = 0; start < size; start += CHUNK) {
+    const end = Math.min(start + CHUNK - 1, size - 1);
+    const cr = await fetch(OD_FILE_URL, {
+      headers:{ 'Authorization':'Bearer '+token, 'Range':`bytes=${start}-${end}` }
+    });
+    if (cr.status !== 206 && cr.status !== 200) throw new Error('Range HTTP '+cr.status+' @'+start);
+    teile.push(new Uint8Array(await cr.arrayBuffer()));
+    if (cr.status === 200) break;
+  }
+  if (!teile.length) throw new Error('Leerer Datei-Inhalt');
+  let gesamt = 0; for(const t of teile) gesamt += t.length;
+  const alle = new Uint8Array(gesamt);
+  let off = 0; for(const t of teile){ alle.set(t, off); off += t.length; }
+  return JSON.parse(new TextDecoder('utf-8').decode(alle));
+}
+
 async function syncFromOneDriveForce(){
   if(!confirm('Daten vom Server (OneDrive) laden und mit den lokalen Daten zusammenführen?\n\nGefüllte Felder werden dabei nicht durch leere überschrieben.')) return;
   window._forceSyncDownload = true;
@@ -23734,11 +23783,8 @@ async function syncFromOneDrive() {
   if (!token) return;
   setSyncStatus('pending');
   try {
-    const r = await fetch(OD_FILE_URL,
-      {headers:{'Authorization':'Bearer '+token}});
-    if (r.status === 404) { await syncToOneDrive(); return; }
-    if (!r.ok) throw new Error('HTTP '+r.status);
-    const backup = await r.json();
+    const backup = await odLadeDatei(token);
+    if (backup === null) { await syncToOneDrive(); return; }
     const remoteTime = backup.updatedAt||'';
     const ls = await idbGet('settings','lastSync').catch(()=>null);
     const localTime  = ls?.value||'';
