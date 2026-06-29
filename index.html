@@ -795,7 +795,7 @@ body.printing-active #printRoot{display:block!important}
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=30;
-const APP_VERSION = '2026-06-29-v145b';
+const APP_VERSION = '2026-06-29-v145c';
 /* v94 (19.06.2026): Etappe 1 – Lokale Benachrichtigungen erweitert (Termine + Maengel).
    - checkFaelligeAufgaben() prueft jetzt zusaetzlich:
      a) Termin-Erinnerungen: Termine mit gesetztem Erinnerungs-Vorlauf (1/2/7 Tage)
@@ -1198,21 +1198,47 @@ async function setupConnectOneDrive(){
 // Nach erfolgreicher OneDrive-Verbindung: Daten holen und Benutzer prüfen
 async function setupLadeBenutzerNachSync(){
   const st=document.getElementById('setupStatus');
-  if(st){ st.textContent='Daten werden aus OneDrive geladen …'; st.style.color='var(--ink-40)'; }
-  let ladeFehler = '';
+  const zeig = (txt, rot) => { if(st){ st.textContent = txt; st.style.color = rot ? 'var(--red,#c33)' : 'var(--ink-40)'; } };
+  zeig('Schritt 1: Token prüfen …');
   try {
-    // Erststart: Download erzwingen, damit verwaister lastSync-Stand nicht blockiert.
-    window._forceSyncDownload = true;
+    const token = await odGetToken();
+    zeig('Schritt 2: Token ' + (token ? 'OK ('+token.length+')' : 'FEHLT'));
+    if(!token){ zeig('Kein Token – bitte erneut „Mit OneDrive verbinden".', true); return; }
+
+    zeig('Schritt 3: Datei laden …');
+    let backup = null;
     try {
-      if(typeof syncFromOneDrive==='function') await syncFromOneDrive();
-    } finally { window._forceSyncDownload = false; }
-  } catch(e){ console.warn('Setup-Sync:', e); ladeFehler = (e && e.message) || String(e); }
-  const users=(await idbGetAll('users').catch(()=>[])).filter(u=>u.aktiv!==false);
-  if(!users.length && ladeFehler && st){
-    // Fehler sichtbar machen (am Handy keine Konsole verfügbar)
-    st.textContent = 'Ladefehler: ' + ladeFehler;
-    st.style.color = 'var(--red, #c33)';
+      backup = await odLadeDatei(token);
+    } catch(e){
+      zeig('FEHLER beim Laden: ' + ((e&&e.message)||e), true);
+      return;
+    }
+    if(backup === null){ zeig('Datei existiert nicht (404).', true); return; }
+
+    const ru = Array.isArray(backup.users) ? backup.users.length : -1;
+    zeig('Schritt 4: Datei geladen ✓ — Benutzer darin: ' + ru);
+    if(ru <= 0){ zeig('Datei geladen, aber KEINE Benutzer darin (users=' + ru + ').', true); return; }
+
+    // Benutzer (und Rest) in lokale DB schreiben
+    zeig('Schritt 5: Speichere Benutzer …');
+    let geschrieben = 0;
+    for(const u of backup.users){ if(u && u.id){ await idbPut('users', u); geschrieben++; } }
+    // restliche Stores ebenfalls einspielen, damit die App vollständig ist
+    const stores = ['mieter','tg','protokolle','aufgaben','maengel','reparaturen','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','versorger_archiv','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','versicherungen','od_dateien','buchungen','fotos','mietbescheinigungen','mv_entwuerfe','selbstauskuenfte','tenant_mails'];
+    for(const s2 of stores){
+      if(Array.isArray(backup[s2])){
+        for(const rec of backup[s2]){ if(rec && rec.id){ await idbPut(s2, rec).catch(()=>{}); } }
+      }
+    }
+    if(backup.settings){ for(const rec of backup.settings){ if(rec && rec.id){ await idbPut('settings', rec).catch(()=>{}); } } }
+    if(backup.tombstones){ try { await idbPut('settings', { id:'tombstones', value: backup.tombstones }); } catch(_){} }
+    try { await idbPut('settings', { id:'lastSync', value: new Date().toISOString() }); } catch(_){}
+    zeig('Schritt 6: ' + geschrieben + ' Benutzer gespeichert ✓');
+  } catch(e){
+    zeig('Unerwarteter Fehler: ' + ((e&&e.message)||e), true);
+    return;
   }
+  const users=(await idbGetAll('users').catch(()=>[])).filter(u=>u.aktiv!==false);
   if(users.length){
     // Benutzer vorhanden → zur normalen Anmeldung
     showScreen('loginScreen');
