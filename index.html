@@ -795,7 +795,7 @@ body.printing-active #printRoot{display:block!important}
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=30;
-const APP_VERSION = '2026-06-30-v150';
+const APP_VERSION = '2026-06-30-v151';
 /* v148 (30.06.2026): Fix untere Navigationsleiste auf Geraeten mit
    Android-Gestenleiste. Bisher schnitt env(safe-area-inset-bottom) als
    Innen-Padding bei fixer height:64px die Buttons ab (Start/ToDo/Kalender/
@@ -899,6 +899,26 @@ const APP_VERSION = '2026-06-30-v150';
    5.  Hauptmieter als "Nachname, Vorname" in Objekt- und Mieteransicht
    6.  Wohnflaeche (m2) neben EUR/m2 in der Objektansicht
    Keine neuen Stores -> DB_VER bleibt 21. Naechstes Paket: OneDrive-Ordnerbaum / Versicherungen / Schadensmeldung. */
+/* v151 (30.06.2026): UI-Korrekturen Mieter/Bescheinigung (keine neuen Stores, DB_VER bleibt 30).
+   1. Neuer-Mieter-Dialog (modalAddMieter):
+      - obere Anrede entfernt (Anrede wird je Person in der Personenzeile gewaehlt)
+      - \"Personen (Anzahl)\" ist jetzt reiner Auto-Zaehler (readonly): zaehlt die zum
+        Stichtag heute gueltigen Personen (ab<=heute, bis leer/>=heute). Neue Helfer
+        personenAnzahlStichtag(); mPersonenAuto() stichtagsbasiert + respektiert weiter
+        data-manuell der Bearbeiten-Maske. pAb/pBis loesen mPersonenAuto() aus.
+      - doppelte Telefon/E-Mail-Zeile unten entfernt; Kontakt steckt je Bewohner.
+      - BEWOHNER-Karte (personenBlockHTML): Tel/E-Mail nur noch ANZEIGE (nicht klickbar),
+        stattdessen Aktionsbuttons je Bewohner (Anrufen/WhatsApp/E-Mail/Kontakt teilen,
+        nur bei vorhandenen Daten). Neue Helfer personAktionsButtons(), personVCard(),
+        personKontaktTeilen(), personNameTeile(). Warndreieck bei aktivem Bewohner ohne
+        \"Dabei ab\"-Datum.
+   2. Mietbescheinigung (Paragraph 23 WoGG): \"Fuer Frau/Herrn\" + Dialog-Untertitel zeigen jetzt
+      ALLE Vertragspartner-Vollnamen (hauptmieterNameVoll) statt nur des Nachnamens.
+   3. Wohnungsinfos-Dialog (modalWohnungHeizNk): Flaeche/Lage werden aus den
+      Mieter-Stammdaten der WE vorbefuellt, falls im Wohnungs-Stamm noch leer.
+   4. Gespeicherte Mietbescheinigungen: zusaetzlicher \"Aendern\"-Button (oeffnet den
+      Bescheinigungs-Dialog erneut); Ansehen/PDF/Verschicken via vorhandenem Druck-Dialog.
+   Hinweis: PDF-Versand per Mail-Backend (send-mail) weiterhin OFFEN (To-do). */
 let idb=null;
 
 function openIDB(){
@@ -2123,12 +2143,9 @@ async function interessentZuMieter(id){
     set('pGeb_0', k.geburtsdatum);
     set('pTel_0', k.telefon);
     set('pMail_0', k.email);
-    // Mieterebene-Fallbackfelder der Add-Maske
-    set('mAnrede', k.anrede);
-    set('mTel', k.telefon);
-    set('mEmail', k.email);
-    set('mPersonen', k.personen);
+    // Personenzahl ergibt sich automatisch; Kontakt steckt in der Personenzeile.
     if(k.mietbeginnISO) set('mEinzug', k.mietbeginnISO);
+    if(typeof mPersonenAuto==='function') mPersonenAuto();
   }, 60);
   toast('Daten übernommen – bitte prüfen und speichern');
 }
@@ -9059,16 +9076,21 @@ function personenBlockHTML(m){
       <span><i class="ti ti-users"></i> Bewohner (${lebend}${personen.length!==lebend?' von '+personen.length:''})</span>
       <button class="btn btn-sm" onclick="modalEditMieter('${m.id}')"><i class="ti ti-pencil"></i> Bearbeiten</button>
     </div>`;
+  const _heute = new Date().toISOString().slice(0,10);
   personen.forEach((p,i)=>{
     const v=p.verstorben;
+    // Warndreieck: aktiver Bewohner ohne "Dabei ab"-Datum (NK-Zählung unklar)
+    const fehltAb = !v && !p.ab;
+    const warn = fehltAb ? ` <span title="Kein \u201eDabei ab\u201c-Datum hinterlegt – wird für die NK-Personenzählung benötigt" style="color:var(--amber);cursor:help"><i class="ti ti-alert-triangle-filled" style="font-size:13px"></i></span>` : '';
     h+=`<div style="display:flex;align-items:flex-start;gap:10px;padding:9px 0;${i<personen.length-1?'border-bottom:1px solid var(--ink-10)':''}" class="${v?'person-verstorben':''}">
       <div style="flex:1;min-width:0">
-        <div style="font-weight:600;font-size:14px">${esc(p.name)}${v?' <span style="font-size:10px;color:var(--ink-40);font-weight:400">(verstorben)</span>':''}</div>
+        <div style="font-weight:600;font-size:14px">${esc(p.name)}${warn}${v?' <span style="font-size:10px;color:var(--ink-40);font-weight:400">(verstorben)</span>':''}</div>
         <div style="display:flex;flex-direction:column;gap:2px;margin-top:3px">
           ${p.geburtsdatum?`<span style="font-size:12px;color:var(--ink-60)"><i class="ti ti-cake" style="font-size:12px"></i> ${fmtDate(p.geburtsdatum)}${alterAus(p.geburtsdatum)?` (${alterAus(p.geburtsdatum)} J.)`:''}</span>`:''}
-          ${p.telefon?`<span style="font-size:12px;color:var(--ink-60)"><i class="ti ti-phone" style="font-size:12px"></i> <a href="${telHref(p.telefon)}">${esc(p.telefon)}</a>${waLink(p.telefon)?` · <a href="${waLink(p.telefon)}" target="_blank" rel="noopener" style="color:#25D366;font-weight:600"><i class="ti ti-brand-whatsapp" style="font-size:12px"></i> WhatsApp</a>`:''}</span>`:''}
-          ${p.email?`<span style="font-size:12px;color:var(--ink-60)"><i class="ti ti-mail" style="font-size:12px"></i> <a href="${mailHref(p.email)}">${esc(p.email)}</a></span>`:''}
+          ${p.telefon?`<span style="font-size:12px;color:var(--ink-60)"><i class="ti ti-phone" style="font-size:12px"></i> ${esc(p.telefon)}</span>`:''}
+          ${p.email?`<span style="font-size:12px;color:var(--ink-60)"><i class="ti ti-mail" style="font-size:12px"></i> ${esc(p.email)}</span>`:''}
         </div>
+        ${v?'':personAktionsButtons(p, m.id, i)}
       </div>
       ${istVerwalter()?`<button class="btn btn-sm" title="${v?'Als lebend markieren':'Als verstorben markieren'}" onclick="togglePersonVerstorben('${m.id}',${i})">
         <i class="ti ti-${v?'rotate':'grave'}" style="font-size:14px"></i>
@@ -9561,6 +9583,88 @@ async function mieterKontaktTeilen(id){
   await vcardTeilen(vc, 'Kontakt_'+fn+'.vcf');
 }
 
+// ── v151: Vor-/Nachname aus "Nachname, Vorname" ODER "Vorname Nachname" ──
+function personNameTeile(name){
+  let n=(name||'').trim().replace(/\s+/g,' ');
+  if(!n) return {vorname:'', nachname:''};
+  if(n.includes(',')){
+    const [nn, vn=''] = n.split(',');
+    return {vorname:vn.trim(), nachname:nn.trim()};
+  }
+  const t=n.split(' ');
+  if(t.length===1) return {vorname:'', nachname:t[0]};
+  return {vorname:t.slice(0,-1).join(' '), nachname:t[t.length-1]};
+}
+
+// ── v151: vCard für eine EINZELNE Person (Bewohner/Vertragspartner) ──
+function personVCard(p, m){
+  const o   = getObj(m.objektId);
+  const kz  = objKuerzel(m.objektId);
+  const {vorname,nachname} = personNameTeile(p.name);
+  const we  = m.weNr!=null && m.weNr!=='' ? ('WE '+m.weNr) : '';
+  const lage= (m.etage||'').trim();
+  const klammerTeile=[kz, we, lage].filter(Boolean).join(' / ');
+  const fn  = (nachname?nachname:(p.name||'')) + (vorname?(', '+vorname):'') + (klammerTeile?(' ('+klammerTeile+')'):'');
+  const tel = telNorm(p.telefon);
+  const adrStrasse = o ? (o.name||'') : '';
+  const adrOrt     = o ? (o.ort||'')  : '';
+  const ortM = adrOrt.match(/^\s*(\d{5})\s+(.+)$/);
+  const plz  = ortM?ortM[1]:'';
+  const stadt= ortM?ortM[2]:adrOrt;
+  let v='BEGIN:VCARD\r\nVERSION:3.0\r\n';
+  v+='N:'+vcEsc(nachname)+';'+vcEsc(vorname)+';;;\r\n';
+  v+='FN:'+vcEsc(fn)+'\r\n';
+  if(o) v+='ORG:'+vcEsc('Mieter '+kz+(we?(' '+we):''))+'\r\n';
+  if(tel)     v+='TEL;TYPE=CELL,VOICE:'+vcEsc(tel)+'\r\n';
+  if(p.email) v+='EMAIL;TYPE=INTERNET:'+vcEsc(p.email)+'\r\n';
+  if(adrStrasse||plz||stadt)
+    v+='ADR;TYPE=HOME:;;'+vcEsc(adrStrasse)+';'+vcEsc(stadt)+';;'+vcEsc(plz)+';Deutschland\r\n';
+  v+='END:VCARD\r\n';
+  return v;
+}
+
+// ── v151: einzelne Person als Kontakt teilen (über Mieter-ID + Index) ──
+async function personKontaktTeilen(mieterId, idx){
+  const m=await idbGet('mieter',mieterId).catch(()=>null);
+  if(!m){ toast('Mieter nicht gefunden'); return; }
+  const liste=personenVon(m);
+  const p=liste[idx]; if(!p){ toast('Person nicht gefunden'); return; }
+  const {nachname}=personNameTeile(p.name);
+  const fn=((nachname||p.name||'Kontakt').replace(/[^a-zA-Z0-9äöüÄÖÜß _-]/g,'')||'Kontakt');
+  await vcardTeilen(personVCard(p,m), 'Kontakt_'+fn+'.vcf');
+}
+
+// ── v151: Aktionsbuttons (Anrufen/WhatsApp/Mail/Teilen) je Bewohner ──
+// Nur Buttons, für die Daten vorhanden sind. "Teilen" immer, wenn Tel ODER Mail.
+function personAktionsButtons(p, mieterId, idx){
+  const btns=[];
+  if(p.telefon){
+    btns.push(`<a href="${telHref(p.telefon)}" class="btn btn-sm btn-success" title="Anrufen"><i class="ti ti-phone"></i></a>`);
+    const wa=waLink(p.telefon);
+    if(wa) btns.push(`<a href="${wa}" target="_blank" rel="noopener" class="btn btn-sm" style="background:#25D366;color:#fff;border-color:#25D366" title="WhatsApp"><i class="ti ti-brand-whatsapp"></i></a>`);
+  }
+  if(p.email)
+    btns.push(`<a href="${mailHref(p.email)}" class="btn btn-sm btn-copper" title="E-Mail"><i class="ti ti-mail"></i></a>`);
+  if(p.telefon||p.email)
+    btns.push(`<button class="btn btn-sm" onclick="personKontaktTeilen('${mieterId}',${idx})" title="Kontakt teilen"><i class="ti ti-user-share"></i></button>`);
+  return btns.length ? `<div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:5px">${btns.join('')}</div>` : '';
+}
+
+// ── v151: Zählt Personen, die zum Stichtag (Default: heute) gültig sind. ──
+// Gültig = nicht verstorben UND (ab leer ODER ab<=Stichtag) UND (bis leer ODER bis>=Stichtag).
+function personenAnzahlStichtag(liste, stichtagISO){
+  const stichtag = stichtagISO || new Date().toISOString().slice(0,10);
+  let n=0;
+  (liste||[]).forEach(p=>{
+    if(!p || !(p.name||'').trim()) return;
+    if(p.verstorben) return;
+    if(p.ab && p.ab > stichtag) return;
+    if(p.bis && p.bis < stichtag) return;
+    n++;
+  });
+  return n;
+}
+
 // Alle (sichtbaren) Mieter als Sammel-vCard exportieren/teilen.
 async function mieterAlleVcardExport(){
   if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
@@ -9813,7 +9917,8 @@ async function showMieter(id){
               <div style="font-weight:600;font-size:13px">Erstellt am ${d}${b.erstelltVon?' · '+esc(b.erstelltVon):''}</div>
               <div style="font-size:11px;color:var(--ink-40)">Gesamtmiete ${gm||'–'}${b.mieteSeitText?' · seit '+esc(b.mieteSeitText):''}</div>
             </div>
-            <button class="btn btn-sm" onclick="zeigeGespMietbescheinigung('${b.id}')" title="Anzeigen / Drucken"><i class="ti ti-printer"></i></button>
+            <button class="btn btn-sm" onclick="zeigeGespMietbescheinigung('${b.id}')" title="Ansehen / als PDF drucken / verschicken"><i class="ti ti-printer"></i></button>
+            <button class="btn btn-sm" onclick="modalMietbescheinigung('${id}')" title="Neue Bescheinigung erstellen / Werte ändern"><i class="ti ti-pencil"></i></button>
             <button class="btn btn-sm btn-danger" onclick="loescheGespMietbescheinigung('${b.id}','${id}')" title="Löschen"><i class="ti ti-trash"></i></button>
           </div>`;
         });
@@ -13791,6 +13896,15 @@ async function modalWohnungHeizNk(objektId, weNr){
   if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
   const obj = getObj(objektId);
   const w   = await getWohnungStamm(objektId, weNr);
+  // v151: fehlende Räume/Fläche/Lage aus den Mieter-Stammdaten der WE vorbefüllen
+  try{
+    const _alle=(await idbGetAll('mieter','objektId',objektId)).filter(x=>!x._vormieter && String(x.weNr)===String(weNr));
+    const _akt=_alle.find(x=>!x.leerstand && x.mieter) || _alle[0];
+    if(_akt){
+      if(w.flaeche==null || w.flaeche==='') { if(_akt.flaeche!=null && _akt.flaeche!=='') w.flaeche=_akt.flaeche; }
+      if(!w.lage && _akt.etage) w.lage=_akt.etage;
+    }
+  }catch(_){}
   const stdHeiz = mvHeizVarianteStandard(objektId, weNr);
   const curHeiz = (w.heizVariante==='A'||w.heizVariante==='B'||w.heizVariante==='C') ? w.heizVariante : '';
   const stdNk   = mvNkSchluesselStandard(objektId);
@@ -15200,7 +15314,7 @@ async function modalMietbescheinigung(mieterId){
   const radio=(name,val,cur)=>`<label style="display:inline-flex;align-items:center;gap:4px;margin-right:12px;font-size:12px"><input type="radio" name="${name}" value="${val}" ${cur===val?'checked':''}> ${val}</label>`;
   showModal(`
     <div class="m-title"><i class="ti ti-file-certificate"></i> Mietbescheinigung (§ 23 WoGG)</div>
-    <div style="font-size:12px;color:var(--ink-40);margin-bottom:10px">${esc(m.mieter)} · ${esc(obj?.name||'')} WE ${esc(m.weNr||'')}</div>
+    <div style="font-size:12px;color:var(--ink-40);margin-bottom:10px">${esc(hauptmieterNameVoll(m)||m.mieter)} · ${esc(obj?.name||'')} WE ${esc(m.weNr||'')}</div>
     <div style="max-height:60vh;overflow-y:auto;padding-right:4px">
 
     <div class="f-section-title"><i class="ti ti-home"></i> Wohnung (wird dauerhaft gespeichert)</div>
@@ -15364,7 +15478,7 @@ async function erstelleMietbescheinigung(mieterId){
     <em>Grundmiete, Heiz- und Nebenkosten bitte getrennt aufführen!</em></p>
     <table class="mb-t">
       <tr><td class="l">Für die Wohnung</td><td>${esc(adr)}</td></tr>
-      <tr><td class="l">Für Frau/Herrn</td><td>${esc(m.mieter||'')}</td></tr>
+      <tr><td class="l">Für Frau/Herrn</td><td>${esc(hauptmieterNameVoll(m)||m.mieter||'')}</td></tr>
       <tr><td class="l">Die Wohnung wird bewohnt mit</td><td>${parseInt(m.personen)||1} Person(en)</td></tr>
       <tr><td class="l">Mietverhältnis seit</td><td>${m.einzug||mieteSeit||''}</td></tr>
       <tr><td class="l">Gesamtfläche</td><td>${qm(m.flaeche)} m²</td></tr>
@@ -18288,9 +18402,9 @@ function personenZeileHTML(p, i){
         <input type="email" id="pMail_${i}" value="${esc(p.email||'')}" style="font-size:12px" placeholder="optional"></div>
       <div class="f-row" style="margin-bottom:6px">
         <div class="f"><label style="font-size:10px">Dabei ab (NK-Wirkung)</label>
-          <input type="date" id="pAb_${i}" value="${p.ab||''}" style="font-size:12px" title="Ab diesem Monat zählt die Person in der NK-Abrechnung"></div>
+          <input type="date" id="pAb_${i}" value="${p.ab||''}" style="font-size:12px" title="Ab diesem Monat zählt die Person in der NK-Abrechnung" onchange="mPersonenAuto()"></div>
         <div class="f"><label style="font-size:10px">Dabei bis</label>
-          <input type="date" id="pBis_${i}" value="${p.bis||''}" style="font-size:12px" title="Letzter Monat, in dem die Person zählt (leer = unbefristet)"></div>
+          <input type="date" id="pBis_${i}" value="${p.bis||''}" style="font-size:12px" title="Letzter Monat, in dem die Person zählt (leer = unbefristet)" onchange="mPersonenAuto()"></div>
       </div>
       <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
         <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-size:12px;color:${vp?'var(--copper)':'var(--ink-40)'};font-weight:${vp?'600':'400'}" title="Im Mietvertrag als Mietpartei genannt – erhält NKA und Mieterhöhung">
@@ -18443,18 +18557,25 @@ function redrawPersonenListe(personen){
 function mPersonenAuto(){
   const feld = document.getElementById('mPersonen');
   if(!feld) return;
-  if(feld.dataset.manuell==='1') return;  // Nutzer hat selbst gesetzt -> nicht überschreiben
+  // Edit-Maske: manuell gesetzte Zahl hat Vorrang. Add-Maske: Feld ist readonly
+  // (kein data-manuell) -> wird hier immer automatisch gesetzt.
+  if(feld.dataset.manuell==='1' && !feld.readOnly) return;
   const liste = document.getElementById('personenListe');
   if(!liste) return;
-  let lebend = 0;
+  // Stichtagsbasiert: heute gültige Personen (ab<=heute, bis leer/>=heute).
+  const heute = new Date().toISOString().slice(0,10);
+  let n = 0;
   for(let i=0;i<liste.children.length;i++){
     const nameEl = document.getElementById('pName_'+i);
-    if(!nameEl) continue;
-    if(!nameEl.value.trim()) continue;
+    if(!nameEl || !nameEl.value.trim()) continue;
     if(document.getElementById('pTot_'+i)?.checked) continue;
-    lebend++;
+    const ab  = document.getElementById('pAb_'+i)?.value || '';
+    const bis = document.getElementById('pBis_'+i)?.value || '';
+    if(ab && ab > heute) continue;
+    if(bis && bis < heute) continue;
+    n++;
   }
-  feld.value = lebend>0 ? lebend : 1;
+  feld.value = n>0 ? n : (liste.children.length ? 0 : 1);
 }
 // Nutzer hat das Personen-Feld von Hand geändert -> Vorrang merken.
 function mPersonenManuell(el){ if(el) el.dataset.manuell='1'; }
@@ -18519,17 +18640,11 @@ async function modalAddMieter(objektId) {
 
     <div class="f-section-title"><i class="ti ti-users"></i> Neuer Mieter</div>
     <div class="f-row">
-      <div class="f"><label>Anrede</label>
-        <select id="mAnrede">
-          <option value="Herr">Herr</option>
-          <option value="Frau">Frau</option>
-          <option value="Divers">Divers / Keine</option>
-        </select></div>
-      <div class="f"><label>Personen (Anzahl)${istPersonenObjekt(objektId)?' <span class="chip chip-warn" style="font-size:9px;padding:0 5px">NK-relevant</span>':''}</label>
-        <input type="number" id="mPersonen" value="1" min="1" max="20" oninput="mPersonenManuell(this)">
-        ${istPersonenObjekt(objektId)?'<div style="font-size:10px;color:var(--amber);margin-top:2px">Dieses Objekt rechnet Nebenkosten nach Personen ab – bitte aktuell halten.</div>':''}</div>
+      <div class="f" style="max-width:200px"><label>Personen (Anzahl)${istPersonenObjekt(objektId)?' <span class="chip chip-warn" style="font-size:9px;padding:0 5px">NK-relevant</span>':''}</label>
+        <input type="number" id="mPersonen" value="1" min="0" max="20" readonly style="background:var(--ink-05)">
+        <div style="font-size:10px;color:var(--ink-40);margin-top:2px">Ergibt sich automatisch aus den Bewohnern unten (heute gültige Personen).${istPersonenObjekt(objektId)?' <span style="color:var(--amber)">Objekt rechnet NK nach Personen ab.</span>':''}</div></div>
     </div>
-    <div style="font-size:11px;color:var(--ink-40);margin-bottom:6px">Jede Zeile = eine Person. Vertragspartner = im Mietvertrag genannt.</div>
+    <div style="font-size:11px;color:var(--ink-40);margin-bottom:6px">Jede Zeile = eine Person. Vertragspartner = im Mietvertrag genannt. Anrede wird je Person gewählt.</div>
     <div id="personenListe">${personenZeileHTML({vertragspartner:true},0)}</div>
     <button type="button" class="btn btn-sm" style="margin-bottom:12px" onclick="addPersonRow()">
       <i class="ti ti-user-plus"></i> Person hinzufügen
@@ -18545,11 +18660,8 @@ async function modalAddMieter(objektId) {
       <div class="f"><label>Kaution (€)</label><input type="number" id="mKaution" step="0.01" oninput="this.dataset.manuell='1'">
         <div style="font-size:10px;color:var(--ink-40);margin-top:2px">Vorschlag: 3× Nettokaltmiete (§ 551 BGB). Bei Eingabe der Miete automatisch gesetzt, frei änderbar.</div></div>
     </div>
-    <div class="f-row">
-      <div class="f"><label>Telefon</label><input type="tel" id="mTel" placeholder="+49 ..."></div>
-      <div class="f"><label>E-Mail</label><input type="email" id="mEmail" placeholder="name@domain.de"></div>
-    </div>
     <div class="f"><label>TG-Stellplatz Nr.</label><input type="text" id="mTgNr"></div>
+    <div style="font-size:10px;color:var(--ink-40);margin-top:-2px">Telefon &amp; E-Mail werden je Bewohner oben erfasst.</div>
 
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="saveNewMieter('${objektId}')">
@@ -18645,18 +18757,16 @@ async function saveNewMieter(objektId) {
     objektId, objekt: obj?.name||'',
     weNr, etage, flaeche,
     mieter: hauptmieterNachnamen({personen_liste:persListe}) || name,
-    anrede: haupt.anrede || document.getElementById('mAnrede')?.value || 'Herr',
-    personen: (document.getElementById('mPersonen')?.dataset.manuell==='1'
-                ? (parseInt(document.getElementById('mPersonen')?.value)||lebend.length||persListe.length||1)
-                : (lebend.length||persListe.length||1)),
+    anrede: haupt.anrede || 'Herr',
+    personen: (personenAnzahlStichtag(persListe) || lebend.length || persListe.length || 1),
     personen_liste: persListe,
     miete, nk,
     gesamt: (parseFloat(miete)||0)+(parseFloat(nk)||0) || '',
     einzug: einzugDate.toLocaleDateString('de-DE'),
     einzugISO: einzugRaw,
     kaution: parseFloat(document.getElementById('mKaution')?.value)||'',
-    telefon: haupt.telefon || document.getElementById('mTel')?.value||'',
-    email:   haupt.email   || document.getElementById('mEmail')?.value||'',
+    telefon: haupt.telefon || (lebend.find(p=>p.telefon)?.telefon) || '',
+    email:   haupt.email   || (lebend.find(p=>p.email)?.email)     || '',
     tgNr:    document.getElementById('mTgNr')?.value||'',
     leerstand: false,
   };
