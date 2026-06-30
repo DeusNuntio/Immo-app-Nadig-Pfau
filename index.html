@@ -795,7 +795,16 @@ body.printing-active #printRoot{display:block!important}
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=30;
-const APP_VERSION = '2026-06-30-v151';
+const APP_VERSION = '2026-06-30-v152';
+/* v152 (30.06.2026): Sicherheits-Patch – gespeicherter XSS geschlossen.
+   21 Stellen, an denen nutzereingegebener Freitext ungeprueft per
+   Template-Literal in innerHTML geschrieben wurde, jetzt ueber esc()
+   bzw. escAttr() abgesichert: Kommentare (Text/Autor/Datum), Notiz-
+   Felder (Zeiterfassung/Dokumente/Bestellliste/Termine), Dokumentname,
+   Bestell-Artikel/Referenz, Kategorienamen, Termin-Personenfelder
+   (Mieter/Zugewiesen/Ersteller), Zaehler-/Benutzername, Mieter-Kontakt
+   (Tel/E-Mail) sowie drei Attribut-Felder (Artikel-, Objekt-, Benutzer-
+   Eingabe via escAttr). Keine neuen Stores, DB_VER bleibt 30. */
 /* v148 (30.06.2026): Fix untere Navigationsleiste auf Geraeten mit
    Android-Gestenleiste. Bisher schnitt env(safe-area-inset-bottom) als
    Innen-Padding bei fixer height:64px die Buttons ab (Start/ToDo/Kalender/
@@ -2224,7 +2233,7 @@ async function renderObjZaehler(el){
           <i class="ti ${ZAEHLER_ICON[z.art]||'ti-gauge'}"></i>
         </div>
         <div style="flex:1">
-          <div style="font-weight:600;font-size:14px">${z.name}${z.weNr?` <span style="font-size:11px;font-weight:600;color:var(--copper);background:var(--ink-05);padding:1px 6px;border-radius:6px;margin-left:4px"><i class="ti ti-home" style="font-size:11px"></i> WE ${z.weNr}</span>`:''}</div>
+          <div style="font-weight:600;font-size:14px">${esc(z.name)}${z.weNr?` <span style="font-size:11px;font-weight:600;color:var(--copper);background:var(--ink-05);padding:1px 6px;border-radius:6px;margin-left:4px"><i class="ti ti-home" style="font-size:11px"></i> WE ${z.weNr}</span>`:''}</div>
           ${z.zaehlernummer?`<div style="font-size:12px;color:var(--ink-60)"><i class="ti ti-hash"></i> ${z.zaehlernummer}</div>`:''}
           <div style="font-size:12px;color:var(--ink-40)">
             ${letzter?`Letzter Stand: <strong>${letzter.wert} ${z.einheit}</strong> · ${letzter.datum}`:'Noch keine Ablesung'}
@@ -4700,7 +4709,7 @@ function stempeluhrHtml(s){
       data-start="${s.start}" data-pausen-ms="${pausenMs}" data-pause-von="${laufendePauseVon}">${fmtDauer(min)}</div>`;
   if(seg && !istPause){
     h+=`<div style="background:var(--copper-bg);border-radius:8px;padding:8px 12px;margin-bottom:8px;text-align:center">
-      <div style="font-size:13px;font-weight:600;color:var(--copper-d)">${seg.katName} läuft</div>
+      <div style="font-size:13px;font-weight:600;color:var(--copper-d)">${esc(seg.katName)} läuft</div>
       <div style="font-size:11px;color:var(--ink-40)">${zielName(seg.objId)} · <span class="stempelTaetDauer" data-start="${seg.start}">${fmtDauer(Math.max(0,Math.round((new Date()-new Date(seg.start))/60000)))}</span></div>
     </div>
     <button class="btn btn-full" style="margin-bottom:6px" onclick="taetigkeitBeenden()"><i class="ti ti-player-stop"></i> Tätigkeit beenden</button>
@@ -5094,9 +5103,9 @@ function renderZeitleiste(s){
     h+=`<div class="card" style="margin-bottom:5px;padding:8px 10px" onclick="modalSegmentBearbeiten('${s.id}','${seg.id}')">
       <div style="display:flex;align-items:center;justify-content:space-between">
         <div>
-          <div style="font-weight:600;font-size:13px">${seg.katName}${seg.ende?'':' <span style="color:var(--copper);font-size:11px">läuft</span>'}</div>
+          <div style="font-weight:600;font-size:13px">${esc(seg.katName)}${seg.ende?'':' <span style="color:var(--copper);font-size:11px">läuft</span>'}</div>
           <div style="font-size:11px;color:var(--ink-40)">${fmtUhr(seg.start)}${seg.ende?'–'+fmtUhr(seg.ende):''} · ${zielName(seg.objId)||'kein Objekt'}</div>
-          ${seg.notiz?`<div style="font-size:11px;color:var(--ink-60);margin-top:2px">${seg.notiz}</div>`:''}
+          ${seg.notiz?`<div style="font-size:11px;color:var(--ink-60);margin-top:2px">${esc(seg.notiz)}</div>`:''}
         </div>
         <div style="text-align:right">
           <div style="font-weight:600;font-size:13px">${fmtDauer(dur)}</div>
@@ -9235,8 +9244,8 @@ async function renderObjMieter(el){
         <div class="m-sub">${m.etage||''} · Einzug: ${m.einzug||'–'}${m.leerstand?'':` · <i class="ti ti-users" style="font-size:11px"></i> ${pers} ${pers===1?'Person':'Personen'}`}</div>
         ${istAdmin && !m.leerstand && mieteProQm(m)!==null?`<div class="m-sub" style="margin-top:2px"><i class="ti ti-square-rounded-percentage" style="font-size:11px"></i> ${mieteProQmHTML(m, stamm&&stamm.mietspiegel)}${m.flaeche?` <span style="color:var(--ink-40);font-size:11px">· ${String(m.flaeche).replace('.',',')} m²</span>`:''}${stamm&&stamm.mietspiegel?` <span style="color:var(--ink-40);font-size:11px">(Mietspiegel ${String(stamm.mietspiegel).replace('.',',')} €/m²)</span>`:''}</div>`:''}
         <div class="m-sub" style="display:flex;gap:8px;flex-wrap:wrap">
-          ${m.telefon?`<span><i class="ti ti-phone" style="font-size:11px"></i> ${m.telefon}</span>`:''}
-          ${m.email?`<span><i class="ti ti-mail" style="font-size:11px"></i> ${m.email}</span>`:''}
+          ${m.telefon?`<span><i class="ti ti-phone" style="font-size:11px"></i> ${esc(m.telefon)}</span>`:''}
+          ${m.email?`<span><i class="ti ti-mail" style="font-size:11px"></i> ${esc(m.email)}</span>`:''}
         </div>
         ${badgeHTML(m)}
       </div>
@@ -11177,9 +11186,9 @@ async function renderDokumente(el, objektId, mieterId) {
           <i class="ti ${isImg?'ti-photo':isPdf?'ti-file-type-pdf':isHtmlDok?typ.icon:'ti-file'}"></i>
         </div>
         <div style="flex:1;min-width:0">
-          <div style="font-size:13px;font-weight:600;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${d.name}</div>
+          <div style="font-size:13px;font-weight:600;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(d.name)}</div>
           <div style="font-size:11px;color:var(--ink-40);margin-top:1px">${d.erstellt||''} · ${isHtmlDok?'Schreiben':fmtBytes(d.size||0)}</div>
-          ${d.notiz?`<div style="font-size:11px;color:var(--ink-60);margin-top:2px;font-style:italic">${d.notiz}</div>`:''}
+          ${d.notiz?`<div style="font-size:11px;color:var(--ink-60);margin-top:2px;font-style:italic">${esc(d.notiz)}</div>`:''}
         </div>
         ${(istVerwalter() && d.mieterId && PORTAL_DOK_TYPEN.includes(d.typ)) ? (()=>{
             const frei = istPortalFreigegeben(d, portalTypDefaults);
@@ -17073,15 +17082,15 @@ function einkaufHTML(e) {
     </div>
     <div style="flex:1;min-width:0">
       <div style="font-size:14px;font-weight:${done?'400':'600'};color:var(--ink);
-        text-decoration:${done?'line-through':'none'}">${e.artikel}</div>
+        text-decoration:${done?'line-through':'none'}">${esc(e.artikel)}</div>
       <div style="font-size:11px;color:var(--ink-40);margin-top:3px;display:flex;gap:8px;flex-wrap:wrap">
         ${e.menge?`<span><i class="ti ti-stack-2" style="font-size:10px"></i> ${e.menge} ${e.einheit||'Stk.'}</span>`:''}
         ${obj?`<span><i class="ti ti-building" style="font-size:10px"></i> ${obj.name}</span>`:''}
         ${e.kategorie?`<span class="chip chip-gray" style="font-size:10px;padding:1px 6px">${e.kategorie}</span>`:''}
-        ${e.referenz?`<span style="font-style:italic">${e.referenz}</span>`:''}
+        ${e.referenz?`<span style="font-style:italic">${esc(e.referenz)}</span>`:''}
         ${done&&e.preis?`<span class="chip chip-copper" style="font-size:10px;padding:1px 6px">${fmtEur(e.preis)}</span>`:''}
       </div>
-      ${e.notiz?`<div style="font-size:12px;color:var(--ink-60);margin-top:3px;line-height:1.4">${e.notiz}</div>`:''}
+      ${e.notiz?`<div style="font-size:12px;color:var(--ink-60);margin-top:3px;line-height:1.4">${esc(e.notiz)}</div>`:''}
     </div>
     <div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0">
       ${!done?`<button class="btn btn-sm btn-success" onclick="toggleEinkauf('${e.id}')" title="Als gekauft markieren">
@@ -17186,7 +17195,7 @@ async function modalEditEinkauf(id) {
   showModal(`
     <div class="m-title"><i class="ti ti-pencil"></i> Bearbeiten</div>
     <div class="f"><label>Artikel</label>
-      <input type="text" id="ekArtikel" value="${e.artikel}"></div>
+      <input type="text" id="ekArtikel" value="${escAttr(e.artikel)}"></div>
     <div class="f-row">
       <div class="f"><label>Menge</label>
         <input type="number" id="ekMenge" value="${e.menge||''}" step="0.5"></div>
@@ -18016,11 +18025,11 @@ function terminHTML(t) {
       <div style="font-size:11px;color:var(--ink-40);margin-top:3px;display:flex;gap:8px;flex-wrap:wrap">
         ${t.uhrzeit?`<span><i class="ti ti-clock" style="font-size:10px"></i> ${t.uhrzeit}${t.uhrzeitEnd?' – '+t.uhrzeitEnd:''}</span>`:''}
         ${obj?`<span><i class="ti ti-building" style="font-size:10px"></i> ${obj.name}</span>`:''}
-        ${t.mieterName?`<span><i class="ti ti-user" style="font-size:10px"></i> ${t.mieterName}</span>`:''}
-        ${t.zugewiesen?`<span><i class="ti ti-user-check" style="font-size:10px;color:var(--copper)"></i> ${t.zugewiesen}</span>`:''}
+        ${t.mieterName?`<span><i class="ti ti-user" style="font-size:10px"></i> ${esc(t.mieterName)}</span>`:''}
+        ${t.zugewiesen?`<span><i class="ti ti-user-check" style="font-size:10px;color:var(--copper)"></i> ${esc(t.zugewiesen)}</span>`:''}
         <span class="chip chip-gray" style="font-size:9px;padding:1px 5px">${typ.label}</span>
       </div>
-      ${t.notiz?`<div style="font-size:11px;color:var(--ink-60);margin-top:3px;font-style:italic;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${t.notiz}</div>`:''}
+      ${t.notiz?`<div style="font-size:11px;color:var(--ink-60);margin-top:3px;font-style:italic;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(t.notiz)}</div>`:''}
     </div>
   </div>`;
 }
@@ -18215,11 +18224,11 @@ async function showTerminDetail(id) {
       <span><i class="ti ti-calendar" style="font-size:12px"></i> ${d}</span>
       ${t.uhrzeit?`<span><i class="ti ti-clock" style="font-size:12px"></i> ${t.uhrzeit}${t.uhrzeitEnd?' – '+t.uhrzeitEnd:''} Uhr</span>`:''}
       ${obj?`<span><i class="ti ti-building" style="font-size:12px"></i> ${obj.name} · ${obj.ort}</span>`:''}
-      ${t.mieterName?`<span><i class="ti ti-user" style="font-size:12px"></i> ${t.mieterName}</span>`:''}
-      ${t.ersteller?`<span><i class="ti ti-user-circle" style="font-size:12px"></i> ${t.ersteller} · ${t.erstellt||''}</span>`:''}
-      ${t.zugewiesen?`<span><i class="ti ti-user-check" style="font-size:12px;color:var(--copper)"></i> <strong>Zugewiesen an:</strong> ${t.zugewiesen}</span>`:''}
+      ${t.mieterName?`<span><i class="ti ti-user" style="font-size:12px"></i> ${esc(t.mieterName)}</span>`:''}
+      ${t.ersteller?`<span><i class="ti ti-user-circle" style="font-size:12px"></i> ${esc(t.ersteller)} · ${esc(t.erstellt||'')}</span>`:''}
+      ${t.zugewiesen?`<span><i class="ti ti-user-check" style="font-size:12px;color:var(--copper)"></i> <strong>Zugewiesen an:</strong> ${esc(t.zugewiesen)}</span>`:''}
     </div>
-    ${t.notiz?`<div style="background:var(--ink-05);border-radius:8px;padding:10px;font-size:13px;line-height:1.6;margin-bottom:12px;white-space:pre-wrap">${t.notiz}</div>`:''}
+    ${t.notiz?`<div style="background:var(--ink-05);border-radius:8px;padding:10px;font-size:13px;line-height:1.6;margin-bottom:12px;white-space:pre-wrap">${esc(t.notiz)}</div>`:''}
     <div style="display:flex;gap:7px;flex-wrap:wrap">
       ${!done&&!abs?`<button class="btn btn-success" onclick="setTerminStatus('${id}','erledigt')"><i class="ti ti-check"></i> Erledigt</button>`:''}
       ${packBtn}
@@ -20958,7 +20967,7 @@ function getProtStep(step){
     <div class="card">
       <div class="card-hdr"><i class="ti ti-building"></i> Objektdaten</div>
       <div class="f-row">
-        <div class="f"><label>Objekt</label><input value="${d.objektName}" onchange="PD.objektName=this.value"></div>
+        <div class="f"><label>Objekt</label><input value="${escAttr(d.objektName)}" onchange="PD.objektName=this.value"></div>
         <div class="f"><label>Ort / PLZ</label><input value="${d.objektOrt}" onchange="PD.objektOrt=this.value"></div>
       </div>
       <div class="f-row t3">
@@ -23170,7 +23179,7 @@ async function renderUserList_(){
     <div class="user-item" style="${inaktiv?'opacity:0.55':''}">
       <div class="user-av ${u.role==='admin'?'admin':''}"><i class="ti ti-user"></i></div>
       <div class="user-body">
-        <div class="user-name">${u.name}${inaktiv?' · <span style="color:var(--red)">deaktiviert</span>':''}</div>
+        <div class="user-name">${esc(u.name)}${inaktiv?' · <span style="color:var(--red)">deaktiviert</span>':''}</div>
         <div class="user-role">${rollenLabel(u.role)} · ${u.objekte?.length?u.objekte.map(g=>GRUPPE_LABEL[g]||g).join(', '):'alle Objekte'}</div>
       </div>
       <div style="display:flex;gap:5px">
@@ -23248,7 +23257,7 @@ async function modalEditUser(id){
   if(!u) return;
   showModal(`
     <div class="m-title"><i class="ti ti-pencil"></i> Benutzer bearbeiten</div>
-    <div class="f"><label>Name</label><input type="text" id="euName" value="${u.name}" spellcheck="true" lang="de"></div>
+    <div class="f"><label>Name</label><input type="text" id="euName" value="${escAttr(u.name)}" spellcheck="true" lang="de"></div>
     <div class="f"><label>Neuer PIN (leer lassen = unverändert)</label><input type="password" id="euPin" placeholder="••••" inputmode="numeric" maxlength="6"></div>
     <div class="f"><label>Rolle</label><select id="euRole" onchange="euRoleWechsel()">
       <option value="hm" ${u.role==='hm'?'selected':''}>Hausmeister</option>
@@ -26343,8 +26352,8 @@ async function showMangelDetail(id, store='maengel') {
     <div class="card-hdr" style="margin-bottom:8px"><i class="ti ti-message"></i> Kommentare (${kommentare.length})</div>
     ${kommentare.length ? `<div class="comment-box" style="margin-bottom:10px">
       ${kommentare.map(k=>`<div class="comment-item">
-        <div class="comment-meta">${k.autor||'–'} · ${k.datum||'–'}</div>
-        <div class="comment-text">${k.text}</div>
+        <div class="comment-meta">${esc(k.autor||'–')} · ${esc(k.datum||'–')}</div>
+        <div class="comment-text">${esc(k.text)}</div>
       </div>`).join('')}
     </div>` : `<div style="font-size:13px;color:var(--ink-40);margin-bottom:10px">Noch keine Kommentare</div>`}
 
