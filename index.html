@@ -794,8 +794,8 @@ body.printing-active #printRoot{display:block!important}
 /* ═══════════════════════════════════════════════════════════
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
-const DB_NAME='immo_v2', DB_VER=30;
-const APP_VERSION = '2026-07-01-v155';
+const DB_NAME='immo_v2', DB_VER=31;
+const APP_VERSION = '2026-07-01-v156';
 /* v155 (01.07.2026): Mieter-Detailansicht – oberen Kontakt-Button-Block
    vollstaendig entfernt. Nachdem in v154 bereits "Anrufen", "WhatsApp" und
    "Kontakt teilen" aus dem Kopfbereich entfernt wurden, entfaellt nun auch
@@ -987,7 +987,7 @@ function openIDB(){
     const req=indexedDB.open(DB_NAME,DB_VER);
     req.onupgradeneeded=e=>{
       const db=e.target.result;
-      ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','fotos','wartung','zaehler','zaehlerstaende','versorger','versorger_archiv','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','ventile','ventilpruefung','taetigkeit_log','sync_log','mieter_snapshots','branchenbuch','interessenten','od_dateien','buchungen','mietbescheinigungen','mv_entwuerfe','selbstauskuenfte','tenant_mails','od_auth'].forEach(s=>{
+      ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','fotos','wartung','zaehler','zaehlerstaende','versorger','versorger_archiv','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','ventile','ventilpruefung','taetigkeit_log','sync_log','mieter_snapshots','branchenbuch','interessenten','od_dateien','buchungen','mietbescheinigungen','kautionsquittungen','mv_entwuerfe','selbstauskuenfte','tenant_mails','od_auth'].forEach(s=>{
         if(!db.objectStoreNames.contains(s)){
           const store=db.createObjectStore(s,{keyPath:'id'});
           if(s==='mieter'){store.createIndex('objektId','objektId');store.createIndex('weNr','weNr')}
@@ -1020,6 +1020,7 @@ function openIDB(){
           if(s==='interessenten'){store.createIndex('objektId','objektId');store.createIndex('status','status')}
           if(s==='od_dateien'){store.createIndex('objektId','objektId');store.createIndex('pfad','pfad')}
           if(s==='mietbescheinigungen'){store.createIndex('mieterId','mieterId');store.createIndex('objektId','objektId')}
+          if(s==='kautionsquittungen'){store.createIndex('mieterId','mieterId');store.createIndex('objektId','objektId')}
           if(s==='mv_entwuerfe'){store.createIndex('mieterId','mieterId');store.createIndex('objektId','objektId')}
           if(s==='selbstauskuenfte'){store.createIndex('objektId','objektId');store.createIndex('status','status')}
           if(s==='tenant_mails'){store.createIndex('mieterId','mieterId');store.createIndex('objektId','objektId')}
@@ -9873,6 +9874,7 @@ async function showMieter(id){
     ${(istVerwalter() && !m._vormieter && (m.leerstand || m.auszug || m.auszugISO))?`<button class="btn btn-sm" style="border-color:var(--copper);color:var(--copper-d)" onclick="modalAushangErstellen('${m.objektId}','${esc(String(m.weNr||''))}','${m.id}')"><i class="ti ti-printer"></i> Aushang „Wohnung frei“</button>`:''}
     <button class="btn btn-sm" onclick="druckeWohnungsgeberBescheinigung('${m.id}')"><i class="ti ti-file-certificate"></i> WGB</button>
     ${istVerwalter()?`<button class="btn btn-sm" onclick="modalMietbescheinigung('${m.id}')"><i class="ti ti-receipt-2"></i> Mietbescheinigung</button>`:''}
+    ${istVerwalter()?`<button class="btn btn-sm" onclick="modalKautionsquittung('${m.id}')"><i class="ti ti-receipt"></i> Kautionsquittung</button>`:''}
     <button class="btn btn-sm" onclick="modalBrief('${m.id}','${m.objektId}')"><i class="ti ti-mail"></i> Brief</button>
     ${m._vormieterId?`<button class="btn btn-sm" onclick="zeigeVormieter('${m._vormieterId}')"><i class="ti ti-history"></i> Vormieter</button>`:(istVerwalter()&&!m._vormieter&&!m._zukuenftig?`<button class="btn btn-sm" onclick="modalVormieterAnlegen('${m.id}')"><i class="ti ti-history"></i> Vormieter anlegen</button>`:'')}
     ${m._vormieter?`<button class="btn btn-sm" onclick="modalNeueAdresse('${m.id}')"><i class="ti ti-map-pin"></i> Neue Anschrift</button>`:''}
@@ -9976,6 +9978,32 @@ async function showMieter(id){
         h+=`</div>`;
       }
     }catch(err){ console.warn('Mietbescheinigung-Archiv-Block:', err); }
+  }
+
+  // ── Gespeicherte Kautionsquittungen ──
+  if(istVerwalter()){
+    try{
+      const kqs = (await idbGetAll('kautionsquittungen','mieterId',id))
+        .sort((a,b)=>new Date(b.erstelltAm||0)-new Date(a.erstelltAm||0));
+      if(kqs.length){
+        h+=`<div class="card" style="margin-top:12px"><div class="card-hdr"><i class="ti ti-receipt"></i> Kautionsquittungen (${kqs.length})</div>`;
+        kqs.forEach(b=>{
+          const d=b.erstelltAm?new Date(b.erstelltAm).toLocaleDateString('de-DE'):'';
+          const bt=(typeof b.betrag==='number'&&b.betrag)?b.betrag.toFixed(2).replace('.',',')+' €':'';
+          h+=`<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:9px 0;border-bottom:1px solid var(--ink-10)">
+            <div style="flex:1;min-width:0">
+              <div style="font-weight:600;font-size:13px">Erstellt am ${d}${b.erstelltVon?' \u00b7 '+esc(b.erstelltVon):''}</div>
+              <div style="font-size:11px;color:var(--ink-40)">Kaution ${bt||'\u2013'}${b.vertreterName?' \u00b7 vertreten durch '+esc(b.vertreterName):''}</div>
+            </div>
+            <button class="btn btn-sm" onclick="zeigeGespKautionsquittung('${b.id}')" title="Ansehen / als PDF drucken"><i class="ti ti-printer"></i></button>
+            <button class="btn btn-sm" onclick="kqVersandDialog('${b.id}')" title="Per WhatsApp oder E-Mail verschicken"><i class="ti ti-send"></i></button>
+            <button class="btn btn-sm" onclick="modalKautionsquittung('${id}')" title="Neue Quittung erstellen / Werte \u00e4ndern"><i class="ti ti-pencil"></i></button>
+            <button class="btn btn-sm btn-danger" onclick="loescheGespKautionsquittung('${b.id}','${id}')" title="L\u00f6schen"><i class="ti ti-trash"></i></button>
+          </div>`;
+        });
+        h+=`</div>`;
+      }
+    }catch(err){ console.warn('Kautionsquittung-Archiv-Block:', err); }
   }
 
   // ── Punkt 13: Mietvertrag-Entwürfe (Historie) ──
@@ -15835,6 +15863,371 @@ async function erstelleMietbescheinigung(mieterId){
 }
 
 // Vorschalt-Dialog: hinterlegte Admin-Unterschriften für die WGB wählen (analog NKA)
+/* ═══════════════════════════════════════════════════════════
+   KAUTIONSQUITTUNG  (eigenständiges Modul, analog Mietbescheinigung)
+   Quittung nach § 368 BGB über den Erhalt der Mietkaution (bar).
+   – Button immer sichtbar im Mieter-Detail
+   – Vermieter-Name automatisch aus Eigentümer/Briefkopf
+   – "vertreten durch" per Auswahl aus Benutzern
+   – Betrag automatisch in Worten (inkl. Cent)
+   – Teilzahlungs-/„bereits gezahlt"-Zeilen bleiben leer (handschriftlich vor Ort)
+   – Speicherung im Store 'kautionsquittungen' (bearbeitbar/versendbar/druckbar)
+   – Weiß-Blatt-sicherer Auto-Print (setTimeout + window.focus, gesplittetes <script>)
+═══════════════════════════════════════════════════════════ */
+
+// Zahl → deutsche Worte (0 … 999.999). Für Kautionsbeträge mehr als ausreichend.
+function _kqUnter1000(n){
+  const einer=['null','ein','zwei','drei','vier','fünf','sechs','sieben','acht','neun',
+    'zehn','elf','zwölf','dreizehn','vierzehn','fünfzehn','sechzehn','siebzehn','achtzehn','neunzehn'];
+  const zehner=['','','zwanzig','dreißig','vierzig','fünfzig','sechzig','siebzig','achtzig','neunzig'];
+  let out='';
+  const h=Math.floor(n/100); n%=100;
+  if(h>0) out+=(h===1?'einhundert':einer[h]+'hundert');
+  if(n>0){
+    if(n<20){
+      out+=(n===1?'eins':einer[n]);
+    }else{
+      const e=n%10, z=Math.floor(n/10);
+      if(e>0) out+=einer[e]+'und'+zehner[z];
+      else    out+=zehner[z];
+    }
+  }
+  return out;
+}
+// Ganzzahl in Worte (mit Tausender). 0 → "null".
+function _kqGanzInWorte(n){
+  n=Math.floor(Math.abs(n));
+  if(n===0) return 'null';
+  const tsd=Math.floor(n/1000), rest=n%1000;
+  let out='';
+  if(tsd>0) out+=(tsd===1?'eintausend':_kqUnter1000(tsd)+'tausend');
+  if(rest>0){
+    // "ein" am Wortende ohne Tausender-Vorsatz → "eins" nur wenn Gesamtzahl == 1 (oben abgefangen)
+    out+=_kqUnter1000(rest);
+  }
+  // Sonderfall: reiner Rest "ein" (z. B. 21 → "einundzwanzig" ok; 1 schon oben)
+  return out;
+}
+// Attributive Form vor Währungseinheit: alleinstehendes "eins" → "ein"
+// ("ein EURO", "einundzwanzig EURO", aber NICHT "einhundertein" → das bleibt).
+function _kqAttributiv(wort){
+  return wort.replace(/eins$/,'ein');
+}
+// Euro-Betrag → Worte inkl. Cent, z. B. 1125.50 → "Eintausendeinhundertfünfundzwanzig EURO und fünfzig Cent"
+function kautionBetragInWorte(betrag){
+  const b=parseBetrag(betrag)||0;
+  const euro=Math.floor(b+0.0000001);
+  const cent=Math.round((b-euro)*100);
+  let euroWort=_kqAttributiv(_kqGanzInWorte(euro));
+  // Großschreibung des ersten Buchstabens
+  euroWort=euroWort.charAt(0).toUpperCase()+euroWort.slice(1);
+  let s=euroWort+' EURO';
+  if(cent>0){
+    s+=' und '+_kqAttributiv(_kqGanzInWorte(cent))+' Cent';
+  }
+  return s;
+}
+
+// Vermieter-Name für die Quittung: automatisch aus Eigentümer des Objekts,
+// Fallback auf Briefkopf-Name. Amtliche Ausschreibung ("Roland B." → "Roland Bernd").
+async function _kqVermieterName(m){
+  try{
+    const eig=await getEigentuemerFuerObjekt(m.objektId);
+    if(eig && eig.name) return amtlicherName(eig.name);
+  }catch(_){}
+  const bk=getBriefkopf(m.objektId);
+  return amtlicherName(bk?.name||'');
+}
+
+// Formular-Modal: Betrag (vorbelegt aus Kaution), Datum (leer=handschriftlich),
+// Vertreter-Auswahl aus Benutzern.
+async function modalKautionsquittung(mieterId){
+  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
+  const m=await idbGet('mieter',mieterId); if(!m){ toast('Mieter nicht gefunden'); return; }
+  const obj=getObj(m.objektId);
+  await ladeBriefkopfCache();
+  const kd=kautionDetailVon(m);
+  // Vorbelegung: hinterlegter Kautionsbetrag (Soll-Betrag, nicht Saldo)
+  const betragVor = parseBetrag(kd.betrag)||parseBetrag(m.kaution)||0;
+  const vermName = await _kqVermieterName(m);
+
+  // Benutzer für Vertreter-Auswahl (aktive)
+  const users=(await idbGetAll('users').catch(()=>[])).filter(u=>u.aktiv!==false);
+  const letzter = window._kqVertreterId || CU?.id || '';
+  const userOpts = ['<option value="">— ohne Vertretung —</option>']
+    .concat(users.map(u=>`<option value="${escAttr(u.id)}" ${u.id===letzter?'selected':''}>${esc(u.name||u.id)}</option>`))
+    .join('');
+
+  const adr = obj ? [obj.name, obj.ort].filter(Boolean).join(', ') : '';
+
+  showModal(`
+    <div class="m-title"><i class="ti ti-receipt"></i> Kautionsquittung</div>
+    <div style="font-size:11px;color:var(--ink-40);margin-bottom:10px">${esc(hauptmieterNameVoll(m)||m.mieter||'')} · ${esc(adr)}${m.weNr?(' · WE '+esc(m.weNr)):''}</div>
+
+    <div style="background:var(--ink-05);border-radius:8px;padding:8px 10px;margin-bottom:10px;font-size:11.5px;color:var(--ink-60);line-height:1.5">
+      <i class="ti ti-info-circle"></i> Quittung nach § 368 BGB über den <strong>bar</strong> erhaltenen Kautionsbetrag.
+      Vermieter: <strong>${esc(vermName)}</strong> (automatisch aus Eigentümer/Briefkopf).
+      Teilzahlungs- und „Bereits gezahlt"-Zeilen bleiben leer und werden vor Ort handschriftlich ergänzt.
+    </div>
+
+    <div class="f" style="margin-bottom:8px">
+      <label>Kautionsbetrag (€)</label>
+      <input type="text" inputmode="decimal" id="kqBetrag" value="${betragVor?String(betragVor).replace('.',','):''}">
+    </div>
+    <div id="kqBetragWortBox" style="font-size:11px;color:var(--ink-40);margin:-4px 0 10px;min-height:14px"></div>
+
+    <div class="f" style="margin-bottom:8px">
+      <label>Vertreten durch (Benutzer)</label>
+      <select id="kqVertreter">${userOpts}</select>
+    </div>
+
+    <div class="f" style="margin-bottom:8px">
+      <label>Datum der Quittung <span style="font-weight:400;color:var(--ink-40)">(leer = per Hand vor Ort)</span></label>
+      <input type="date" id="kqDatum" value="">
+    </div>
+
+    <button class="btn btn-copper btn-full" style="margin-top:6px" onclick="erstelleKautionsquittung('${m.id}')">
+      <i class="ti ti-printer"></i> Quittung erzeugen
+    </button>
+  `);
+
+  // Live-Vorschau des Betrags in Worten
+  const inp=document.getElementById('kqBetrag');
+  const box=document.getElementById('kqBetragWortBox');
+  const upd=()=>{ const b=parseBetrag(inp.value); box.textContent = b>0 ? ('in Worten: '+kautionBetragInWorte(b)) : ''; };
+  if(inp&&box){ inp.addEventListener('input',upd); upd(); }
+}
+
+// Dokument erzeugen + speichern + drucken.
+async function erstelleKautionsquittung(mieterId){
+  const m=await idbGet('mieter',mieterId); if(!m) return;
+  const obj=getObj(m.objektId);
+  await ladeBriefkopfCache();
+  const bk=getBriefkopf(m.objektId);
+
+  const val=id=>document.getElementById(id)?.value||'';
+  const betrag=parseBetrag(val('kqBetrag'))||0;
+  const vertreterId=val('kqVertreter');
+  const datumRoh=val('kqDatum');
+
+  window._kqVertreterId = vertreterId; // Auswahl merken
+
+  const vermName=await _kqVermieterName(m);
+  let vertreterName='';
+  if(vertreterId){
+    const u=await idbGet('users',vertreterId).catch(()=>null);
+    vertreterName=u?.name||'';
+  }
+
+  const betragStr = betrag>0 ? (betrag.toFixed(2).replace('.',',')+'  EUR') : '_______ EUR';
+  const betragWort = betrag>0 ? ('('+kautionBetragInWorte(betrag)+')') : '';
+  const datumStr = datumRoh ? new Date(datumRoh).toLocaleDateString('de-DE') : '';
+
+  // Objektzeile: Anschrift + WE (aus Objekt/Mieter)
+  const objAdr = obj ? [obj.name, obj.ort].filter(Boolean).join(', ') : '';
+  const objZeile = objAdr + (m.weNr?(' , WE '+m.weNr):'');
+
+  // Namen aufteilen (Vorname(n) / Nachname) aus Hauptmieter
+  const vollName = hauptmieterNameVoll(m) || m.mieter || '';
+  let vorname='', nachname='';
+  if(vollName.includes(',')){
+    const t=vollName.split(',');
+    nachname=t[0].trim(); vorname=(t[1]||'').trim();
+  }else{
+    const t=vollName.trim().split(/\s+/);
+    nachname=t.length>1?t.pop():''; vorname=t.join(' ');
+  }
+
+  // Vertretungssatz
+  const vertretung = vertreterName ? (' vertreten durch '+esc(vertreterName)) : '';
+
+  // Fußzeile aus Briefkopf-Einstellungen
+  const fussName = bk?.name||'';
+  const fussStr  = bk?.strasse||'';
+  const fussOrt  = bk?.ort||'';
+  const fussTel  = bk?.tel||'';
+  const fussMail = bk?.email||'';
+
+  const style=`<style>
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{font-family:Arial,sans-serif;font-size:13px;color:#111;padding:20mm 20mm;max-width:210mm;line-height:1.55}
+    .kq-h{font-size:20px;font-weight:700;text-align:center;margin-bottom:6px}
+    .kq-obj{text-align:center;font-size:13px;margin-bottom:18px}
+    .kq-obj .lbl{color:#555;font-size:11px}
+    .kq-sec{font-weight:700;margin:14px 0 4px;font-size:13px}
+    .kq-daten{margin:4px 0 14px}
+    .kq-daten td{padding:2px 8px 2px 0;font-size:13px;vertical-align:top}
+    .kq-daten td.l{color:#555;width:120px}
+    .kq-body{margin:14px 0;text-align:justify}
+    .kq-body strong{font-weight:700}
+    .kq-line{border-bottom:1px solid #333;display:inline-block;min-width:120px}
+    .kq-bereits{margin:16px 0 30px}
+    .kq-sig{margin-top:40px;display:flex;justify-content:space-between;gap:30px}
+    .kq-sig > div{flex:1;text-align:center}
+    .kq-sig .line{border-top:1px solid #333;margin-bottom:3px;padding-top:2px}
+    .kq-sig .cap{font-size:11px;color:#555}
+    .kq-ort{margin:26px 0 0;font-size:13px}
+    .kq-foot{margin-top:46px;border-top:1px solid #999;padding-top:8px;text-align:center;font-size:11px;color:#444;line-height:1.5}
+    .kq-foot .fn{font-weight:700;color:#222;font-size:12px}
+    @page{margin:0;size:A4}
+    @media print{body{padding:20mm 20mm;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+    body>*{page-break-inside:avoid}
+  </style>`;
+
+  const inhalt=`
+    <div class="kq-h">Quittung über den Erhalt der Mietkaution</div>
+    <div class="kq-obj"><span class="lbl">für das Objekt</span><br>${esc(objZeile)}</div>
+
+    <div class="kq-sec">Persönliche Daten Mieter:</div>
+    <table class="kq-daten">
+      <tr><td class="l">Vorname(n):</td><td>${esc(vorname||'—')}</td></tr>
+      <tr><td class="l">Nachname:</td><td>${esc(nachname||vollName)}</td></tr>
+    </table>
+
+    <div class="kq-body">
+      Der Vermieter ${esc(vermName)}${vertretung} bestätigt hiermit, dass die im Mietvertrag
+      vereinbarte Kaution in Höhe von <strong>${betragStr}</strong> ${betragWort?('<strong>'+esc(betragWort)+'</strong>'):''},
+      anteilig <span class="kq-line">&nbsp;</span> EUR am <span class="kq-line">&nbsp;</span>
+      vom Mieter/von den Mietern gestellt wurde.
+    </div>
+
+    <div class="kq-bereits">Bereits gezahlt: <span class="kq-line" style="min-width:280px">&nbsp;</span></div>
+
+    <div class="kq-ort">Ort, Datum: ${datumStr?esc(datumStr):'<span class="kq-line" style="min-width:200px">&nbsp;</span>'}</div>
+
+    <div class="kq-sig">
+      <div><div class="line">&nbsp;</div><div class="cap">Unterschrift Vermieter</div></div>
+      <div><div class="line">&nbsp;</div><div class="cap">Unterschrift/en Mieter/n</div></div>
+    </div>
+
+    <div class="kq-foot">
+      <div class="fn">${esc(fussName)}</div>
+      ${fussStr||fussOrt?`<div>${esc([fussStr,fussOrt].filter(Boolean).join(' · '))}</div>`:''}
+      ${fussTel?`<div>Tel: ${esc(fussTel)}</div>`:''}
+      ${fussMail?`<div>${esc(fussMail)}</div>`:''}
+    </div>`;
+
+  const html='<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8"><title>Kautionsquittung – '
+    +esc(m.mieter||'')+'</title>'+style+'</head><body>'+inhalt
+    +'<scr'+'ipt>(function(){var p=function(){setTimeout(function(){window.focus();window.print();},500);};'
+    +'if(document.readyState==="complete"){p();}else{window.addEventListener("load",p);}})()</scr'+'ipt>'
+    +'</body></html>';
+
+  // Speichern (bearbeitbar/versendbar/druckbar) – Auto-Print-Script aus Archiv entfernen
+  try{
+    const archivHtml = html.replace(/<scr(ipt|.)*?>[\s\S]*?window\.print\(\)[\s\S]*?<\/scr.{0,3}ipt>/gi,'');
+    const kqDaten={
+      id:'kq_'+m.id+'_'+Date.now().toString(36),
+      mieterId:m.id,
+      objektId:m.objektId,
+      mieterName:m.mieter||'',
+      objektName:obj?.name||'',
+      weNr:m.weNr||'',
+      erstelltAm:new Date().toISOString(),
+      erstelltVon:CU?.name||'',
+      betrag:betrag,
+      betragWorte: betrag>0?kautionBetragInWorte(betrag):'',
+      vermieterName:vermName,
+      vertreterName:vertreterName,
+      datum:datumRoh||'',
+      html:archivHtml,
+    };
+    await idbPut('kautionsquittungen',kqDaten);
+    bcSend('kautionsquittung_saved',{mieterId:m.id});
+    clearTimeout(window._syncTimer);
+    window._syncTimer=setTimeout(()=>{ if(typeof syncToOneDrive==='function') syncToOneDrive(); },2000);
+  }catch(e){ console.warn('Kautionsquittung-Archiv:',e); }
+
+  const heute=new Date().toLocaleDateString('de-DE');
+  const _kqName=['Kautionsquittung',(obj?.name||'').replace(/[\\/:*?"<>|]+/g,' ').trim(),m.weNr?('WE '+m.weNr):'','-',(m.mieter||'').replace(/[\\/:*?"<>|,]+/g,' ').trim(),'-',heute].filter(Boolean).join(' ').replace(/\s+/g,' ').trim();
+  druckHTML(html,'Kautionsquittung – '+(m.mieter||''),_kqName);
+  closeModal();
+  toast('Kautionsquittung erstellt & gespeichert ✓');
+}
+
+// Gespeicherte Kautionsquittung erneut anzeigen / drucken (offline, aus HTML)
+async function zeigeGespKautionsquittung(kqId){
+  const b=await idbGet('kautionsquittungen',kqId);
+  if(!b||!b.html){ toast('Quittung nicht gefunden'); return; }
+  druckHTML(b.html,'Kautionsquittung – '+(b.mieterName||''));
+}
+// Gespeicherte Kautionsquittung löschen
+async function loescheGespKautionsquittung(kqId, mieterId){
+  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
+  if(!confirm('Diese gespeicherte Kautionsquittung wirklich löschen?')) return;
+  await idbDelete('kautionsquittungen',kqId);
+  bcSend('kautionsquittung_saved',{mieterId});
+  toast('Quittung gelöscht');
+  if(typeof showMieter==='function') showMieter(mieterId);
+}
+
+// Begleittext für den Versand
+function kqBegleittext(m, obj){
+  const std=new Date().getHours();
+  let gruss;
+  if(std<11) gruss='Guten Morgen';
+  else if(std<18) gruss='Guten Tag';
+  else gruss='Guten Abend';
+  const adr=obj?[obj.name,obj.ort].filter(Boolean).join(', '):'';
+  return gruss+',\n\n'
+    +'anbei erhalten Sie die Quittung über den Erhalt Ihrer Mietkaution'
+    +(adr?(' für Ihre Wohnung '+adr):'')+'.\n\n'
+    +'Für Rückfragen stehen wir Ihnen gerne zur Verfügung.\n\n'
+    +'Mit freundlichen Grüßen\n'
+    +'Nadig Pfau Hausverwaltung';
+}
+
+// Versand-Dialog (analog Mietbescheinigung)
+async function kqVersandDialog(kqId){
+  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
+  const b=await idbGet('kautionsquittungen',kqId).catch(()=>null);
+  if(!b){ toast('Quittung nicht gefunden'); return; }
+  const m=await idbGet('mieter',b.mieterId).catch(()=>null);
+  const obj=m?getObj(m.objektId):null;
+  const tel=(m?.telefon||'').trim();
+  const mail=(m?.email||'').trim();
+  const text=kqBegleittext(m||{},obj);
+
+  const kontaktInfo=[
+    tel  ? '<div style="font-size:12px;color:var(--ink-60)"><i class="ti ti-phone"></i> '+esc(tel)+'</div>':'',
+    mail ? '<div style="font-size:12px;color:var(--ink-60)"><i class="ti ti-mail"></i> '+esc(mail)+'</div>':'',
+    (!tel&&!mail)?'<div style="font-size:12px;color:var(--amber)">Für diesen Mieter ist weder Telefon noch E-Mail hinterlegt.</div>':''
+  ].join('');
+
+  showModal(`
+    <div class="m-title"><i class="ti ti-send"></i> Kautionsquittung verschicken</div>
+    <div style="font-size:12px;color:var(--ink-40);margin-bottom:10px">${esc((m?hauptmieterNameVoll(m):'')||m?.mieter||'')} · ${esc(obj?.name||'')}${m?.weNr?(' · WE '+esc(m.weNr)):''}</div>
+    ${kontaktInfo}
+    <div style="background:var(--amber-bg,#fff8e6);border:1px solid var(--amber,#e0a800);border-radius:8px;padding:8px 10px;margin:10px 0;font-size:11.5px;color:var(--ink-70);line-height:1.5">
+      <i class="ti ti-info-circle"></i> WhatsApp und E-Mail-App können keine Datei automatisch anhängen.
+      Bitte zuvor über <strong>„Ansehen / als PDF drucken"</strong> die Quittung als PDF speichern
+      und im geöffneten Chat bzw. der E-Mail selbst anhängen. Der Begleittext ist bereits vorbereitet.
+    </div>
+    <label style="font-size:12px;color:var(--ink-60);display:block;margin-bottom:4px">Begleittext (editierbar)</label>
+    <textarea id="kqVersandText" style="width:100%;min-height:150px;font-size:12.5px;padding:8px;border:1px solid var(--ink-10);border-radius:8px;line-height:1.5;font-family:inherit">${esc(text)}</textarea>
+    <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:14px">
+      ${tel ? `<button class="btn btn-full" style="flex:1;background:#25D366;color:#fff;border-color:#25D366" onclick="kqVersandOeffne('wa','${esc(waNummer(tel))}')"><i class="ti ti-brand-whatsapp"></i> WhatsApp</button>`:''}
+      ${mail ? `<button class="btn btn-copper btn-full" style="flex:1" onclick="kqVersandOeffne('mail','${escAttr(mail)}')"><i class="ti ti-mail"></i> E-Mail</button>`:''}
+    </div>
+    <div style="display:flex;gap:8px;margin-top:8px">
+      <button class="btn btn-sm" style="flex:1" onclick="kqVersandKopiere()"><i class="ti ti-copy"></i> Text kopieren</button>
+      <button class="btn btn-sm" style="flex:1" onclick="closeModal()">Schließen</button>
+    </div>
+  `);
+}
+function kqVersandOeffne(art, ziel){
+  const text=document.getElementById('kqVersandText')?.value||'';
+  let href='';
+  if(art==='wa'){ href='https://wa.me/'+ziel+'?text='+encodeURIComponent(text); }
+  else{ const betreff='Ihre Kautionsquittung'; href='mailto:'+ziel+'?subject='+encodeURIComponent(betreff)+'&body='+encodeURIComponent(text); }
+  try{ window.open(href,'_blank','noopener'); }catch(_){ location.href=href; }
+}
+async function kqVersandKopiere(){
+  const text=document.getElementById('kqVersandText')?.value||'';
+  try{ await navigator.clipboard.writeText(text); toast('Begleittext kopiert ✓'); }
+  catch(_){ toast('Kopieren nicht möglich – bitte manuell markieren'); }
+}
+
 async function druckeWohnungsgeberBescheinigung(mieterId){
   if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
   const m = await idbGet('mieter', mieterId);
@@ -23558,7 +23951,7 @@ async function delUser(id){
 async function exportBackup(){
   if(!istSystemAdmin()){ toast('Nur für Administratoren'); return; }
   const backup={};
-  for(const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','versicherungen','versorger_archiv','od_dateien','buchungen','fotos','mietbescheinigungen','mv_entwuerfe','selbstauskuenfte','tenant_mails']){
+  for(const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','versicherungen','versorger_archiv','od_dateien','buchungen','fotos','mietbescheinigungen','kautionsquittungen','mv_entwuerfe','selbstauskuenfte','tenant_mails']){
     backup[s]=await idbGetAll(s);
   }
   backup.exportedAt=now();backup.version=2;
@@ -23763,7 +24156,7 @@ async function importBackupAusfuehren(modus){
   const backup = window._pendingBackup;
   if(!backup){ toast('Keine Backup-Datei geladen'); closeModal(); return; }
   closeModal();
-  const alleStores=['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','versorger_archiv','od_dateien','buchungen','fotos','mietbescheinigungen','mv_entwuerfe','selbstauskuenfte','tenant_mails'];
+  const alleStores=['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','versorger_archiv','od_dateien','buchungen','fotos','mietbescheinigungen','kautionsquittungen','mv_entwuerfe','selbstauskuenfte','tenant_mails'];
   try{
     await erstelleMieterSnapshot('vor Import ('+modus+')');
     if(modus==='ersetzen'){
@@ -24044,7 +24437,7 @@ async function syncToOneDrive() {
     } catch(e){ /* offline o. 404: normaler Upload-Weg unten */ }
 
     const backup = {};
-    for (const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','versorger_archiv','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','versicherungen','od_dateien','buchungen','fotos','mietbescheinigungen','mv_entwuerfe','selbstauskuenfte','tenant_mails']) {
+    for (const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','versorger_archiv','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','versicherungen','od_dateien','buchungen','fotos','mietbescheinigungen','kautionsquittungen','mv_entwuerfe','selbstauskuenfte','tenant_mails']) {
       backup[s] = await idbGetAll(s);
     }
     backup.updatedAt = new Date().toISOString();
@@ -24145,7 +24538,7 @@ async function syncFromOneDrive() {
       await idbPut('settings', { id:'tombstones', value: mergedTomb });
 
       // Merge: ID-basiert, nur übernehmen wenn remote neuer oder lokal fehlt
-      const mergeStores = ['protokolle','aufgaben','maengel','reparaturen','dokumente','nka_archiv','einkaufsliste','wartung','termine','zaehler','zaehlerstaende','versorger','versorger_archiv','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','od_dateien','fotos','mietbescheinigungen','mv_entwuerfe','selbstauskuenfte','tenant_mails','buchungen'];
+      const mergeStores = ['protokolle','aufgaben','maengel','reparaturen','dokumente','nka_archiv','einkaufsliste','wartung','termine','zaehler','zaehlerstaende','versorger','versorger_archiv','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','od_dateien','fotos','mietbescheinigungen','kautionsquittungen','mv_entwuerfe','selbstauskuenfte','tenant_mails','buchungen'];
       for (const s of mergeStores) {
         if (!backup[s]) continue;
         const tombS = mergedTomb[s] || {};

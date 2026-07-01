@@ -3,7 +3,7 @@
 // Strategie: "Netzwerk zuerst" – die App bleibt immer aktuell, Cache nur als
 // Offline-Fallback für das HTML-Dokument selbst.
 
-const CACHE = 'nadigpfau-v155';
+const CACHE = 'nadigpfau-v156';
 
 self.addEventListener('install', () => {
   // Sofort aktivieren, nicht auf alten SW warten
