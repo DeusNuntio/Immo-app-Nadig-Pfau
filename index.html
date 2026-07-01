@@ -795,7 +795,30 @@ body.printing-active #printRoot{display:block!important}
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=30;
-const APP_VERSION = '2026-07-01-v153';
+const APP_VERSION = '2026-07-01-v155';
+/* v155 (01.07.2026): Mieter-Detailansicht – oberen Kontakt-Button-Block
+   vollstaendig entfernt. Nachdem in v154 bereits "Anrufen", "WhatsApp" und
+   "Kontakt teilen" aus dem Kopfbereich entfernt wurden, entfaellt nun auch
+   der verbliebene "E-Mail"-Button. Alle Kontaktaktionen (Anrufen, WhatsApp,
+   E-Mail, Kontakt teilen) sind unten in der Bewohner-Sektion je Person
+   vorhanden. Die E-Mail-Adresse bleibt im Info-Grid des Kopfbereichs als
+   klickbarer mailto-Link sichtbar. Keine neuen Stores, DB_VER bleibt 30. */
+/* v154 (01.07.2026): Mietbescheinigung & Mieteransicht – zwei Verbesserungen.
+   1) Vorbelegung Brennstoff & Warmwasser: Die Mietbescheinigung kreuzt jetzt
+      automatisch den Brennstoff an, der sich aus der im Objekt hinterlegten
+      Heizungsart (objekt_stamm.heizung) ergibt – z. B. "Gas-Zentralheizung"
+      -> Gas (neue Hilfsfunktion mbBrennstoffAusHeizung). Die Warmwasser-
+      aufbereitung wird aus der effektiven Heizungsvariante der Wohnung
+      abgeleitet (mvHeizVarianteFuer): A -> zentral, B/C -> Durchlauferhitzer
+      (neue Hilfsfunktion mbWarmwasserAusVariante). Greift nur als Vorbelegung,
+      solange im Wohnungsstamm noch kein eigener Wert gepflegt ist; manuelle
+      Auswahl bleibt jederzeit moeglich.
+   2) Mieter-Detailansicht: Die oberen Schnell-Buttons "Anrufen", "WhatsApp"
+      und "Kontakt teilen" im Kopfbereich wurden entfernt, da sie unten in der
+      Bewohner-Sektion je Person bereits vorhanden sind. Der E-Mail-Button
+      oben bleibt erhalten (unten kein eigener E-Mail-Button). Funktion
+      mieterKontaktTeilen bleibt fuer die Bewohner-Sektion bestehen.
+   Keine neuen Stores, DB_VER bleibt 30. */
 /* v153 (01.07.2026): Mietbescheinigung – vier Verbesserungen.
    1) Etage/Lage: Die Etage wird jetzt automatisch aus dem Mieterfeld
       "Etage / Lage" (m.etage) uebernommen. Neue Hilfsfunktionen
@@ -9799,12 +9822,6 @@ async function showMieter(id){
       ${m.telefon?`<div class="det-field"><label>Telefon</label><span><a href="${telHref(m.telefon)}">${esc(m.telefon)}</a></span></div>`:''}
       ${m.email?`<div class="det-field"><label>E-Mail</label><span><a href="${mailHref(m.email)}">${esc(m.email)}</a></span></div>`:''}
     </div>
-    <div style="display:flex;gap:7px;margin-top:8px;flex-wrap:wrap">
-      ${m.telefon?`<a href="${telHref(m.telefon)}" class="btn btn-success"><i class="ti ti-phone"></i> Anrufen</a>`:''}
-      ${m.telefon&&waLink(m.telefon)?`<a href="${waLink(m.telefon)}" target="_blank" rel="noopener" class="btn" style="background:#25D366;color:#fff;border-color:#25D366"><i class="ti ti-brand-whatsapp"></i> WhatsApp</a>`:''}
-      ${m.email?`<a href="${mailHref(m.email)}" class="btn btn-copper"><i class="ti ti-mail"></i> E-Mail</a>`:''}
-      <button class="btn" onclick="mieterKontaktTeilen('${m.id}')" title="Kontakt als vCard weiterleiten"><i class="ti ti-user-share"></i> Kontakt teilen</button>
-    </div>
     ${istVerwalter()&&(m.iban||m.zahlweise||m.sepaMandat)?`<div style="margin-top:10px;background:#fff;border:1px solid var(--ink-10);border-radius:8px;padding:10px 12px;color:#1a2433">
       <div style="font-size:12px;font-weight:700;color:#0C447C;margin-bottom:6px"><i class="ti ti-building-bank"></i> Bankverbindung</div>
       <div class="det-grid">
@@ -15454,6 +15471,27 @@ function mbLageZusatz(txt){
   return teile.join('/');
 }
 
+// Leitet den WoGG-Brennstoff (Gas/Öl/Strom/Fernwärme/Kohle) aus der im Objekt
+// hinterlegten Heizungsart ab (gs.heizung, z. B. "Gas-Zentralheizung").
+function mbBrennstoffAusHeizung(heizungsart){
+  const t=String(heizungsart||'').toLowerCase();
+  if(/gas/.test(t))                       return 'Gas';
+  if(/öl|oel|\böl\b/.test(t))             return 'Öl';
+  if(/fernwärme|fernwaerme/.test(t))      return 'Fernwärme';
+  if(/strom|nachtspeicher|wärmepumpe|waermepumpe/.test(t)) return 'Strom';
+  if(/kohle/.test(t))                     return 'Kohle';
+  return '';   // Pellet/Holz/Sonstige: kein eindeutiges WoGG-Feld -> kein Kreuz
+}
+// Leitet die Warmwasseraufbereitung aus der Heizungsvariante ab.
+//  A = Heizung & Warmwasser zentral  -> 'zentral'
+//  B = Heizung zentral, WW dezentral -> 'durchlauferhitzer'
+//  C = Heizung & Warmwasser dezentral-> 'durchlauferhitzer'
+function mbWarmwasserAusVariante(variante){
+  if(variante==='A') return 'zentral';
+  if(variante==='B' || variante==='C') return 'durchlauferhitzer';
+  return '';
+}
+
 // Brennstoff- und Lage-Optionen fürs Formular
 const WOGG_BRENNSTOFF=['Gas','Öl','Strom','Fernwärme','Kohle'];
 const WOGG_LAGE=['Erdgeschoss','Obergeschoss','Dachgeschoss'];
@@ -15473,6 +15511,12 @@ async function modalMietbescheinigung(mieterId){
   const _mbEtZahl  = (w.etageZahl!=null && w.etageZahl!=='') ? w.etageZahl : (m.etage? (mbEtageZahl(m.etage)||'') : '');
   const _mbEtZusatz= (w.lageZusatz!=null && w.lageZusatz!=='') ? w.lageZusatz : (m.etage? mbLageZusatz(m.etage) : '');
   const gs=(await idbGet('objekt_stamm',m.objektId).catch(()=>null))||{};
+  // Punkt 1 (v154): Brennstoff & Warmwasser aus den Objekt-/Wohnungsdaten vorbelegen,
+  // falls im Wohnungsstamm noch nichts gepflegt ist. So ist bei einer Gas-Zentralheizung
+  // automatisch "Gas" angekreuzt und die passende Warmwasseraufbereitung gewählt.
+  const _mbHeizVar = await mvHeizVarianteFuer(m.objektId, m.weNr).catch(()=>'');
+  if(!w.brennstoff && gs.heizung){ const _b=mbBrennstoffAusHeizung(gs.heizung); if(_b) w.brennstoff=_b; }
+  if(!w.warmwasser){ const _ww=mbWarmwasserAusVariante(_mbHeizVar); if(_ww) w.warmwasser=_ww; }
   // Punkt 2.2: Unterschriften-Auswahl wie bei der WGB (max. 2 hinterlegte Admin-Signaturen)
   const _users=await idbGetAll('users').catch(()=>[]);
   const _admins=_users.filter(u=>u.role==='admin' && u.signatur);
