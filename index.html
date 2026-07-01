@@ -795,7 +795,31 @@ body.printing-active #printRoot{display:block!important}
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=30;
-const APP_VERSION = '2026-06-30-v152';
+const APP_VERSION = '2026-07-01-v153';
+/* v153 (01.07.2026): Mietbescheinigung – vier Verbesserungen.
+   1) Etage/Lage: Die Etage wird jetzt automatisch aus dem Mieterfeld
+      "Etage / Lage" (m.etage) uebernommen. Neue Hilfsfunktionen
+      mbEtageZahl/mbEtageGrundlage/mbEtageOrdinal/mbLage2AusText/
+      mbLageZusatz leiten Grundlage (EG/OG/DG), Etagenzahl (-> "2.
+      Obergeschoss"), Zusatzlage (Vorne/Hinten/Fluegel/Anbau, sofern
+      eindeutig) und Klartext-Zusatz (links/rechts/mitte) ab. Neue,
+      editierbare Dialogfelder mbEtageZahl + mbLageZusatz; dauerhaft
+      im Wohnungsstamm (etageZahl/lageZusatz) gespeichert.
+   2) Unterschriftslinie: signaturLinieEinbrennen() verbreitert die
+      Zeichenflaeche seitlich (je 35 %), sodass die eingebrannte
+      Unterschriftslinie deutlich ueber die Signatur hinausragt. Wirkt
+      auf alle Dokumente mit "Fuer Dokumente (mit Linie)". Hinweis:
+      Linie muss einmalig neu festgelegt/gespeichert werden.
+   3) Layout: Mietbescheinigung gleichmaessig groesser (Basisschrift
+      11 -> 12,5 px, Ueberschriften/Tabellen/Abstaende proportional)
+      mit Umbruchsicherung (body>*{page-break-inside:avoid}); bleibt
+      auf einer A4-Seite.
+   4) Versand: Neuer Button je gespeicherter Bescheinigung. Dialog
+      mbVersandDialog() mit § 23 WoGG-konformem, editierbarem
+      Begleittext + WhatsApp-/E-Mail-Versand (mbVersandOeffne) und
+      "Text kopieren". Kein PDF-Anschreiben; PDF haengt der Nutzer
+      selbst an (wa.me/mailto koennen keine Datei anhaengen).
+   Keine neuen Stores, DB_VER bleibt 30. */
 /* v152 (30.06.2026): Sicherheits-Patch – gespeicherter XSS geschlossen.
    21 Stellen, an denen nutzereingegebener Freitext ungeprueft per
    Template-Literal in innerHTML geschrieben wurde, jetzt ueber esc()
@@ -9926,7 +9950,8 @@ async function showMieter(id){
               <div style="font-weight:600;font-size:13px">Erstellt am ${d}${b.erstelltVon?' · '+esc(b.erstelltVon):''}</div>
               <div style="font-size:11px;color:var(--ink-40)">Gesamtmiete ${gm||'–'}${b.mieteSeitText?' · seit '+esc(b.mieteSeitText):''}</div>
             </div>
-            <button class="btn btn-sm" onclick="zeigeGespMietbescheinigung('${b.id}')" title="Ansehen / als PDF drucken / verschicken"><i class="ti ti-printer"></i></button>
+            <button class="btn btn-sm" onclick="zeigeGespMietbescheinigung('${b.id}')" title="Ansehen / als PDF drucken"><i class="ti ti-printer"></i></button>
+            <button class="btn btn-sm" onclick="mbVersandDialog('${b.id}')" title="Per WhatsApp oder E-Mail verschicken"><i class="ti ti-send"></i></button>
             <button class="btn btn-sm" onclick="modalMietbescheinigung('${id}')" title="Neue Bescheinigung erstellen / Werte ändern"><i class="ti ti-pencil"></i></button>
             <button class="btn btn-sm btn-danger" onclick="loescheGespMietbescheinigung('${b.id}','${id}')" title="Löschen"><i class="ti ti-trash"></i></button>
           </div>`;
@@ -9980,6 +10005,92 @@ async function loescheGespMietbescheinigung(mbId, mieterId){
   bcSend('mietbescheinigung_saved', {mieterId});
   toast('Bescheinigung gelöscht');
   if(typeof showMieter==='function') showMieter(mieterId);
+}
+
+// ── Versand einer Mietbescheinigung per WhatsApp-/E-Mail-Text ──
+// Hinweis: WhatsApp (wa.me) und mailto koennen technisch KEINE Datei anhaengen.
+// Daher wird nur ein freundlicher Begleittext vorbereitet; das PDF haengt der
+// Nutzer nach dem Erzeugen ("Ansehen / als PDF drucken" -> als PDF speichern)
+// selbst in den Chat bzw. die E-Mail. Der Text ist § 23 WoGG-konform formuliert.
+function mbBegleittext(m, obj){
+  const anrede = (m.anrede||'').trim();
+  const name   = (typeof hauptmieterNameVoll==='function' ? hauptmieterNameVoll(m) : '') || m.mieter || '';
+  const nachname = name.split(',')[0].trim() || name;
+  let gruss;
+  if(/frau/i.test(anrede))      gruss = 'Sehr geehrte Frau '+nachname;
+  else if(/herr/i.test(anrede)) gruss = 'Sehr geehrter Herr '+nachname;
+  else                          gruss = 'Guten Tag';
+  const adr = obj ? [obj.name, obj.ort].filter(Boolean).join(', ') : '';
+  return gruss+',\n\n'
+    + 'anbei erhalten Sie die von Ihnen benötigte Mietbescheinigung nach § 23 Absatz 3 '
+    + 'des Wohngeldgesetzes (WoGG)'+(adr?(' für Ihre Wohnung '+adr):'')+'.\n\n'
+    + 'Bitte prüfen Sie die Angaben. Für Rückfragen stehen wir Ihnen gerne zur Verfügung.\n\n'
+    + 'Mit freundlichen Grüßen\n'
+    + 'Nadig Pfau Hausverwaltung';
+}
+
+async function mbVersandDialog(mbId){
+  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
+  const b = await idbGet('mietbescheinigungen', mbId).catch(()=>null);
+  if(!b){ toast('Bescheinigung nicht gefunden'); return; }
+  const m = await idbGet('mieter', b.mieterId).catch(()=>null);
+  const obj = m ? getObj(m.objektId) : null;
+  const tel  = (m?.telefon||'').trim();
+  const mail = (m?.email||'').trim();
+  const text = mbBegleittext(m||{}, obj);
+
+  const waHref   = tel  ? (waLink(tel)+'?text='+encodeURIComponent(text)) : '';
+  const betreff  = 'Ihre Mietbescheinigung nach § 23 WoGG';
+  const mailHrefV= mail ? ('mailto:'+encodeURIComponent(mail).replace(/%40/g,'@')
+                    +'?subject='+encodeURIComponent(betreff)
+                    +'&body='+encodeURIComponent(text)) : '';
+
+  const kontaktInfo = [
+    tel  ? '<div style="font-size:12px;color:var(--ink-60)"><i class="ti ti-phone"></i> '+esc(tel)+'</div>'  : '',
+    mail ? '<div style="font-size:12px;color:var(--ink-60)"><i class="ti ti-mail"></i> '+esc(mail)+'</div>' : '',
+    (!tel && !mail) ? '<div style="font-size:12px;color:var(--amber)">Für diesen Mieter ist weder Telefon noch E-Mail hinterlegt.</div>' : ''
+  ].join('');
+
+  showModal(`
+    <div class="m-title"><i class="ti ti-send"></i> Mietbescheinigung verschicken</div>
+    <div style="font-size:12px;color:var(--ink-40);margin-bottom:10px">${esc((m?hauptmieterNameVoll(m):'')||m?.mieter||'')} · ${esc(obj?.name||'')}${m?.weNr?(' · WE '+esc(m.weNr)):''}</div>
+    ${kontaktInfo}
+    <div style="background:var(--amber-bg,#fff8e6);border:1px solid var(--amber,#e0a800);border-radius:8px;padding:8px 10px;margin:10px 0;font-size:11.5px;color:var(--ink-70);line-height:1.5">
+      <i class="ti ti-info-circle"></i> WhatsApp und E-Mail-App können keine Datei automatisch anhängen.
+      Bitte zuvor über <strong>„Ansehen / als PDF drucken"</strong> die Bescheinigung als PDF speichern
+      und im geöffneten Chat bzw. der E-Mail selbst anhängen. Der Begleittext ist bereits vorbereitet.
+    </div>
+    <label style="font-size:12px;color:var(--ink-60);display:block;margin-bottom:4px">Begleittext (editierbar)</label>
+    <textarea id="mbVersandText" style="width:100%;min-height:150px;font-size:12.5px;padding:8px;border:1px solid var(--ink-10);border-radius:8px;line-height:1.5;font-family:inherit">${esc(text)}</textarea>
+    <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:14px">
+      ${tel ? `<button class="btn btn-full" style="flex:1;background:#25D366;color:#fff;border-color:#25D366" onclick="mbVersandOeffne('wa','${esc(waNummer(tel))}')"><i class="ti ti-brand-whatsapp"></i> WhatsApp</button>` : ''}
+      ${mail ? `<button class="btn btn-copper btn-full" style="flex:1" onclick="mbVersandOeffne('mail','${escAttr(mail)}')"><i class="ti ti-mail"></i> E-Mail</button>` : ''}
+    </div>
+    <div style="display:flex;gap:8px;margin-top:8px">
+      <button class="btn btn-sm" style="flex:1" onclick="mbVersandKopiere()"><i class="ti ti-copy"></i> Text kopieren</button>
+      <button class="btn btn-sm" style="flex:1" onclick="closeModal()">Schließen</button>
+    </div>
+  `);
+}
+
+// Öffnet WhatsApp bzw. E-Mail mit dem (ggf. editierten) Begleittext.
+function mbVersandOeffne(art, ziel){
+  const text = document.getElementById('mbVersandText')?.value || '';
+  let href='';
+  if(art==='wa'){
+    href = 'https://wa.me/'+ziel+'?text='+encodeURIComponent(text);
+  }else{
+    const betreff='Ihre Mietbescheinigung nach § 23 WoGG';
+    href = 'mailto:'+ziel+'?subject='+encodeURIComponent(betreff)+'&body='+encodeURIComponent(text);
+  }
+  try{ window.open(href,'_blank','noopener'); }catch(_){ location.href=href; }
+}
+
+// Kopiert den Begleittext in die Zwischenablage.
+async function mbVersandKopiere(){
+  const text = document.getElementById('mbVersandText')?.value || '';
+  try{ await navigator.clipboard.writeText(text); toast('Begleittext kopiert ✓'); }
+  catch(_){ toast('Kopieren nicht möglich – bitte manuell markieren'); }
 }
 
 // Punkt 13: Gespeicherten MV-Entwurf erneut anzeigen / drucken (offline, aus HTML).
@@ -15293,6 +15404,56 @@ async function mvLegeMieterAn(D, rd){
   }
 }
 
+// ── Mietbescheinigung: Etage/Lage aus dem Mieter-Freitext (m.etage) ableiten ──
+// Das Mieterfeld "Etage / Lage" ist Freitext (z. B. "2.OG rechts", "EG links",
+// "Dachgeschoss"). Fuer die amtliche WoGG-Bescheinigung leiten wir daraus ab:
+//  a) die Grundlage (Erdgeschoss / Obergeschoss / Dachgeschoss) zum Ankreuzen,
+//  b) die Etagenzahl fuer die Beschriftung "2. Obergeschoss",
+//  c) eine Zusatzlage (Vorne/Hinten/Fluegel/Anbau), sofern eindeutig,
+//  d) einen Klartext-Zusatz (links/rechts/mitte), der amtlich nicht ankreuzbar ist.
+function mbEtageZahl(txt){
+  // Erste Zahl vor "OG"/"Obergeschoss"/"Stock"/"Etage" bzw. eine fuehrende Zahl.
+  const t=String(txt||'').toLowerCase();
+  let m=t.match(/(\d+)\s*\.?\s*(?:og|obergeschoss|stock|stockwerk|etage|geschoss|ober)/);
+  if(m) return parseInt(m[1]);
+  m=t.match(/^\s*(\d+)\b/);            // reine Zahl am Anfang, z. B. "2 rechts"
+  if(m) return parseInt(m[1]);
+  return null;
+}
+// Grundlage zum Ankreuzen: 'Erdgeschoss' | 'Obergeschoss' | 'Dachgeschoss' | ''
+function mbEtageGrundlage(txt){
+  const t=String(txt||'').toLowerCase();
+  if(/dach|dg\b|dachgeschoss/.test(t)) return 'Dachgeschoss';
+  if(/erdgeschoss|\beg\b|parterre|hochparterre|souterrain/.test(t)) return 'Erdgeschoss';
+  if(/og|obergeschoss|stock|etage|geschoss/.test(t) || /^\s*\d/.test(t)) return 'Obergeschoss';
+  return '';
+}
+// Beschriftung fuer die Obergeschoss-Zeile: "2. Obergeschoss", sonst "Obergeschoss".
+function mbEtageOrdinal(txt){
+  const g=mbEtageGrundlage(txt);
+  if(g==='Obergeschoss'){ const z=mbEtageZahl(txt); return z?(z+'. Obergeschoss'):'Obergeschoss'; }
+  return g||'';
+}
+// Zusatzlage laut amtlichem Formular (Vorne/Hinten/Fluegel/Anbau), sofern eindeutig.
+function mbLage2AusText(txt){
+  const t=String(txt||'').toLowerCase();
+  if(/vorne|vorder/.test(t)) return 'Vorne';
+  if(/hinten|hinter|garten/.test(t)) return 'Hinten';
+  if(/fl[üu]gel|seiten/.test(t)) return 'Flügel';
+  if(/anbau|hinterhaus|remise/.test(t)) return 'Anbau';
+  return '';
+}
+// Klartext-Zusatz, der amtlich NICHT ankreuzbar ist (links/rechts/mitte).
+// Wird als Beschriftung hinter der Etage gefuehrt, um die Aussage nicht zu verfaelschen.
+function mbLageZusatz(txt){
+  const t=String(txt||'').toLowerCase();
+  const teile=[];
+  if(/\blinks\b|\bli\.?\b/.test(t)) teile.push('links');
+  if(/\brechts\b|\bre\.?\b/.test(t)) teile.push('rechts');
+  if(/\bmitte\b|\bmittig\b|\bmi\.?\b/.test(t)) teile.push('mitte');
+  return teile.join('/');
+}
+
 // Brennstoff- und Lage-Optionen fürs Formular
 const WOGG_BRENNSTOFF=['Gas','Öl','Strom','Fernwärme','Kohle'];
 const WOGG_LAGE=['Erdgeschoss','Obergeschoss','Dachgeschoss'];
@@ -15304,6 +15465,13 @@ async function modalMietbescheinigung(mieterId){
   const m=await idbGet('mieter',mieterId); if(!m){ toast('Mieter nicht gefunden'); return; }
   const obj=getObj(m.objektId);
   const w=await getWohnungStamm(m.objektId, m.weNr);   // dauerhafte Wohnungsdaten
+  // Etage/Lage automatisch aus dem Mieterfeld (m.etage) ableiten, falls im
+  // Wohnungsstamm noch nichts gepflegt ist. So muss die Etage nur EINMAL beim
+  // Mieter gepflegt werden ("Bild 1") und erscheint automatisch in der Bescheinigung.
+  if(!w.lage  && m.etage) w.lage  = mbEtageGrundlage(m.etage) || w.lage;
+  if(!w.lage2 && m.etage) w.lage2 = mbLage2AusText(m.etage)   || w.lage2;
+  const _mbEtZahl  = (w.etageZahl!=null && w.etageZahl!=='') ? w.etageZahl : (m.etage? (mbEtageZahl(m.etage)||'') : '');
+  const _mbEtZusatz= (w.lageZusatz!=null && w.lageZusatz!=='') ? w.lageZusatz : (m.etage? mbLageZusatz(m.etage) : '');
   const gs=(await idbGet('objekt_stamm',m.objektId).catch(()=>null))||{};
   // Punkt 2.2: Unterschriften-Auswahl wie bei der WGB (max. 2 hinterlegte Admin-Signaturen)
   const _users=await idbGetAll('users').catch(()=>[]);
@@ -15336,6 +15504,14 @@ async function modalMietbescheinigung(mieterId){
     <div class="f"><label>Lage im Gebäude</label>
       <div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px">${WOGG_LAGE.map(l=>radio('mbLage',l,w.lage)).join('')}</div>
       <div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px">${WOGG_LAGE2.map(l=>radio('mbLage2',l,w.lage2)).join('')}</div>
+    </div>
+    <div class="f-row">
+      <div class="f"><label>Etage (Zahl) – bei Obergeschoss</label>
+        <input type="number" id="mbEtageZahl" min="1" step="1" value="${esc(String(_mbEtZahl||''))}" placeholder="z. B. 2">
+        <div style="font-size:10px;color:var(--ink-40);margin-top:2px">Ergibt z. B. „2. Obergeschoss\". Automatisch aus dem Mieterfeld „Etage/Lage\" übernommen.</div></div>
+      <div class="f"><label>Lage-Zusatz (Klartext)</label>
+        <input type="text" id="mbLageZusatz" value="${esc(String(_mbEtZusatz||''))}" placeholder="z. B. links / rechts / mitte">
+        <div style="font-size:10px;color:var(--ink-40);margin-top:2px">Für Angaben, die das amtliche Formular nicht ankreuzt (links/rechts/mitte).</div></div>
     </div>
     <div class="f-row">
       <label style="display:flex;align-items:center;gap:8px;font-size:12px;flex:1">${cb('mbSammelheizung',w.sammelheizung!==false)} Sammelheizung vorhanden</label>
@@ -15462,6 +15638,7 @@ async function erstelleMietbescheinigung(mieterId){
     modernisiert:chk('mbModern'), modernisiertText:val('mbModernText'),
     gefoerdert:chk('mbGefoerdert'), gewerbe:chk('mbGewerbe'),
     moeblierung:val('mbMoeblierung'), heizAnteil:val('mbHeiz'),
+    etageZahl:val('mbEtageZahl'), lageZusatz:val('mbLageZusatz'),
   };
   await saveWohnungStamm(m.objektId, m.weNr, wDaten);
 
@@ -15494,8 +15671,8 @@ async function erstelleMietbescheinigung(mieterId){
       <tr><td class="l">Anzahl Zimmer (ohne Küche/Bad/Diele)</td><td>${val('mbZimmer')||'–'}</td></tr>
       <tr><td class="l">Baujahr des Hauses</td><td>${val('mbBaujahr')||'–'}</td></tr>
     </table>
-    <div class="mb-row">${bx(radioVal('mbLage')==='Erdgeschoss')}Erdgeschoss ${bx(radioVal('mbLage')==='Obergeschoss')}Obergeschoss ${bx(radioVal('mbLage')==='Dachgeschoss')}Dachgeschoss
-      &nbsp;&nbsp; ${bx(radioVal('mbLage2')==='Vorne')}Vorne ${bx(radioVal('mbLage2')==='Hinten')}Hinten ${bx(radioVal('mbLage2')==='Flügel')}Flügel ${bx(radioVal('mbLage2')==='Anbau')}Anbau</div>
+    <div class="mb-row">${bx(radioVal('mbLage')==='Erdgeschoss')}Erdgeschoss ${bx(radioVal('mbLage')==='Obergeschoss')}${(radioVal('mbLage')==='Obergeschoss'&&val('mbEtageZahl'))?esc(val('mbEtageZahl'))+'. ':''}Obergeschoss ${bx(radioVal('mbLage')==='Dachgeschoss')}Dachgeschoss
+      &nbsp;&nbsp; ${bx(radioVal('mbLage2')==='Vorne')}Vorne ${bx(radioVal('mbLage2')==='Hinten')}Hinten ${bx(radioVal('mbLage2')==='Flügel')}Flügel ${bx(radioVal('mbLage2')==='Anbau')}Anbau${val('mbLageZusatz')?' &nbsp;&nbsp;('+esc(val('mbLageZusatz'))+')':''}</div>
     <div class="mb-row">Vermietungsart: ${bx(val('mbMoeblierung')==='leer')}leer ${bx(val('mbMoeblierung')==='teil')}teilmöbliert ${bx(val('mbMoeblierung')==='voll')}vollmöbliert</div>
     <div class="mb-row">Gewerblich/beruflich genutzt: ${bx(chk('mbGewerbe'))}Ja ${bx(!chk('mbGewerbe'))}Nein
       &nbsp;&nbsp; Öffentlich gefördert: ${bx(chk('mbGefoerdert'))}Ja ${bx(!chk('mbGefoerdert'))}Nein</div>
@@ -15541,23 +15718,25 @@ async function erstelleMietbescheinigung(mieterId){
 
   const style=`<style>
     *{margin:0;padding:0;box-sizing:border-box}
-    body{font-family:Arial,sans-serif;font-size:11px;color:#111;padding:11mm 15mm;max-width:210mm;line-height:1.3}
-    .mb-h{font-size:19px;font-weight:700;text-align:center;margin-bottom:10px;letter-spacing:.5px}
-    .mb-h2{font-size:14px;font-weight:700;margin:13px 0 8px;border-bottom:2px solid #333;padding-bottom:3px}
-    .mb-sub{font-size:10.5px;color:#444;margin-bottom:8px;line-height:1.4}
-    .mb-t{width:100%;border-collapse:collapse;margin:5px 0}
+    body{font-family:Arial,sans-serif;font-size:12.5px;color:#111;padding:13mm 16mm;max-width:210mm;line-height:1.4}
+    .mb-h{font-size:23px;font-weight:700;text-align:center;margin-bottom:14px;letter-spacing:.5px}
+    .mb-h2{font-size:16px;font-weight:700;margin:16px 0 9px;border-bottom:2px solid #333;padding-bottom:3px}
+    .mb-sub{font-size:12px;color:#444;margin-bottom:9px;line-height:1.45}
+    .mb-t{width:100%;border-collapse:collapse;margin:6px 0}
     .mb-t tr{page-break-inside:avoid}
-    .mb-t td{border:1px solid #999;padding:3.5px 9px;font-size:11px}
+    .mb-t td{border:1px solid #999;padding:4.5px 10px;font-size:12.5px}
     .mb-t td.l{background:#f4f4f4;width:56%;color:#333}
-    .mb-row{font-size:11px;margin:5px 0;line-height:1.45}
-    .mb-vermieter{margin-top:12px;border:1px solid #999;padding:6px 11px;font-size:11px;page-break-inside:avoid}
-    .mb-vermieter span{font-size:10px}
-    .mb-sig{margin-top:18px;display:flex;justify-content:space-between;align-items:flex-end;gap:24px}
+    .mb-row{font-size:12.5px;margin:6px 0;line-height:1.5}
+    .mb-vermieter{margin-top:14px;border:1px solid #999;padding:7px 12px;font-size:12px;page-break-inside:avoid}
+    .mb-vermieter span{font-size:11px}
+    .mb-sig{margin-top:22px;display:flex;justify-content:space-between;align-items:flex-end;gap:24px}
     .mb-sig-wrap{display:flex;gap:24px;align-items:flex-end}
     .mb-sig-line{min-width:175px;text-align:center}
-    .mb-sig-line img{max-height:48px !important}
-    .mb-sig-line div{font-size:10px !important}
-    @page{margin:0;size:A4}@media print{body{padding:11mm 15mm;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+    .mb-sig-line img{max-height:54px !important}
+    .mb-sig-line div{font-size:11px !important}
+    /* Sicherung: alles bleibt auf einer Seite */
+    body>*{page-break-inside:avoid}
+    @page{margin:0;size:A4}@media print{body{padding:13mm 16mm;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
   </style>`;
   const html=`<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8"><title>Mietbescheinigung – ${esc(m.mieter||'')}</title>${style}</head>
     <body>${seite1}${seite2}
@@ -15582,6 +15761,7 @@ async function erstelleMietbescheinigung(mieterId){
       felder: {
         zimmer: val('mbZimmer'), baujahr: val('mbBaujahr'),
         lage: radioVal('mbLage'), lage2: radioVal('mbLage2'),
+        etageZahl: val('mbEtageZahl'), lageZusatz: val('mbLageZusatz'),
         sammelheizung: chk('mbSammelheizung'), bad: chk('mbBad'),
         brennstoff: radioVal('mbBrennstoff'), warmwasser: val('mbWarmwasser'),
         modernisiert: chk('mbModern'), modernisiertText: val('mbModernText'),
@@ -22932,9 +23112,14 @@ function signaturLinieEinbrennen(dataUrl, posProzent){
     const img=new Image();
     img.onload=()=>{
       const w=img.width, h=img.height;
-      const c=document.createElement('canvas'); c.width=w; c.height=h;
+      // Zeichenfläche seitlich verbreitern, damit die Unterschriftslinie deutlich
+      // über die Signatur hinausragt (wie eine echte Unterschriftslinie im Dokument).
+      // Zusatzbreite je Seite = 35 % der Signaturbreite.
+      const pad=Math.round(w*0.35);
+      const cw=w+2*pad;
+      const c=document.createElement('canvas'); c.width=cw; c.height=h;
       const ctx=c.getContext('2d');
-      ctx.drawImage(img,0,0);
+      ctx.drawImage(img,pad,0);        // Signatur mittig platzieren
       // Linienstärke proportional zur Höhe, mind. 2 px, dünn gehalten
       const lw=Math.max(2, Math.round(h*0.022));
       const y=Math.round(h*(posProzent/100));
@@ -22942,8 +23127,8 @@ function signaturLinieEinbrennen(dataUrl, posProzent){
       ctx.lineWidth=lw;
       ctx.lineCap='round';
       ctx.beginPath();
-      ctx.moveTo(Math.round(w*0.01), y);
-      ctx.lineTo(Math.round(w*0.99), y);
+      ctx.moveTo(Math.round(cw*0.01), y);
+      ctx.lineTo(Math.round(cw*0.99), y);
       ctx.stroke();
       resolve(c.toDataURL('image/png'));
     };
