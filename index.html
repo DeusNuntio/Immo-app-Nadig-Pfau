@@ -795,7 +795,7 @@ body.printing-active #printRoot{display:block!important}
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=31;
-const APP_VERSION = '2026-07-02-v158';
+const APP_VERSION = '2026-07-02-v159';
 /* v157 (02.07.2026): Drei Fixes/Features – Sync, Mail-Papierkorb, QR-ZIP-Export.
    1) SYNC-TOMBSTONES: mergeRecord holte geleerte Felder immer von der Gegen-
       seite zurück ("gefüllt schlägt leer") – Feld-Löschungen konnten dadurch
@@ -10055,7 +10055,8 @@ async function showMieter(id){
     <div style="display:none"><!-- dummy --></div
       ${tg?`<div class="det-field"><label>TG-Stellplatz</label><span>Nr. ${tg.nr} · ${fmtEur(tg.miete)}/Mon.</span></div>`:''}
       ${m.uebergabe?`<div class="det-field"><label>Übergabe</label><span>${m.uebergabe}</span></div>`:''}
-      ${istVerwalter()&&m.krKlausel==='Ja'?`<div class="det-field"><label>KR-Klausel</label><span>${fmtEur(m.krHoehe)} · ${m.krProzent||'–'}% p.a.</span></div>`:''}
+      ${istVerwalter()&&m.vertragsmodell?`<div class="det-field"><label>Vertragsmodell</label><span>${esc(m.vertragsmodell)}</span></div>`:''}
+      ${istVerwalter()&&m.krKlausel==='Ja'?`<div class="det-field"><label>KR-Klausel</label><span>${fmtEur(m.krHoehe)} je Fall · ${m.krProzent?m.krProzent+'%':'–'}${m.krMaxEuro?' (max. '+fmtEur(m.krMaxEuro)+'/Jahr)':' p.a.'}</span></div>`:''}
     </div>
   </div>
   ${personenBlockHTML(m)}
@@ -18534,6 +18535,8 @@ async function exportExcel() {
     'KR-Klausel': m.krKlausel||'',
     'KR-Höhe (€)': m.krHoehe||'',
     'KR-% Jahresmiete': m.krProzent||'',
+    'KR-Max (€/Jahr)': m.krMaxEuro||'',
+    'Vertragsmodell': m.vertragsmodell||'',
     'TG-Stellplatz Nr.': m.tgNr||'',
   }));
   const tgJson = tg.map(t=>({ 'Nr': t.nr, 'Mieter': t.mieter||'', 'Ab': t.ab||'', 'Miete (€)': t.miete||'' }));
@@ -19359,6 +19362,11 @@ function mieterFormHTML(obj, m={}) {
         <input type="text" id="mTgNr" value="${m.tgNr||''}"></div>
     </div>
     <div class="f-row">
+      <div class="f"><label>Vertragsmodell / Vertragswerk</label>
+        <input type="text" id="mVertragsmodell" value="${m.vertragsmodell||''}" placeholder="z. B. Nadig Neu, Patrizia, Allianz">
+        <div style="font-size:10px;color:var(--ink-40);margin-top:2px">Vertragswerk des Mietvertrags (bei Bestandsübernahme: Voreigentümer).</div></div>
+    </div>
+    <div class="f-row">
       <div class="f"><label>Aktuelle Miete gezahlt seit</label>
         <input type="date" id="mMieteSeit" value="${m.mieteSeitISO||''}">
         <div style="font-size:10px;color:var(--ink-40);margin-top:2px">Datum, seit dem die aktuelle Gesamtmiete gezahlt wird (z. B. nach Mieterhöhung). Wird für die Mietbescheinigung übernommen. Leer = Einzugsdatum.</div></div>
@@ -19760,6 +19768,7 @@ async function saveEditMieter(id) {
   m.kaution = parseFloat(document.getElementById('mKaution').value)||m.kaution||'';
   m.tgNr    = document.getElementById('mTgNr').value;
   m.mieteSeitISO = document.getElementById('mMieteSeit')?.value || '';
+  m.vertragsmodell = document.getElementById('mVertragsmodell')?.value || '';
   // Bankverbindung / Zahlung (nur Admin sieht die Felder; HM-Formular enthält sie nicht)
   if(document.getElementById('mIban')){
     m.zahlweise    = document.getElementById('mZahlweise')?.value || m.zahlweise || '';
@@ -22791,6 +22800,8 @@ async function importExcel(input){
             setIf('krKlausel', r['KR-Klausel']);
             setIf('krHoehe',   r['KR-Höhe (€)']);
             setIf('krProzent', r['KR-% Jahresmiete']);
+            setIf('krMaxEuro', r['KR-Max (€/Jahr)']);
+            setIf('vertragsmodell', r['Vertragsmodell']);
             setIf('tgNr',      r['TG-Stellplatz Nr.']);
             setIf('personen',  r['Personen']);
             // Frischer Zeitstempel, damit die Excel-Änderung beim OneDrive-Sync
