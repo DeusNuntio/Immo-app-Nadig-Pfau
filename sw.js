@@ -2,8 +2,12 @@
 // Zweck: macht die PWA für Chrome installierbar (fetch-Handler erforderlich).
 // Strategie: "Netzwerk zuerst" – die App bleibt immer aktuell, Cache nur als
 // Offline-Fallback für das HTML-Dokument selbst.
+//
+// Review-Fix 02.07.2026 (B5): Bei Offline-Cache-Miss wird nie mehr undefined
+// an respondWith übergeben (führte zu TypeError); stattdessen kontrollierte
+// 503/504-Antworten.
 
-const CACHE = 'nadigpfau-v157';
+const CACHE = 'nadigpfau-v158';
 
 self.addEventListener('install', () => {
   // Sofort aktivieren, nicht auf alten SW warten
@@ -37,14 +41,19 @@ self.addEventListener('fetch', (e) => {
         return fresh;
       } catch (err) {
         const cached = await caches.match(req);
-        return cached || caches.match('./index.html');
+        return cached
+          || (await caches.match('./index.html'))
+          || new Response('<h1>Offline</h1><p>Keine Verbindung und keine zwischengespeicherte Version vorhanden.</p>',
+               { status: 503, headers: { 'Content-Type': 'text/html; charset=utf-8' } });
       }
     })());
     return;
   }
 
-  // Übrige GET-Requests: Netzwerk zuerst, bei Fehler Cache
+  // Übrige GET-Requests: Netzwerk zuerst, bei Fehler Cache – nie undefined liefern
   e.respondWith(
-    fetch(req).catch(() => caches.match(req))
+    fetch(req).catch(async () =>
+      (await caches.match(req)) || new Response('', { status: 504, statusText: 'offline' })
+    )
   );
 });
