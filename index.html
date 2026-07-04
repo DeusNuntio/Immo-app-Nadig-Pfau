@@ -795,7 +795,7 @@ body.printing-active #printRoot{display:block!important}
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=31;
-const APP_VERSION = '2026-07-04-v164';
+const APP_VERSION = '2026-07-04-v166';
 /* v157 (02.07.2026): Drei Fixes/Features – Sync, Mail-Papierkorb, QR-ZIP-Export.
    1) SYNC-TOMBSTONES: mergeRecord holte geleerte Felder immer von der Gegen-
       seite zurück ("gefüllt schlägt leer") – Feld-Löschungen konnten dadurch
@@ -22603,19 +22603,21 @@ async function printProtHTML(d) {
       const col = val==='Einwandfrei'?'#2E7D52':val==='Beschädigt'?'#C0392B':val==='Entfällt'?'#888':'#D4820A';
       const note = rd.condNotes?.[c]||'';
       roomRows += `<tr><td style="padding:3px 8px;border:1px solid #dde;font-size:10px;width:38%">${c}</td><td style="padding:3px 8px;border:1px solid #dde;font-size:10px;color:${col};font-weight:600;width:28%">${val}</td><td style="padding:3px 8px;border:1px solid #dde;font-size:10px;width:34%;color:#333">${note}</td></tr>`;
-      const cps = rd.condPhotos?.[c];
-      if (Array.isArray(cps) && cps.length) {
+      const cps = await protoFotoWerte(rd.condPhotos?.[c], rd.condPhotoIds?.[c]);
+      if (cps.length) {
         let imgs='';
-        for (const ph of cps){ const comp=await compressImg(ph); imgs+=`<img src="${comp}" style="width:70px;height:52px;object-fit:cover;border-radius:3px;border:1px solid #ccd;margin:2px">`; }
-        roomRows += `<tr><td colspan="3" style="padding:4px 8px;border:1px solid #dde"><div style="font-size:8px;font-weight:700;color:#777;margin-bottom:2px">Fotos zu „${c}"</div><div style="display:flex;flex-wrap:wrap;gap:3px">${imgs}</div></td></tr>`;
+        for (const ph of cps){ const src=await fotoDruckQuelle(ph); if(!src) continue; const comp=await compressImg(src); imgs+=`<img src="${comp}" style="width:70px;height:52px;object-fit:cover;border-radius:3px;border:1px solid #ccd;margin:2px">`; }
+        if (imgs) roomRows += `<tr><td colspan="3" style="padding:4px 8px;border:1px solid #dde"><div style="font-size:8px;font-weight:700;color:#777;margin-bottom:2px">Fotos zu „${c}"</div><div style="display:flex;flex-wrap:wrap;gap:3px">${imgs}</div></td></tr>`;
       }
     }
     if (rd.notes) roomRows += `<tr><td colspan="3" style="padding:3px 8px;border:1px solid #dde;font-size:10px;font-style:italic;color:#555">Hinweis: ${rd.notes}</td></tr>`;
 
-    if (rd.photos?.length) {
-      roomRows += `<tr><td colspan="3" style="padding:5px 8px;border:1px solid #dde"><div style="font-size:9px;font-weight:700;margin-bottom:3px">FOTOS (${rd.photos.length})</div><div style="display:flex;flex-wrap:wrap;gap:4px">`;
-      for (const p of rd.photos) {
-        const comp = await compressImg(p);
+    const _roomFotos = await protoFotoWerte(rd.photos, rd.photoIds);
+    if (_roomFotos.length) {
+      roomRows += `<tr><td colspan="3" style="padding:5px 8px;border:1px solid #dde"><div style="font-size:9px;font-weight:700;margin-bottom:3px">FOTOS (${_roomFotos.length})</div><div style="display:flex;flex-wrap:wrap;gap:4px">`;
+      for (const p of _roomFotos) {
+        const src = await fotoDruckQuelle(p); if(!src) continue;
+        const comp = await compressImg(src);
         roomRows += `<img src="${comp}" style="width:80px;height:60px;object-fit:cover;border-radius:3px;border:1px solid #ccd">`;
       }
       roomRows += `</div></td></tr>`;
@@ -22624,9 +22626,11 @@ async function printProtHTML(d) {
   let mR = '';
   for (const z of (d.zaehler||[]).filter(z=>z.stand)) {
     let fotoCell = '';
-    if (z.foto) {
-      const comp = await compressImg(z.foto);
-      fotoCell = `<img src="${comp}" style="width:60px;height:45px;object-fit:cover;border-radius:3px;border:1px solid #ccd;vertical-align:middle;margin-left:4px">`;
+    const _zFoto = await protoZaehlerFotoWert(z);
+    if (_zFoto) {
+      const _zSrc = await fotoDruckQuelle(_zFoto);
+      if (_zSrc) { const comp = await compressImg(_zSrc);
+        fotoCell = `<img src="${comp}" style="width:60px;height:45px;object-fit:cover;border-radius:3px;border:1px solid #ccd;vertical-align:middle;margin-left:4px">`; }
     }
     mR += `<tr><td style="padding:3px 8px;border:1px solid #dde;font-size:10px">${z.typ}</td><td style="padding:3px 8px;border:1px solid #dde;font-size:10px">${z.nr}</td><td style="padding:3px 8px;border:1px solid #dde;font-size:10px;font-weight:700">${z.stand} ${z.einheit} ${fotoCell}</td></tr>`;
   }
@@ -27805,6 +27809,40 @@ async function fotoQuelle(x){
   return '';
 }
 
+/* Zentraler Blob->dataURL-Helfer (Promise). Bisher gab es nur verstreute
+   inline-FileReader; diese Stelle ist additiv und ersetzt keine davon. */
+function blobZuDataUrl(blob){
+  return new Promise((res,rej)=>{
+    const fr = new FileReader();
+    fr.onload  = ()=>res(fr.result);
+    fr.onerror = ()=>rej(fr.error);
+    fr.readAsDataURL(blob);
+  });
+}
+
+/* Druck-/Canvas-taugliche Quelle: liefert IMMER eine echte dataURL (nie eine
+   Fremd-URL). Alt-String -> direkt. Ausgelagerte Referenz -> OneDrive-Download-
+   Link (`odDownloadUrl`) per fetch -> Blob -> dataURL. Grund: `compressImg`
+   zeichnet ins Canvas und ruft toDataURL(); eine cross-origin-URL wuerde das
+   Canvas "tainten" (SecurityError). Fallback: Inline-Thumbnail bzw. ''. */
+async function fotoDruckQuelle(x){
+  if(typeof x==='string') return x;
+  if(istFotoRef(x)){
+    try{
+      const url = await odDownloadUrl(x.odId);
+      if(url){
+        const resp = await fetch(url);
+        if(resp && resp.ok){
+          const blob = await resp.blob();
+          return await blobZuDataUrl(blob);
+        }
+      }
+    }catch(e){ console.warn('fotoDruckQuelle:', e); }
+    return x.thumb || '';
+  }
+  return '';
+}
+
 /* Synchron fuer Listen/Vorschau (ohne Netz): Alt-String -> direkt;
    Referenz -> Inline-Thumbnail (leer, wenn keines vorhanden). */
 function fotoThumbQuelle(x){
@@ -27837,6 +27875,37 @@ function fotoImgTag(wert, caption='Foto', style=''){
   const onclick = istFotoRef(wert) ? `openFoto('${wert.odId}','odref')` : `openFoto('${wert}','${cap}')`;
   const st = style || 'width:34px;height:34px;border-radius:6px;object-fit:cover';
   return `<img src="${src}" style="${st}" onclick="${onclick}">`;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   §12-P23 / 23a – PROTOKOLLFOTO-RESOLVER (Stufe 1, additiv, verhaltensgleich)
+   ----------------------------------------------------------------------
+   Zentralisiert den LESEPFAD der Protokollfotos. Ein "Foto-Wert" ist ein
+   Alt-dataURL-String ODER eine ausgelagerte Referenz {ref,odId,...}.
+   Quelle-Reihenfolge: (1) vorhandene inline-Arrays (heute immer gefuellt ->
+   Stufe 1 exakt wie bisher), (2) Fallback ueber die *Ids in den fotos-Store
+   (rec.ref falls ausgelagert, sonst rec.data). Ab Stufe 2 (inline entfaellt)
+   greift automatisch der Store-Zweig – der Druck-/Anzeigecode bleibt gleich.
+   ══════════════════════════════════════════════════════════════════════ */
+async function protoFotoWerte(inlineArr, idArr){
+  if (Array.isArray(inlineArr) && inlineArr.length) return inlineArr.slice();
+  const out = [];
+  if (Array.isArray(idArr)) {
+    for (const fid of idArr){
+      try { const fo = await idbGet('fotos', fid);
+        if (fo) out.push(istFotoRef(fo.ref) ? fo.ref : (fo.data || '')); } catch(_){}
+    }
+  }
+  return out.filter(Boolean);
+}
+/* Einzelner Zaehler-Fotowert: inline z.foto bevorzugt, sonst ueber z.fotoId. */
+async function protoZaehlerFotoWert(z){
+  if (z && z.foto) return z.foto;
+  if (z && z.fotoId){
+    try { const fo = await idbGet('fotos', z.fotoId);
+      if (fo) return istFotoRef(fo.ref) ? fo.ref : (fo.data || ''); } catch(_){}
+  }
+  return '';
 }
 
 document.getElementById('photoIn').addEventListener('change', async function() {
