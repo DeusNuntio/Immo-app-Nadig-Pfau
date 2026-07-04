@@ -795,7 +795,7 @@ body.printing-active #printRoot{display:block!important}
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=31;
-const APP_VERSION = '2026-07-04-v166';
+const APP_VERSION = '2026-07-04-v168';
 /* v157 (02.07.2026): Drei Fixes/Features – Sync, Mail-Papierkorb, QR-ZIP-Export.
    1) SYNC-TOMBSTONES: mergeRecord holte geleerte Felder immer von der Gegen-
       seite zurück ("gefüllt schlägt leer") – Feld-Löschungen konnten dadurch
@@ -9984,7 +9984,9 @@ async function mangelAnHandwerker(id, store){
   const files=[];
   for(let i=0;i<fotoSrcs.length;i++){
     try{
-      const res=await fetch(fotoSrcs[i]);
+      // dual-format: Referenz -> OneDrive-URL, Alt-String -> direkt
+      const _src=await fotoQuelle(fotoSrcs[i]); if(!_src) continue;
+      const res=await fetch(_src);
       const blob=await res.blob();
       files.push(new File([blob], 'Foto_'+(i+1)+'.jpg', {type:blob.type||'image/jpeg'}));
     }catch(_){}
@@ -10890,7 +10892,7 @@ function reparaturHTML(r){
       ${r.beschreibung?`<div style="font-size:12px;color:var(--ink-40);margin-top:2px;font-style:italic">${r.beschreibung}</div>`:''}
     </div>
     <div class="t-actions">
-      ${r.rechnung?`<button class="btn btn-sm" onclick="openFoto('${r.rechnung}','Rechnung')"><i class="ti ti-file-invoice"></i></button>`:''}
+      ${r.rechnung?`<button class="btn btn-sm" onclick="${istFotoRef(r.rechnung)?`openFoto('${r.rechnung.odId}','odref')`:`openFoto('${r.rechnung}','Rechnung')`}"><i class="ti ti-file-invoice"></i></button>`:''}
       <button class="btn btn-sm btn-danger" onclick="deleteReparatur('${r.id}')"><i class="ti ti-trash"></i></button>
     </div>
   </div>`;
@@ -17546,6 +17548,19 @@ async function saveReparatur() {
   const gesamt    = arbeitGes + teileGes + extBetrag;
 
   const saveEntry = async (rechnData) => {
+    // §12-P23/23a: neue Rechnung (dataURL) nach OneDrive auslagern; bei
+    // Fehler/kein Ziel bleibt die dataURL inline erhalten (keine Regression).
+    let rechnAusgelagert = rechnData;
+    if (rechnData && typeof rechnData==='string' && rechnData.startsWith('data:')) {
+      const zielRechnung = fotoZielFuer(document.getElementById('repObjId')?.value, m?.weNr||'', 'reparaturen');
+      if (zielRechnung) {
+        const mime = (rechnData.match(/data:([^;]+)/)||[])[1] || '';
+        const ext  = mime.includes('pdf') ? 'pdf' : (mime.includes('png') ? 'png' : 'jpg');
+        const ref  = await fotoAuslagern(rechnData, Object.assign({}, zielRechnung,
+          { name:'Rechnung_'+odSafeName(titel)+'_'+today()+'.'+ext }));
+        if (ref) rechnAusgelagert = ref;
+      }
+    }
     await idbPut('reparaturen', {
       id:uid(), type:'reparatur',
       objektId: document.getElementById('repObjId')?.value,
@@ -17556,7 +17571,7 @@ async function saveReparatur() {
       status: document.getElementById('repStatus')?.value,
       arbeit, teile,
       extBetrag: extBetrag||null,
-      rechnung: rechnData||null,
+      rechnung: rechnAusgelagert||null,
       kosten: gesamt,
       gesamt,
       erstellt: now(), ersteller: CU?.name||'',
@@ -17872,7 +17887,9 @@ async function showReparaturDetail(id) {
     ${teilHTML?`<div class="card-hdr" style="margin-bottom:4px"><i class="ti ti-package"></i> Ersatzteile / Material</div>${teilHTML}<div style="padding:4px 0;margin-bottom:10px"></div>`:''}
     ${r.extBetrag?`<div style="display:flex;justify-content:space-between;font-size:13px;font-weight:600;padding:6px 0;border-top:2px solid var(--ink-10)"><span>Externe Rechnung</span><span>${fmtEur(r.extBetrag)}</span></div>`:''}
     ${r.rechnung?`<div class="card-hdr" style="margin-top:10px;margin-bottom:6px"><i class="ti ti-file-invoice"></i> Rechnung</div>
-      <img src="${r.rechnung}" style="width:100%;border-radius:8px;cursor:pointer;margin-bottom:8px" onclick="openFoto('${r.rechnung}','Rechnung ${r.titel}')" onerror="this.style.display='none'">`:''}
+      ${istFotoRef(r.rechnung)
+        ? `<img src="${fotoThumbQuelle(r.rechnung)}" style="width:100%;border-radius:8px;cursor:pointer;margin-bottom:8px" onclick="openFoto('${r.rechnung.odId}','odref')" onerror="this.style.display='none'">`
+        : `<img src="${r.rechnung}" style="width:100%;border-radius:8px;cursor:pointer;margin-bottom:8px" onclick="openFoto('${r.rechnung}','Rechnung ${r.titel}')" onerror="this.style.display='none'">`}`:''}
     <div style="display:flex;gap:7px;flex-wrap:wrap;margin-top:10px">
       <button class="btn ${done?'':'btn-success'}" onclick="toggleReparatur('${id}');closeModal()">
         <i class="ti ti-${done?'rotate-ccw':'check'}"></i> ${done?'Wieder öffnen':'Erledigen'}
@@ -27358,9 +27375,9 @@ async function showMangelDetail(id, store='maengel') {
     ${m.fotos?.length ? `
     <div class="card-hdr" style="margin-bottom:8px"><i class="ti ti-photo"></i> Fotos (${m.fotos.length})</div>
     <div class="foto-gallery">
-      ${m.fotos.map((f,i)=>`<div class="foto-item" onclick="openFoto('${f}','Foto ${i+1} – ${m.titel}')">
-        <img src="${f}" loading="lazy">
-      </div>`).join('')}
+      ${m.fotos.map((f,i)=> istFotoRef(f)
+        ? `<div class="foto-item" onclick="openFoto('${f.odId}','odref')"><img src="${fotoThumbQuelle(f)}" loading="lazy"></div>`
+        : `<div class="foto-item" onclick="openFoto('${f}','Foto ${i+1} – ${m.titel}')"><img src="${f}" loading="lazy"></div>`).join('')}
     </div>` : ''}
 
     ${m.erledigtFoto ? `
@@ -27479,7 +27496,7 @@ function renderEmFotoGrid(){
   if(!fotos.length){ grid.style.display='none'; grid.innerHTML=''; return; }
   grid.style.display='grid';
   grid.innerHTML=fotos.map((f,i)=>`<div style="position:relative">
-    <img src="${f}" style="width:100%;aspect-ratio:1;object-fit:cover;border-radius:8px;border:1px solid var(--ink-10)">
+    <img src="${istFotoRef(f)?fotoThumbQuelle(f):f}" style="width:100%;aspect-ratio:1;object-fit:cover;border-radius:8px;border:1px solid var(--ink-10)">
     <button onclick="delEmFoto(${i})" style="position:absolute;top:2px;right:2px;width:22px;height:22px;border-radius:50%;border:none;background:#C0392B;color:#fff;font-size:13px;cursor:pointer;display:flex;align-items:center;justify-content:center">&times;</button>
   </div>`).join('');
 }
@@ -27532,7 +27549,25 @@ async function saveEditMangel(id, store) {
   m.kostenTeile = teile||null; m.stunden=stunden||null; m.stundensatz=satz||null;
   m.kostenArbeit= (stunden*satz)||null;
   m.kosten      = (teile+stunden*satz)||null;
-  m.fotos       = window._emFotos || m.fotos || [];
+  // §12-P23/23a: neu aufgenommene Fotos (dataURL) nach OneDrive auslagern
+  // (Store `maengel`/`aufgaben` via FOTO_FELDER). Vorhandene Referenzen und
+  // Alt-Strings bleiben unveraendert; bei Upload-Fehler bleibt die dataURL
+  // inline erhalten (Fallback wie v164 -> keine Regression, kein Datenverlust).
+  {
+    const rohFotos = window._emFotos || m.fotos || [];
+    const zielFoto = fotoZielFuer(m.objektId, m.weNr||'', store);
+    const ausgelagert = [];
+    for (const f of rohFotos) {
+      if (zielFoto && typeof f==='string' && f.startsWith('data:')) {
+        const ref = await fotoAuslagern(f, Object.assign({}, zielFoto,
+          { name:'Mangel_'+odSafeName(m.titel||'Foto')+'_'+uid()+'.jpg' }));
+        ausgelagert.push(ref || f);
+      } else {
+        ausgelagert.push(f);
+      }
+    }
+    m.fotos = ausgelagert;
+  }
   m.bearbeitetAm = now(); m.bearbeitetVon = CU?.name||'';
   await idbPut(store, m);
   window._emFotos=null;
