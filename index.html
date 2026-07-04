@@ -795,7 +795,7 @@ body.printing-active #printRoot{display:block!important}
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=31;
-const APP_VERSION = '2026-07-03-v161';
+const APP_VERSION = '2026-07-04-v164';
 /* v157 (02.07.2026): Drei Fixes/Features – Sync, Mail-Papierkorb, QR-ZIP-Export.
    1) SYNC-TOMBSTONES: mergeRecord holte geleerte Felder immer von der Gegen-
       seite zurück ("gefüllt schlägt leer") – Feld-Löschungen konnten dadurch
@@ -7197,7 +7197,7 @@ async function ventilDetail(ventilId){
     <i class="ti ti-${p.funktioniert?'circle-check':'alert-triangle'}" style="color:${p.funktioniert?'var(--green,#2E7D52)':'var(--red,#C0392B)'}"></i>
     <div style="flex:1"><div style="font-size:13px">${p.funktioniert?'Funktioniert':'Defekt – Mangel'}</div>
       <div style="font-size:11px;color:var(--ink-40)">${fmtDate(p.datum)} · ${esc(p.pruefer||'')}</div></div>
-    ${p.foto?`<img src="${p.foto}" style="width:34px;height:34px;border-radius:6px;object-fit:cover" onclick="openFoto('${p.foto}','Ventilprüfung')">`:''}
+    ${fotoImgTag(p.foto,'Ventilprüfung','width:34px;height:34px;border-radius:6px;object-fit:cover')}
   </div>`).join('');
   showModal(`
     <div class="m-title"><i class="ti ${t.icon}" style="color:${t.color}"></i> ${esc(v.strang)} · ${t.label}</div>
@@ -7282,6 +7282,17 @@ async function ventilPruefungSpeichern(ventilId, funktioniert){
   const obj=getObj(v.objektId);
   const t=ventilTyp(v.typ);
   let mangelId=null;
+  // §12-P23/23a Pilot: neues Ventilfoto (dataURL) nach OneDrive auslagern.
+  // Bei Fehler/kein Ziel bleibt die dataURL erhalten -> keine Regression.
+  let _vFoto = _ventilFoto;
+  if(_ventilFoto && typeof _ventilFoto==='string' && _ventilFoto.startsWith('data:')){
+    const _ziel = fotoZielFuer(v.objektId, '', 'ventilpruefung');
+    if(_ziel){
+      const _ref = await fotoAuslagern(_ventilFoto, Object.assign({}, _ziel,
+        { name:'Ventil_'+odSafeName(v.strang||'Strang')+'_'+today()+'.jpg' }));
+      if(_ref) _vFoto = _ref;
+    }
+  }
   if(!funktioniert){
     // Mangel anlegen
     const mangel={
@@ -7290,7 +7301,7 @@ async function ventilPruefungSpeichern(ventilId, funktioniert){
       beschreibung:`Bei der Prüfung wurde festgestellt, dass das Absperrventil „${v.strang||'Strang'}" (${t.label})${v.lage?' im Bereich '+v.lage:''} nicht einwandfrei funktioniert. Instandsetzung erforderlich.`,
       kategorie:'Sanitär/Heizung', schwere:'hoch', status:'offen',
       datum: today(), erstellt: nowIso(), ersteller: CU?.name||'',
-      fotos: _ventilFoto?[_ventilFoto]:[], _ventilId:ventilId,
+      fotos: _vFoto?[_vFoto]:[], _ventilId:ventilId,
     };
     await idbPut('maengel', mangel);
     mangelId=mangel.id;
@@ -7299,7 +7310,7 @@ async function ventilPruefungSpeichern(ventilId, funktioniert){
   const pruef={
     id:uid(), ventilId, objektId:v.objektId,
     funktioniert, datum: today(), zeit: nowIso(),
-    pruefer: CU?.name||'', foto: _ventilFoto||null, mangelId,
+    pruefer: CU?.name||'', foto: _vFoto||null, mangelId,
     erstellt: nowIso(), geaendert: nowIso(),
   };
   await idbPut('ventilpruefung', pruef);
@@ -24940,6 +24951,19 @@ const OD_BASE          = 'NadigPfau/Objekte';
 const OD_GRAPH         = 'https://graph.microsoft.com/v1.0';
 let   odBaumSyncLauft  = false;
 
+/* Kategorie-Unterordner je Knoten (23c). Reihenfolge = Anzeigereihenfolge.
+   WE-Ebene = mieterbezogene Ablage; Allgemein = Objektdokumente. */
+const OD_KATEGORIEN_WE   = ['Fotos','Protokolle','Mietvertrag','Briefe','Mietbescheinigungen','Rechnungen','Sonstiges'];
+const OD_KATEGORIEN_ALLG = ['Versicherungen','Energieausweis','Plaene','Sonstiges'];
+/* Icon je Kategorie fuer den UI-Browser. */
+const OD_KAT_ICON = {
+  'Fotos':'ti-photo','Protokolle':'ti-clipboard-text','Mietvertrag':'ti-file-text',
+  'Briefe':'ti-mail','Mietbescheinigungen':'ti-certificate','Rechnungen':'ti-receipt',
+  'Versicherungen':'ti-shield-check','Energieausweis':'ti-bolt','Plaene':'ti-map',
+  'Sonstiges':'ti-dots',
+};
+function odKategorienFuer(knoten){ return knoten==='Allgemein' ? OD_KATEGORIEN_ALLG : OD_KATEGORIEN_WE; }
+
 /* Standort-Definition fuer den Ordnerbaum.
    key = Ordnername auf OneDrive; objektIds = zugehoerige Objekte. */
 function odStandorte(){
@@ -25030,10 +25054,14 @@ async function odBaumAnlegen(){
   for(const st of stand){
     const base=`${OD_BASE}/${odSafeName(st.ordner)}`;
     await odEnsureFolder(base);
-    await odEnsureFolder(`${base}/Allgemein`);
+    const allg=`${base}/Allgemein`;
+    await odEnsureFolder(allg);
+    for(const k of OD_KATEGORIEN_ALLG){ await odEnsureFolder(`${allg}/${odSafeName(k)}`); }
     const wes=await odWohneinheiten(st.objektIds);
     for(const w of wes){
-      await odEnsureFolder(`${base}/WE ${odSafeName(w)}`);
+      const we=`${base}/WE ${odSafeName(w)}`;
+      await odEnsureFolder(we);
+      for(const k of OD_KATEGORIEN_WE){ await odEnsureFolder(`${we}/${odSafeName(k)}`); }
     }
   }
   return stand.length;
@@ -25088,9 +25116,17 @@ async function syncDateibaum(silent){
       const wes=await odWohneinheiten(st.objektIds);
       const knoten=['Allgemein', ...wes.map(w=>'WE '+odSafeName(w))];
       for(const kn of knoten){
-        const ordnerPfad=odKnotenPfad(st.ordner, kn);
+        const knotenPfad=odKnotenPfad(st.ordner, kn);
         const weNr = kn.startsWith('WE ') ? kn.slice(3) : '';
         const kategorie = kn==='Allgemein' ? 'allgemein' : 'wohneinheit';
+        // Blattordner: Knoten-Wurzel (Rueckwaertskompatibilitaet fuer Alt-Dateien)
+        // + je Kategorie-Unterordner (23c).
+        const _kats=odKategorienFuer(kn);
+        const _blaetter=[{pfad:knotenPfad,unterkat:''},
+          ..._kats.map(k=>({pfad:knotenPfad+'/'+odSafeName(k),unterkat:k}))];
+        for(const _bl of _blaetter){
+        const ordnerPfad=_bl.pfad;
+        const unterkategorie=_bl.unterkat;
 
         // (a) Remote -> App: neue/aktualisierte Dateien als Metadaten erfassen
         const remoteFiles=await odListFiles(ordnerPfad);
@@ -25107,7 +25143,7 @@ async function syncDateibaum(silent){
               ordner: ordnerPfad,
               gruppe: st.gruppe,
               standort: st.ordner,
-              weNr, kategorie,
+              weNr, kategorie, unterkategorie,
               groesse: f.size||0,
               eTag: f.eTag||'',
               odItemId: f.id||'',
@@ -25154,6 +25190,7 @@ async function syncDateibaum(silent){
           bekannt[zielPfad]=upd;
           hoch++;
         }
+        }
       }
     }
     if(!silent){
@@ -25170,30 +25207,38 @@ async function syncDateibaum(silent){
 }
 
 /* Download-Inhalt einer OneDrive-Datei (kurzlebiger Link, kein Cache). */
-async function odDateiOeffnen(recId){
+/* Liefert einen kurzlebigen Graph-Download-Link fuer einen od_dateien-Record
+   (oder null). Basis fuer Anzeige (fotoQuelle) und odDateiOeffnen. */
+async function odDownloadUrl(recId){
   try{
     const rec=await idbGet('od_dateien', recId);
-    if(!rec){ toast('Datei nicht gefunden'); return; }
+    if(!rec) return null;
     if(rec.odItemId){
       const meta=await odGraph(`/me/drive/items/${rec.odItemId}?$select=@microsoft.graph.downloadUrl,name`);
       const url=meta && meta['@microsoft.graph.downloadUrl'];
-      if(url){ window.open(url,'_blank'); return; }
+      if(url) return url;
     }
-    // Fallback ueber Pfad
     const meta=await odGraph(`/me/drive/root:/${encodeURI(rec.pfad)}:/?$select=@microsoft.graph.downloadUrl`);
-    const url=meta && meta['@microsoft.graph.downloadUrl'];
+    return (meta && meta['@microsoft.graph.downloadUrl']) || null;
+  }catch(e){ return null; }
+}
+async function odDateiOeffnen(recId){
+  try{
+    const url=await odDownloadUrl(recId);
     if(url) window.open(url,'_blank');
     else toast('Download-Link nicht verfuegbar');
-  }catch(e){ toast('Oeffnen fehlgeschlagen: '+e.message); }
+  }catch(e){ toast('Oeffnen fehlgeschlagen: '+(e&&e.message||e)); }
 }
 
 /* Datei aus der App in einen Ordnerbaum-Knoten hochladen.
    standortGruppe + knoten ('Allgemein' oder 'WE n'); file = File-Objekt. */
-async function odDateiHochladen(gruppe, knoten, file){
+async function odDateiHochladen(gruppe, knoten, kategorie, file){
   if(!file){ return; }
   const st=odStandorte().find(s=>s.gruppe===gruppe);
   if(!st){ toast('Standort unbekannt'); return; }
-  const ordnerPfad=odKnotenPfad(st.ordner, knoten);
+  const knotenPfad=odKnotenPfad(st.ordner, knoten);
+  const kat=(kategorie && kategorie!=='(wurzel)') ? odSafeName(kategorie) : '';
+  const ordnerPfad = kat ? knotenPfad+'/'+kat : knotenPfad;
   const b64=await new Promise((res,rej)=>{
     const fr=new FileReader();
     fr.onload=()=>res(String(fr.result).split(',')[1]||'');
@@ -25208,6 +25253,7 @@ async function odDateiHochladen(gruppe, knoten, file){
     gruppe: st.gruppe, standort: st.ordner,
     weNr: knoten.startsWith('WE ')?knoten.slice(3):'',
     kategorie: knoten==='Allgemein'?'allgemein':'wohneinheit',
+    unterkategorie: kat,
     groesse: file.size||0, mime: file.type||'application/octet-stream',
     eTag:'', odItemId:'', lastModified:new Date().toISOString(),
     quelle:'app', geloescht:false,
@@ -25216,14 +25262,15 @@ async function odDateiHochladen(gruppe, knoten, file){
   await idbPut('od_dateien', rec, {keepStamp:true});
   toast('Wird hochgeladen …');
   await syncDateibaum(false);
+  return rec;
 }
 
 /* ── Datei-Ordnerbaum: UI-Browser ──────────────────────────
    Modal mit Standort -> Knoten (Allgemein / WE n) -> Dateien.
    Upload per Datei-Input, Oeffnen per Download-Link. */
-let _odBrowserState = { gruppe:null, knoten:null };
+let _odBrowserState = { gruppe:null, knoten:null, kategorie:null };
 
-async function odBrowserOeffnen(gruppe, knoten){
+async function odBrowserOeffnen(gruppe, knoten, kategorie){
   if(!odTokens){ toast('Bitte zuerst mit OneDrive anmelden'); return; }
   const stand=odStandorte();
   // Ebene 1: Standortauswahl
@@ -25243,7 +25290,7 @@ async function odBrowserOeffnen(gruppe, knoten){
   }
   const st=stand.find(s=>s.gruppe===gruppe);
   if(!st){ toast('Standort unbekannt'); return; }
-  // Ebene 2: Knotenauswahl (Allgemein + WEs)
+  // Ebene 2: Knotenauswahl (Allgemein + WEs) -> fuehrt zu Ebene 3 (Kategorie)
   if(!knoten){
     const wes=await odWohneinheiten(st.objektIds);
     const knoten=['Allgemein', ...wes.map(w=>'WE '+odSafeName(w))];
@@ -25260,9 +25307,45 @@ async function odBrowserOeffnen(gruppe, knoten){
       </div>`);
     return;
   }
-  // Ebene 3: Dateiliste eines Knotens
-  _odBrowserState={ gruppe, knoten };
-  const ordnerPfad=odKnotenPfad(st.ordner, knoten);
+  // Ebene 3: Kategorieauswahl (23c) – Unterordner je Knoten
+  if(!kategorie){
+    const kats=odKategorienFuer(knoten);
+    const knotenPfad=odKnotenPfad(st.ordner, knoten);
+    // Zaehlung je Kategorie fuer Badge; Wurzel-Dateien separat erfassen.
+    const dateien=(await idbGetAll('od_dateien')).filter(r=>r && !r.geloescht &&
+      (r.ordner===knotenPfad || (r.ordner||'').startsWith(knotenPfad+'/')));
+    const zaehl={}; let wurzel=0;
+    for(const r of dateien){
+      if(r.ordner===knotenPfad){ wurzel++; continue; }
+      const uk=(r.ordner||'').slice(knotenPfad.length+1).split('/')[0];
+      zaehl[uk]=(zaehl[uk]||0)+1;
+    }
+    const items=kats.map(k=>{
+      const ic=OD_KAT_ICON[k]||'ti-folder';
+      const n=zaehl[odSafeName(k)]||zaehl[k]||0;
+      const badge=n?` <span style="color:var(--ink-40);font-size:11px">· ${n}</span>`:'';
+      return `<button class="btn btn-full" style="justify-content:flex-start;margin-bottom:6px"
+         onclick="odBrowserOeffnen('${gruppe}','${esc(knoten)}','${esc(k)}')">
+         <i class="ti ${ic}"></i> ${esc(k)}${badge}</button>`;
+    }).join('');
+    // Alt-Dateien direkt im Knoten (ohne Kategorie) nur anbieten, wenn vorhanden.
+    const wurzelBtn = wurzel ? `<button class="btn btn-full" style="justify-content:flex-start;margin-bottom:6px;opacity:.85"
+         onclick="odBrowserOeffnen('${gruppe}','${esc(knoten)}','(wurzel)')">
+         <i class="ti ti-folder"></i> Ohne Kategorie <span style="color:var(--ink-40);font-size:11px">· ${wurzel}</span></button>` : '';
+    showModal(`
+      <div class="m-title"><i class="ti ti-folder"></i> ${esc(st.ordner)} · ${esc(knoten)}</div>
+      <div style="margin:10px 0;max-height:50vh;overflow:auto">${items}${wurzelBtn}</div>
+      <div style="display:flex;gap:8px;justify-content:space-between;margin-top:8px">
+        <button class="btn btn-sm" onclick="odBrowserOeffnen('${gruppe}')"><i class="ti ti-arrow-left"></i> Zurück</button>
+        <button class="btn btn-sm" onclick="closeModal()">Schließen</button>
+      </div>`);
+    return;
+  }
+  // Ebene 4: Dateiliste einer Kategorie (bzw. Wurzel bei '(wurzel)')
+  _odBrowserState={ gruppe, knoten, kategorie };
+  const knotenPfad=odKnotenPfad(st.ordner, knoten);
+  const istWurzel = kategorie==='(wurzel)';
+  const ordnerPfad = istWurzel ? knotenPfad : knotenPfad+'/'+odSafeName(kategorie);
   const alle=(await idbGetAll('od_dateien')).filter(r=>r && r.ordner===ordnerPfad && !r.geloescht);
   alle.sort((a,b)=>String(a.name).localeCompare(String(b.name),'de'));
   const liste = alle.length ? alle.map(r=>{
@@ -25278,24 +25361,28 @@ async function odBrowserOeffnen(gruppe, knoten){
     </div>`;
   }).join('') : '<div style="padding:18px;text-align:center;color:var(--ink-40);font-size:13px">Noch keine Dateien. Über „Synchronisieren“ werden auf OneDrive abgelegte Dateien geladen.</div>';
 
+  const titelKat = istWurzel ? 'Ohne Kategorie' : esc(kategorie);
+  // Upload nur in echte Kategorien anbieten, nicht in die Wurzel (Alt-Ablage).
+  const uploadBtn = istWurzel ? '' :
+    `<button class="btn btn-primary btn-sm" onclick="document.getElementById('odUploadInput').click()"><i class="ti ti-upload"></i> Datei hochladen</button>`;
   showModal(`
-    <div class="m-title"><i class="ti ti-folder-open"></i> ${esc(st.ordner)} · ${esc(knoten)}</div>
+    <div class="m-title"><i class="ti ti-folder-open"></i> ${esc(knoten)} · ${titelKat}</div>
     <div style="max-height:46vh;overflow:auto;margin:8px 0;border:1px solid var(--line);border-radius:8px">${liste}</div>
     <input type="file" id="odUploadInput" style="display:none"
        onchange="odBrowserUpload(this)">
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
-      <button class="btn btn-primary btn-sm" onclick="document.getElementById('odUploadInput').click()"><i class="ti ti-upload"></i> Datei hochladen</button>
-      <button class="btn btn-copper btn-sm" onclick="syncDateibaum(false).then(()=>odBrowserOeffnen('${gruppe}','${esc(knoten)}'))"><i class="ti ti-refresh"></i> Synchronisieren</button>
-      <button class="btn btn-sm" onclick="odBrowserOeffnen('${gruppe}')"><i class="ti ti-arrow-left"></i> Zurück</button>
+      ${uploadBtn}
+      <button class="btn btn-copper btn-sm" onclick="syncDateibaum(false).then(()=>odBrowserOeffnen('${gruppe}','${esc(knoten)}','${esc(kategorie)}'))"><i class="ti ti-refresh"></i> Synchronisieren</button>
+      <button class="btn btn-sm" onclick="odBrowserOeffnen('${gruppe}','${esc(knoten)}')"><i class="ti ti-arrow-left"></i> Zurück</button>
     </div>`);
 }
 
 async function odBrowserUpload(input){
   const file=input.files && input.files[0];
   if(!file) return;
-  const {gruppe, knoten}=_odBrowserState;
-  await odDateiHochladen(gruppe, knoten, file);
-  odBrowserOeffnen(gruppe, knoten);
+  const {gruppe, knoten, kategorie}=_odBrowserState;
+  await odDateiHochladen(gruppe, knoten, kategorie, file);
+  odBrowserOeffnen(gruppe, knoten, kategorie);
 }
 
 
@@ -27099,6 +27186,12 @@ function filterChips(items, activeVal, onClick, style='') {
    FOTO-OVERLAY
 ═══════════════════════════════════════════════════════════ */
 async function openFoto(src, caption='') {
+  // OneDrive-Foto-Referenz (23a): src = od_dateien-recId -> Download-Link laden
+  if (caption === 'odref' && src) {
+    const url = await odDownloadUrl(src);
+    if (url) { src = url; caption = 'Foto'; }
+    else { toast('Foto konnte nicht geladen werden'); return; }
+  }
   // Dokument-ID? Dann Bild aus IDB laden
   if (caption === 'dok' && src && !src.startsWith('data:')) {
     const d = await idbGet('dokumente', src).catch(()=>null);
@@ -27624,6 +27717,126 @@ function compressFoto(file, maxPx=1200, quality=0.75) {
     reader.onerror = () => resolve(null);
     reader.readAsDataURL(file);
   });
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   §12-P23 / 23a – FOTO-AUSLAGERUNG NACH ONEDRIVE (FUNDAMENT, v163)
+   ---------------------------------------------------------------------
+   Rein additive dual-format-Bausteine. Sie ersetzen Base64-dataURLs durch
+   schlanke Referenz-Objekte {ref, odId, name, mime, thumb}, die auf den
+   Store `od_dateien` (OneDrive) zeigen. Anzeige- und Alt-Format laufen
+   parallel (Abwaertskompatibilitaet).
+   ⚠️ STATUS: noch NICHT verdrahtet – keine Schreibstelle ruft dies bereits
+   auf. Verdrahtung store-fuer-store ab v164 (siehe Konzept_23a §8), Backfill
+   der Bestands-Base64 danach. Siehe FOTO_FELDER unten fuer das Mapping.
+   ══════════════════════════════════════════════════════════════════════ */
+
+/* Zentrale Feld-Tabelle: welcher Store haelt Foto-Felder, mit Ziel-Kategorie
+   und Knoten-Regel ('we' = WE <weNr>, 'allg' = Allgemein, 'auto' = mieterId?we:allg).
+   Einzige Quelle fuer Verdrahtung + Backfill (vermeidet Drift). */
+/* pdfWebsite:true = Foto fliesst in PDF-Erzeugung und/oder oeffentliche Website
+   (Aushang/Leerstand). Solche Stores brauchen bei der Verdrahtung eine synchrone
+   dataURL zum Erzeugungszeitpunkt -> vor PDF/Website-Ausgabe rehydrieren (fotoQuelle)
+   bzw. fuer die Website zusaetzlich ueber Azure Blob veroeffentlichen. Erst spaeter
+   verdrahten. false = reine Bildschirm-Anzeige (unkritisch, zuerst). */
+const FOTO_FELDER = {
+  protokolle:     { felder:['fotos'],             kategorie:'Protokolle', knoten:'we',   pdfWebsite:true  },
+  maengel:        { felder:['fotos'],             kategorie:'Protokolle', knoten:'we',   pdfWebsite:false },
+  aufgaben:       { felder:['fotos'],             kategorie:'Protokolle', knoten:'we',   pdfWebsite:false },
+  objekt_stamm:   { felder:['fotos','grundriss'], kategorie:'Fotos',      knoten:'we',   pdfWebsite:true  },
+  dokumente:      { felder:['data'],              kategorie:'Sonstiges',  knoten:'auto', pdfWebsite:false },
+  reparaturen:    { felder:['rechnung'],          kategorie:'Rechnungen', knoten:'we',   pdfWebsite:false },
+  ventilpruefung: { felder:['foto'],              kategorie:'Sonstiges',  knoten:'allg', pdfWebsite:false },
+};
+
+/* Ist der Wert eine ausgelagerte Foto-Referenz (statt Alt-dataURL-String)? */
+function istFotoRef(x){ return !!(x && typeof x==='object' && x.ref===true && x.odId); }
+
+/* dataURL -> File (fuer den OneDrive-Upload via odDateiHochladen). */
+function dataUrlZuFile(dataUrl, name){
+  const [head, b64] = String(dataUrl).split(',');
+  const mime = ((head||'').match(/data:([^;]+)/)||[])[1] || 'image/jpeg';
+  const bin = atob(b64||'');
+  const arr = new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++){ arr[i]=bin.charCodeAt(i); }
+  return new File([arr], name || ('foto_'+Date.now()+'.jpg'), { type:mime });
+}
+
+/* Sehr kleines Inline-Thumbnail (wenige KB) fuer Offline-Vorschau in Listen. */
+function fotoThumb(dataUrl, px=96, q=0.5){
+  return new Promise(res=>{
+    const img=new Image();
+    img.onload=()=>{
+      let w=img.width, h=img.height;
+      if(w>=h){ if(w>px){ h=Math.round(h*px/w); w=px; } }
+      else    { if(h>px){ w=Math.round(w*px/h); h=px; } }
+      const c=document.createElement('canvas'); c.width=w; c.height=h;
+      try{ c.getContext('2d').drawImage(img,0,0,w,h); res(c.toDataURL('image/jpeg', q)); }
+      catch(_){ res(''); }
+    };
+    img.onerror=()=>res('');
+    img.src=dataUrl;
+  });
+}
+
+/* Lagert ein Foto (dataURL-String ODER File) nach OneDrive aus und liefert
+   die Referenz {ref,odId,name,mime,thumb} – oder null bei Fehler/fehlendem
+   Ziel. Bei null behaelt der Aufrufer die dataURL inline (kein Datenverlust).
+   ziel = { gruppe, knoten ('Allgemein'|'WE n'), kategorie, name? }. */
+async function fotoAuslagern(quelle, ziel){
+  try{
+    if(!ziel || !ziel.gruppe || !ziel.knoten) return null;
+    const name = ziel.name || ('foto_'+uid()+'.jpg');
+    const istData = (typeof quelle==='string' && quelle.startsWith('data:'));
+    const file = (quelle instanceof File) ? quelle : (istData ? dataUrlZuFile(quelle, name) : null);
+    if(!file) return null;
+    const thumb = istData ? await fotoThumb(quelle).catch(()=> '') : '';
+    const rec = await odDateiHochladen(ziel.gruppe, ziel.knoten, ziel.kategorie||'Sonstiges', file);
+    if(!rec || !rec.id) return null;
+    return { ref:true, odId:rec.id, name:rec.name, mime:rec.mime||file.type||'image/jpeg', thumb: thumb||undefined };
+  }catch(e){ console.warn('fotoAuslagern:', e); return null; }
+}
+
+/* Anzeige-Aufloesung: liefert eine anzeigbare URL fuer <img> im Vollbild.
+   Alt-String -> direkt; Referenz -> kurzlebiger Graph-Link (Fallback thumb). */
+async function fotoQuelle(x){
+  if(typeof x==='string') return x;
+  if(istFotoRef(x)) return (await odDownloadUrl(x.odId)) || x.thumb || '';
+  return '';
+}
+
+/* Synchron fuer Listen/Vorschau (ohne Netz): Alt-String -> direkt;
+   Referenz -> Inline-Thumbnail (leer, wenn keines vorhanden). */
+function fotoThumbQuelle(x){
+  if(typeof x==='string') return x;
+  if(istFotoRef(x)) return x.thumb || '';
+  return '';
+}
+
+/* Ziel fuer die Auslagerung aus objektId/weNr + FOTO_FELDER ableiten:
+   {gruppe, knoten ('Allgemein'|'WE n'), kategorie} – oder null (kein Standort). */
+function fotoZielFuer(objektId, weNr, storeName){
+  try{
+    const cfg = FOTO_FELDER[storeName] || {};
+    const st = odStandorte().find(s => s.objektIds.includes(objektId));
+    if(!st) return null;
+    const we = String(weNr||'').trim();
+    let knoten = 'Allgemein';
+    if(cfg.knoten==='we' && we) knoten = 'WE '+odSafeName(we);
+    else if(cfg.knoten==='auto') knoten = we ? 'WE '+odSafeName(we) : 'Allgemein';
+    return { gruppe:st.gruppe, knoten, kategorie:cfg.kategorie||'Sonstiges' };
+  }catch(e){ return null; }
+}
+
+/* dual-format <img>-Tag: Alt-dataURL ODER ausgelagerte Referenz. Vorschau nutzt
+   Thumbnail/dataURL (sync), Klick oeffnet Vollbild (Referenz -> openFoto('odref')). */
+function fotoImgTag(wert, caption='Foto', style=''){
+  if(!wert) return '';
+  const src = fotoThumbQuelle(wert);
+  const cap = String(caption||'Foto').replace(/'/g,'');
+  const onclick = istFotoRef(wert) ? `openFoto('${wert.odId}','odref')` : `openFoto('${wert}','${cap}')`;
+  const st = style || 'width:34px;height:34px;border-radius:6px;object-fit:cover';
+  return `<img src="${src}" style="${st}" onclick="${onclick}">`;
 }
 
 document.getElementById('photoIn').addEventListener('change', async function() {
