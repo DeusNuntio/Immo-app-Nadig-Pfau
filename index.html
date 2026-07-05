@@ -796,7 +796,7 @@ body.printing-active #printRoot{display:block!important}
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=31;
-const APP_VERSION = '2026-07-04-v172';
+const APP_VERSION = '2026-07-05-v175';
 /* v157 (02.07.2026): Drei Fixes/Features – Sync, Mail-Papierkorb, QR-ZIP-Export.
    1) SYNC-TOMBSTONES: mergeRecord holte geleerte Felder immer von der Gegen-
       seite zurück ("gefüllt schlägt leer") – Feld-Löschungen konnten dadurch
@@ -14440,7 +14440,7 @@ function renderWhFotoGalerie(){
   if(gr){
     h += `<div style="margin-bottom:8px"><div style="font-size:10px;color:var(--ink-40);text-transform:uppercase;letter-spacing:.4px;margin-bottom:4px">Grundriss</div>
       <div style="position:relative;display:inline-block">
-        <img src="${gr}" style="height:84px;border-radius:8px;border:1px solid var(--ink-10);object-fit:cover">
+        <img src="${fotoThumbQuelle(gr)}" style="height:84px;border-radius:8px;border:1px solid var(--ink-10);object-fit:cover">
         <button type="button" onclick="whGrundrissEntfernen()" style="position:absolute;top:-7px;right:-7px;width:22px;height:22px;border-radius:50%;border:none;background:var(--red,#C0392B);color:#fff;font-size:12px;cursor:pointer;line-height:1">×</button>
       </div></div>`;
   }
@@ -14449,7 +14449,7 @@ function renderWhFotoGalerie(){
       <div style="display:flex;flex-wrap:wrap;gap:8px">`;
     fotos.forEach((f,i)=>{
       h += `<div style="position:relative">
-        <img src="${f}" style="width:84px;height:84px;border-radius:8px;border:1px solid var(--ink-10);object-fit:cover">
+        <img src="${fotoThumbQuelle(f)}" style="width:84px;height:84px;border-radius:8px;border:1px solid var(--ink-10);object-fit:cover">
         <button type="button" onclick="whFotoEntfernen(${i})" style="position:absolute;top:-7px;right:-7px;width:22px;height:22px;border-radius:50%;border:none;background:var(--red,#C0392B);color:#fff;font-size:12px;cursor:pointer;line-height:1">×</button>
       </div>`;
     });
@@ -14505,9 +14505,26 @@ async function saveWohnungHeizNk(objektId, weNr){
   daten.diele   = !!document.getElementById('whDiele')?.checked;
   daten.kellerNr= document.getElementById('whKeller')?.value?.trim()||'';
   daten.lage    = document.getElementById('whLage')?.value?.trim()||'';
-  // Wohnungsfotos & Grundriss aus dem Modal-Arbeitsspeicher übernehmen
-  daten.fotos     = Array.isArray(window._whFotos) ? window._whFotos.slice() : [];
-  daten.grundriss = window._whGrundriss || '';
+  // Wohnungsfotos & Grundriss aus dem Modal-Arbeitsspeicher übernehmen.
+  // 23a (v174): NEUE dataURLs nach OneDrive auslagern (Kategorie "Fotos", WE-Knoten);
+  // vorhandene Referenzen/Alt-Strings unverändert. Defensiver Fallback wie v164:
+  // schlägt der Upload fehl oder fehlt das Ziel, bleibt die dataURL inline.
+  const _whZiel = fotoZielFuer(objektId, weNr, 'objekt_stamm');
+  const _whRoh  = Array.isArray(window._whFotos) ? window._whFotos.slice() : [];
+  const _whNeu  = [];
+  for(const f of _whRoh){
+    if(_whZiel && typeof f==='string' && f.startsWith('data:')){
+      const ref = await fotoAuslagern(f, {..._whZiel, name:'wohnungsfoto_we'+odSafeName(String(weNr||''))+'_'+uid()+'.jpg'});
+      _whNeu.push(ref || f);
+    } else _whNeu.push(f);
+  }
+  daten.fotos = _whNeu;
+  let _whGr = window._whGrundriss || '';
+  if(_whZiel && typeof _whGr==='string' && _whGr.startsWith('data:')){
+    const ref = await fotoAuslagern(_whGr, {..._whZiel, name:'grundriss_we'+odSafeName(String(weNr||''))+'_'+uid()+'.jpg'});
+    if(ref) _whGr = ref;
+  }
+  daten.grundriss = _whGr;
   await saveWohnungStamm(objektId, weNr, daten);
   window._whFotos = null; window._whGrundriss = null;
   closeModal();
@@ -20169,7 +20186,7 @@ async function modalAushangErstellen(objektId, weNr, vormieterId){
     fotoWahl = '<div style="display:flex;flex-wrap:wrap;gap:8px;margin:6px 0 4px">' + fotos.map((f,i)=>
       `<label style="position:relative;cursor:pointer">
         <input type="checkbox" class="ausFotoChk" data-i="${i}" ${i<5?'checked':''} style="position:absolute;top:5px;left:5px;width:18px;height:18px;z-index:2">
-        <img src="${f}" style="width:78px;height:78px;border-radius:8px;border:1px solid var(--ink-10);object-fit:cover">
+        <img src="${fotoThumbQuelle(f)}" style="width:78px;height:78px;border-radius:8px;border:1px solid var(--ink-10);object-fit:cover">
       </label>`).join('') + '</div>';
   } else {
     fotoWahl = '<div style="font-size:12px;color:var(--amber);margin:4px 0"><i class="ti ti-alert-triangle"></i> Keine Wohnungsfotos hinterlegt. Du kannst sie über „Wohnungsinfos“ ergänzen – der Aushang funktioniert auch ohne.</div>';
@@ -20271,10 +20288,17 @@ async function aushangErzeugen(objektId, weNr){
   const homepage = !!document.getElementById('ausHomepage')?.checked;
 
   // ausgewählte Fotos
-  const gewaehlt = [];
-  document.querySelectorAll('.ausFotoChk').forEach(chk=>{ if(chk.checked) gewaehlt.push(fotos[parseInt(chk.dataset.i)]); });
+  const gewaehltRoh = [];
+  document.querySelectorAll('.ausFotoChk').forEach(chk=>{ if(chk.checked) gewaehltRoh.push(fotos[parseInt(chk.dataset.i)]); });
   const grChk = document.getElementById('ausGrundriss');
-  const grundriss = (grChk && grChk.checked && stamm.grundriss) ? stamm.grundriss : '';
+  const grundrissRoh = (grChk && grChk.checked && stamm.grundriss) ? stamm.grundriss : '';
+  // 23a (v174): ausgelagerte Referenzen zu echten dataURLs rehydrieren – der
+  // Aushang-Druck bettet die Bilder synchron ins HTML ein und /api/leerstand
+  // erwartet Base64 (lädt selbst nach Azure Blob hoch). Alt-Strings unverändert;
+  // Fallback bei Netzfehler ist das Inline-Thumbnail (fotoDruckQuelle).
+  const gewaehlt = [];
+  for(const f of gewaehltRoh){ const d = await fotoDruckQuelle(f); if(d) gewaehlt.push(d); }
+  const grundriss = grundrissRoh ? (await fotoDruckQuelle(grundrissRoh)) : '';
 
   // abgeleitete Werte
   const kaltN = parseFloat(String(kalt).replace(',','.'));
@@ -20304,7 +20328,9 @@ async function aushangErzeugen(objektId, weNr){
       };
       const rec = (await idbGet('settings','homepage_leerstand').catch(()=>null)) || {id:'homepage_leerstand', value:{}};
       if(!rec.value || typeof rec.value!=='object') rec.value={};
-      rec.value[kennung] = { ...datensatz, vorgemerktAm: nowIso() };
+      // v174: Bild-Payload NICHT in die Sync-JSON duplizieren (23a-Ziel).
+      // Der Record dient nur der Schalter-Vorbelegung + Entfernen-Logik.
+      rec.value[kennung] = { ...datensatz, fotos: gewaehlt.length, grundriss: !!grundriss, vorgemerktAm: nowIso() };
       rec.geaendert = nowIso();
       await idbPut('settings', rec);
       clearTimeout(window._syncTimer);
@@ -21568,14 +21594,16 @@ async function restoreFotosForPD(){
   if (!fotos.length) return;
   let ergaenzt = false;
   for (const fo of fotos) {
-    if (!fo || !fo.slot || !fo.data) continue;
+    // 23a Stufe 2b: Wiederherstellungswert = dataURL ODER ausgelagerte Referenz
+    const foWert = fo ? (fo.data || (istFotoRef(fo.ref) ? fo.ref : null)) : null;
+    if (!fo || !fo.slot || !foWert) continue;
     if (fo.slot.startsWith('room:')) {
       const room = fo.slot.slice(5);
       if (PD.raeume && PD.raeume[room]) {
         PD.raeume[room].photoIds = PD.raeume[room].photoIds || [];
         if (!PD.raeume[room].photoIds.includes(fo.id)) {
           PD.raeume[room].photos = PD.raeume[room].photos || [];
-          PD.raeume[room].photos.push(fo.data);
+          PD.raeume[room].photos.push(foWert);
           PD.raeume[room].photoIds.push(fo.id);
           ergaenzt = true;
         }
@@ -21593,7 +21621,7 @@ async function restoreFotosForPD(){
           rd.condPhotos[cond] = rd.condPhotos[cond] || [];
           rd.condPhotoIds[cond] = rd.condPhotoIds[cond] || [];
           if (!rd.condPhotoIds[cond].includes(fo.id)) {
-            rd.condPhotos[cond].push(fo.data);
+            rd.condPhotos[cond].push(foWert);
             rd.condPhotoIds[cond].push(fo.id);
             ergaenzt = true;
           }
@@ -21602,7 +21630,7 @@ async function restoreFotosForPD(){
     } else if (fo.slot.startsWith('zaehler:')) {
       const idx = parseInt(fo.slot.slice(8), 10);
       if (PD.zaehler && PD.zaehler[idx] && PD.zaehler[idx].fotoId !== fo.id && !PD.zaehler[idx].foto) {
-        PD.zaehler[idx].foto = fo.data;
+        PD.zaehler[idx].foto = foWert;
         PD.zaehler[idx].fotoId = fo.id;
         ergaenzt = true;
       }
@@ -21958,7 +21986,7 @@ function getProtStep(step){
           <div class="f"><label>Stand (${z.einheit})</label><input type="number" value="${z.stand}" onchange="PD.zaehler[${i}].stand=this.value"></div>
         </div>
         ${z.foto ? `<div style="position:relative;width:80px;height:60px;border-radius:6px;overflow:hidden;border:1px solid var(--ink-10);margin-top:6px">
-          <img src="${z.foto}" style="width:100%;height:100%;object-fit:cover">
+          <img src="${fotoThumbQuelle(z.foto)}" style="width:100%;height:100%;object-fit:cover">
           <button class="ph-del" onclick="delZaehlerFoto(${i})">✕</button>
         </div>` : `<button class="btn btn-sm" style="margin-top:6px" onclick="openZaehlerCam(${i})">
           <i class="ti ti-camera"></i> Foto
@@ -22088,7 +22116,7 @@ function renderProtRaeume(){
       ${showNote?(()=>{
         const cps=(rd.condPhotos&&rd.condPhotos[c])||[];
         return `<div style="margin-top:5px">
-          ${cps.length?`<div class="ph-grid" style="margin-bottom:5px">${cps.map((p,pi)=>`<div class="ph-thumb"><img src="${p}"><button class="ph-del" onclick="delCondPhoto('${rn}','${c.replace(/'/g,"\\'")}',${pi})">✕</button></div>`).join('')}</div>`:''}
+          ${cps.length?`<div class="ph-grid" style="margin-bottom:5px">${cps.map((p,pi)=>`<div class="ph-thumb"><img src="${fotoThumbQuelle(p)}"><button class="ph-del" onclick="delCondPhoto('${rn}','${c.replace(/'/g,"\\'")}',${pi})">✕</button></div>`).join('')}</div>`:''}
           <button class="btn btn-sm" onclick="openCondCam('${rn}','${c.replace(/'/g,"\\'")}')"><i class="ti ti-camera"></i> Foto zu „${c}"</button>
         </div>`;
       })():''}
@@ -22098,7 +22126,7 @@ function renderProtRaeume(){
 
   const photos=rd.photos||[];
   const photoH=photos.length?`<div class="ph-grid">
-    ${photos.map((p,i)=>`<div class="ph-thumb"><img src="${p}">
+    ${photos.map((p,i)=>`<div class="ph-thumb"><img src="${fotoThumbQuelle(p)}">
       <button class="ph-del" onclick="delRoomPhoto('${rn}',${i})">✕</button>
     </div>`).join('')}
   </div>`:'';
@@ -22402,13 +22430,17 @@ async function finishProt(){
         m.fotos = m.fotos||[];
         // 1) Gezielt dem Bauteil zugeordnete Fotos übernehmen (Daten-URLs liegen direkt in PD)
         const cps = rd?.condPhotos?.[cond];
+        // 23a Stufe 2b: Werte koennen Referenz-Objekte sein -> Dedup via odId statt includes
+        const _enthaelt=(arr,v)=>arr.some(x=> x===v || (istFotoRef(x)&&istFotoRef(v)&&x.odId===v.odId));
         if(Array.isArray(cps)){
-          for(const ph of cps){ if(ph && !m.fotos.includes(ph)) m.fotos.push(ph); }
+          for(const ph of cps){ if(ph && !_enthaelt(m.fotos,ph)) m.fotos.push(ph); }
         }
         // 2) Falls für dieses Bauteil kein eigenes Foto da ist, Raum-Fotos als Fallback
         if(!m.fotos.length && rd?.photoIds?.length){
           for(const fid of rd.photoIds){
-            try{ const fo=await idbGet('fotos', fid); if(fo?.data && !m.fotos.includes(fo.data)) m.fotos.push(fo.data); }catch(e){}
+            try{ const fo=await idbGet('fotos', fid);
+              const val = fo ? (fo.data || (istFotoRef(fo.ref)?fo.ref:null)) : null;
+              if(val && !_enthaelt(m.fotos,val)) m.fotos.push(val); }catch(e){}
           }
         }
       }
@@ -22476,14 +22508,14 @@ async function viewProtokoll(id){
       const cps=rd.condPhotos?.[c];
       if(Array.isArray(cps)&&cps.length){
         rows+=`<div style="display:flex;flex-wrap:wrap;gap:5px;margin:3px 0 6px">`;
-        cps.forEach((ph,pi)=>{ rows+=`<img src="${ph}" onclick="openFoto('${ph}','${esc(rn)} – ${esc(c)} ${pi+1}')" style="width:56px;height:56px;object-fit:cover;border-radius:6px;cursor:pointer;border:1px solid var(--ink-10)">`; });
+        cps.forEach((ph,pi)=>{ rows+=fotoImgTag(ph, (rn+' – '+c+' '+(pi+1)).replace(/"/g,''), 'width:56px;height:56px;object-fit:cover;border-radius:6px;cursor:pointer;border:1px solid var(--ink-10)'); });
         rows+=`</div>`;
       }
     }
     if(!any) rows+=`<div style="font-size:12px;color:var(--ink-40)">Einwandfrei</div>`;
     if(rd.photos?.length){
       rows+=`<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px">`;
-      rd.photos.forEach((ph,i)=>{ rows+=`<img src="${ph}" onclick="openFoto('${ph}','${esc(rn)} – Foto ${i+1}')" style="width:64px;height:64px;object-fit:cover;border-radius:6px;cursor:pointer;border:1px solid var(--ink-10)">`; });
+      rd.photos.forEach((ph,i)=>{ rows+=fotoImgTag(ph, (rn+' – Foto '+(i+1)).replace(/"/g,''), 'width:64px;height:64px;object-fit:cover;border-radius:6px;cursor:pointer;border:1px solid var(--ink-10)'); });
       rows+=`</div>`;
     }
     return rows;
@@ -22497,7 +22529,7 @@ async function viewProtokoll(id){
     zaehlerH+=`<div style="display:flex;gap:8px;font-size:12px;padding:3px 0">
       <span style="flex:1">${esc(z.typ)} (${esc(z.nr||'–')})</span>
       <span style="font-weight:600">${esc(z.stand)} ${esc(z.einheit||'')}</span>
-      ${z.foto?`<img src="${z.foto}" onclick="openFoto('${z.foto}','${esc(z.typ)}')" style="width:40px;height:30px;object-fit:cover;border-radius:4px;cursor:pointer">`:''}
+      ${z.foto?fotoImgTag(z.foto, String(z.typ||'Zähler').replace(/"/g,''), 'width:40px;height:30px;object-fit:cover;border-radius:4px;cursor:pointer'):''}
     </div>`;
   });
 
@@ -25037,7 +25069,7 @@ function odStandorte(){
   }
   // Label fuer den Ordnernamen (knapp, dateisystemtauglich)
   const LABEL={
-    krefeld:'KR Krefeld', duesseldorf:'RT Duesseldorf',
+    krefeld:'KR Krefeld', duesseldorf:'Düsseldorf',
     mg:'MG Moenchengladbach', monheim:'Monheim',
   };
   const out=[];
@@ -25123,16 +25155,13 @@ async function odBaumAnlegen(){
   for(const st of stand){
     const base=`${OD_BASE}/${odSafeName(st.ordner)}`;
     await odEnsureFolder(base);
-    for(const oid of st.objektIds){
-      const geb=odGebaeudeName(oid);
-      if(!geb) continue;
-      const gBase=`${base}/${geb}`;
+    for(const g of await odGebaeudeListe(st, _mAlle)){
+      const gBase=`${base}/${g.geb}`;
       await odEnsureFolder(gBase);
       const allg=`${gBase}/Allgemein`;
       await odEnsureFolder(allg);
       for(const k of OD_KATEGORIEN_ALLG){ await odEnsureFolder(`${allg}/${odSafeName(k)}`); }
-      const wes=await alleWeVonObjekt(oid, _mAlle);
-      for(const w of wes){
+      for(const w of g.wes){
         const we=`${gBase}/WE ${odSafeName(w)}`;
         await odEnsureFolder(we);
         for(const k of OD_KATEGORIEN_WE){ await odEnsureFolder(`${we}/${odSafeName(k)}`); }
@@ -25163,10 +25192,33 @@ function odKnotenPfad(standortOrdner, knoten, gebaeude){
   const g = gebaeude ? '/'+odSafeName(gebaeude) : '';
   return `${OD_BASE}/${odSafeName(standortOrdner)}${g}/${knoten}`;
 }
-/* Gebäudename (Ordnerebene) eines Objekts – v172, Ordner pro Gebäude. */
+/* Gebäudename (Ordnerebene) eines Objekts – v172, Ordner pro Gebäude.
+   v173: Alias-Tabelle für Gebäude, die sich einen OneDrive-Ordner teilen
+   (durchgängige WE-Nummerierung über beide Hausnummern, Nutzerwunsch 05.07.). */
+const OD_GEBAEUDE_ALIAS = {
+  mind23:  'Mindener Straße 23 und 25',
+  mind25:  'Mindener Straße 23 und 25',
+  ruhrt41: 'Ruhrtalstraße',
+};
 function odGebaeudeName(objektId){
+  if(OD_GEBAEUDE_ALIAS[objektId]) return odSafeName(OD_GEBAEUDE_ALIAS[objektId]);
   const o = getObj(objektId);
   return o ? odSafeName(o.name) : '';
+}
+/* v173: Gebäude eines Standorts mit vereinten WEs (Alias = mehrere Objekte je Ordner). */
+async function odGebaeudeListe(st, mieterAlle){
+  const map={};
+  for(const oid of st.objektIds){
+    const geb=odGebaeudeName(oid);
+    if(!geb) continue;
+    if(!map[geb]) map[geb]={geb, oids:[], wes:new Set()};
+    map[geb].oids.push(oid);
+    for(const w of await alleWeVonObjekt(oid, mieterAlle)) map[geb].wes.add(w);
+  }
+  return Object.values(map).map(g=>({ geb:g.geb, oids:g.oids,
+    wes:[...g.wes].sort((a,b)=>{ const na=Number(a), nb=Number(b);
+      return (!isNaN(na)&&!isNaN(nb)) ? na-nb : String(a).localeCompare(String(b),'de'); })
+  }));
 }
 
 /* ── Bidirektionaler Datei-Sync ─────────────────────────────
@@ -25188,21 +25240,22 @@ async function syncDateibaum(silent){
     const stand=odStandorte();
 
     // bereits bekannte Metadaten (pfad -> record)
-    const bekannt={};
+    // pfad -> Record; zusätzlich odItemId -> Record (v173: heilt Records nach
+    // manueller Umbenennung/Verschiebung auf OneDrive, statt sie zu duplizieren).
+    const bekannt={}, bekanntById={};
     for(const rec of await idbGetAll('od_dateien')){
-      if(rec && rec.pfad) bekannt[rec.pfad]=rec;
+      if(!rec) continue;
+      if(rec.pfad) bekannt[rec.pfad]=rec;
+      if(rec.odItemId) bekanntById[rec.odItemId]=rec;
     }
 
     const _mAlle=await idbGetAll('mieter').catch(()=>[]);
     for(const st of stand){
       // v172: Zweige je Gebäude (neu) + bisherige Standort-Ebene (Legacy, Alt-Dateien).
       const zweige=[];
-      for(const oid of st.objektIds){
-        const geb=odGebaeudeName(oid);
-        if(!geb) continue;
-        const gw=await alleWeVonObjekt(oid, _mAlle);
-        for(const kn of ['Allgemein', ...gw.map(w=>'WE '+odSafeName(w))]){
-          zweige.push({kn, gebaeude:geb, pfad:odKnotenPfad(st.ordner, kn, geb)});
+      for(const g of await odGebaeudeListe(st, _mAlle)){
+        for(const kn of ['Allgemein', ...g.wes.map(w=>'WE '+odSafeName(w))]){
+          zweige.push({kn, gebaeude:g.geb, pfad:odKnotenPfad(st.ordner, kn, g.geb)});
         }
       }
       const wesAlt=await odWohneinheiten(st.objektIds);
@@ -25229,7 +25282,7 @@ async function syncDateibaum(silent){
         for(const f of remoteFiles){
           const pfad=ordnerPfad+'/'+f.name;
           remoteByPfad[pfad]=f;
-          const vorher=bekannt[pfad];
+          const vorher=bekannt[pfad] || (f.id ? bekanntById[f.id] : null);
           if(!vorher || vorher.eTag!==f.eTag){
             const rec={
               id: vorher?.id || ('od_'+uid()),
@@ -25449,12 +25502,12 @@ async function odBrowserOeffnen(gruppe, knoten, kategorie, gebaeude){
     return;
   }
   const istAlt = gebaeude==='(alt)';
-  const gebOid = istAlt ? null : st.objektIds.find(oid=>odGebaeudeName(oid)===gebaeude);
   // Ebene 3: Knotenauswahl (Allgemein + WEs des Gebäudes) -> fuehrt zur Kategorie
   if(!knoten){
+    // v173: WEs über ALLE Objekte des (ggf. zusammengelegten) Gebäudes vereinen.
     const wes = istAlt
       ? await odWohneinheiten(st.objektIds)
-      : await alleWeVonObjekt(gebOid, await idbGetAll('mieter').catch(()=>[]));
+      : (((await odGebaeudeListe(st, await idbGetAll('mieter').catch(()=>[]))).find(g=>g.geb===gebaeude)||{}).wes || []);
     const knoten=['Allgemein', ...wes.map(w=>'WE '+odSafeName(w))];
     const items=knoten.map(kn=>
       `<button class="btn btn-full" style="justify-content:flex-start;margin-bottom:6px"
@@ -27961,6 +28014,17 @@ function fotoImgTag(wert, caption='Foto', style=''){
    (rec.ref falls ausgelagert, sonst rec.data). Ab Stufe 2 (inline entfaellt)
    greift automatisch der Store-Zweig – der Druck-/Anzeigecode bleibt gleich.
    ══════════════════════════════════════════════════════════════════════ */
+/* 23a Stufe 2b (v175): Protokollfoto beim Erfassen nach OneDrive auslagern.
+   Liefert die Referenz {ref,odId,...} oder null (kein PD/Ziel/OneDrive/Fehler);
+   bei null verfaehrt der Aufrufer exakt wie bisher (dataURL doppelt inline). */
+async function protoFotoAuslagern(data, slotName){
+  try{
+    if(!PD || !PD.objektId) return null;
+    const ziel = fotoZielFuer(PD.objektId, PD.weNr, 'protokolle');
+    if(!ziel) return null;
+    return await fotoAuslagern(data, {...ziel, name:'protokoll_'+slotName+'_'+uid()+'.jpg'});
+  }catch(e){ console.warn('protoFotoAuslagern:', e); return null; }
+}
 async function protoFotoWerte(inlineArr, idArr){
   if (Array.isArray(inlineArr) && inlineArr.length) return inlineArr.slice();
   const out = [];
@@ -28058,15 +28122,21 @@ async function processPhoto(data) {
       const {room,cond}=pPhotoCond;
       if (PD && PD.raeume && PD.raeume[room]) {
         const fotoId = uid();
+        // 23a Stufe 2b: erst OneDrive, bei Erfolg Referenz statt Base64 (JSON-Schrumpf);
+        // bei null exakt wie bisher (dataURL doppelt) – kein Datenverlust.
+        const odRef = await protoFotoAuslagern(data, 'bauteil');
+        const wert = odRef || data;
         try {
-          await idbPut('fotos', { id: fotoId, protId: PD.id, slot: 'cond:'+room+'::'+cond, data, erstellt: now() });
+          await idbPut('fotos', odRef
+            ? { id: fotoId, protId: PD.id, slot: 'cond:'+room+'::'+cond, ref: odRef, erstellt: now() }
+            : { id: fotoId, protId: PD.id, slot: 'cond:'+room+'::'+cond, data, erstellt: now() });
         } catch(e){ console.warn('Bauteilfoto-Sicherung:', e); toast('Foto konnte nicht gesichert werden – bitte erneut'); return; }
         const rd=PD.raeume[room];
         rd.condPhotos = rd.condPhotos || {};
         rd.condPhotoIds = rd.condPhotoIds || {};
         rd.condPhotos[cond] = rd.condPhotos[cond] || [];
         rd.condPhotoIds[cond] = rd.condPhotoIds[cond] || [];
-        rd.condPhotos[cond].push(data);
+        rd.condPhotos[cond].push(wert);
         rd.condPhotoIds[cond].push(fotoId);
         if(!PD._adminEditOriginal) PD.status='draft';
         try { await idbPut('protokolle', PD); } catch(e){ console.warn('Draft nach Bauteilfoto:', e); }
@@ -28078,10 +28148,14 @@ async function processPhoto(data) {
     } else if (pPhotoRoom) {
       if (PD && PD.raeume && PD.raeume[pPhotoRoom]) {
         const fotoId = uid();
+        const odRef = await protoFotoAuslagern(data, 'raum');   // 23a Stufe 2b
+        const wert = odRef || data;
         try {
-          await idbPut('fotos', { id: fotoId, protId: PD.id, slot: 'room:'+pPhotoRoom, data, erstellt: now() });
+          await idbPut('fotos', odRef
+            ? { id: fotoId, protId: PD.id, slot: 'room:'+pPhotoRoom, ref: odRef, erstellt: now() }
+            : { id: fotoId, protId: PD.id, slot: 'room:'+pPhotoRoom, data, erstellt: now() });
         } catch(e) { console.warn('Einzelfoto-Sicherung:', e); toast('Foto konnte nicht gesichert werden – bitte erneut'); return; }
-        PD.raeume[pPhotoRoom].photos.push(data);
+        PD.raeume[pPhotoRoom].photos.push(wert);
         PD.raeume[pPhotoRoom].photoIds = PD.raeume[pPhotoRoom].photoIds || [];
         PD.raeume[pPhotoRoom].photoIds.push(fotoId);
         if(!PD._adminEditOriginal) PD.status = 'draft';
@@ -28092,10 +28166,14 @@ async function processPhoto(data) {
       if (PD && PD.zaehler && PD.zaehler[window._zaehlerIdx] !== undefined) {
         const idx = window._zaehlerIdx;
         const fotoId = uid();
+        const odRef = await protoFotoAuslagern(data, 'zaehler');   // 23a Stufe 2b
+        const wert = odRef || data;
         try {
-          await idbPut('fotos', { id: fotoId, protId: PD.id, slot: 'zaehler:'+idx, data, erstellt: now() });
+          await idbPut('fotos', odRef
+            ? { id: fotoId, protId: PD.id, slot: 'zaehler:'+idx, ref: odRef, erstellt: now() }
+            : { id: fotoId, protId: PD.id, slot: 'zaehler:'+idx, data, erstellt: now() });
         } catch(e) { console.warn('Einzelfoto-Sicherung:', e); toast('Foto konnte nicht gesichert werden – bitte erneut'); return; }
-        PD.zaehler[idx].foto = data;
+        PD.zaehler[idx].foto = wert;
         PD.zaehler[idx].fotoId = fotoId;
         if(!PD._adminEditOriginal) PD.status = 'draft';
         try { await idbPut('protokolle', PD); } catch(e){ console.warn('Draft nach Zählerfoto:', e); }
