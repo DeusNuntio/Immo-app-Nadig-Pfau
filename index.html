@@ -796,7 +796,7 @@ body.printing-active #printRoot{display:block!important}
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=31;
-const APP_VERSION = '2026-07-05-v175';
+const APP_VERSION = '2026-07-05-v177';
 /* v157 (02.07.2026): Drei Fixes/Features – Sync, Mail-Papierkorb, QR-ZIP-Export.
    1) SYNC-TOMBSTONES: mergeRecord holte geleerte Felder immer von der Gegen-
       seite zurück ("gefüllt schlägt leer") – Feld-Löschungen konnten dadurch
@@ -1716,6 +1716,19 @@ async function renderDash() {
         <div style="flex:1"><div style="font-size:13px;font-weight:600;color:var(--amber)">Datensicherung empfohlen</div>
         <div style="font-size:12px;color:var(--amber)">${syncInfo} Daten werden nur lokal gespeichert.</div></div>
         <button class="btn btn-sm" onclick="syncToOneDrive()"><i class="ti ti-cloud-upload"></i></button>
+      </div>`;
+    }
+  }
+
+  // v176: DSGVO-Erinnerung – Ausweiskopien nach Zweckerfüllung löschen (§12-P24, Stufe 1)
+  if(istVerwalter()){
+    const _ausweisFaellig = await ausweisLoeschKandidaten();
+    if(_ausweisFaellig.length){
+      html += `<div style="background:var(--amber-l);border-radius:10px;padding:10px 14px;margin-bottom:12px;display:flex;align-items:center;gap:10px;cursor:pointer" onclick="modalAusweisLoeschen()">
+        <i class="ti ti-id" style="color:var(--amber);font-size:18px;flex-shrink:0"></i>
+        <div style="flex:1"><div style="font-size:13px;font-weight:600;color:var(--amber)">${_ausweisFaellig.length} Ausweiskopie${_ausweisFaellig.length>1?'n':''} zur Löschung fällig</div>
+        <div style="font-size:12px;color:var(--amber)">DSGVO: nach Zweckerfüllung löschen (Art. 17). Tippen zum Prüfen.</div></div>
+        <i class="ti ti-chevron-right" style="color:var(--amber)"></i>
       </div>`;
     }
   }
@@ -11797,6 +11810,149 @@ function modalUploadDok(objektId, mieterId) {
   if(dokTypEl){ dokTypEl.addEventListener('change', dokTypHinweis); dokTypHinweis(); }
 }
 
+/* ═══════════════════════════════════════════════════════════
+   v176 – AUSWEIS-LÖSCHWORKFLOW (Stufe 1, §12-P24)
+   Ausweiskopien (typ 'ausweis') sind nach Zweckerfüllung zu löschen
+   (Art. 17 Abs. 1 lit. a DSGVO; restriktive Kopier-Praxis § 20 PAuswG).
+   Zweck (Identitätsprüfung vor Vertragsschluss) gilt als erfüllt, sobald
+   ein Mietvertrag beim Mieter archiviert ist – oder spätestens nach
+   AUSWEIS_ERINNERUNG_TAGE. SEPA-Mandate ('lastschrift') sind BEWUSST
+   ausgenommen: Aufbewahrungspflicht während der Mandatslaufzeit.
+   Stufe 1 = Erinnerung + manuelles Löschen (kein Auto-Löschen).
+═══════════════════════════════════════════════════════════ */
+const AUSWEIS_ERINNERUNG_TAGE = 60;
+
+// 'erstellt' liegt historisch teils als de-DE-Locale-String vor ("05.07.2026, 16:45:12"),
+// teils als ISO. Beide Formate tolerant zu einem Zeitstempel (ms) parsen; null bei Fehlschlag.
+function parseErstelltMs(v){
+  if(!v) return null;
+  // de-DE ZUERST prüfen: Date.parse würde "5.3.2026" teils US-artig (Monat/Tag
+  // vertauscht) interpretieren – deshalb hat das explizite Muster Vorrang.
+  const m = String(v).match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})/);
+  if(m) return new Date(+m[3], +m[2]-1, +m[1]).getTime();
+  const t = Date.parse(v);
+  return isNaN(t) ? null : t;
+}
+
+// Liefert [{dok, grund}] aller Ausweiskopien, die zur Löschung anstehen.
+async function ausweisLoeschKandidaten(){
+  let doks = [];
+  try { doks = await idbGetAll('dokumente'); } catch(e){ return []; }
+  const ausweise = doks.filter(d => d && d.typ === 'ausweis');
+  if(!ausweise.length) return [];
+  // Mieter mit archiviertem Mietvertrag -> Identitätsprüfungs-Zweck erfüllt
+  const mitVertrag = new Set(doks.filter(d => d && d.typ === 'vertrag' && d.mieterId).map(d => d.mieterId));
+  const jetzt = Date.now(), frist = AUSWEIS_ERINNERUNG_TAGE * 86400000;
+  const liste = [];
+  for(const d of ausweise){
+    if(d.mieterId && mitVertrag.has(d.mieterId)){
+      liste.push({ dok: d, grund: 'Mietvertrag liegt vor – Zweck der Identitätsprüfung erfüllt' });
+      continue;
+    }
+    const ms = parseErstelltMs(d.erstellt);
+    if(ms !== null && (jetzt - ms) > frist){
+      const tage = Math.floor((jetzt - ms) / 86400000);
+      liste.push({ dok: d, grund: 'Älter als ' + AUSWEIS_ERINNERUNG_TAGE + ' Tage (' + tage + ' Tage)' });
+    }
+  }
+  return liste;
+}
+
+async function modalAusweisLoeschen(){
+  const kand = await ausweisLoeschKandidaten();
+  if(!kand.length){ closeModal(); toast('Keine Ausweiskopien zur Löschung fällig'); refreshCurrentPage(); return; }
+  const mieterAlle = await idbGetAll('mieter').catch(()=>[]);
+  const mName = id => { const m = mieterAlle.find(x=>x.id===id); return m ? (m.mieter||'') : ''; };
+  let h = `<div class="m-title"><i class="ti ti-id"></i> Ausweiskopien löschen (${kand.length})</div>
+    <div style="font-size:12px;color:var(--ink-40);margin-bottom:10px;line-height:1.5">
+      Ausweiskopien sind nach Zweckerfüllung zu löschen (Art. 17 DSGVO). Die Löschung wirkt
+      geräteübergreifend (Sync-Tombstone) und kann nicht rückgängig gemacht werden.</div>`;
+  for(const k of kand){
+    const d = k.dok;
+    h += `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--ink-10)">
+      <div style="flex:1;min-width:0">
+        <div style="font-size:13px;font-weight:600">${esc(d.name||'Ausweisdokument')}</div>
+        <div style="font-size:11px;color:var(--ink-40)">${esc(mName(d.mieterId))}${d.mieterId?' · ':''}${esc(objNameOderAllgemein(d.objektId))} · ${esc(d.erstellt||'')}</div>
+        <div style="font-size:11px;color:var(--amber)">${esc(k.grund)}</div>
+      </div>
+      <button class="btn btn-sm" style="color:var(--red)" onclick="ausweisLoeschen('${d.id}')"><i class="ti ti-trash"></i></button>
+    </div>`;
+  }
+  h += `<div style="display:flex;gap:8px;margin-top:14px">
+    <button class="btn" style="flex:1" onclick="closeModal()">Später</button>
+    <button class="btn btn-copper" style="flex:1" onclick="ausweisAlleLoeschen()"><i class="ti ti-trash"></i> Alle löschen (${kand.length})</button>
+  </div>`;
+  showModal(h);
+}
+
+async function ausweisLoeschen(id){
+  if(!confirm('Diese Ausweiskopie unwiderruflich löschen?')) return;
+  await deleteMitTombstone('dokumente', id);
+  clearTimeout(window._syncTimer);
+  window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
+  toast('Ausweiskopie gelöscht ✓');
+  await modalAusweisLoeschen();   // Liste neu aufbauen (schließt bei 0 selbst)
+}
+
+async function ausweisAlleLoeschen(){
+  const kand = await ausweisLoeschKandidaten();
+  if(!kand.length){ closeModal(); return; }
+  if(!confirm(kand.length + ' Ausweiskopie(n) unwiderruflich löschen?')) return;
+  for(const k of kand){ await deleteMitTombstone('dokumente', k.dok.id); }
+  clearTimeout(window._syncTimer);
+  window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
+  toast(kand.length + ' Ausweiskopie(n) gelöscht ✓');
+  closeModal();
+  refreshCurrentPage();
+}
+
+/* ═══════════════════════════════════════════════════════════
+   v177 – 23a-Verdrahtung `dokumente.data` (Datei-Uploads)
+   Nur hochgeladene DATEIEN werden ausgelagert (saveDok, Grundriss-,
+   Wohnungsbild-Upload) – die eigentlichen Größentreiber (bis 10 MB).
+   Generierte HTML-Archivdokumente (archiviereMieterDokument/-Aushang)
+   bleiben BEWUSST inline: klein (Text) und Basis für den späteren
+   Mieterportal-Push. Typen 'ausweis'/'lastschrift' bleiben DAUERHAFT
+   inline (Architektur-Entscheidung §12: besonders sensibel, kurzlebig,
+   v176-Löschworkflow). Fallback wie v164: Upload-Fehler ⇒ data inline.
+═══════════════════════════════════════════════════════════ */
+const DOK_INLINE_TYPEN = ['ausweis','lastschrift'];
+// Typ -> OneDrive-Kategorie (nur auf WE-Knoten; Allgemein bleibt 'Sonstiges').
+const DOK_OD_KATEGORIE = { vertrag:'Mietvertrag', brief:'Briefe', foto:'Fotos',
+  wohnungsbild:'Fotos', protokoll:'Protokolle', abrechnung:'Rechnungen', nka:'Rechnungen' };
+
+// Lagert ein Dokument nach OneDrive aus. dok braucht typ/objektId/name/mimeType,
+// dataUrl ist die frische FileReader-dataURL. Liefert Referenz oder null.
+async function dokAuslagernRef(dok, dataUrl, weNr){
+  try{
+    if(!dok || DOK_INLINE_TYPEN.includes(dok.typ)) return null;
+    let we = weNr || dok.weNr || '';
+    if(!we && dok.mieterId){
+      const m = await idbGet('mieter', dok.mieterId).catch(()=>null);
+      we = m?.weNr || '';
+    }
+    const ziel = fotoZielFuer(dok.objektId, we, 'dokumente');
+    if(!ziel) return null;
+    if(ziel.knoten && ziel.knoten.startsWith('WE ') && DOK_OD_KATEGORIE[dok.typ]){
+      ziel.kategorie = DOK_OD_KATEGORIE[dok.typ];
+    }
+    const mime = dok.mimeType || '';
+    const ext = mime.includes('pdf') ? '.pdf' : mime.includes('png') ? '.png'
+              : mime.includes('image') ? '.jpg' : '';
+    const basis = String(dok.name||'dokument').replace(/[\\/:*?"<>|]+/g,' ').trim().slice(0,60) || 'dokument';
+    ziel.name = basis + '_' + uid() + ext;
+    return await fotoAuslagern(dataUrl, ziel);
+  }catch(e){ console.warn('dokAuslagernRef:', e); return null; }
+}
+
+// Anzeigbare Quelle eines Dokuments (dataURL ODER kurzlebiger OneDrive-Link).
+async function dokQuelle(d){
+  if(!d) return '';
+  if(d.data) return d.data;
+  if(istFotoRef(d.ref)) return (await odDownloadUrl(d.ref.odId)) || d.ref.thumb || '';
+  return '';
+}
+
 async function saveDok(objektId, mieterId) {
   const name = document.getElementById('dokName').value.trim();
   const file = document.getElementById('dokFile').files[0];
@@ -11820,6 +11976,9 @@ async function saveDok(objektId, mieterId) {
       size:     file.size,
       erstellt: now(), ersteller: CU?.name||'',
     };
+    // v177: Datei nach OneDrive auslagern (Referenz statt Base64); Fehler ⇒ inline (Fallback)
+    const odRef = await dokAuslagernRef(dok, e.target.result);
+    if(odRef){ dok.ref = odRef; delete dok.data; }
     await idbPut('dokumente', dok);
     closeModal();
     clearTimeout(window._syncTimer);
@@ -11835,8 +11994,10 @@ async function saveDok(objektId, mieterId) {
 async function downloadDok(id) {
   const d = await idbGet('dokumente', id);
   if (!d) return;
+  const quelle = await dokQuelle(d);   // v177: dataURL ODER OneDrive-Referenz
+  if (!quelle) { toast('Dokument konnte nicht geladen werden'); return; }
   const a = document.createElement('a');
-  a.href = d.data;
+  a.href = quelle;
   a.download = d.name + (d.mimeType?.includes('pdf')?'.pdf':d.mimeType?.includes('image')?'.jpg':'');
   a.click();
 }
@@ -11844,9 +12005,10 @@ async function downloadDok(id) {
 // Dokument über das native Teilen-Menü weiterleiten (Mail, WhatsApp, …) mit Download-Fallback
 async function dokTeilen(id) {
   const d = await idbGet('dokumente', id);
-  if (!d || !d.data) { toast('Kein Dokument vorhanden'); return; }
+  const _quelle = await dokQuelle(d);   // v177: dataURL ODER OneDrive-Referenz
+  if (!_quelle) { toast('Kein Dokument vorhanden'); return; }
   try {
-    const res = await fetch(d.data);
+    const res = await fetch(_quelle);
     const blob = await res.blob();
     const isPdf = (d.mimeType||'').includes('pdf');
     const ext = isPdf ? '.pdf' : (d.mimeType||'').includes('image') ? '.jpg' : '';
@@ -11858,13 +12020,13 @@ async function dokTeilen(id) {
     }
     // Fallback: herunterladen
     const a = document.createElement('a');
-    a.href = d.data; a.download = safeName+ext;
+    a.href = _quelle; a.download = safeName+ext;
     document.body.appendChild(a); a.click(); a.remove();
     toast('Heruntergeladen – kann jetzt weitergeleitet werden');
   } catch(e) {
     if (e && e.name === 'AbortError') return; // Nutzer hat abgebrochen
     console.warn('dokTeilen:', e);
-    try { const a=document.createElement('a'); a.href=d.data; a.download=(d.name||'Dokument'); a.click(); }
+    try { const a=document.createElement('a'); a.href=_quelle; a.download=(d.name||'Dokument'); a.click(); }
     catch(_){ toast('Teilen nicht möglich'); }
   }
 }
@@ -15668,9 +15830,18 @@ async function mvErzeugen(){
   // 5) Vertrag drucken / als PDF speichern (In-Page-Druck, Samsung-tauglich)
   const _mvDateiname = mvDateinameBauen(D, getObj(D.objektId));
   druckHTML(html, 'Mietvertrag – '+(D.mieter1Name||''), _mvDateiname);
-  toast(D.mieterId
+  // v176: Löschangebot bei MV-Erstellung – vorhandene Ausweiskopien des Mieters ansprechen (Art. 17 DSGVO)
+  let _awHinweis = '';
+  if(mieterId){
+    try{
+      const _doks = await idbGetAll('dokumente');
+      const _n = _doks.filter(x => x && x.typ === 'ausweis' && x.mieterId === mieterId).length;
+      if(_n) _awHinweis = ' Hinweis: ' + _n + ' Ausweiskopie' + (_n>1?'n':'') + ' kann jetzt gelöscht werden (Dashboard-Erinnerung).';
+    }catch(_){}
+  }
+  toast((D.mieterId
     ? 'Mietvertrag-Entwurf aktualisiert – beim Mieter ersetzt. Bitte ausdrucken und handschriftlich unterschreiben.'
-    : 'Mietvertrag erzeugt – beim Mieter abgelegt. Bitte ausdrucken und handschriftlich unterschreiben.');
+    : 'Mietvertrag erzeugt – beim Mieter abgelegt. Bitte ausdrucken und handschriftlich unterschreiben.') + _awHinweis);
   MV_DRAFT = null;
 }
 
@@ -17661,7 +17832,7 @@ async function modalGrundriss(objektId) {
     ${grundrisse.length
       ? grundrisse.map(g=>`<div style="margin-bottom:10px">
           <div style="font-size:13px;font-weight:600;margin-bottom:6px">${g.name}</div>
-          ${g.mimeType?.startsWith('image/')?`<img src="${g.data}" style="width:100%;border-radius:8px;cursor:pointer" onclick="openFoto('${g.id}','dok')">`
+          ${g.mimeType?.startsWith('image/')?`<img src="${fotoThumbQuelle(g.data||g.ref)}" style="width:100%;border-radius:8px;cursor:pointer" onclick="openFoto('${g.id}','dok')">`
             :`<button class="btn btn-sm" onclick="downloadDok('${g.id}')"><i class="ti ti-download"></i> ${g.name} herunterladen</button>`}
           <div style="display:flex;gap:6px;margin-top:6px">
             <button class="btn btn-sm btn-danger" onclick="deleteDok('${g.id}');closeModal()"><i class="ti ti-trash"></i></button>
@@ -17698,7 +17869,7 @@ async function modalWohnungGrundriss(objektId, weNr){
       <div style="font-size:12px;font-weight:700;color:var(--ink-60);margin-bottom:6px"><i class="ti ti-map"></i> ${label}</div>
       <div>${plan
         ? (istBild
-            ? `<img src="${plan.data}" style="width:100%;border-radius:8px;cursor:pointer" onclick="openFoto('${planId}','dok')">`
+            ? `<img src="${fotoThumbQuelle(plan.data||plan.ref)}" style="width:100%;border-radius:8px;cursor:pointer" onclick="openFoto('${planId}','dok')">`
             : `<button class="btn btn-full" onclick="downloadDok('${planId}')"><i class="ti ti-file-type-pdf"></i> ${esc(plan.name||'Grundriss')} herunterladen</button>`)
         : `<div class="empty" style="padding:16px"><i class="ti ti-map-off"></i><p>Noch kein ${slot==='b'?'Grundriss der zweiten Ebene':'Grundriss'} hinterlegt.</p></div>`}
       </div>
@@ -17735,6 +17906,9 @@ async function onWohnungGrundrissFile(objektId, weNr, slot){
       data:e.target.result, mimeType:file.type, size:file.size,
       erstellt:now(), geaendert:now(), ersteller:CU?.name||'',
     };
+    // v177: nach OneDrive auslagern; Fehler ⇒ data bleibt inline (Fallback)
+    const odRef = await dokAuslagernRef(dok, e.target.result, weNr);
+    if(odRef){ dok.ref = odRef; delete dok.data; }
     await idbPut('dokumente',dok);
     clearTimeout(window._syncTimer);
     window._syncTimer=setTimeout(()=>syncToOneDrive(),3000);
@@ -17783,7 +17957,7 @@ async function modalWohnungsbilder(objektId, weNr){
     h+=`<div style="max-height:54vh;overflow-y:auto;padding-right:4px">`;
     bilder.forEach(b=>{
       h+=`<div style="margin-bottom:12px;border:1px solid var(--ink-10);border-radius:10px;overflow:hidden">
-        <img src="${b.data}" style="width:100%;display:block;cursor:pointer" onclick="openFoto('${b.id}','dok')">
+        <img src="${fotoThumbQuelle(b.data||b.ref)}" style="width:100%;display:block;cursor:pointer" onclick="openFoto('${b.id}','dok')">
         <div style="padding:8px 10px">
           <div style="font-size:13px;color:var(--ink)">${b.beschreibung?esc(b.beschreibung):'<span style="color:#888780">Ohne Beschreibung</span>'}</div>
           <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">
@@ -17819,6 +17993,9 @@ async function onWohnungsbildFile(objektId, weNr){
       data:e.target.result, mimeType:file.type, size:file.size,
       erstellt:now(), geaendert:now(), ersteller:CU?.name||'',
     };
+    // v177: nach OneDrive auslagern; Fehler ⇒ data bleibt inline (Fallback)
+    const odRef = await dokAuslagernRef(dok, e.target.result, weNr);
+    if(odRef){ dok.ref = odRef; delete dok.data; }
     await idbPut('dokumente',dok);
     clearTimeout(window._syncTimer);
     window._syncTimer=setTimeout(()=>syncToOneDrive(),3000);
@@ -27416,7 +27593,8 @@ async function openFoto(src, caption='') {
   // Dokument-ID? Dann Bild aus IDB laden
   if (caption === 'dok' && src && !src.startsWith('data:')) {
     const d = await idbGet('dokumente', src).catch(()=>null);
-    if (d) { src = d.data; caption = d.name; }
+    if (d) { src = await dokQuelle(d); caption = d.name; }   // v177: dataURL ODER OneDrive-Referenz
+    if (!src) { toast('Dokument konnte nicht geladen werden'); return; }
   }
   // Zählerstand-Foto aus IDB laden
   if (caption === 'zaehlerstand' && src && !src.startsWith('data:')) {
