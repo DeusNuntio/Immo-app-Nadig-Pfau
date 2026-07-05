@@ -796,7 +796,7 @@ body.printing-active #printRoot{display:block!important}
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=31;
-const APP_VERSION = '2026-07-05-v177';
+const APP_VERSION = '2026-07-05-v178';
 /* v157 (02.07.2026): Drei Fixes/Features – Sync, Mail-Papierkorb, QR-ZIP-Export.
    1) SYNC-TOMBSTONES: mergeRecord holte geleerte Felder immer von der Gegen-
       seite zurück ("gefüllt schlägt leer") – Feld-Löschungen konnten dadurch
@@ -15048,8 +15048,10 @@ function mvSammleAnlagenStyles(anl){
 //  Regulierte Gebiete (Mietpreisbremse): Krefeld, Düsseldorf, Monheim.
 // ═══════════════════════════════════════════════════════════
 function mvObjektReguliert(objektId){
-  const g=(getObj(objektId)?.gruppe||'').toLowerCase();
-  return ['krefeld','kr','duesseldorf','dus','monheim'].includes(g);
+  // v178: Gemeinde-Bindung (statt Gruppen) + Laufzeit der Mietpreisbremse
+  // (§556d BGB; MietSchVO NRW §3 Abs.2 S.1, verlängert bis 31.12.2029).
+  if(new Date() > new Date(MIETSCHVO_MPB_BIS)) return false;
+  return gemeindeInMietSchVO(getObj(objektId));
 }
 
 // Laufender Entwurf des MV-Generators (im Speicher, nicht persistiert bis "Erzeugen")
@@ -18372,24 +18374,57 @@ async function deleteEinkauf(id) {
    MIETERHÖHUNG
 ═══════════════════════════════════════════════════════════ */
 /* ═══════════════════════════════════════════════════════════
-   v59b: Mieterhöhungs-Cockpit – Kappungsgrenze §558 Abs.3 BGB
-   - 15% in 57 NRW-Kommunen (MietSchVO NRW, bis 28.02.2030),
-     u.a. Krefeld, Düsseldorf, Monheim, Hilden
-   - 20% Regelfall (z.B. Mönchengladbach – nicht auf der Liste)
+   v59b/v178: Mieterhöhungs-Cockpit – Kappungsgrenze §558 Abs.3 BGB
+   - 15% in 57 NRW-Kommunen (MietSchVO NRW seit 01.03.2025,
+     Kappungsgrenze bis 28.02.2030), u.a. Düsseldorf, Krefeld,
+     Monheim am Rhein, Hilden. 20% Regelfall (z.B. Mönchengladbach).
+   - v178 (B3/V7): Bindung an die GEMEINDE aus obj.ort statt an die
+     Letterhead-Gruppe. Behebt: Hilden (gruppe 'mg') rechnete 20%
+     statt 15%; Amboßstr. (gruppe 'pfau', Düsseldorf) fiel bei der
+     Mietpreisbremse-Erkennung durch.
+   - Mietpreisbremse (§556d BGB): eigener Geltungszeitraum – vom Bund
+     verlängert, MietSchVO NRW §3 Abs.2 S.1 bis 31.12.2029.
    - §559 (Modernisierung) zählt NICHT in die Kappungsgrenze
    - Sperrfrist: Miete muss bei Wirksamwerden 12 Mon. unverändert
      sein (§558 Abs.1); wirksam frühestens nach 15 Mon. faktisch
 ═══════════════════════════════════════════════════════════ */
 
-// Gruppe -> Kappungsgrenze in % zum Stichtag (Datum der Wirksamkeit)
+// MietSchVO NRW: die 57 einbezogenen Städte/Gemeinden (normalisiert, klein).
+// Quelle: MHKBD NRW / Haus & Grund Düsseldorf, Stand der VO vom 01.03.2025.
+const MIETSCHVO_NRW_GEMEINDEN = ['aachen','alfter','bad lippspringe','bergheim',
+  'bergisch gladbach','bielefeld','bonn','bornheim','brühl','dormagen','dortmund',
+  'düren','düsseldorf','elsdorf','erftstadt','erkrath','frechen','greven',
+  'grevenbroich','harsewinkel','hennef','hilden','hürth','kaarst','kempen',
+  'kerpen','korschenbroich','köln','königswinter','krefeld','langenfeld',
+  'leichlingen','leverkusen','lohmar','lotte','meckenheim','meerbusch','monheim',
+  'münster','neuss','niederkassel','ostbevern','overath','paderborn','pulheim',
+  'ratingen','rheinbach','rösrath','rommerskirchen','sankt augustin','siegburg',
+  'swisttal','telgte','troisdorf','wachtberg','weilerswist','wesseling'];
+const MIETSCHVO_KAPPUNG_BIS = '2030-02-28';   // Kappungsgrenze 15% (§558 Abs.3 BGB)
+const MIETSCHVO_MPB_BIS     = '2029-12-31';   // Mietpreisbremse (§556d BGB, verlängert)
+
+// Gemeindename aus obj.ort ("40239 Düsseldorf" -> "düsseldorf").
+function objektGemeinde(obj){
+  const ort = String(obj?.ort||'').trim();
+  const m = ort.match(/^\d{5}\s+(.+)$/);
+  return (m ? m[1] : ort).toLowerCase().trim();
+}
+
+// Liegt das Objekt in einer MietSchVO-NRW-Gemeinde? Exakter Treffer ODER
+// Listeneintrag als Wortpräfix ("monheim am rhein" -> "monheim").
+// Fallback ohne ort-Feld: bisherige Gruppenliste (konservativ, Bestandsschutz).
+function gemeindeInMietSchVO(obj){
+  const g = objektGemeinde(obj);
+  if(g) return MIETSCHVO_NRW_GEMEINDEN.some(e => g === e || g.startsWith(e + ' '));
+  const gr = (obj?.gruppe||'').toLowerCase();
+  return ['krefeld','kr','duesseldorf','dus','monheim','pfau'].includes(gr);
+}
+
+// Kappungsgrenze in % zum Stichtag (Datum der Wirksamkeit der Erhöhung).
 function kappungsgrenze(obj, stichtagISO){
-  const g=(obj?.gruppe||'').toLowerCase();
-  // NRW-MietSchVO gilt bis 28.02.2030; danach Regelfall 20%
   const stichtag = stichtagISO ? new Date(stichtagISO) : new Date();
-  const verordnungAktiv = stichtag <= new Date('2030-02-28');
-  const abgesenkt = ['krefeld','kr','duesseldorf','dus','monheim','pfau'].includes(g);
-  if(abgesenkt && verordnungAktiv) return 15;
-  return 20;  // Mönchengladbach (mg) und alles Übrige / nach 2030
+  const verordnungAktiv = stichtag <= new Date(MIETSCHVO_KAPPUNG_BIS);
+  return (gemeindeInMietSchVO(obj) && verordnungAktiv) ? 15 : 20;
 }
 
 // Datum X Jahre vor Stichtag (für 3-Jahres-Fenster)

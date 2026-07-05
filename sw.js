@@ -7,7 +7,7 @@
 // an respondWith übergeben (führte zu TypeError); stattdessen kontrollierte
 // 503/504-Antworten.
 
-const CACHE = 'nadigpfau-v177';
+const CACHE = 'nadigpfau-v178';
 
 self.addEventListener('install', () => {
   // Sofort aktivieren, nicht auf alten SW warten
