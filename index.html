@@ -719,6 +719,7 @@ body.printing-active #printRoot{display:block!important}
   <div id="dvBar">
     <span id="dvTitel">Vorschau</span>
     <span style="flex:1"></span>
+    <button type="button" class="dv-btn" onclick="druckVorschauTeilen()"><i class="ti ti-share"></i> Teilen</button>
     <button type="button" class="dv-btn dv-print" onclick="druckVorschauDrucken()"><i class="ti ti-printer"></i> Drucken</button>
     <button type="button" class="dv-btn dv-close" onclick="schliesseDruckVorschau()"><i class="ti ti-x"></i> Schließen</button>
   </div>
@@ -795,7 +796,7 @@ body.printing-active #printRoot{display:block!important}
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=31;
-const APP_VERSION = '2026-07-04-v168';
+const APP_VERSION = '2026-07-04-v172';
 /* v157 (02.07.2026): Drei Fixes/Features – Sync, Mail-Papierkorb, QR-ZIP-Export.
    1) SYNC-TOMBSTONES: mergeRecord holte geleerte Felder immer von der Gegen-
       seite zurück ("gefüllt schlägt leer") – Feld-Löschungen konnten dadurch
@@ -1767,7 +1768,7 @@ async function renderDash() {
 
   const lastProts = prots
     .filter(p=>!p._papierkorb&&myObj.some(o=>o.id===p.objektId)&&p.status!=='draft')
-    .sort((a,b)=>new Date(b.erstellt)-new Date(a.erstellt))
+    .sort((a,b)=>new Date(b.datum||b.erstellt)-new Date(a.datum||a.erstellt))
     .slice(0,3);
   if (lastProts.length) {
     html += `<div class="card" style="margin-bottom:12px">
@@ -10648,6 +10649,13 @@ async function renderAufgaben(){
     <button class="tab-btn" onclick="aufgabenTab('einkauf',this)"><i class="ti ti-shopping-cart"></i> Einkauf</button>
   </div>
   ${filterBar}
+  <div class="search-bar" style="margin-bottom:10px">
+    <div class="search-wrap" style="flex:1">
+      <i class="ti ti-search"></i>
+      <input class="search-input" id="aufSucheInput" placeholder="Titel, Objekt, Beschreibung…"
+        value="${esc(window._aufFilter?.q||'')}" oninput="aufSuche(this.value)">
+    </div>
+  </div>
   <div id="auf-todos">`;
 
   if(!offen.length&&!erledigt.length){
@@ -10684,12 +10692,46 @@ async function renderAufgaben(){
     if(btn)btn.classList.add('active');
     if(window._aufTab==='einkauf') renderEinkaufsliste();
   }
+  aufSucheAnwenden();
   updateBadge();
 }
 
 function aufFilterLg(v){ window._aufFilter=window._aufFilter||{}; window._aufFilter.lg=v; window._aufFilter.obj=''; renderAufgaben(); }
 function aufFilterObj(v){ window._aufFilter=window._aufFilter||{}; window._aufFilter.obj=v; renderAufgaben(); }
 function aufToggleDone(){ window._aufFilter=window._aufFilter||{hideDone:true}; window._aufFilter.hideDone=!window._aufFilter.hideDone; renderAufgaben(); }
+
+// Freitextsuche Aufgaben/Mängel (v170, additiv): filtert die bereits gerenderten
+// Karten des aktiven Tabs per Ein-/Ausblenden – kein Re-Render, kein Fokusverlust.
+// Query lebt in window._aufFilter.q und übersteht Voll-Renders + Tab-Wechsel.
+function aufSuche(q){
+  window._aufFilter = window._aufFilter || {};
+  window._aufFilter.q = q;
+  aufSucheAnwenden();
+}
+function aufSucheAnwenden(){
+  const q = (window._aufFilter?.q || '').trim().toLowerCase();
+  const aktiv = (window._aufTab && window._aufTab!=='todos') ? window._aufTab : 'todos';
+  const cont = document.getElementById('auf-'+aktiv);
+  if(!cont) return;
+  const karten = cont.querySelectorAll('.task-item');
+  let sichtbar = 0;
+  karten.forEach(k=>{
+    const treffer = !q || (k.textContent||'').toLowerCase().includes(q);
+    k.style.display = treffer ? '' : 'none';
+    if(treffer) sichtbar++;
+  });
+  let hint = cont.querySelector('.auf-such-leer');
+  if(q && sichtbar===0 && karten.length){
+    if(!hint){
+      hint = document.createElement('div');
+      hint.className = 'no-results auf-such-leer';
+      hint.innerHTML = '<i class="ti ti-search"></i><p>Nichts gefunden</p>';
+      cont.appendChild(hint);
+    }
+  } else if(hint){
+    hint.remove();
+  }
+}
 
 function aufgabenTab(t,btn){
   document.querySelectorAll('#page-aufgaben .tab-btn').forEach(b=>b.classList.remove('active'));
@@ -10700,6 +10742,7 @@ function aufgabenTab(t,btn){
   });
   window._aufTab=t;
   if(t==='einkauf') renderEinkaufsliste();
+  aufSucheAnwenden();
 }
 
 async function refreshAufgaben(){
@@ -25072,17 +25115,28 @@ async function odBaumAnlegen(){
   await odEnsureFolder('NadigPfau');
   await odEnsureFolder(OD_BASE);
   const stand=odStandorte();
+  // v172: Ordner PRO GEBÄUDE (Objekte/<Standort>/<Gebäude>/<Allgemein|WE n>/<Kategorie>).
+  // WE-Nummern kollidieren damit nicht mehr standortweit (Mindener 23 WE 1 ≠ Kyffhäuser 30 WE 1).
+  // WEs je Gebäude inkl. Leerstand aus objekt_stamm (alleWeVonObjekt). Die bisherige
+  // Standort-Ebene (Alt-Dateien) bleibt unangetastet und wird beim Sync weiter gelesen.
+  const _mAlle=await idbGetAll('mieter').catch(()=>[]);
   for(const st of stand){
     const base=`${OD_BASE}/${odSafeName(st.ordner)}`;
     await odEnsureFolder(base);
-    const allg=`${base}/Allgemein`;
-    await odEnsureFolder(allg);
-    for(const k of OD_KATEGORIEN_ALLG){ await odEnsureFolder(`${allg}/${odSafeName(k)}`); }
-    const wes=await odWohneinheiten(st.objektIds);
-    for(const w of wes){
-      const we=`${base}/WE ${odSafeName(w)}`;
-      await odEnsureFolder(we);
-      for(const k of OD_KATEGORIEN_WE){ await odEnsureFolder(`${we}/${odSafeName(k)}`); }
+    for(const oid of st.objektIds){
+      const geb=odGebaeudeName(oid);
+      if(!geb) continue;
+      const gBase=`${base}/${geb}`;
+      await odEnsureFolder(gBase);
+      const allg=`${gBase}/Allgemein`;
+      await odEnsureFolder(allg);
+      for(const k of OD_KATEGORIEN_ALLG){ await odEnsureFolder(`${allg}/${odSafeName(k)}`); }
+      const wes=await alleWeVonObjekt(oid, _mAlle);
+      for(const w of wes){
+        const we=`${gBase}/WE ${odSafeName(w)}`;
+        await odEnsureFolder(we);
+        for(const k of OD_KATEGORIEN_WE){ await odEnsureFolder(`${we}/${odSafeName(k)}`); }
+      }
     }
   }
   return stand.length;
@@ -25105,8 +25159,14 @@ async function odListFiles(pfad){
 }
 
 /* Pfad eines Knotens (Standort/WE/Allgemein) bauen. */
-function odKnotenPfad(standortOrdner, knoten){
-  return `${OD_BASE}/${odSafeName(standortOrdner)}/${knoten}`;
+function odKnotenPfad(standortOrdner, knoten, gebaeude){
+  const g = gebaeude ? '/'+odSafeName(gebaeude) : '';
+  return `${OD_BASE}/${odSafeName(standortOrdner)}${g}/${knoten}`;
+}
+/* Gebäudename (Ordnerebene) eines Objekts – v172, Ordner pro Gebäude. */
+function odGebaeudeName(objektId){
+  const o = getObj(objektId);
+  return o ? odSafeName(o.name) : '';
 }
 
 /* ── Bidirektionaler Datei-Sync ─────────────────────────────
@@ -25133,11 +25193,25 @@ async function syncDateibaum(silent){
       if(rec && rec.pfad) bekannt[rec.pfad]=rec;
     }
 
+    const _mAlle=await idbGetAll('mieter').catch(()=>[]);
     for(const st of stand){
-      const wes=await odWohneinheiten(st.objektIds);
-      const knoten=['Allgemein', ...wes.map(w=>'WE '+odSafeName(w))];
-      for(const kn of knoten){
-        const knotenPfad=odKnotenPfad(st.ordner, kn);
+      // v172: Zweige je Gebäude (neu) + bisherige Standort-Ebene (Legacy, Alt-Dateien).
+      const zweige=[];
+      for(const oid of st.objektIds){
+        const geb=odGebaeudeName(oid);
+        if(!geb) continue;
+        const gw=await alleWeVonObjekt(oid, _mAlle);
+        for(const kn of ['Allgemein', ...gw.map(w=>'WE '+odSafeName(w))]){
+          zweige.push({kn, gebaeude:geb, pfad:odKnotenPfad(st.ordner, kn, geb)});
+        }
+      }
+      const wesAlt=await odWohneinheiten(st.objektIds);
+      for(const kn of ['Allgemein', ...wesAlt.map(w=>'WE '+odSafeName(w))]){
+        zweige.push({kn, gebaeude:'', pfad:odKnotenPfad(st.ordner, kn)});
+      }
+      for(const zw of zweige){
+        const kn=zw.kn;
+        const knotenPfad=zw.pfad;
         const weNr = kn.startsWith('WE ') ? kn.slice(3) : '';
         const kategorie = kn==='Allgemein' ? 'allgemein' : 'wohneinheit';
         // Blattordner: Knoten-Wurzel (Rueckwaertskompatibilitaet fuer Alt-Dateien)
@@ -25165,6 +25239,7 @@ async function syncDateibaum(silent){
               gruppe: st.gruppe,
               standort: st.ordner,
               weNr, kategorie, unterkategorie,
+              gebaeude: zw.gebaeude||'',
               groesse: f.size||0,
               eTag: f.eTag||'',
               odItemId: f.id||'',
@@ -25234,6 +25309,12 @@ async function odDownloadUrl(recId){
   try{
     const rec=await idbGet('od_dateien', recId);
     if(!rec) return null;
+    // v172: Datei wartet noch auf Upload -> lokal anzeigen statt 404,
+    // und den Upload im Hintergrund erneut anstoßen (Selbstheilung).
+    if(rec.pendingUpload && rec._blobB64){
+      try{ odPendingFlush(); }catch(_){ }
+      return 'data:'+(rec.mime||'image/jpeg')+';base64,'+rec._blobB64;
+    }
     if(rec.odItemId){
       const meta=await odGraph(`/me/drive/items/${rec.odItemId}?$select=@microsoft.graph.downloadUrl,name`);
       const url=meta && meta['@microsoft.graph.downloadUrl'];
@@ -25253,11 +25334,11 @@ async function odDateiOeffnen(recId){
 
 /* Datei aus der App in einen Ordnerbaum-Knoten hochladen.
    standortGruppe + knoten ('Allgemein' oder 'WE n'); file = File-Objekt. */
-async function odDateiHochladen(gruppe, knoten, kategorie, file){
+async function odDateiHochladen(gruppe, knoten, kategorie, file, gebaeude){
   if(!file){ return; }
   const st=odStandorte().find(s=>s.gruppe===gruppe);
   if(!st){ toast('Standort unbekannt'); return; }
-  const knotenPfad=odKnotenPfad(st.ordner, knoten);
+  const knotenPfad=odKnotenPfad(st.ordner, knoten, gebaeude||'');
   const kat=(kategorie && kategorie!=='(wurzel)') ? odSafeName(kategorie) : '';
   const ordnerPfad = kat ? knotenPfad+'/'+kat : knotenPfad;
   const b64=await new Promise((res,rej)=>{
@@ -25274,7 +25355,7 @@ async function odDateiHochladen(gruppe, knoten, kategorie, file){
     gruppe: st.gruppe, standort: st.ordner,
     weNr: knoten.startsWith('WE ')?knoten.slice(3):'',
     kategorie: knoten==='Allgemein'?'allgemein':'wohneinheit',
-    unterkategorie: kat,
+    unterkategorie: kat, gebaeude: gebaeude||'',
     groesse: file.size||0, mime: file.type||'application/octet-stream',
     eTag:'', odItemId:'', lastModified:new Date().toISOString(),
     quelle:'app', geloescht:false,
@@ -25282,8 +25363,40 @@ async function odDateiHochladen(gruppe, knoten, kategorie, file){
   };
   await idbPut('od_dateien', rec, {keepStamp:true});
   toast('Wird hochgeladen …');
-  await syncDateibaum(false);
+  // v172: gezielter Upload nur der wartenden Dateien statt vollem Baum-Walk.
+  // Der Vollwalk (syncDateibaum) brach auf Mobilgeräten oft ab, bevor der
+  // Upload dran war -> Datei blieb dauerhaft 'pending' (Ventil-Foto-Befund).
+  await odPendingFlush();
   return rec;
+}
+
+/* Lädt ausschließlich wartende (pendingUpload) Dateien hoch – schnell,
+   idempotent, ohne Baum-Walk. Ordner werden bei Bedarf angelegt. */
+async function odPendingFlush(){
+  let ok=0, fehler=0;
+  try{
+    const pending=(await idbGetAll('od_dateien')).filter(r=>r && r.pendingUpload && r._blobB64 && !r.geloescht);
+    for(const rec of pending){
+      try{
+        await odEnsureFolder(rec.ordner);
+        const bytes=Uint8Array.from(atob(rec._blobB64), c=>c.charCodeAt(0));
+        const up=await odGraph(
+          `/me/drive/root:/${encodeURI(rec.pfad)}:/content`,
+          { method:'PUT',
+            headers:{'Content-Type': rec.mime||'application/octet-stream'},
+            body: bytes });
+        if(!up || up.__notfound || !up.id){ fehler++; continue; }
+        await idbPut('od_dateien', { ...rec,
+          eTag:up.eTag||'', odItemId:up.id||'',
+          groesse:up.size||rec.groesse||0,
+          lastModified:up.lastModifiedDateTime||new Date().toISOString(),
+          pendingUpload:false, _blobB64:undefined }, {keepStamp:true});
+        ok++;
+      }catch(e){ fehler++; console.warn('odPendingFlush:', rec.pfad, e); }
+    }
+  }catch(e){ console.warn('odPendingFlush:', e); }
+  if(ok) toast(`✓ ${ok} Datei${ok>1?'en':''} hochgeladen`+(fehler?` · ${fehler} offen`:''));
+  return {ok, fehler};
 }
 
 /* ── Datei-Ordnerbaum: UI-Browser ──────────────────────────
@@ -25291,7 +25404,7 @@ async function odDateiHochladen(gruppe, knoten, kategorie, file){
    Upload per Datei-Input, Oeffnen per Download-Link. */
 let _odBrowserState = { gruppe:null, knoten:null, kategorie:null };
 
-async function odBrowserOeffnen(gruppe, knoten, kategorie){
+async function odBrowserOeffnen(gruppe, knoten, kategorie, gebaeude){
   if(!odTokens){ toast('Bitte zuerst mit OneDrive anmelden'); return; }
   const stand=odStandorte();
   // Ebene 1: Standortauswahl
@@ -25311,19 +25424,47 @@ async function odBrowserOeffnen(gruppe, knoten, kategorie){
   }
   const st=stand.find(s=>s.gruppe===gruppe);
   if(!st){ toast('Standort unbekannt'); return; }
-  // Ebene 2: Knotenauswahl (Allgemein + WEs) -> fuehrt zu Ebene 3 (Kategorie)
+  // Ebene 2 (v172): Gebäudeauswahl. '(alt)' = bisherige Standort-Ebene (Alt-Dateien).
+  if(!gebaeude){
+    const gebs=st.objektIds.map(oid=>odGebaeudeName(oid)).filter(Boolean)
+      .filter((g,i,a)=>a.indexOf(g)===i)
+      .sort((a,b)=>a.localeCompare(b,'de'));
+    const stPfad=`${OD_BASE}/${odSafeName(st.ordner)}`;
+    const altZahl=(await idbGetAll('od_dateien')).filter(r=>r && !r.geloescht && !r.gebaeude &&
+      (r.ordner||'').startsWith(stPfad+'/')).length;
+    const items=gebs.map(g=>
+      `<button class="btn btn-full" style="justify-content:flex-start;margin-bottom:6px"
+         onclick="odBrowserOeffnen('${gruppe}','','','${esc(g)}')">
+         <i class="ti ti-building"></i> ${esc(g)}</button>`).join('');
+    const altBtn=altZahl?`<button class="btn btn-full" style="justify-content:flex-start;margin-bottom:6px;opacity:.85"
+         onclick="odBrowserOeffnen('${gruppe}','','','(alt)')">
+         <i class="ti ti-archive"></i> Standort-Ebene (Alt-Dateien) <span style="color:var(--ink-40);font-size:11px">· ${altZahl}</span></button>`:'';
+    showModal(`
+      <div class="m-title"><i class="ti ti-folder"></i> ${esc(st.ordner)} · Gebäude wählen</div>
+      <div style="margin:10px 0;max-height:50vh;overflow:auto">${items}${altBtn}</div>
+      <div style="display:flex;gap:8px;justify-content:space-between;margin-top:8px">
+        <button class="btn btn-sm" onclick="odBrowserOeffnen()"><i class="ti ti-arrow-left"></i> Zurück</button>
+        <button class="btn btn-sm" onclick="closeModal()">Schließen</button>
+      </div>`);
+    return;
+  }
+  const istAlt = gebaeude==='(alt)';
+  const gebOid = istAlt ? null : st.objektIds.find(oid=>odGebaeudeName(oid)===gebaeude);
+  // Ebene 3: Knotenauswahl (Allgemein + WEs des Gebäudes) -> fuehrt zur Kategorie
   if(!knoten){
-    const wes=await odWohneinheiten(st.objektIds);
+    const wes = istAlt
+      ? await odWohneinheiten(st.objektIds)
+      : await alleWeVonObjekt(gebOid, await idbGetAll('mieter').catch(()=>[]));
     const knoten=['Allgemein', ...wes.map(w=>'WE '+odSafeName(w))];
     const items=knoten.map(kn=>
       `<button class="btn btn-full" style="justify-content:flex-start;margin-bottom:6px"
-         onclick="odBrowserOeffnen('${gruppe}','${esc(kn)}')">
+         onclick="odBrowserOeffnen('${gruppe}','${esc(kn)}','','${esc(gebaeude)}')">
          <i class="ti ${kn==='Allgemein'?'ti-archive':'ti-door'}"></i> ${esc(kn)}</button>`).join('');
     showModal(`
-      <div class="m-title"><i class="ti ti-folder"></i> ${esc(st.ordner)}</div>
+      <div class="m-title"><i class="ti ti-folder"></i> ${esc(st.ordner)} · ${istAlt?'Alt-Dateien':esc(gebaeude)}</div>
       <div style="margin:10px 0;max-height:50vh;overflow:auto">${items}</div>
       <div style="display:flex;gap:8px;justify-content:space-between;margin-top:8px">
-        <button class="btn btn-sm" onclick="odBrowserOeffnen()"><i class="ti ti-arrow-left"></i> Zurück</button>
+        <button class="btn btn-sm" onclick="odBrowserOeffnen('${gruppe}')"><i class="ti ti-arrow-left"></i> Zurück</button>
         <button class="btn btn-sm" onclick="closeModal()">Schließen</button>
       </div>`);
     return;
@@ -25331,7 +25472,7 @@ async function odBrowserOeffnen(gruppe, knoten, kategorie){
   // Ebene 3: Kategorieauswahl (23c) – Unterordner je Knoten
   if(!kategorie){
     const kats=odKategorienFuer(knoten);
-    const knotenPfad=odKnotenPfad(st.ordner, knoten);
+    const knotenPfad = istAlt ? odKnotenPfad(st.ordner, knoten) : odKnotenPfad(st.ordner, knoten, gebaeude);
     // Zaehlung je Kategorie fuer Badge; Wurzel-Dateien separat erfassen.
     const dateien=(await idbGetAll('od_dateien')).filter(r=>r && !r.geloescht &&
       (r.ordner===knotenPfad || (r.ordner||'').startsWith(knotenPfad+'/')));
@@ -25346,25 +25487,25 @@ async function odBrowserOeffnen(gruppe, knoten, kategorie){
       const n=zaehl[odSafeName(k)]||zaehl[k]||0;
       const badge=n?` <span style="color:var(--ink-40);font-size:11px">· ${n}</span>`:'';
       return `<button class="btn btn-full" style="justify-content:flex-start;margin-bottom:6px"
-         onclick="odBrowserOeffnen('${gruppe}','${esc(knoten)}','${esc(k)}')">
+         onclick="odBrowserOeffnen('${gruppe}','${esc(knoten)}','${esc(k)}','${esc(gebaeude)}')">
          <i class="ti ${ic}"></i> ${esc(k)}${badge}</button>`;
     }).join('');
     // Alt-Dateien direkt im Knoten (ohne Kategorie) nur anbieten, wenn vorhanden.
     const wurzelBtn = wurzel ? `<button class="btn btn-full" style="justify-content:flex-start;margin-bottom:6px;opacity:.85"
-         onclick="odBrowserOeffnen('${gruppe}','${esc(knoten)}','(wurzel)')">
+         onclick="odBrowserOeffnen('${gruppe}','${esc(knoten)}','(wurzel)','${esc(gebaeude)}')">
          <i class="ti ti-folder"></i> Ohne Kategorie <span style="color:var(--ink-40);font-size:11px">· ${wurzel}</span></button>` : '';
     showModal(`
-      <div class="m-title"><i class="ti ti-folder"></i> ${esc(st.ordner)} · ${esc(knoten)}</div>
+      <div class="m-title"><i class="ti ti-folder"></i> ${istAlt?'Alt':esc(gebaeude)} · ${esc(knoten)}</div>
       <div style="margin:10px 0;max-height:50vh;overflow:auto">${items}${wurzelBtn}</div>
       <div style="display:flex;gap:8px;justify-content:space-between;margin-top:8px">
-        <button class="btn btn-sm" onclick="odBrowserOeffnen('${gruppe}')"><i class="ti ti-arrow-left"></i> Zurück</button>
+        <button class="btn btn-sm" onclick="odBrowserOeffnen('${gruppe}','','','${esc(gebaeude)}')"><i class="ti ti-arrow-left"></i> Zurück</button>
         <button class="btn btn-sm" onclick="closeModal()">Schließen</button>
       </div>`);
     return;
   }
   // Ebene 4: Dateiliste einer Kategorie (bzw. Wurzel bei '(wurzel)')
-  _odBrowserState={ gruppe, knoten, kategorie };
-  const knotenPfad=odKnotenPfad(st.ordner, knoten);
+  _odBrowserState={ gruppe, knoten, kategorie, gebaeude };
+  const knotenPfad = istAlt ? odKnotenPfad(st.ordner, knoten) : odKnotenPfad(st.ordner, knoten, gebaeude);
   const istWurzel = kategorie==='(wurzel)';
   const ordnerPfad = istWurzel ? knotenPfad : knotenPfad+'/'+odSafeName(kategorie);
   const alle=(await idbGetAll('od_dateien')).filter(r=>r && r.ordner===ordnerPfad && !r.geloescht);
@@ -25393,17 +25534,18 @@ async function odBrowserOeffnen(gruppe, knoten, kategorie){
        onchange="odBrowserUpload(this)">
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
       ${uploadBtn}
-      <button class="btn btn-copper btn-sm" onclick="syncDateibaum(false).then(()=>odBrowserOeffnen('${gruppe}','${esc(knoten)}','${esc(kategorie)}'))"><i class="ti ti-refresh"></i> Synchronisieren</button>
-      <button class="btn btn-sm" onclick="odBrowserOeffnen('${gruppe}','${esc(knoten)}')"><i class="ti ti-arrow-left"></i> Zurück</button>
+      <button class="btn btn-copper btn-sm" onclick="syncDateibaum(false).then(()=>odBrowserOeffnen('${gruppe}','${esc(knoten)}','${esc(kategorie)}','${esc(gebaeude)}'))"><i class="ti ti-refresh"></i> Synchronisieren</button>
+      <button class="btn btn-sm" onclick="odBrowserOeffnen('${gruppe}','${esc(knoten)}','','${esc(gebaeude)}')"><i class="ti ti-arrow-left"></i> Zurück</button>
     </div>`);
 }
 
 async function odBrowserUpload(input){
   const file=input.files && input.files[0];
   if(!file) return;
-  const {gruppe, knoten, kategorie}=_odBrowserState;
-  await odDateiHochladen(gruppe, knoten, kategorie, file);
-  odBrowserOeffnen(gruppe, knoten, kategorie);
+  const {gruppe, knoten, kategorie, gebaeude}=_odBrowserState;
+  if(gebaeude==='(alt)'){ toast('Upload bitte in einen Gebäude-Ordner'); return; }
+  await odDateiHochladen(gruppe, knoten, kategorie, file, gebaeude||'');
+  odBrowserOeffnen(gruppe, knoten, kategorie, gebaeude);
 }
 
 
@@ -26254,6 +26396,33 @@ function schliesseDruckVorschau(){
   const fr = document.getElementById('dvFrame');
   if(ov){ ov.classList.remove('aktiv'); ov.setAttribute('aria-hidden','true'); }
   if(fr){ try{ fr.srcdoc=''; }catch(_){} }
+}
+
+// Teilt das aktuell in der Vorschau liegende Dokument als Datei (v171).
+// WhatsApp/Mail über das native Teilen-Menü; das selbst-enthaltene HTML
+// (Fotos als dataURLs eingebettet) wird als Datei angehängt. Fallback: Download.
+async function druckVorschauTeilen(){
+  const html = _dvAktuellesHtml;
+  if(!html){ toast('Kein Dokument in der Vorschau'); return; }
+  const name = ((_dvDateiname||'Dokument').replace(/[^a-zA-Z0-9äöüÄÖÜß _.-]/g,'').slice(0,60) || 'Dokument');
+  const dateiname = name.toLowerCase().endsWith('.html') ? name : name+'.html';
+  try{
+    const blob = new Blob([html], {type:'text/html'});
+    const file = new File([blob], dateiname, {type:'text/html'});
+    if(navigator.canShare && navigator.canShare({files:[file]})){
+      await navigator.share({files:[file], title:name});
+      return;
+    }
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob); a.download=dateiname;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>{ try{ URL.revokeObjectURL(a.href); }catch(_){} }, 60000);
+    toast('Heruntergeladen – kann jetzt weitergeleitet werden');
+  }catch(e){
+    if(e && e.name==='AbortError') return; // Nutzer hat abgebrochen
+    console.warn('druckVorschauTeilen:', e);
+    toast('Teilen nicht möglich');
+  }
 }
 
 // Löst aus der Vorschau heraus den eigentlichen Druck aus.
@@ -27178,30 +27347,8 @@ window.nav=async function(id,title,sub,push=true){
 };
 
 
-/* ═══════════════════════════════════════════════════════════
-   SUCHE & FILTER – GLOBALE STATE
-═══════════════════════════════════════════════════════════ */
-let filterState = {
-  mieter:  { q: '', objId: 'all' },
-  aufgaben:{ q: '', status: 'offen', objId: 'all', prio: 'all' },
-  maengel: { q: '', status: 'offen', objId: 'all' },
-};
 
-function searchBar(id, placeholder, onInput) {
-  return `<div class="search-bar">
-    <div class="search-wrap">
-      <i class="ti ti-search"></i>
-      <input class="search-input" id="${id}" placeholder="${placeholder}" 
-        oninput="${onInput}" value="${filterState[id.split('_')[0]]?.q||''}">
-    </div>
-  </div>`;
-}
 
-function filterChips(items, activeVal, onClick, style='') {
-  return `<div class="filter-row" style="${style}">
-    ${items.map(([val,lbl])=>`<button class="filter-chip ${activeVal===val?'active':''}" onclick="${onClick}('${val}',this)">${lbl}</button>`).join('')}
-  </div>`;
-}
 
 /* ═══════════════════════════════════════════════════════════
    FOTO-OVERLAY
@@ -27266,22 +27413,7 @@ async function shareFoto(){
   }
 }
 
-/* ═══════════════════════════════════════════════════════════
-   VERBESSERTES DASHBOARD mit Quick-Actions & Aktivitäten
-═══════════════════════════════════════════════════════════ */
-/* ═══════════════════════════════════════════════════════════
-   VERBESSERTE MIETER-LISTE mit Suche & Filter
-═══════════════════════════════════════════════════════════ */
-function updateMieterFilter() {
-  filterState.mieter.q = document.getElementById('mieter_q')?.value || '';
-  renderObjMieter(document.getElementById('objTabContent'));
-}
 
-function highlightQ(text, q) {
-  if (!q) return text;
-  const re = new RegExp(`(${q.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')})`, 'gi');
-  return text.replace(re, '<mark style="background:var(--copper-bg);color:var(--copper-d);border-radius:2px">$1</mark>');
-}
 
 /* ═══════════════════════════════════════════════════════════
    VERBESSERTER MIETER-DETAIL mit Kontakt-CTAs
@@ -27583,102 +27715,9 @@ async function deleteMangelConfirm(id, store) {
   await refreshAufgaben(); await renderDash(); toast('Gelöscht');
 }
 
-/* ═══════════════════════════════════════════════════════════
-   VERBESSERTE AUFGABEN-SEITE mit Suche + Filter
-═══════════════════════════════════════════════════════════ */
-function renderTodoList(aufg) {
-  const el = document.getElementById('todos-list');
-  if (!el) return;
-  const f = filterState.aufgaben;
-  const q = (document.getElementById('auf_todos_q')?.value || f.q || '').toLowerCase();
 
-  let items = aufg;
-  if (f.status && f.status !== 'offen' && ['hoch','mittel','niedrig'].includes(f.status)) {
-    items = items.filter(a=>a.prio===f.status && a.status!=='erledigt');
-  } else if (f.status === 'erledigt') {
-    items = items.filter(a=>a.status==='erledigt');
-  } else if (f.status === 'offen' || !f.status) {
-    items = items.filter(a=>a.status!=='erledigt');
-  }
-  if (f.objId && f.objId !== 'all') items = items.filter(a=>a.objektId===f.objId);
-  if (q) items = items.filter(a=>
-    a.titel.toLowerCase().includes(q) ||
-    (a.beschreibung||'').toLowerCase().includes(q) ||
-    (getObj(a.objektId)?.name||'').toLowerCase().includes(q)
-  );
 
-  if (!items.length) {
-    el.innerHTML = `<div class="no-results"><i class="ti ti-check"></i><p>${q?`Nichts gefunden für „${q}"`:f.status==='erledigt'?'Keine erledigten Aufgaben':'Keine offenen Aufgaben'}</p></div>`;
-    return;
-  }
-  items.sort((a,b)=>prioPrio(a.prio)-prioPrio(b.prio));
-  el.innerHTML = items.map(a=>taskHTML(a)).join('');
-}
 
-function renderMangelList(mangel) {
-  const el = document.getElementById('mangel-list');
-  if (!el) return;
-  const f = filterState.maengel;
-  const q = (document.getElementById('auf_mng_q')?.value || '').toLowerCase();
-  let items = mangel;
-  if (f.status && f.status!=='all') items=items.filter(m=>m.status===(f.status==='behoben'?'behoben':'offen'));
-  if (f.objId && f.objId!=='all') items=items.filter(m=>m.objektId===f.objId);
-  if (q) items=items.filter(m=>m.titel.toLowerCase().includes(q)||(m.beschreibung||'').toLowerCase().includes(q));
-  items.sort((a,b)=>new Date(b.erstellt)-new Date(a.erstellt));
-  el.innerHTML = items.length
-    ? items.map(m=>mangelHTML(m)).join('')
-    : `<div class="no-results"><i class="ti ti-mood-smile"></i><p>${f.status==='behoben'?'Keine behobenen Mängel':'Keine offenen Mängel'}</p></div>`;
-}
-
-function renderReparaturList(reps) {
-  const el = document.getElementById('rep-list');
-  if (!el) return;
-  if (!reps.length) { el.innerHTML='<div class="empty"><i class="ti ti-tools"></i><p>Keine Reparaturen erfasst</p></div>'; return; }
-  el.innerHTML = reps.sort((a,b)=>new Date(b.erstellt)-new Date(a.erstellt)).map(r=>reparaturHTML(r)).join('');
-}
-
-// Filter-Setter
-function setAufgabenFilter(val,btn){
-  filterState.aufgaben.status=val;
-  document.querySelectorAll('#auf-todos .filter-chip').forEach(b=>b.classList.remove('active'));
-  btn?.classList.add('active');
-  idbGetAll('aufgaben').then(a=>renderTodoList(a));
-}
-function setAufgabenObjFilter(val,btn){
-  filterState.aufgaben.objId=val;
-  const row=btn?.parentNode;
-  if(row) Array.from(row.children).forEach(b=>b.classList.remove('active'));
-  btn?.classList.add('active');
-  idbGetAll('aufgaben').then(a=>renderTodoList(a));
-}
-function filterTodos(){
-  filterState.aufgaben.q=document.getElementById('auf_todos_q')?.value||'';
-  idbGetAll('aufgaben').then(a=>renderTodoList(a));
-}
-function setMangelFilter(val,btn){
-  filterState.maengel.status=val;
-  document.querySelectorAll('#auf-maengel .filter-row:first-of-type .filter-chip').forEach(b=>b.classList.remove('active'));
-  btn?.classList.add('active');
-  idbGetAll('maengel').then(m=>renderMangelList(m));
-}
-function setMangelObjFilter(val,btn){
-  filterState.maengel.objId=val;
-  const row=btn?.parentNode;
-  if(row) Array.from(row.children).forEach(b=>b.classList.remove('active'));
-  btn?.classList.add('active');
-  idbGetAll('maengel').then(m=>renderMangelList(m));
-}
-function filterMaengel(){
-  idbGetAll('maengel').then(m=>renderMangelList(m));
-}
-function setReparaturFilter(val,btn){
-  document.querySelectorAll('#auf-reparaturen .filter-chip').forEach(b=>b.classList.remove('active'));
-  btn?.classList.add('active');
-  idbGetAll('reparaturen').then(r=>{
-    const filtered=val==='all'?r:r.filter(x=>x.status===val);
-    renderReparaturList(filtered);
-  });
-}
 
 /* ═══════════════════════════════════════════════════════════
    MANGEL HTML – mit Detail-Link
@@ -27830,7 +27869,7 @@ async function fotoAuslagern(quelle, ziel){
     const file = (quelle instanceof File) ? quelle : (istData ? dataUrlZuFile(quelle, name) : null);
     if(!file) return null;
     const thumb = istData ? await fotoThumb(quelle).catch(()=> '') : '';
-    const rec = await odDateiHochladen(ziel.gruppe, ziel.knoten, ziel.kategorie||'Sonstiges', file);
+    const rec = await odDateiHochladen(ziel.gruppe, ziel.knoten, ziel.kategorie||'Sonstiges', file, ziel.gebaeude||'');
     if(!rec || !rec.id) return null;
     return { ref:true, odId:rec.id, name:rec.name, mime:rec.mime||file.type||'image/jpeg', thumb: thumb||undefined };
   }catch(e){ console.warn('fotoAuslagern:', e); return null; }
@@ -27897,7 +27936,7 @@ function fotoZielFuer(objektId, weNr, storeName){
     let knoten = 'Allgemein';
     if(cfg.knoten==='we' && we) knoten = 'WE '+odSafeName(we);
     else if(cfg.knoten==='auto') knoten = we ? 'WE '+odSafeName(we) : 'Allgemein';
-    return { gruppe:st.gruppe, knoten, kategorie:cfg.kategorie||'Sonstiges' };
+    return { gruppe:st.gruppe, gebaeude:odGebaeudeName(objektId), knoten, kategorie:cfg.kategorie||'Sonstiges' };
   }catch(e){ return null; }
 }
 
