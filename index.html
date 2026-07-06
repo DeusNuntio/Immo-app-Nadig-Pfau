@@ -796,7 +796,7 @@ body.printing-active #printRoot{display:block!important}
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=31;
-const APP_VERSION = '2026-07-06-v180';
+const APP_VERSION = '2026-07-06-v181';
 /* v157 (02.07.2026): Drei Fixes/Features – Sync, Mail-Papierkorb, QR-ZIP-Export.
    1) SYNC-TOMBSTONES: mergeRecord holte geleerte Felder immer von der Gegen-
       seite zurück ("gefüllt schlägt leer") – Feld-Löschungen konnten dadurch
@@ -1383,10 +1383,10 @@ function setupZeigeErstAdmin(){
   box.style.display='block';
   box.innerHTML=`
     <div style="border-top:1px solid var(--ink-10);padding-top:14px">
-      <div style="font-size:14px;font-weight:600;margin-bottom:8px">Ersten Administrator anlegen</div>
+      <div style="font-size:14px;font-weight:600;margin-bottom:8px">Ersten Admin anlegen</div>
       <div class="lg" style="margin-bottom:10px">
         <label>Name</label>
-        <input type="text" id="setupAdminName" placeholder="z. B. Alexander Nadig" style="width:100%;padding:10px;border:1px solid var(--ink-20);border-radius:8px;font-size:15px">
+        <input type="text" id="setupAdminName" placeholder="z. B. Alexander-Roland Nadig" style="width:100%;padding:10px;border:1px solid var(--ink-20);border-radius:8px;font-size:15px">
       </div>
       <div class="lg" style="margin-bottom:14px">
         <label>PIN (4 Ziffern)</label>
@@ -1404,7 +1404,7 @@ async function setupErstAdminAnlegen(){
   const user={ id:uid(), name, pin, role:'admin', objekte:[], aktiv:true, eintritt:today() };
   await idbPut('users', user);
   if(typeof syncToOneDrive==='function'){ try { await syncToOneDrive(); } catch(e){ console.warn(e); } }
-  toast('Administrator angelegt ✓');
+  toast('Admin angelegt ✓');
   showScreen('loginScreen');
   await loadLoginUsers();
 }
@@ -1578,6 +1578,7 @@ function refreshCurrentPage(){if(curPage==='dash')renderDash();}
 ═══════════════════════════════════════════════════════════ */
 async function initApp(){
   document.getElementById('hdrSub').textContent='';
+  await migriereBenutzernamenVoll().catch(e=>console.warn('Namensmigration:', e));
   await renderDash();
   nav('dash','Dashboard','',false);
   updateBadge();
@@ -1599,6 +1600,23 @@ async function initApp(){
       else if (go==='aufgaben') nav('aufgaben','Aufgaben','');
     }
   } catch(e) { /* ignorieren */ }
+}
+
+/* v181 (Punkt 7): Vollständige Namen in den Benutzer-Records durchsetzen.
+   Idempotent; exakte Treffer, damit z. B. "Roland Nadig" (Eigentümer MG) unberührt bleibt. */
+async function migriereBenutzernamenVoll(){
+  const MAP = { 'Alexander Nadig':'Alexander-Roland Nadig', 'Anna Pfau':'Anna-Alexandra Pfau' };
+  const users = await idbGetAll('users').catch(()=>[]);
+  let geaendert = 0;
+  for(const u of users){
+    const neu = MAP[(u.name||'').trim()];
+    if(!neu) continue;
+    u.name = neu; u.geaendert = now();
+    await idbPut('users', u);
+    if(CU && CU.id===u.id) CU.name = neu;
+    geaendert++;
+  }
+  if(geaendert) syncSoon();
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -1677,6 +1695,14 @@ async function renderDash() {
     <button class="qa-btn" onclick="nav('branchenbuch')"><i class="ti ti-address-book"></i> Branchenbuch</button>
     <button class="qa-btn" onclick="modalPacklistenTermine()"><i class="ti ti-backpack"></i> Packliste</button>
     ${istVerwalter()?`<button class="qa-btn" onclick="nav('rechnungen')"><i class="ti ti-file-invoice"></i> Rechnungen</button>`:''}
+  </div>`;
+
+  // v181 (Punkt 5): Zähler-Schnellsuche – Nummer (auch Teilstück) oder Bezeichnung
+  html += `<div class="card" style="margin-bottom:12px">
+    <div class="card-hdr"><i class="ti ti-gauge"></i> Zähler suchen</div>
+    <input type="text" id="dashZaehlerSuche" placeholder="Zählernummer (auch Teilstück) oder Bezeichnung …"
+      oninput="zaehlerSucheInput()" style="width:100%;padding:10px;border:1px solid var(--ink-20);border-radius:8px;font-size:14px">
+    <div id="dashZaehlerTreffer" style="margin-top:8px"></div>
   </div>`;
 
   // Fällige Wartungsfristen
@@ -1902,7 +1928,7 @@ async function getMyObjekte(){
 function istVerwalter(u){ const r=(u||CU)?.role; return r==='admin'||r==='eigentuemer'; }
 function istSystemAdmin(u){ return (u||CU)?.role==='admin'; }
 function istEigentuemer(u){ return (u||CU)?.role==='eigentuemer'; }
-function rollenLabel(role){ return role==='admin'?'Administrator':(role==='eigentuemer'?'Eigentümer':'Hausmeister'); }
+function rollenLabel(role){ return role==='admin'?'Admin':(role==='eigentuemer'?'Eigentümer':'Hausmeister'); }
 function darfObjekt(objektId, u){
   const cu=u||CU; if(!cu) return false;
   if(cu.role==='admin') return true;
@@ -1977,7 +2003,7 @@ const INTERESSENT_STATUS = [
 function interessentStatusInfo(v){ return INTERESSENT_STATUS.find(x=>x.val===v) || INTERESSENT_STATUS[0]; }
 
 async function renderInteressenten(el, objektId){
-  if(!istVerwalter()){ el.innerHTML='<div class="empty"><i class="ti ti-lock"></i><p>Nur für Administratoren.</p></div>'; return; }
+  if(!istVerwalter()){ el.innerHTML='<div class="empty"><i class="ti ti-lock"></i><p>Nur für Admins.</p></div>'; return; }
   let alle = await idbGetAll('interessenten').catch(()=>[]);
   // Objektbezug: Kandidaten für dieses Objekt ODER allgemeine Warteliste ohne Objekt
   let liste = objektId
@@ -2038,7 +2064,7 @@ async function interessentWohnungsOptionen(objektId, selWe){
 }
 
 async function modalInteressentNeu(objektId, id){
-  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Admins'); return; }
   const k = id ? (await idbGet('interessenten', id).catch(()=>null))||{} : {};
   const objId = k.objektId || objektId || '';
   const objOpts = OBJEKTE.filter(o=>!o.privat || o.sichtbarFuer?.includes(CU?.id))
@@ -2124,7 +2150,7 @@ async function interessentObjChange(){
 }
 
 async function saveInteressent(id){
-  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Admins'); return; }
   const name = document.getElementById('iName')?.value?.trim()||'';
   if(!name){ toast('Bitte Namen angeben'); return; }
   const objId = document.getElementById('iObj')?.value||'';
@@ -2202,7 +2228,7 @@ async function modalInteressentDetail(id){
 }
 
 async function deleteInteressent(id){
-  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Admins'); return; }
   const k = await idbGet('interessenten', id).catch(()=>null);
   if(!k) return;
   if(!confirm(`Interessent „${k.name||''}" wirklich löschen?`)) return;
@@ -2219,7 +2245,7 @@ async function deleteInteressent(id){
 // Miete/Fläche und bestätigt. Nach dem Speichern wird der Kandidat auf
 // Status 'uebernommen' gesetzt (separat, da saveNewMieter den Kandidaten nicht kennt).
 async function interessentZuMieter(id){
-  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Admins'); return; }
   const k = await idbGet('interessenten', id).catch(()=>null);
   if(!k){ toast('Interessent nicht gefunden'); return; }
   if(!k.objektId){
@@ -2272,6 +2298,61 @@ const ZAEHLER_SONDERFALL = {
 };
 const ZAEHLER_ICON = {gas:'ti-flame',wasser:'ti-droplet',warmwasser:'ti-droplet-half-2',strom:'ti-bolt',heizung:'ti-temperature',tiefgarage:'ti-parking'};
 
+/* ── v181 (Punkt 5): Zähler-Schnellsuche im Dashboard ──
+   Sucht in Zählernummer (normalisiert, Teiltreffer) und Bezeichnung über alle
+   Objekte, auf die der Benutzer Zugriff hat. Klick: WE-Zähler → Wohnung des
+   aktiven Mieters, Allgemeinzähler → Zähler-Übersicht des Objekts. */
+function zaehlerSucheNorm(t){ return String(t||'').toLowerCase().replace(/[\s\-\/.]/g,''); }
+function zaehlerSucheInput(){
+  clearTimeout(window._zaehlerSucheTimer);
+  window._zaehlerSucheTimer=setTimeout(zaehlerSucheAusfuehren, 250);
+}
+async function zaehlerSucheAusfuehren(){
+  const box=document.getElementById('dashZaehlerTreffer');
+  const q=(document.getElementById('dashZaehlerSuche')?.value||'').trim();
+  if(!box) return;
+  if(q.length<2){ box.innerHTML = q ? '<div style="font-size:12px;color:var(--ink-40)">Mindestens 2 Zeichen eingeben …</div>' : ''; return; }
+  const qn=zaehlerSucheNorm(q), ql=q.toLowerCase();
+  let alle=[];
+  try{ alle=await idbGetAll('zaehler'); }catch(e){}
+  const treffer=alle.filter(z=>{
+    if(!z || !darfObjekt(z.objektId)) return false;
+    const nr=zaehlerSucheNorm(z.zaehlernummer);
+    return (nr && nr.includes(qn)) || (z.name||'').toLowerCase().includes(ql);
+  }).sort((a,b)=>{
+    // exakte/beginnende Nummerntreffer zuerst
+    const an=zaehlerSucheNorm(a.zaehlernummer), bn=zaehlerSucheNorm(b.zaehlernummer);
+    const ap=an.startsWith(qn)?0:1, bp=bn.startsWith(qn)?0:1;
+    return ap-bp || (a.name||'').localeCompare(b.name||'','de');
+  }).slice(0,15);
+  if(!treffer.length){ box.innerHTML='<div style="font-size:12px;color:var(--ink-40)">Keine passenden Zähler gefunden.</div>'; return; }
+  box.innerHTML=treffer.map(z=>{
+    const obj=getObj(z.objektId);
+    return `<div style="display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--ink-10);cursor:pointer" onclick="zaehlerTrefferOeffnen('${z.id}')">
+      <i class="ti ${ZAEHLER_ICON[z.art]||'ti-gauge'}" style="font-size:18px;color:var(--copper)"></i>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:13px;font-weight:600">${esc(z.name||'')}${z.weNr?` <span style="font-size:11px;color:var(--copper)">· WE ${esc(String(z.weNr))}</span>`:' <span style="font-size:11px;color:var(--ink-40)">· Allgemein</span>'}</div>
+        <div style="font-size:11px;color:var(--ink-40)">${z.zaehlernummer?`<i class="ti ti-hash"></i> ${esc(z.zaehlernummer)} · `:''}${esc(obj?.name||'')}</div>
+      </div>
+      <i class="ti ti-chevron-right" style="color:var(--ink-30)"></i>
+    </div>`;
+  }).join('');
+}
+async function zaehlerTrefferOeffnen(zid){
+  const z=await idbGet('zaehler', zid).catch(()=>null);
+  if(!z) return;
+  if(z.weNr!=null && z.weNr!==''){
+    // Wohnungszähler → direkt zur Wohnung (aktiver Mieter der WE)
+    const mieter=(await idbGetAll('mieter').catch(()=>[]))
+      .find(m=>m && m.objektId===z.objektId && String(m.weNr)===String(z.weNr) && !m._vormieter && !m._zukuenftig);
+    if(mieter){ await showMieter(mieter.id); return; }
+  }
+  // Allgemeinzähler (oder WE ohne aktiven Mieter) → Zähler-Übersicht des Objekts
+  await showObjekt(z.objektId);
+  const btn=[...document.querySelectorAll('#page-objekt .tab-btn')].find(b=>b.textContent.trim()==='Zähler');
+  if(btn) btn.click(); else await renderObjTab('zaehler');
+}
+
 // Stellt sicher, dass für ein Objekt die (Standard- oder Sonder-)Zähler existieren.
 async function ensureZaehler(objektId){
   const vorhandene = await idbGetAll('zaehler','objektId',objektId);
@@ -2299,6 +2380,15 @@ async function renderObjZaehler(el){
   let h=`<div class="s-hdr"><div class="s-title"><i class="ti ti-gauge"></i> Zähler (${zaehler.length})</div>
     ${istVerwalter()?`<button class="btn btn-sm" onclick="modalNeuerZaehler('${currentObjId}')"><i class="ti ti-plus"></i> Zähler</button>`:''}
   </div>`;
+  // v181 (Punkt 9): Gesamtdiagramm je Kategorie, sobald mehrere Zähler derselben Art existieren
+  const artZaehl={};
+  zaehler.forEach(z=>{ artZaehl[z.art]=(artZaehl[z.art]||0)+1; });
+  const chartArten=Object.keys(artZaehl).filter(a=>artZaehl[a]>=2);
+  if(chartArten.length){
+    h+=`<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">${chartArten.map(a=>
+      `<button class="btn btn-sm" onclick="modalZaehlerKategorieChart('${currentObjId}','${a}')">
+        <i class="ti ti-chart-line"></i> Diagramm ${esc(ZAEHLER_ART_LABEL[a]||a)} (${artZaehl[a]})</button>`).join('')}</div>`;
+  }
 
   for(const z of zaehler){
     const istDub = dubCount[z.art+'|'+norm(z.name)] > 1;
@@ -2384,7 +2474,7 @@ async function onZsFoto(input){
 function zsFotoVorschau(dataUrl){
   const prev = document.getElementById('zsFotoPreview');
   if(prev) prev.innerHTML = `<img src="${dataUrl}" style="max-width:100%;border-radius:8px;border:1px solid var(--ink-10)">
-    <button class="btn btn-sm btn-danger" style="margin-top:4px" onclick="window._zsFoto=null;document.getElementById('zsFotoPreview').innerHTML=''"><i class="ti ti-trash"></i> Foto entfernen</button>`;
+    <button class="btn btn-sm btn-danger" style="margin-top:4px" onclick="if(confirm('Foto wirklich entfernen?')){window._zsFoto=null;document.getElementById('zsFotoPreview').innerHTML=''}"><i class="ti ti-trash"></i> Foto entfernen</button>`;
 }
 
 // Zählerstand-Foto über das robuste In-App-Kamera-Overlay (kein PWA-Reload)
@@ -2433,6 +2523,88 @@ async function saveZaehlerstand(zaehlerId){
   toast('Ablesung gespeichert ✓');
 }
 
+/* ── v181 (Punkt 9): Diagramme für Zählerstände (reines SVG, keine Bibliothek) ── */
+const ZCHART_FARBEN=['#b87333','#1a56db','#0e9f6e','#dc2626','#7c3aed','#d97706','#0891b2','#be185d','#4b5563','#65a30d'];
+const ZAEHLER_ART_LABEL={gas:'Gas',wasser:'Wasser',warmwasser:'Warmwasser',strom:'Strom',heizung:'Heizung',tiefgarage:'Tiefgarage'};
+// serien: [{name, punkte:[{x:ms,y:Zahl}]}] – x = Zeit, y = Wert (>=0)
+function linienChartSVG(serien, opts={}){
+  const daten=serien.filter(se=>se.punkte&&se.punkte.length);
+  const alleP=daten.flatMap(se=>se.punkte);
+  if(!alleP.length) return '';
+  const W=640,H=300,padL=56,padR=14,padT=14,padB=34;
+  let xMin=Math.min(...alleP.map(p=>p.x)), xMax=Math.max(...alleP.map(p=>p.x));
+  if(xMin===xMax){ xMin-=86400000; xMax+=86400000; }
+  const yMax=Math.max(1e-9, Math.max(...alleP.map(p=>p.y)))*1.1;
+  const sx=x=>padL+(x-xMin)/(xMax-xMin)*(W-padL-padR);
+  const sy=y=>H-padB-(y/yMax)*(H-padT-padB);
+  const fY=v=>v.toLocaleString('de-DE',{maximumFractionDigits: yMax<10?2:(yMax<100?1:0)});
+  const fD=ms=>{ const d=new Date(ms); return String(d.getDate()).padStart(2,'0')+'.'+String(d.getMonth()+1).padStart(2,'0')+'.'+String(d.getFullYear()).slice(2); };
+  let g='';
+  for(let i=0;i<=4;i++){
+    const yv=yMax/4*i, yp=sy(yv);
+    g+=`<line x1="${padL}" y1="${yp}" x2="${W-padR}" y2="${yp}" stroke="#e5e0d8" stroke-width="1"/>`+
+       `<text x="${padL-6}" y="${yp+4}" font-size="10" fill="#8a8378" text-anchor="end">${fY(yv)}</text>`;
+  }
+  for(const t of [xMin,(xMin+xMax)/2,xMax]){
+    g+=`<text x="${sx(t)}" y="${H-padB+16}" font-size="10" fill="#8a8378" text-anchor="middle">${fD(t)}</text>`;
+  }
+  daten.forEach((se,i)=>{
+    const farbe=ZCHART_FARBEN[i%ZCHART_FARBEN.length];
+    const pkt=[...se.punkte].sort((a,b)=>a.x-b.x);
+    if(pkt.length>1){
+      g+=`<polyline points="${pkt.map(p=>sx(p.x).toFixed(1)+','+sy(p.y).toFixed(1)).join(' ')}" fill="none" stroke="${farbe}" stroke-width="2"/>`;
+    }
+    for(const p of pkt){
+      g+=`<circle cx="${sx(p.x).toFixed(1)}" cy="${sy(p.y).toFixed(1)}" r="3.2" fill="${farbe}"><title>${esc(se.name)} · ${fD(p.x)} · ${fY(p.y)} ${esc(opts.einheit||'')}</title></circle>`;
+    }
+  });
+  const legende = daten.length>1
+    ? `<div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:6px">${daten.map((se,i)=>
+        `<span style="font-size:11px;display:inline-flex;align-items:center;gap:5px"><span style="width:10px;height:10px;border-radius:50%;background:${ZCHART_FARBEN[i%ZCHART_FARBEN.length]};display:inline-block"></span>${esc(se.name)}</span>`).join('')}</div>`
+    : '';
+  return `<div><svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block">${g}</svg>${legende}
+    ${opts.hinweis?`<div style="font-size:10px;color:var(--ink-40);margin-top:4px">${opts.hinweis}</div>`:''}</div>`;
+}
+// Verbrauchspunkte eines Zählers aus seinen Ablesungen (aufsteigend); Modus:
+// 'diff' = Verbrauch je Ablesung, 'proTag' = Ø Verbrauch/Tag im Intervall.
+function zaehlerVerbrauchsPunkte(staendeAsc, modus){
+  const out=[];
+  for(let i=1;i<staendeAsc.length;i++){
+    const alt=staendeAsc[i-1], neuS=staendeAsc[i];
+    const d=(parseFloat(neuS.wert)||0)-(parseFloat(alt.wert)||0);
+    if(d<0) continue; // Zählerwechsel/Korrektur nicht als negativer Verbrauch
+    const t=new Date(neuS.datumISO).getTime();
+    if(!isFinite(t)) continue;
+    if(modus==='proTag'){
+      const tage=Math.max(1,Math.round((new Date(neuS.datumISO)-new Date(alt.datumISO))/86400000));
+      out.push({x:t, y:d/tage});
+    } else out.push({x:t, y:d});
+  }
+  return out;
+}
+// Gesamtübersicht einer Kategorie: alle Zähler dieser Art in einem Diagramm,
+// eine Linie je Zähler (Ø Verbrauch/Tag – fair vergleichbar bei unterschiedlichen Ableseabständen)
+async function modalZaehlerKategorieChart(objektId, art){
+  const zaehler=(await idbGetAll('zaehler','objektId',objektId)).filter(z=>z.art===art)
+    .sort((a,b)=>(a.name||'').localeCompare(b.name||'','de'));
+  const staende=await idbGetAll('zaehlerstaende','objektId',objektId);
+  const serien=[];
+  let einheit='';
+  for(const z of zaehler){
+    const asc=staende.filter(x=>x.zaehlerId===z.id).sort((a,b)=>new Date(a.datumISO||0)-new Date(b.datumISO||0));
+    const punkte=zaehlerVerbrauchsPunkte(asc,'proTag');
+    if(punkte.length) serien.push({name:(z.name||'')+(z.weNr?` (WE ${z.weNr})`:''), punkte});
+    if(!einheit && z.einheit) einheit=z.einheit;
+  }
+  const label=ZAEHLER_ART_LABEL[art]||art;
+  const chart=linienChartSVG(serien,{einheit:(einheit?einheit+'/Tag':''),
+    hinweis:'Ø Verbrauch pro Tag zwischen zwei Ablesungen – so sind Wohnungen mit unterschiedlichen Ableseabständen vergleichbar.'});
+  showModal(`
+    <div class="m-title"><i class="ti ${ZAEHLER_ICON[art]||'ti-gauge'}"></i> ${esc(label)} – alle Zähler im Vergleich</div>
+    ${chart||'<div style="font-size:13px;color:var(--ink-40)">Noch nicht genug Ablesungen für ein Diagramm (je Zähler mindestens zwei nötig).</div>'}
+    <button class="btn btn-full" style="margin-top:12px" onclick="closeModal()">Schließen</button>`);
+}
+
 // Verlauf mit Verbrauchsdifferenzen (Monat/Jahr-Vergleich)
 async function zeigeZaehlerVerlauf(zaehlerId){
   const z = await idbGet('zaehler', zaehlerId);
@@ -2470,8 +2642,15 @@ async function zeigeZaehlerVerlauf(zaehlerId){
   const jahrRows=Object.keys(perJahr).sort((a,b)=>b-a).map(j=>
     `<tr><td style="padding:4px 6px;font-size:12px">${j}</td><td style="padding:4px 6px;font-size:12px;font-weight:600">${perJahr[j].toFixed(2)} ${z.einheit}</td></tr>`).join('');
 
+  // v181 (Punkt 9): grafischer Verlauf des Verbrauchs je Ablesung (ab 3 Ablesungen)
+  const chartPunkte=zaehlerVerbrauchsPunkte([...staende].reverse(),'diff');
+  const chartHtml=chartPunkte.length>=2
+    ? linienChartSVG([{name:z.name||'Zähler', punkte:chartPunkte}],
+        {einheit:z.einheit, hinweis:'Verbrauch ('+z.einheit+') je Ablesung, jeweils seit der vorherigen Ablesung.'})
+    : '';
   showModal(`
     <div class="m-title"><i class="ti ti-chart-line"></i> Verlauf – ${z.name}</div>
+    ${chartHtml?`<div class="card-hdr" style="margin-bottom:6px">Verbrauchsverlauf</div><div style="margin-bottom:14px">${chartHtml}</div>`:''}
     ${jahrRows?`<div class="card-hdr" style="margin-bottom:6px">Verbrauch je Kalenderjahr</div>
     <table style="width:100%;border-collapse:collapse;margin-bottom:14px">
       <thead><tr style="background:var(--ink-05)"><th style="padding:4px 6px;text-align:left;font-size:11px">Jahr</th><th style="padding:4px 6px;text-align:left;font-size:11px">Verbrauch</th></tr></thead>
@@ -2502,7 +2681,7 @@ async function delZaehlerstand(id, zaehlerId){
 
 // Einzelnen Ablesewert bearbeiten (nur Admin)
 async function modalZaehlerstandEdit(id, zaehlerId){
-  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Admins'); return; }
   const st = await idbGet('zaehlerstaende', id);
   if(!st){ toast('Ablesung nicht gefunden'); return; }
   const z = await idbGet('zaehler', zaehlerId);
@@ -2525,7 +2704,7 @@ async function modalZaehlerstandEdit(id, zaehlerId){
 }
 
 async function saveZaehlerstandEdit(id, zaehlerId){
-  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Admins'); return; }
   const st = await idbGet('zaehlerstaende', id);
   if(!st) return;
   const wert = document.getElementById('zseWert')?.value;
@@ -2842,7 +3021,7 @@ function monateAbziehen(datum, monate){
 }
 
 async function renderObjVersorger(el){
-  if(!istVerwalter()){ el.innerHTML='<div class="empty"><i class="ti ti-lock"></i><p>Nur für Administratoren sichtbar.</p></div>'; return; }
+  if(!istVerwalter()){ el.innerHTML='<div class="empty"><i class="ti ti-lock"></i><p>Nur für Admins sichtbar.</p></div>'; return; }
   const liste=(await idbGetAll('versorger','objektId',currentObjId))
     .sort((a,b)=>a.sparte.localeCompare(b.sparte));
   const zMap = Object.fromEntries((await idbGetAll('zaehler','objektId',currentObjId)).map(z=>[z.id,z]));
@@ -2850,7 +3029,7 @@ async function renderObjVersorger(el){
     <button class="btn btn-sm btn-copper" onclick="modalVersorger('${currentObjId}')"><i class="ti ti-plus"></i> Versorger</button>
   </div>
   <div style="font-size:11px;color:var(--ink-40);margin-bottom:10px">
-    <i class="ti ti-info-circle"></i> Zugangsdaten sind nur für Administratoren sichtbar. Eine Erinnerung wird automatisch einen Monat vor Ablauf der Kündigungsfrist im Kalender hinterlegt.
+    <i class="ti ti-info-circle"></i> Zugangsdaten sind nur für Admins sichtbar. Eine Erinnerung wird automatisch einen Monat vor Ablauf der Kündigungsfrist im Kalender hinterlegt.
   </div>`;
   if(!liste.length){
     h+='<div class="empty"><i class="ti ti-file-off"></i><p>Noch keine Versorger erfasst.</p></div>';
@@ -4659,6 +4838,7 @@ async function backendKeySpeichern(){
   toast('Backend-Schlüssel gespeichert');
 }
 async function backendKeyLoeschen(){
+  if(!confirm('Backend-Schlüssel wirklich von diesem Gerät entfernen?')) return;
   await idbDelete('settings','backendKey').catch(()=>{});
   const inp=document.getElementById('backendKeyIn'); if(inp) inp.value='';
   const del=document.getElementById('backendKeyDelBtn'); if(del) del.style.display='none';
@@ -4698,6 +4878,7 @@ async function saEncKeySpeichern(){
   toast('Selbstauskunft-Schlüssel gespeichert');
 }
 async function saEncKeyLoeschen(){
+  if(!confirm('Entschlüsselungs-Schlüssel wirklich von diesem Gerät entfernen?')) return;
   await idbDelete('settings','saEncKey').catch(()=>{});
   const inp=document.getElementById('saEncKeyIn'); if(inp) inp.value='';
   const del=document.getElementById('saEncKeyDelBtn'); if(del) del.style.display='none';
@@ -5087,6 +5268,7 @@ async function renderEigentuemerLeistung(el){
 async function renderZeiterfassung(){
   const el=document.getElementById('page-zeit');
   if(!el) return;
+  await ladePausePauschal();
   // Eigentümer: keine Stempeluhr/Personalsicht, sondern objektbezogene
   // Leistungsübersicht (Kleinreparaturen, Reparaturen) für die Abrechnung.
   if(istEigentuemer()){
@@ -5172,7 +5354,7 @@ async function renderZeiterfassung(){
     h+=`<div class="card-hdr" style="margin:16px 0 6px"><i class="ti ti-history"></i> Letzte Sitzungen</div>`;
     for(const tag of tage){
       const sitzungenTag=alleBeendet.filter(x=>x.datum===tag).sort((a,b)=>(a.start||'').localeCompare(b.start||''));
-      const tagMin=sitzungenTag.reduce((sum,x)=>sum+sitzungMinuten(x),0);
+      const tagMin=tagMinutenNetto(sitzungenTag);
       h+=`<div style="display:flex;align-items:center;justify-content:space-between;margin:10px 0 4px">
         <div style="font-size:12px;font-weight:600;color:var(--ink-60)">${fmtDatumLang(tag)}</div>
         <div style="font-size:12px;font-weight:600;color:var(--copper-d)">${fmtDauer(tagMin)}</div>
@@ -5317,6 +5499,7 @@ async function speichereTaetigkeit(taetigkeit, ziel, extra){
   return rec;
 }
 async function taetigkeitLogLoeschen(id){
+  if(!confirm('Diesen Tätigkeits-Eintrag wirklich löschen?')) return;
   await deleteMitTombstone('taetigkeit_log', id);
   syncSoon();
   if(document.getElementById('page-zeit')?.classList.contains('active')) renderZeiterfassung();
@@ -5686,7 +5869,7 @@ async function modalMitarbeiterZeit(userId){
   } else {
     for(const tag of tage){
       const st=sitzungen.filter(s=>s.datum===tag).sort((a,b)=>(a.start||'').localeCompare(b.start||''));
-      const tagMin=st.reduce((sum,s)=>sum+sitzungMinuten(s),0);
+      const tagMin=tagMinutenNetto(st);
       const ueber10=tagMin>600;
       body+=`<div style="display:flex;align-items:center;justify-content:space-between;margin:8px 0 4px">
         <div style="font-size:12px;font-weight:600;color:var(--ink-60)">${fmtDatumLang(tag)}</div>
@@ -5717,7 +5900,7 @@ async function renderUrlaub(){
   // Mitarbeiter und sieht keine fremden Personaldaten – nur Hinweis.
   if(istEigentuemer()){
     el.innerHTML=`<div class="s-hdr"><div class="s-title"><i class="ti ti-beach"></i> Urlaub</div></div>
-      <div class="empty"><i class="ti ti-shield-lock"></i><p>Die Urlaubs- und Personalverwaltung liegt beim Administrator.<br>Geleistete Tätigkeiten an Ihren Objekten finden Sie unter „Zeiterfassung".</p></div>`;
+      <div class="empty"><i class="ti ti-shield-lock"></i><p>Die Urlaubs- und Personalverwaltung liegt beim Admin.<br>Geleistete Tätigkeiten an Ihren Objekten finden Sie unter „Zeiterfassung".</p></div>`;
     return;
   }
   const istAdmin = istSystemAdmin();
@@ -6541,8 +6724,40 @@ async function getSitzungenUser(userId){
 function summeMinuten(sitzungen, filterFn){
   return sitzungen.filter(filterFn).reduce((sum,s)=>sum+sitzungMinuten(s),0);
 }
+/* ── v181 (Punkt 4): Pauschale 30-Minuten-Pause je Arbeitstag ──
+   Einstellung 'zeit_pause_pauschal' (settings, synchronisiert): Ist sie aktiv,
+   werden je Kalendertag mit erfasster Arbeitszeit einmalig 30 Minuten abgezogen –
+   unabhängig davon, ob sich der Mitarbeiter zur Pause ausloggt. Erfasste
+   Einzelpausen mindern die Zeit weiterhin zusätzlich (sitzungMinuten). */
+const PAUSE_PAUSCHAL_MIN = 30;
+async function ladePausePauschal(){
+  try{ const r=await idbGet('settings','zeit_pause_pauschal'); window._pausePauschal=!!(r&&r.value); }
+  catch(e){ window._pausePauschal=false; }
+  return window._pausePauschal;
+}
+async function pausePauschalToggle(an){
+  await idbPut('settings',{id:'zeit_pause_pauschal', value:!!an, geaendert:nowIso()});
+  window._pausePauschal=!!an;
+  syncSoon();
+  toast(an?'Pauschale Pause aktiv: 30 Min./Arbeitstag werden abgezogen':'Pauschale Pause deaktiviert');
+}
+// Netto-Minuten eines Tages: Summe der Sitzungen abzüglich Tagespauschale (max. Tagesist)
+function tagMinutenNetto(sitzungenTag){
+  const brutto=(sitzungenTag||[]).reduce((sum,x)=>sum+sitzungMinuten(x),0);
+  if(!window._pausePauschal || brutto<=0) return brutto;
+  return Math.max(0, brutto - PAUSE_PAUSCHAL_MIN);
+}
+// Wie summeMinuten, aber mit Tagespauschale (je Kalendertag einmalig)
+function summeMinutenPauschal(sitzungen, filterFn){
+  const gefiltert=sitzungen.filter(filterFn);
+  if(!window._pausePauschal) return gefiltert.reduce((sum,s)=>sum+sitzungMinuten(s),0);
+  const proTag={};
+  for(const s of gefiltert) (proTag[s.datum]=proTag[s.datum]||[]).push(s);
+  return Object.values(proTag).reduce((sum,st)=>sum+tagMinutenNetto(st),0);
+}
 // Stundenkonto für einen User: aktuelle Woche, aktueller Monat, Saldo inkl. Übertrag
 async function berechneStundenkonto(user){
+  await ladePausePauschal();
   const sitzungen=await getSitzungenUser(user.id);
   const urlaube=await getUrlaube(user.id);
   const wochenSoll=(user.wochenSoll!=null?user.wochenSoll:40);
@@ -6551,9 +6766,9 @@ async function berechneStundenkonto(user){
   const dieseWocheMontag=montagDerWoche(heuteStr);
   const dieserMonat=monatKey(heuteStr);
   // Ist-Minuten dieser Woche / dieses Monats (tatsächlich gearbeitete Zeit; zählt auch im Urlaub)
-  const wocheMin=summeMinuten(sitzungen, s=>montagDerWoche(s.datum)===dieseWocheMontag);
-  const monatMin=summeMinuten(sitzungen, s=>monatKey(s.datum)===dieserMonat);
-  const heuteMin=summeMinuten(sitzungen, s=>s.datum===heuteStr);
+  const wocheMin=summeMinutenPauschal(sitzungen, s=>montagDerWoche(s.datum)===dieseWocheMontag);
+  const monatMin=summeMinutenPauschal(sitzungen, s=>monatKey(s.datum)===dieserMonat);
+  const heuteMin=summeMinutenPauschal(sitzungen, s=>s.datum===heuteStr);
 
   // Soll taggenau aufsummieren: jeder Mo–Fr zählt tagSoll, außer Feiertag/Sondertag oder genehmigter Urlaub.
   const sollBis=(vonStr, bisStr)=>{
@@ -6596,13 +6811,14 @@ async function berechneStundenkonto(user){
 }
 // Reine Ist-Stunden (Woche/Monat/heute) ohne Soll/Saldo – für Admin-Dokumentation
 async function berechneIstStunden(userId){
+  await ladePausePauschal();
   const sitzungen=await getSitzungenUser(userId);
   const heuteStr=today();
   const dieseWocheMontag=montagDerWoche(heuteStr);
   const dieserMonat=monatKey(heuteStr);
-  const wocheMin=summeMinuten(sitzungen, s=>montagDerWoche(s.datum)===dieseWocheMontag);
-  const monatMin=summeMinuten(sitzungen, s=>monatKey(s.datum)===dieserMonat);
-  const heuteMin=summeMinuten(sitzungen, s=>s.datum===heuteStr);
+  const wocheMin=summeMinutenPauschal(sitzungen, s=>montagDerWoche(s.datum)===dieseWocheMontag);
+  const monatMin=summeMinutenPauschal(sitzungen, s=>monatKey(s.datum)===dieserMonat);
+  const heuteMin=summeMinutenPauschal(sitzungen, s=>s.datum===heuteStr);
   return { wocheStd:wocheMin/60, monatStd:monatMin/60, heuteStd:heuteMin/60 };
 }
 // Übertrag aus settings lesen (Schlüssel: stdkonto_<userId>)
@@ -6615,6 +6831,7 @@ async function getStundenUebertrag(userId, bisMonat){
 // Wird bei App-Start aufgerufen.
 async function pruefeMonatsuebertrag(){
   try{
+    await ladePausePauschal();
     const users=(await idbGetAll('users')).filter(u=>u.role!=='admin');
     const dieserMonat=monatKey(today());
     for(const u of users){
@@ -6632,7 +6849,7 @@ async function pruefeMonatsuebertrag(){
         .sort();
       let changed=false;
       for(const m of monate){
-        const istMin=summeMinuten(sitzungen, s=>monatKey(s.datum)===m);
+        const istMin=summeMinutenPauschal(sitzungen, s=>monatKey(s.datum)===m);
         const [jr,mo]=m.split('-').map(Number);
         const tageImMonat=new Date(jr,mo,0).getDate();
         // Monatssoll taggenau: Mo–Fr, ohne Feiertage/Sondertage/genehmigten Urlaub
@@ -8781,7 +8998,7 @@ async function getSchluesselSoll(objektId, weNr){
 }
 
 async function modalSchluessel(objektId, weNr){
-  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Admins'); return; }
   const obj = getObj(objektId);
   const soll = await getSchluesselSoll(objektId, weNr);
   const w = await getWohnungStamm(objektId, weNr);
@@ -8805,7 +9022,7 @@ async function modalSchluessel(objektId, weNr){
 }
 
 async function saveSchluessel(objektId, weNr){
-  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Admins'); return; }
   const schluessel = {};
   SCHLUESSEL_TYPEN.forEach(t => { schluessel[t.key] = Number(document.getElementById('sk_'+t.key)?.value)||0; });
   const schluesselNotiz = document.getElementById('skNotiz')?.value?.trim()||'';
@@ -8840,7 +9057,7 @@ function energieausweisWarnung(e){
 }
 
 async function modalGebaeudeStamm(objektId){
-  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Admins'); return; }
   const obj=getObj(objektId);
   const s=(await idbGet('objekt_stamm',objektId).catch(()=>null))||{};
   // Punkt 1.1: Eigentümerliste + aktuelle Zuordnung laden
@@ -8953,7 +9170,7 @@ async function onEigSelectChange(){
   wrap.style.display = sel.value==='__neu' ? 'block' : 'none';
 }
 async function saveGebaeudeStamm(objektId){
-  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Admins'); return; }
   // Punkt 1.1: Eigentümer ermitteln (Auswahl oder Neueintrag)
   let eigId='', eigName='', eigAnschrift='';
   const eigSel=document.getElementById('gsEigSelect')?.value||'';
@@ -9035,7 +9252,7 @@ async function getVersicherungenFuerObjekt(objektId){
 
 // Verwaltungs-Modal: alle Versicherungen eines Objekts
 async function modalVersicherungen(objektId){
-  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Admins'); return; }
   const obj=getObj(objektId);
   const list=await getVersicherungenFuerObjekt(objektId);
   const zeilen = list.length
@@ -9068,7 +9285,7 @@ async function modalVersicherungen(objektId){
 
 // Anlage/Bearbeitung einer einzelnen Versicherung
 async function modalVersicherungEdit(objektId, versId){
-  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Admins'); return; }
   const obj=getObj(objektId);
   let v={id:'',objektId,art:'haftpflicht',artText:'',gesellschaft:'',scheinNr:'',ansprechpartner:'',schadenEmail:'',schadenTel:'',notiz:''};
   if(versId){ const ex=await idbGet('versicherungen',versId).catch(()=>null); if(ex) v=ex; }
@@ -9108,7 +9325,7 @@ function onVsArtChange(){
   if(sel&&wrap) wrap.style.display = sel.value==='sonstige' ? 'block' : 'none';
 }
 async function saveVersicherung(objektId, versId){
-  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Admins'); return; }
   const g=id=>document.getElementById(id)?.value?.trim()||'';
   const art=document.getElementById('vsArt')?.value||'haftpflicht';
   const rec={
@@ -9132,7 +9349,7 @@ async function saveVersicherung(objektId, versId){
   await modalVersicherungen(objektId);
 }
 async function versicherungLoeschen(objektId, versId){
-  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Admins'); return; }
   if(!confirm('Diese Versicherung wirklich löschen?')) return;
   await idbDelete('versicherungen',versId);
   clearTimeout(window._syncTimer);
@@ -9143,7 +9360,7 @@ async function versicherungLoeschen(objektId, versId){
 
 /* ── Schadensmeldung an Versicherung (Paket 3b) ── */
 async function modalSchadenMelden(mangelId, store='maengel'){
-  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Admins'); return; }
   const m=await idbGet(store,mangelId).catch(()=>null);
   if(!m){ toast('Vorgang nicht gefunden'); return; }
   const obj=getObj(m.objektId);
@@ -9416,7 +9633,7 @@ function alterAus(iso){
 }
 // Person als verstorben / wieder lebend markieren
 async function togglePersonVerstorben(mieterId, idx){
-  if(!istVerwalter()){ toast('Nur Administratoren können den Verstorben-Status ändern'); return; }
+  if(!istVerwalter()){ toast('Nur Admins können den Verstorben-Status ändern'); return; }
   const m=await idbGet('mieter',mieterId); if(!m) return;
   // Sicherstellen, dass eine personen_liste existiert
   if(!m.personen_liste||!m.personen_liste.length){
@@ -9972,7 +10189,7 @@ function personenAnzahlStichtag(liste, stichtagISO){
 
 // Alle (sichtbaren) Mieter als Sammel-vCard exportieren/teilen.
 async function mieterAlleVcardExport(){
-  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Admins'); return; }
   const myObj = await getMyObjekte();
   const myIds = myObj.map(o=>o.id);
   let mieter = (await idbGetAll('mieter').catch(()=>[]))
@@ -10295,7 +10512,7 @@ async function zeigeGespMietbescheinigung(mbId){
 }
 // Gespeicherte Mietbescheinigung löschen
 async function loescheGespMietbescheinigung(mbId, mieterId){
-  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Admins'); return; }
   if(!confirm('Diese gespeicherte Mietbescheinigung wirklich löschen?')) return;
   await idbDelete('mietbescheinigungen', mbId);
   bcSend('mietbescheinigung_saved', {mieterId});
@@ -10326,7 +10543,7 @@ function mbBegleittext(m, obj){
 }
 
 async function mbVersandDialog(mbId){
-  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Admins'); return; }
   const b = await idbGet('mietbescheinigungen', mbId).catch(()=>null);
   if(!b){ toast('Bescheinigung nicht gefunden'); return; }
   const m = await idbGet('mieter', b.mieterId).catch(()=>null);
@@ -10397,7 +10614,7 @@ async function zeigeMvEntwurf(eid){
 }
 // Punkt 13: Archivierten Entwurf wieder in den Generator laden (zum Weiterbearbeiten).
 async function mvEntwurfWiederherstellen(eid){
-  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Admins'); return; }
   const e=await idbGet('mv_entwuerfe',eid);
   if(!e||!e.entwurf){ toast('Entwurf nicht gefunden'); return; }
   MV_DRAFT = Object.assign({}, e.entwurf, { mieterId: e.mieterId });
@@ -10406,7 +10623,7 @@ async function mvEntwurfWiederherstellen(eid){
 }
 // Punkt 13: Archivierten Entwurf löschen.
 async function loescheMvEntwurf(eid, mieterId){
-  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Admins'); return; }
   if(!confirm('Diesen Mietvertrag-Entwurf wirklich löschen?')) return;
   await idbDelete('mv_entwuerfe', eid);
   bcSend('mv_entwurf_saved', {mieterId});
@@ -10852,13 +11069,9 @@ async function ladeMieterWeCache(){
       if(m._vormieter||m._zukuenftig||m.leerstand) continue;
       if(m.weNr==null||m.weNr==='') continue;
       const key=m.objektId+'|'+String(m.weNr);
-      // erste lebende Person bevorzugen, sonst Hauptname
-      let name=m.mieter;
-      if(m.personen_liste&&m.personen_liste.length){
-        const leb=m.personen_liste.filter(p=>p.name&&!p.verstorben);
-        if(leb.length) name=leb.map(p=>p.name.split(' ').slice(-1)[0]).slice(0,2).join(' / ');
-      }
-      _mieterWeCache[key]=name;
+      // v181 (Punkt 3): einheitliche Darstellung – immer Nachname(n) der Vertragspartner.
+      // Der bisherige Letztes-Wort-Split lieferte bei "Nachname, Vorname" den Vornamen.
+      _mieterWeCache[key]=hauptmieterNachnamen(m)||m.mieter||'';
     }
   }catch(e){ console.warn('MieterWeCache:', e); }
 }
@@ -11116,6 +11329,7 @@ async function toggleAufgabe(id){
   toast('Status aktualisiert');
 }
 async function deleteAufgabe(id){
+  if(!confirm('Diese Aufgabe wirklich löschen?')) return;
   await idbDelete('aufgaben',id); bcSend('aufgabe_changed',{id});
   await refreshAufgaben(); if(curPage==='objekt') await renderObjTab('aufgaben');
   toast('Aufgabe gelöscht');
@@ -11210,6 +11424,7 @@ async function syncEinzugNachMangelStatus(mangelId){
 }
 
 async function deleteMangel(id){
+  if(!confirm('Diesen Mangel wirklich löschen?')) return;
   let store='maengel';
   if(!(await idbGet('maengel',id))){ if(await idbGet('reparaturen',id).catch(()=>null)) store='reparaturen'; }
   await idbDelete(store,id); bcSend('mangel_changed',{id});
@@ -11222,6 +11437,7 @@ async function toggleReparatur(id){
   await idbPut('reparaturen',r); await refreshAufgaben(); toast('Status aktualisiert');
 }
 async function deleteReparatur(id){
+  if(!confirm('Diese Reparatur wirklich löschen?')) return;
   await idbDelete('reparaturen',id); await refreshAufgaben(); toast('Reparatur gelöscht');
 }
 
@@ -11609,7 +11825,7 @@ async function renderDokumente(el, objektId, mieterId) {
   let docs = mieterId
     ? alle.filter(d=>d.mieterId===mieterId)
     : alle.filter(d=>d.objektId===objektId && !d.mieterId);
-  // Sensible Dokumente sind nur für Administratoren sichtbar:
+  // Sensible Dokumente sind nur für Admins sichtbar:
   // NKA (Finanzdaten), Ausweise (§20 PAuswG / Art.9 DSGVO), SEPA-Mandate (Bankdaten)
   const ADMIN_ONLY_DOK = ['nka','ausweis','lastschrift'];
   if (!istVerwalter()) docs = docs.filter(d=>!ADMIN_ONLY_DOK.includes(d.typ));
@@ -11667,7 +11883,7 @@ async function renderDokumente(el, objektId, mieterId) {
 // Portal-Freigabe eines Einzeldokuments umschalten.
 // Zyklus: Typ-Standard → ausdrücklich freigegeben → ausdrücklich gesperrt → Typ-Standard
 async function togglePortalFreigabe(id){
-  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Admins'); return; }
   const d = await idbGet('dokumente', id);
   if(!d || !PORTAL_DOK_TYPEN.includes(d.typ)){ return; }
   if(d.portalFreigabe === true)       d.portalFreigabe = false;
@@ -11741,16 +11957,49 @@ async function renderODArchivFuerWE(el, gruppe, weNr){
     h+=`<div style="font-size:12px;color:var(--ink-40)">Noch keine OneDrive-Dateien für diese Wohnung. Lege Dateien am PC im Ordner <em>${esc(odGruppeOrdner(gruppe))} / WE ${esc(String(weNr))}</em> ab und tippe auf <i class="ti ti-refresh"></i>.</div>`;
     el.innerHTML=h; return;
   }
-  h+=dateien.map(d=>`<div style="display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--ink-10);cursor:pointer" onclick="odDateiOeffnen('${d.id}')">
+  // v181 (Punkt 2): Dubletten (gleiche OneDrive-Item-ID bzw. gleicher Pfad) nur einmal anzeigen
+  dateien=odDateienDedupe(dateien);
+  h+=dateien.map(d=>`<div style="display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--ink-10)">
     <i class="ti ${odDateiIcon(d.name)}" style="font-size:20px;color:var(--copper,#b87333)"></i>
-    <div style="flex:1;min-width:0">
+    <div style="flex:1;min-width:0;cursor:pointer" onclick="odDateiOeffnen('${d.id}')">
       <div style="font-size:13px;font-weight:500;word-break:break-word">${esc(d.name||'')}</div>
       <div style="font-size:11px;color:var(--ink-40)">${d.groesse?fmtBytes(d.groesse):''}${d.lastModified?' · '+new Date(d.lastModified).toLocaleDateString('de-DE'):''}${d.quelle==='app'?' · aus App':''}</div>
     </div>
-    <i class="ti ti-external-link" style="color:var(--ink-30)"></i>
+    <i class="ti ti-external-link" style="color:var(--ink-30);cursor:pointer" onclick="odDateiOeffnen('${d.id}')"></i>
+    ${istVerwalter()?`<button class="btn btn-sm btn-danger" onclick="event.stopPropagation();odDateiLoeschen('${d.id}')"><i class="ti ti-trash"></i></button>`:''}
   </div>`).join('');
   el.innerHTML=h;
 }
+/* v181 (Punkt 2): Dubletten-Bereinigung für die Anzeige – gleiche odItemId
+   (bzw. gleicher Pfad, falls keine Item-ID) nur einmal, jüngster Record gewinnt. */
+function odDateienDedupe(liste){
+  const gesehen={}, out=[];
+  for(const d of liste){
+    const key = d.odItemId ? ('id:'+d.odItemId) : ('pf:'+(d.pfad||d.id));
+    if(gesehen[key]) continue;
+    gesehen[key]=true; out.push(d);
+  }
+  return out;
+}
+
+/* v181 (Punkt 1): Datei aus App UND OneDrive löschen (mit Sicherheitsabfrage).
+   Record wird per geloescht-Flag entfernt (merge-fähig, geräteübergreifend). */
+async function odDateiLoeschen(recId){
+  const rec=await idbGet('od_dateien', recId).catch(()=>null);
+  if(!rec) return;
+  if(!confirm(`„${rec.name||'Datei'}" wirklich löschen?\n\nDie Datei wird aus der App-Ansicht entfernt und – falls noch vorhanden – auch in OneDrive gelöscht.`)) return;
+  if(rec.odItemId){
+    try{ await odGraph('/me/drive/items/'+encodeURIComponent(rec.odItemId), {method:'DELETE'}); }
+    catch(e){ toast('OneDrive-Löschung fehlgeschlagen: '+e.message); return; }
+  }
+  rec.geloescht=true; rec._blobB64=undefined; rec.pendingUpload=false;
+  await idbPut('od_dateien', rec);
+  syncSoon();
+  toast('Datei gelöscht ✓');
+  const el=document.getElementById('mieterODEl');
+  if(el) await renderODArchivFuerWE(el, rec.gruppe, rec.weNr);
+}
+
 // Ordnerlabel je Gruppe (für den Hinweistext).
 function odGruppeOrdner(gruppe){
   const st=(typeof odStandorte==='function'?odStandorte():[]).find(x=>x.gruppe===gruppe);
@@ -11785,6 +12034,7 @@ async function odSyncWeDateien(gruppe, weNr){
   zweige.push({gebaeude:'', pfad:odKnotenPfad(st.ordner, kn)});  // Legacy-Ebene
 
   let neu=0;
+  const gesehenIds={};   // v181 (Punkt 1): remote noch vorhandene Item-IDs
   for(const zw of zweige){
     const _kats=odKategorienFuer(kn);
     const _blaetter=[{pfad:zw.pfad,unterkat:''},
@@ -11792,6 +12042,7 @@ async function odSyncWeDateien(gruppe, weNr){
     for(const _bl of _blaetter){
       for(const f of await odListFiles(_bl.pfad)){
         const pfad=_bl.pfad+'/'+f.name;
+        if(f.id) gesehenIds[f.id]=true;
         const vorher=bekannt[pfad] || (f.id ? bekanntById[f.id] : null);
         if(vorher && vorher.eTag===f.eTag) continue;
         const rec={
@@ -11810,6 +12061,34 @@ async function odSyncWeDateien(gruppe, weNr){
       }
     }
   }
+  /* v181 (Punkt 1): In OneDrive gelöschte Dateien auch hier ausblenden.
+     Kandidat = bekannter Record dieser WE mit Item-ID, der im Walk nicht mehr
+     auftauchte. Vor dem Markieren gezielter Existenz-Check (nur echtes 404
+     zählt – Netzfehler werfen und werden übersprungen, keine Fehl-Löschung). */
+  let entfernt=0;
+  for(const rec of Object.values(bekanntById)){
+    if(!rec || rec.geloescht || rec.pendingUpload) continue;
+    if(rec.gruppe!==st.gruppe || String(rec.weNr)!==weKey) continue;
+    if(gesehenIds[rec.odItemId]) continue;
+    try{
+      const chk=await odGraph('/me/drive/items/'+encodeURIComponent(rec.odItemId)+'?$select=id');
+      if(chk && chk.__notfound){ rec.geloescht=true; await idbPut('od_dateien', rec); entfernt++; }
+    }catch(e){ /* Netz-/Auth-Fehler: Record behalten */ }
+  }
+  /* v181 (Punkt 2): Record-Dubletten heilen – gleiche Item-ID mehrfach erfasst
+     (z. B. App-Upload + Sync-Walk oder zwei Geräte vor dem Merge). */
+  const proId={};
+  for(const rec of await idbGetAll('od_dateien')){
+    if(!rec || rec.geloescht || !rec.odItemId) continue;
+    if(rec.gruppe!==st.gruppe || String(rec.weNr)!==weKey) continue;
+    (proId[rec.odItemId]=proId[rec.odItemId]||[]).push(rec);
+  }
+  for(const grp of Object.values(proId)){
+    if(grp.length<2) continue;
+    grp.sort((a,b)=> new Date(b.lastModified||b.geaendert||0)-new Date(a.lastModified||a.geaendert||0));
+    for(const dub of grp.slice(1)){ dub.geloescht=true; await idbPut('od_dateien', dub); }
+  }
+  if(entfernt) syncSoon();
   await odPendingFlush().catch(()=>{});   // wartende App-Uploads mitnehmen
   return neu;
 }
@@ -11863,10 +12142,10 @@ function modalUploadDok(objektId, mieterId) {
   function dokTypHinweis(){
     const v = dokTypEl.value;
     if(v==='ausweis'){
-      dokHinweisEl.innerHTML = '<i class="ti ti-shield-lock"></i> Ausweisdokumente enthalten besonders schützenswerte Daten. Speicherung nur, solange ein berechtigter Zweck besteht (§ 20 PAuswG, Art. 5 Abs. 1 lit. e DSGVO). Nur für Administratoren sichtbar.';
+      dokHinweisEl.innerHTML = '<i class="ti ti-shield-lock"></i> Ausweisdokumente enthalten besonders schützenswerte Daten. Speicherung nur, solange ein berechtigter Zweck besteht (§ 20 PAuswG, Art. 5 Abs. 1 lit. e DSGVO). Nur für Admins sichtbar.';
       dokHinweisEl.style.display='block';
     } else if(v==='lastschrift'){
-      dokHinweisEl.innerHTML = '<i class="ti ti-shield-lock"></i> SEPA-Mandat enthält Bankdaten. Nur für Administratoren sichtbar.';
+      dokHinweisEl.innerHTML = '<i class="ti ti-shield-lock"></i> SEPA-Mandat enthält Bankdaten. Nur für Admins sichtbar.';
       dokHinweisEl.style.display='block';
     } else {
       dokHinweisEl.style.display='none';
@@ -12679,6 +12958,75 @@ function nkaSummeManuell(kId){
   if(hatPos) nkaTeilSumme(kId);
 }
 
+/* ── v181 (Punkt 10): NKA-Übernahme aus der Buchhaltung ──
+   Zeigt je (umlagefähiger Kategorie, Zahlungsempfänger) eine wählbare Position aus dem
+   Abrechnungszeitraum. Bei Versorgerwechsel sind so mehrere Positionen derselben Kostenart
+   getrennt wählbar. Übernommen wird je Kategorie EINE zusammengefasste eigene Kostenart.
+   Nicht umlagefähige Kategorien (§ 1 Abs. 2 BetrKV) werden bewusst nicht angeboten. */
+async function nkaBuchPanelToggle(objektId){
+  const panel=document.getElementById('nkaBuchPanel');
+  if(!panel) return;
+  if(panel.dataset.offen==='1'){ panel.dataset.offen='0'; panel.innerHTML=''; return; }
+  panel.dataset.offen='1';
+  const von=document.getElementById('nkaVon')?.value;
+  const bis=document.getElementById('nkaBis')?.value;
+  if(!von||!bis){ panel.innerHTML='<div style="font-size:12px;color:var(--amber)"><i class="ti ti-alert-triangle"></i> Bitte zuerst den Abrechnungszeitraum wählen.</div>'; return; }
+  const konto=ZA_KONTEN.find(k=>k.objekte.includes(objektId));
+  if(!konto){ panel.innerHTML='<div style="font-size:12px;color:var(--ink-40)">Diesem Objekt ist kein Import-Konto zugeordnet.</div>'; return; }
+  const alle=await idbGetAll('buchungen').catch(()=>[]);
+  const s=buchKatSummen(alle.filter(b=>b && b.kontoId===konto.id), von, bis);
+  const eur=n=>(Number(n)||0).toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:2});
+  let idx=0, rows='';
+  for(const k of BUCH_KATEGORIEN.filter(x=>x.nka)){
+    const dat=s.proKat[k.id];
+    if(!dat) continue;
+    const empfListe=Object.entries(dat.empfaenger).sort((a,b)=>b[1].summe-a[1].summe);
+    for(const [name,e] of empfListe){
+      rows+=`<label style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--line);cursor:pointer;font-size:12px">
+        <input type="checkbox" class="nkaBuPos" data-kat="${k.id}" data-betrag="${e.summe}" data-empf="${esc(name)}" style="width:15px;height:15px">
+        <span style="flex:1"><strong>${esc(k.label)}</strong> – ${esc(name)} <span style="color:var(--ink-40)">(${e.anzahl}×)</span></span>
+        <span style="font-weight:600;font-variant-numeric:tabular-nums">${eur(e.summe)} €</span>
+      </label>`;
+      idx++;
+    }
+  }
+  const hinweisOhne = s.ohneKat.anzahl
+    ? `<div style="font-size:11px;color:var(--amber);margin-top:6px"><i class="ti ti-alert-triangle"></i>
+       ${s.ohneKat.anzahl} Ausgang/Ausgänge (${eur(s.ohneKat.summe)} €) im Zeitraum sind noch ohne Kategorie –
+       bitte unter Einstellungen → Zahlungen → „Buchhaltung (Ausgaben)" zuordnen.</div>` : '';
+  panel.innerHTML = idx
+    ? `<div style="border:1px dashed var(--ink-10);border-radius:8px;padding:10px">
+        <div style="font-size:12px;font-weight:600;margin-bottom:4px"><i class="ti ti-cash-banknote"></i> Kosten aus ${esc(konto.label)} · ${von.split('-').reverse().join('.')} – ${bis.split('-').reverse().join('.')}</div>
+        <div style="font-size:11px;color:var(--ink-40);margin-bottom:6px">Positionen wählen – je Kategorie und Zahlungsempfänger getrennt (Versorgerwechsel: beide Anbieter anhaken). Gewählte Positionen derselben Kategorie werden zu einer Kostenart zusammengefasst. Nicht umlagefähige Kategorien (Instandhaltung, Reparaturen, Verwaltung …) erscheinen hier nicht.</div>
+        ${rows}
+        ${hinweisOhne}
+        <button type="button" class="btn btn-sm btn-copper" style="margin-top:8px" onclick="nkaBuchUebernehmen()">
+          <i class="ti ti-check"></i> Ausgewählte übernehmen</button>
+      </div>`
+    : `<div style="font-size:12px;color:var(--ink-40)">Im Abrechnungszeitraum sind keine kategorisierten, umlagefähigen Ausgänge vorhanden.${hinweisOhne}</div>`;
+}
+function nkaBuchUebernehmen(){
+  const gewaehlt=[...document.querySelectorAll('.nkaBuPos:checked')];
+  if(!gewaehlt.length){ toast('Bitte mindestens eine Position wählen.'); return; }
+  const proKat={};
+  for(const cb of gewaehlt){
+    const kat=cb.dataset.kat;
+    const g=(proKat[kat]=proKat[kat]||{summe:0, empf:[]});
+    g.summe+=Number(cb.dataset.betrag)||0;
+    g.empf.push(cb.dataset.empf);
+  }
+  let n=0;
+  for(const kat of Object.keys(proKat)){
+    const g=proKat[kat];
+    const name=buchKatLabel(kat)+' ('+g.empf.join(', ')+')';
+    nkaAddCustom(null, name, 'wfl', g.summe.toFixed(2).replace('.',','));
+    n++;
+  }
+  const panel=document.getElementById('nkaBuchPanel');
+  if(panel){ panel.dataset.offen='0'; panel.innerHTML=''; }
+  toast(n+' Kostenart(en) aus der Buchhaltung übernommen ✓');
+}
+
 async function modalNKA(objektId) {
   if (!istVerwalter()) { toast('Nur für Verwalter'); return; }
   const obj      = getObj(objektId);
@@ -12766,9 +13114,15 @@ async function modalNKA(objektId) {
     ${kostenHTML}
     <div class="f-section-title" style="margin-top:8px"><i class="ti ti-playlist-add"></i> Eigene Kostenarten</div>
     <div id="nkaCustomList"></div>
-    <button type="button" class="btn btn-sm" onclick="nkaAddCustom()">
-      <i class="ti ti-plus"></i> Eigene Kostenart hinzufügen
-    </button>
+    <div style="display:flex;gap:6px;flex-wrap:wrap">
+      <button type="button" class="btn btn-sm" onclick="nkaAddCustom()">
+        <i class="ti ti-plus"></i> Eigene Kostenart hinzufügen
+      </button>
+      <button type="button" class="btn btn-sm btn-copper" onclick="nkaBuchPanelToggle('${objektId}')">
+        <i class="ti ti-cash-banknote"></i> Aus Buchhaltung übernehmen
+      </button>
+    </div>
+    <div id="nkaBuchPanel" data-offen="0" style="margin-top:8px"></div>
     <div class="f-section-title" style="margin-top:10px"><i class="ti ti-signature"></i> Unterschrift(en) unter der Abrechnung</div>
     <div style="font-size:11px;color:var(--ink-40);margin-bottom:6px">Es können eine oder zwei hinterlegte Unterschriften gewählt werden (z. B. Alexander-Roland Nadig und Anna-Alexandra Pfau).</div>
     <div id="nkaSigPick"></div>
@@ -13473,7 +13827,7 @@ async function ladeLgMieter(lgId, von, bis){
 function nkaLgPosKey(lgId, von, bis){ return 'nka_lg_'+lgId+'_'+(von||'')+'_'+(bis||''); }
 
 async function modalNKALiegenschaft(lgId){
-  if (!istVerwalter()){ toast('Nur für Administratoren'); return; }
+  if (!istVerwalter()){ toast('Nur für Admins'); return; }
   const vorlage=getNKALgVorlage(lgId);
   if(!vorlage){ toast('Keine Liegenschafts-Vorlage'); return; }
   await ladeBriefkopfCache();
@@ -13644,7 +13998,7 @@ async function nkaLgGewaehlteSignaturen(){
 // Sammeldokument (Deckblatt + Einzelbriefe) und legt es je Mieter im Archiv ab.
 // korrektur: optionales {originalId, text} für nachträgliche Korrekturen.
 async function erstelleNKALiegenschaft(lgId, korrektur){
-  if (!istVerwalter()){ toast('Nur für Administratoren'); return; }
+  if (!istVerwalter()){ toast('Nur für Admins'); return; }
   const vorlage=getNKALgVorlage(lgId);
   if(!vorlage) return;
   const lg=LIEGENSCHAFTEN.find(l=>l.id===lgId);
@@ -14321,7 +14675,7 @@ const BRIEFKOPF_DEFAULTS = {
     tel:'0177 / 2509710', email:'nadigpfau-hausverwaltung@gmx.de',
   },
   pfau: {
-    name:'Anna Pfau und Torben Pfau', absender:'Anna und Torben Pfau',
+    name:'Anna-Alexandra Pfau und Torben Pfau', absender:'Anna-Alexandra und Torben Pfau',
     zusatz:'',
     strasse:'Venloer Straße 20', ort:'40477 Düsseldorf',
     tel:'0177 / 2509710', email:'nadigpfau-hausverwaltung@gmx.de',
@@ -14459,7 +14813,7 @@ async function renderPortalFreigabe(){
 }
 
 async function onPortalTypToggle(typ, checked){
-  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Admins'); return; }
   await setPortalTypDefault(typ, checked);
   const pfEl=document.getElementById('portalFreigabeEl');
   if(pfEl) pfEl.innerHTML=await renderPortalFreigabe();
@@ -14471,7 +14825,7 @@ function renderBriefkopfConfig(){
     {key:'dus', label:'Düsseldorf / Monheim (Nadig Pfau)'},
     {key:'kr',  label:'Krefeld (Nadig Pfau)'},
     {key:'mg',  label:'Mönchengladbach + Hilden (Roland Nadig)'},
-    {key:'pfau',label:'Amboßstr. (Anna & Torben Pfau)'},
+    {key:'pfau',label:'Amboßstr. (Anna-Alexandra & Torben Pfau)'},
   ];
   const feld=(k,f,lbl,val)=>`<div class="f" style="margin-bottom:6px"><label style="font-size:10px">${lbl}</label>
     <input type="text" id="bk_${k}_${f}" value="${esc(val||'')}" style="font-size:12px"></div>`;
@@ -14570,7 +14924,7 @@ async function saveWohnungStamm(objektId, weNr, daten){
    für den Mietvertrag-Generator. Standard kommt aus dem Code-Mapping,
    gespeicherte Werte überschreiben ihn je Wohnung. */
 async function modalWohnungHeizNk(objektId, weNr){
-  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Admins'); return; }
   const obj = getObj(objektId);
   const w   = await getWohnungStamm(objektId, weNr);
   // v151: fehlende Räume/Fläche/Lage aus den Mieter-Stammdaten der WE vorbefüllen
@@ -14714,7 +15068,7 @@ function whGrundrissEntfernen(){
 }
 
 async function saveWohnungHeizNk(objektId, weNr){
-  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Admins'); return; }
   const heiz = document.getElementById('whHeiz')?.value || '';
   const nk = {};
   MV_NK_KOSTENARTEN.forEach(ka=>{
@@ -15125,7 +15479,7 @@ let MV_DRAFT = null;
 
 // Schritt 1: Generator aus einem Interessenten/Kandidaten heraus öffnen.
 async function mvStartAusInteressent(interessentId){
-  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Admins'); return; }
   const k = await idbGet('interessenten', interessentId).catch(()=>null);
   if(!k){ toast('Interessent nicht gefunden'); return; }
   await mvOeffneGenerator({ quelleInteressentId:interessentId, vorbefuellung:k });
@@ -15166,7 +15520,7 @@ async function mvOeffneGenerator(opts){
 // Setzt MV_DRAFT aus m.mvEntwurf und merkt sich mieterId, damit beim erneuten Erzeugen
 // derselbe Mieter aktualisiert und das alte Vertragsdokument ersetzt wird.
 async function mvBearbeiteEntwurf(mieterId){
-  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Admins'); return; }
   const m = await idbGet('mieter', mieterId).catch(()=>null);
   if(!m){ toast('Mieter nicht gefunden'); return; }
   if(!m.mvEntwurf){ toast('Für diesen Mieter ist kein Vertragsentwurf gespeichert.'); return; }
@@ -15179,7 +15533,7 @@ async function mvBearbeiteEntwurf(mieterId){
 // werden vorbefüllt; mieterId wird gesetzt, damit beim Erzeugen genau dieser
 // Mieter aktualisiert wird (kein Duplikat) und ein evtl. Entwurf wieder geöffnet wird.
 async function mvStartFuerMieter(mieterId){
-  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Admins'); return; }
   const m = await idbGet('mieter', mieterId).catch(()=>null);
   if(!m){ toast('Mieter nicht gefunden'); return; }
   // Falls bereits ein Entwurf existiert: diesen weiterbearbeiten.
@@ -15822,7 +16176,7 @@ async function mvBaueRenderdaten(){
 
 // ── Hauptaktion: PDF erzeugen, beim Mieter ablegen, Mieter-Datensatz anlegen ──
 async function mvErzeugen(){
-  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Admins'); return; }
   mvSammleAusFormular();
   const D = MV_DRAFT;
   // Pflichtprüfungen
@@ -16067,7 +16421,7 @@ const WOGG_LAGE2=['Vorne','Hinten','Flügel','Anbau'];
 
 // ── Mietbescheinigung §23 Abs.3 WoGG: Dialog ──
 async function modalMietbescheinigung(mieterId){
-  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Admins'); return; }
   const m=await idbGet('mieter',mieterId); if(!m){ toast('Mieter nicht gefunden'); return; }
   const obj=getObj(m.objektId);
   const w=await getWohnungStamm(m.objektId, m.weNr);   // dauerhafte Wohnungsdaten
@@ -16483,7 +16837,7 @@ async function _kqVermieterName(m){
 // Formular-Modal: Betrag (vorbelegt aus Kaution), Datum (leer=handschriftlich),
 // Vertreter-Auswahl aus Benutzern.
 async function modalKautionsquittung(mieterId){
-  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Admins'); return; }
   const m=await idbGet('mieter',mieterId); if(!m){ toast('Mieter nicht gefunden'); return; }
   const obj=getObj(m.objektId);
   await ladeBriefkopfCache();
@@ -16694,7 +17048,7 @@ async function zeigeGespKautionsquittung(kqId){
 }
 // Gespeicherte Kautionsquittung löschen
 async function loescheGespKautionsquittung(kqId, mieterId){
-  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Admins'); return; }
   if(!confirm('Diese gespeicherte Kautionsquittung wirklich löschen?')) return;
   await idbDelete('kautionsquittungen',kqId);
   bcSend('kautionsquittung_saved',{mieterId});
@@ -16720,7 +17074,7 @@ function kqBegleittext(m, obj){
 
 // Versand-Dialog (analog Mietbescheinigung)
 async function kqVersandDialog(kqId){
-  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Admins'); return; }
   const b=await idbGet('kautionsquittungen',kqId).catch(()=>null);
   if(!b){ toast('Quittung nicht gefunden'); return; }
   const m=await idbGet('mieter',b.mieterId).catch(()=>null);
@@ -16770,7 +17124,7 @@ async function kqVersandKopiere(){
 }
 
 async function druckeWohnungsgeberBescheinigung(mieterId){
-  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Admins'); return; }
   const m = await idbGet('mieter', mieterId);
   if(!m){ toast('Mieter nicht gefunden'); return; }
   const users = await idbGetAll('users').catch(()=>[]);
@@ -17037,7 +17391,7 @@ async function deleteNKA(id) {
 // vorbefüllt mit den gespeicherten Werten. Das Ergebnis wird als Korrektur
 // gekennzeichnet und ersetzt den bisherigen Archiv-Eintrag (gleiche ID).
 async function modalNKAKorrektur(nkaId){
-  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Admins'); return; }
   const nka=await idbGet('nka_archiv', nkaId);
   if(!nka){ toast('Eintrag nicht gefunden'); return; }
   showModal(`
@@ -18828,7 +19182,7 @@ ${istZustimmung
    EXCEL-EXPORT
 ═══════════════════════════════════════════════════════════ */
 async function exportExcel() {
-  if(!istSystemAdmin()){ toast('Nur für Administratoren'); return; }
+  if(!istSystemAdmin()){ toast('Nur für Admins'); return; }
   if (typeof XLSX === 'undefined') { toast('XLSX-Bibliothek nicht geladen'); return; }
   toast('Excel wird erstellt...');
   const myObj   = await getMyObjekte();
@@ -19769,6 +20123,7 @@ function addPersonRow() {
 }
 
 function removePerson(idx) {
+  if(!confirm('Diese Person wirklich aus der Liste entfernen?')) return;
   const aktuell = getPersonenFromForm(false).filter((_,i)=>i!==idx);
   redrawPersonenListe(aktuell.length?aktuell:[{vertragspartner:true}]);
 }
@@ -20234,7 +20589,7 @@ async function mieterEndgueltigLoeschen(id){
 // Vormieter eines Mieters anzeigen (öffnet die Detailansicht des Vormieters)
 // Punkt 3: Historischen Vormieter manuell anlegen und mit aktuellem Mieter verknüpfen.
 async function modalVormieterAnlegen(mieterId){
-  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Admins'); return; }
   const m = await idbGet('mieter', mieterId);
   if(!m){ toast('Mieter nicht gefunden'); return; }
   const obj = getObj(m.objektId);
@@ -20262,7 +20617,7 @@ async function modalVormieterAnlegen(mieterId){
 }
 
 async function saveVormieterAnlegen(mieterId){
-  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Admins'); return; }
   const m = await idbGet('mieter', mieterId);
   if(!m) return;
   const name = document.getElementById('vmName')?.value?.trim()||'';
@@ -20423,7 +20778,7 @@ function mEditKuendigungChange(){
   }
 }
 async function modalAushangErstellen(objektId, weNr, vormieterId){
-  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Admins'); return; }
   const obj   = getObj(objektId);
   const stamm = await getWohnungStamm(objektId, weNr);
   const vm    = vormieterId ? await idbGet('mieter', vormieterId).catch(()=>null) : null;
@@ -20790,7 +21145,7 @@ function aushangDokumentHtml(d){
 // wurde zum Vormieter). Ein fälschlich angelegter Nachmieter kann dabei entfernt
 // oder selbst zum Vormieter gemacht werden. Wohnungs-Stammdaten bleiben unberührt.
 async function mieterReaktivieren(vormieterId){
-  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Admins'); return; }
   const vm = await idbGet('mieter', vormieterId);
   if(!vm){ toast('Mieter nicht gefunden'); return; }
   if(!vm._vormieter){ toast('Dieser Mieter ist bereits aktiv'); return; }
@@ -21075,7 +21430,7 @@ function kautionSaldo(kd){
 }
 
 async function modalKaution(mieterId){
-  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Admins'); return; }
   const m = await idbGet('mieter', mieterId);
   if(!m) return;
   const obj = getObj(m.objektId);
@@ -21179,7 +21534,7 @@ async function modalKaution(mieterId){
 
 // ── Kautionszins-Rechner (v77) ──────────────────────────────────
 async function modalKautionZins(mieterId){
-  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Admins'); return; }
   const m=await idbGet('mieter', mieterId);
   if(!m) return;
   const kd=kautionDetailVon(m);
@@ -21675,6 +22030,7 @@ async function restoreMangelFotos(){
 }
 
 function delMangelFoto(i){
+  if(!confirm('Foto wirklich entfernen?')) return;
   window._mangelPhotos.splice(i,1);
   if(window._mangelFotoIds && window._mangelFotoIds[i]){
     idbDelete('fotos', window._mangelFotoIds[i]).catch(()=>{});
@@ -22465,6 +22821,7 @@ function openRoomCam(room){pPhotoRoom=room;pPhotoCond=null;window._zaehlerIdx=nu
 // Foto gezielt zu einem Bauteil/Zustand aufnehmen (z. B. „Elektro / Schalter")
 function openCondCam(room,cond){pPhotoCond={room,cond};pPhotoRoom=null;window._zaehlerIdx=null;window._mangelPhotos=null;window._zsCamActive=false;window._lagerCamActive=false;window._mangelEditCamActive=false;openCam();}
 function delCondPhoto(room,cond,i){
+  if(!confirm('Foto wirklich entfernen?')) return;
   const rd=PD&&PD.raeume&&PD.raeume[room]; if(!rd||!rd.condPhotos||!rd.condPhotos[cond])return;
   const fid=rd.condPhotoIds&&rd.condPhotoIds[cond]&&rd.condPhotoIds[cond][i];
   if(fid){ idbDelete('fotos',fid).catch(()=>{}); rd.condPhotoIds[cond].splice(i,1); }
@@ -22476,6 +22833,7 @@ function delCondPhoto(room,cond,i){
 function openZaehlerCam(idx){window._zaehlerIdx=idx;pPhotoRoom=null;pPhotoCond=null;window._mangelPhotos=null;window._zsCamActive=false;window._lagerCamActive=false;window._mangelEditCamActive=false;openCam();}
 function delZaehlerFoto(i){
   if (!PD || !PD.zaehler || !PD.zaehler[i]) return;
+  if(!confirm('Foto wirklich entfernen?')) return;
   const fid = PD.zaehler[i].fotoId;
   PD.zaehler[i].foto = '';
   PD.zaehler[i].fotoId = null;
@@ -22484,6 +22842,7 @@ function delZaehlerFoto(i){
   renderProt(2);
 }
 function delRoomPhoto(room,idx){
+  if(!confirm('Foto wirklich entfernen?')) return;
   const rd = PD.raeume[room];
   rd.photos.splice(idx,1);
   if (rd.photoIds && rd.photoIds[idx]) {
@@ -22570,7 +22929,7 @@ function initSigs(){
   });
 }
 
-// Admin-Auswahl: hinterlegte Unterschrift eines (anderen) Administrators als Vermieter-Unterschrift setzen
+// Admin-Auswahl: hinterlegte Unterschrift eines (anderen) Admins als Vermieter-Unterschrift setzen
 async function populateSigAdminPick(){
   const wrap=document.getElementById('sigAdminPick');
   if(!wrap||!istVerwalter()) return;
@@ -22871,7 +23230,7 @@ async function einzugAusAbnahme(id){
 async function adminEditProtokoll(id){
   const p=await idbGet('protokolle',id);
   if(!p){ return; }
-  if(!istVerwalter()){ toast('Nur Administratoren dürfen archivierte Protokolle ändern'); return; }
+  if(!istVerwalter()){ toast('Nur Admins dürfen archivierte Protokolle ändern'); return; }
   if(!confirm('Dieses archivierte Protokoll bearbeiten? Änderungen werden rot protokolliert.')) return;
   closeModal();
   PD={...p};pRoomIdx=0;
@@ -23100,7 +23459,7 @@ ${(d.aenderungen&&d.aenderungen.length)?`<div style="margin-top:12px;padding:8px
    EXCEL IMPORT
 ═══════════════════════════════════════════════════════════ */
 async function importExcel(input){
-  if(!istSystemAdmin()){ toast('Nur für Administratoren'); return; }
+  if(!istSystemAdmin()){ toast('Nur für Admins'); return; }
   const file=input.files[0]; if(!file) return;
   const el=document.getElementById('importStatus');
   el.innerHTML='<div style="color:var(--amber);font-size:13px"><i class="ti ti-loader" style="animation:spin 1s linear infinite"></i> Importiere...</div>';
@@ -23656,7 +24015,7 @@ function dcQrDokument(seiten, dokTitel){
 
 // ── Druckcenter öffnen ────────────────────────────────────
 async function oeffneDruckcenter(){
-  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Admins'); return; }
   showModal(`
     <div class="m-title"><i class="ti ti-printer"></i> Druckcenter</div>
     <div class="dc-tabs" style="display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap">
@@ -23863,11 +24222,24 @@ async function renderSettings(){
         <div class="user-av ${istVerwalter()?'admin':''}"><i class="ti ti-user"></i></div>
         <div>
           <div style="font-weight:600;font-size:15px">${CU?.name||'–'}</div>
-          <div style="font-size:12px;color:var(--ink-40)">${istSystemAdmin()?'Administrator – alle Objekte':(istEigentuemer()?`Eigentümer – ${(CU?.objekte||[]).map(g=>GRUPPE_LABEL[g]||g).join(', ')}`:`Hausmeister – ${(CU?.objekte||[]).map(g=>GRUPPE_LABEL[g]||g).join(', ')}`)}</div>
+          <div style="font-size:12px;color:var(--ink-40)">${istSystemAdmin()?'Admin – alle Objekte':(istEigentuemer()?`Eigentümer – ${(CU?.objekte||[]).map(g=>GRUPPE_LABEL[g]||g).join(', ')}`:`Hausmeister – ${(CU?.objekte||[]).map(g=>GRUPPE_LABEL[g]||g).join(', ')}`)}</div>
         </div>
         <button class="btn btn-sm btn-danger" style="margin-left:auto" onclick="doLogout()"><i class="ti ti-logout"></i> Abmelden</button>
       </div>
     </div>
+
+    ${isAdmin?`<div class="settings-card" data-tab="allgemein">
+      <div class="card-hdr"><i class="ti ti-coffee"></i> Zeiterfassung – Pauschale Pause</div>
+      <p style="font-size:13px;color:var(--ink-40);margin:0 0 10px;line-height:1.6">
+        Ist die Option aktiv, werden je Arbeitstag automatisch einmalig <strong>30 Minuten Pause</strong>
+        von der erfassten Arbeitszeit abgezogen – unabhängig davon, ob sich der Mitarbeiter zur Pause
+        ausloggt. Manuell erfasste Pausen mindern die Zeit weiterhin zusätzlich.
+      </p>
+      <label style="display:flex;align-items:center;gap:10px;font-size:14px;cursor:pointer">
+        <input type="checkbox" id="pausePauschalCb" onchange="pausePauschalToggle(this.checked)" style="width:18px;height:18px">
+        Pauschal 30 Minuten Pause pro Arbeitstag abziehen
+      </label>
+    </div>`:''}
 
     ${isAdmin?`<div class="settings-card" data-tab="druck">
       <div class="card-hdr"><i class="ti ti-printer"></i> Druckcenter</div>
@@ -24005,7 +24377,7 @@ async function renderSettings(){
     <div class="settings-card" data-tab="allgemein">
       <div class="card-hdr"><i class="ti ti-signature"></i> Meine Unterschrift</div>
       <p style="font-size:13px;color:var(--ink-40);margin-bottom:12px;line-height:1.6">
-        Hinterlegte Unterschrift wird bei Protokollen automatisch als Ihre Unterschrift verwendet. ${isAdmin?'Andere Administratoren können sie für gemeinsam zu unterzeichnende Dokumente (z. B. NKA) auswählen.':''}
+        Hinterlegte Unterschrift wird bei Protokollen automatisch als Ihre Unterschrift verwendet. ${isAdmin?'Andere Admins können sie für gemeinsam zu unterzeichnende Dokumente (z. B. NKA) auswählen.':''}
       </p>
       <div id="meineSigView"></div>
       <input type="file" id="sigUploadIn" accept="image/*" style="display:none" onchange="onSignaturUpload(this)">
@@ -24094,7 +24466,7 @@ async function renderSettings(){
       </p>
       <div class="f">
         <label>Konto auswählen</label>
-        <select id="zaKonto" class="inp">
+        <select id="zaKonto" class="inp" onchange="zaKontoGewechselt()">
           ${ZA_KONTEN.filter(k=>k.objekte.some(oid=>darfObjekt(oid))).map(k=>`<option value="${k.id}">${esc(k.label)}</option>`).join('')}
         </select>
       </div>
@@ -24148,6 +24520,8 @@ async function renderSettings(){
   }
 
   if(isAdmin) await renderUserList_();
+  if(isAdmin){ const pcb=document.getElementById('pausePauschalCb'); if(pcb) pcb.checked=await ladePausePauschal(); }
+  if(isAdmin){ try{ await zaVerlaufInit(); }catch(e){ console.warn('Zahlungsverlauf:', e); } }
   if(isAdmin){ const bkEl=document.getElementById('briefkopfConfigEl'); if(bkEl){ await ladeBriefkopfCache(); bkEl.innerHTML=renderBriefkopfConfig(); } }
   if(isAdmin){ const ivEl=document.getElementById('intervallConfigEl'); if(ivEl) ivEl.innerHTML=await renderIntervallConfig(); }
   if(isAdmin){ const pfEl=document.getElementById('portalFreigabeEl'); if(pfEl) pfEl.innerHTML=await renderPortalFreigabe(); }
@@ -24262,6 +24636,7 @@ async function sigLinieSpeichern(){
   toast('Unterschriftslinie gespeichert ✓');
 }
 async function deleteSignaturLinie(){
+  if(!confirm('Linien-Variante der Unterschrift wirklich entfernen?')) return;
   const u=await idbGet('users',CU.id).catch(()=>null);
   if(u){ delete u.signaturMitLinie; u.geaendert=now(); await idbPut('users',u); }
   delete CU.signaturMitLinie;
@@ -24419,9 +24794,9 @@ async function saveDrawSig(){
   await speichereMeineSignatur(clean);
 }
 
-// Nur Alexander Nadig darf Hausmeister deaktivieren/reaktivieren
+// Nur Alexander-Roland Nadig darf Hausmeister deaktivieren/reaktivieren
 function istAlexander(){
-  return /alexander\s+nadig/i.test(CU?.name||'');
+  return /alexander(-roland)?[\s-]+nadig/i.test(CU?.name||'');
 }
 
 async function renderUserList_(){
@@ -24448,10 +24823,10 @@ async function renderUserList_(){
 
 // Hausmeister deaktivieren/reaktivieren (Daten bleiben erhalten)
 async function toggleUserAktiv(id){
-  if(!istAlexander()){ toast('Nur Alexander Nadig darf das'); return; }
+  if(!istAlexander()){ toast('Nur Alexander-Roland Nadig darf das'); return; }
   const u=await idbGet('users', id);
   if(!u) return;
-  if(u.role==='admin'){ toast('Administratoren können hier nicht deaktiviert werden'); return; }
+  if(u.role==='admin'){ toast('Admins können hier nicht deaktiviert werden'); return; }
   const neuInaktiv = u.aktiv!==false; // aktuell aktiv → deaktivieren
   const frage = neuInaktiv
     ? `Hausmeister „${u.name}" deaktivieren?\n\nEr kann sich dann nicht mehr anmelden. Alle bisherigen Daten (Arbeitszeiten, Protokolle) bleiben zur Dokumentation erhalten.`
@@ -24475,7 +24850,7 @@ async function modalAddUser(){
     <div class="f"><label>Rolle</label><select id="nuRole">
       <option value="hm">Hausmeister</option>
       <option value="eigentuemer">Eigentümer</option>
-      <option value="admin">Administrator</option>
+      <option value="admin">Admin</option>
     </select></div>
     <div class="f"><label>Objekt-Zugriff (Mehrfachauswahl)</label>
       <select id="nuObjekte" multiple style="height:130px">
@@ -24520,7 +24895,7 @@ async function modalEditUser(id){
     <div class="f"><label>Rolle</label><select id="euRole" onchange="euRoleWechsel()">
       <option value="hm" ${u.role==='hm'?'selected':''}>Hausmeister</option>
       <option value="eigentuemer" ${u.role==='eigentuemer'?'selected':''}>Eigentümer</option>
-      <option value="admin" ${u.role==='admin'?'selected':''}>Administrator</option>
+      <option value="admin" ${u.role==='admin'?'selected':''}>Admin</option>
     </select></div>
     <div class="f" id="euModusWrap" style="${(u.role==='admin'||u.role==='eigentuemer')?'display:none':''}">
       <label>Zeit-/Tätigkeitserfassung</label>
@@ -24585,7 +24960,7 @@ async function delUser(id){
    BACKUP EXPORT / IMPORT
 ═══════════════════════════════════════════════════════════ */
 async function exportBackup(){
-  if(!istSystemAdmin()){ toast('Nur für Administratoren'); return; }
+  if(!istSystemAdmin()){ toast('Nur für Admins'); return; }
   const backup={};
   for(const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','versicherungen','versorger_archiv','od_dateien','buchungen','fotos','mietbescheinigungen','kautionsquittungen','mv_entwuerfe','selbstauskuenfte','tenant_mails']){
     backup[s]=await idbGetAll(s);
@@ -24800,7 +25175,7 @@ function erfasseLeerungen(altSnapshot, obj){
 }
 
 async function importBackup(input){
-  if(!istSystemAdmin()){ toast('Nur für Administratoren'); return; }
+  if(!istSystemAdmin()){ toast('Nur für Admins'); return; }
   const file=input.files[0]; if(!file) return;
   const reader=new FileReader();
   reader.onload=function(e){
@@ -24836,7 +25211,7 @@ async function importBackup(input){
 
 // Führt den gewählten Import-Modus auf der zwischengespeicherten Backup-Datei aus.
 async function importBackupAusfuehren(modus){
-  if(!istSystemAdmin()){ toast('Nur für Administratoren'); return; }
+  if(!istSystemAdmin()){ toast('Nur für Admins'); return; }
   const backup = window._pendingBackup;
   if(!backup){ toast('Keine Backup-Datei geladen'); closeModal(); return; }
   closeModal();
@@ -24886,7 +25261,7 @@ async function importBackupAusfuehren(modus){
 }
 
 async function confirmReset(){
-  if(!istSystemAdmin()){ toast('Nur für Administratoren'); return; }
+  if(!istSystemAdmin()){ toast('Nur für Admins'); return; }
   if(!confirm('ACHTUNG: Alle lokalen Daten werden unwiderruflich gelöscht. Fortfahren?')) return;
   for(const s of ['mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings']) await idbClear(s);
   await ensureDefaultUsers();
@@ -26031,7 +26406,7 @@ function bbSetFilter(feld,val){
 }
 
 async function modalBranchenbuch(id){
-  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Admins'); return; }
   const x = id ? (await idbGet('branchenbuch',id).catch(()=>null))||{} : {};
   const orte = x.orte||[];
   const katOpts = BB_KATEGORIEN.map(k=>`<option value="${k.key}" ${x.kategorie===k.key?'selected':''}>${k.label}</option>`).join('');
@@ -26137,6 +26512,68 @@ const ZA_KONTEN = [
   { id:'kref',  label:'Krefeld',             objekte:['inr181','inr183','inr185','wilm7','wilm9','wilm11','wilm13'] },
   { id:'amboss',label:'Amboßstr. 10',        objekte:['amboss10'] },
 ];
+
+/* ── v181 (Punkt 10): Buchhaltungs-Kategorien für Kontoausgänge ──
+   nka:true = umlagefähige Betriebskosten (§ 2 BetrKV) → in der NKA-Übernahme wählbar.
+   Instandhaltung/Reparaturen/Verwaltung usw. sind nach § 1 Abs. 2 BetrKV nicht
+   umlagefähig und werden dort bewusst nicht angeboten. */
+const BUCH_KATEGORIEN=[
+  {id:'gas',                 label:'Gas',                   nka:true},
+  {id:'strom',               label:'Strom',                 nka:true},
+  {id:'wasser',              label:'Wasser / Abwasser',     nka:true},
+  {id:'grundsteuer',         label:'Grundsteuer',           nka:true},
+  {id:'gebaeudeversicherung',label:'Gebäudeversicherung',   nka:true},
+  {id:'muell',               label:'Müll',                  nka:true},
+  {id:'strassenreinigung',   label:'Straßenreinigung',      nka:true},
+  {id:'schornsteinfeger',    label:'Schornsteinfeger',      nka:true},
+  {id:'hausmeister',         label:'Hausmeister',           nka:true},
+  {id:'reinigung',           label:'Reinigung',             nka:true},
+  {id:'gartenpflege',        label:'Gartenpflege',          nka:true},
+  {id:'instandhaltung',      label:'Instandhaltung',        nka:false},
+  {id:'reparaturen',         label:'Reparaturen',           nka:false},
+  {id:'handwerker',          label:'Handwerker',            nka:false},
+  {id:'ersatzteile',         label:'Ersatzteile',           nka:false},
+  {id:'geraetekauf',         label:'Gerätekauf',            nka:false},
+  {id:'verwaltung',          label:'Verwaltung',            nka:false},
+  {id:'sonstige_bk',         label:'Sonstige Betriebskosten',nka:true},
+  {id:'sonstiges',           label:'Sonstiges',             nka:false},
+];
+function buchKatLabel(id){ return (BUCH_KATEGORIEN.find(k=>k.id===id)||{}).label || id || '–'; }
+function buchKatOptionen(gewaehlt){
+  return '<option value="">– Kategorie wählen –</option>'+BUCH_KATEGORIEN.map(k=>
+    `<option value="${k.id}"${k.id===gewaehlt?' selected':''}>${esc(k.label)}</option>`).join('');
+}
+// Teile einer Buchung: Split-Zeilen oder einfache Kategorie (Beträge stets positiv)
+function buchTeile(b){
+  const betrag=Math.abs(Number(b.betrag)||0);
+  if(Array.isArray(b.kategorien)&&b.kategorien.length)
+    return b.kategorien.map(t=>({kat:t.kat, betrag:Math.abs(Number(t.betrag)||0)}));
+  if(b.kategorie) return [{kat:b.kategorie, betrag}];
+  return null;
+}
+/* Summen je Kategorie (und je Zahlungsempfänger) über frei wählbaren Zeitraum –
+   Grundlage für Auswertung und NKA-Übernahme. */
+function buchKatSummen(buchungen, vonISO, bisISO){
+  const out={proKat:{}, ohneKat:{summe:0,anzahl:0}, gesamt:0};
+  for(const b of buchungen){
+    if(!b || b.typ!=='ausgang') continue;
+    const d=b.datumISO||'';
+    if(vonISO && d<vonISO) continue;
+    if(bisISO && d>bisISO) continue;
+    const betrag=Math.abs(Number(b.betrag)||0);
+    out.gesamt+=betrag;
+    const teile=buchTeile(b);
+    if(!teile){ out.ohneKat.summe+=betrag; out.ohneKat.anzahl++; continue; }
+    const empf=(b.name||'Unbekannt').trim()||'Unbekannt';
+    for(const t of teile){
+      const k=(out.proKat[t.kat]=out.proKat[t.kat]||{summe:0,anzahl:0,empfaenger:{}});
+      k.summe+=t.betrag; k.anzahl++;
+      const e=(k.empfaenger[empf]=k.empfaenger[empf]||{summe:0,anzahl:0});
+      e.summe+=t.betrag; e.anzahl++;
+    }
+  }
+  return out;
+}
 
 function zaNormIban(s){ return String(s||'').replace(/\s+/g,'').toUpperCase(); }
 function zaNum(s){
@@ -26301,7 +26738,19 @@ async function zaSpeichern(){
     await idbPut('buchungen', rec);
     neu++;
   }
-  toast(`${neu} Buchungen gespeichert${dup?`, ${dup} bereits vorhanden`:''}.`);
+  // v181 (Punkt 10): Ausgänge ebenfalls speichern – Grundlage der Buchhaltung.
+  // Bereits kategorisierte Duplikate bleiben unangetastet.
+  let neuAus=0;
+  for(const b of (ZA_STATE.alleBuchungen||[])){
+    if(b.typ!=='ausgang') continue;
+    const rec = zaBuchungRecord(konto.id, b, null);
+    let exists=false;
+    try { const e=await idbGet('buchungen', rec.id); exists=!!e; } catch(_){}
+    if(exists) continue;
+    await idbPut('buchungen', rec);
+    neuAus++;
+  }
+  toast(`${neu} Eingänge${neuAus?` und ${neuAus} Ausgänge`:''} gespeichert${dup?`, ${dup} bereits vorhanden`:''}.`);
   clearTimeout(window._syncTimer);
   window._syncTimer=setTimeout(()=>{ if(typeof syncToOneDrive==='function') syncToOneDrive(); }, 3000);
   zaRenderVerlauf();
@@ -26316,7 +26765,14 @@ let ZA_VERLAUF = { sicht:'mietkonto', kontoId:null };
 async function zaRenderVerlauf(){
   const box = document.getElementById('zaErgebnis');
   if(!box) return;
-  const konto = ZA_STATE.konto;
+  // v181 (Punkt 10): Konto notfalls aus der Auswahl ableiten – der Verlauf soll
+  // auch nach Seitenwechsel ohne neuen CSV-Import angezeigt werden können.
+  let konto = ZA_STATE.konto;
+  if(!konto){
+    const kid=document.getElementById('zaKonto')?.value;
+    konto = ZA_KONTEN.find(k=>k.id===kid) || null;
+    ZA_STATE.konto = konto;
+  }
   if(!konto){ toast('Bitte zuerst ein Konto wählen.'); return; }
   ZA_VERLAUF.kontoId = konto.id;
 
@@ -26348,11 +26804,19 @@ async function zaRenderVerlauf(){
         <i class="ti ti-user"></i> Mietkonto (je Mieter)</button>
       <button class="btn btn-sm ${ZA_VERLAUF.sicht==='auszug'?'btn-primary':''}" onclick="zaSetSicht('auszug')">
         <i class="ti ti-list"></i> Kontoauszug (je Monat)</button>
+      <button class="btn btn-sm ${ZA_VERLAUF.sicht==='buchhaltung'?'btn-primary':''}" onclick="zaSetSicht('buchhaltung')">
+        <i class="ti ti-cash-banknote"></i> Buchhaltung (Ausgaben)</button>
+      <button class="btn btn-sm ${ZA_VERLAUF.sicht==='auswertung'?'btn-primary':''}" onclick="zaSetSicht('auswertung')">
+        <i class="ti ti-chart-pie"></i> Auswertung</button>
     </div>`;
 
   let inhalt;
   if(ZA_VERLAUF.sicht==='mietkonto'){
     inhalt = zaRenderMietkonto(buch, mieter, monate, konto);
+  } else if(ZA_VERLAUF.sicht==='buchhaltung'){
+    inhalt = zaRenderBuchhaltung(buch, konto);
+  } else if(ZA_VERLAUF.sicht==='auswertung'){
+    inhalt = zaRenderAuswertung(buch, konto);
   } else {
     inhalt = zaRenderAuszug(buch, monate, konto);
   }
@@ -26362,6 +26826,27 @@ async function zaRenderVerlauf(){
 }
 
 function zaSetSicht(s){ ZA_VERLAUF.sicht=s; zaRenderVerlauf(); }
+
+/* v181 (Punkt 10): Verlauf ohne neuen Import anzeigen – beim Öffnen des
+   Zahlungen-Tabs und beim Kontowechsel direkt aus den gespeicherten Buchungen. */
+async function zaKontoGewechselt(){
+  const kid=document.getElementById('zaKonto')?.value;
+  ZA_STATE.konto = ZA_KONTEN.find(k=>k.id===kid) || null;
+  ZA_STATE.results=[]; ZA_STATE.alleBuchungen=[];
+  await zaVerlaufInit();
+}
+async function zaVerlaufInit(){
+  const box=document.getElementById('zaErgebnis');
+  if(!box) return;
+  const kid=document.getElementById('zaKonto')?.value;
+  const konto=ZA_KONTEN.find(k=>k.id===kid);
+  if(!konto){ box.innerHTML=''; return; }
+  ZA_STATE.konto=konto;
+  let alle=[];
+  try{ alle=await idbGetAll('buchungen'); }catch(_){}
+  if(alle.some(b=>b && b.kontoId===konto.id)) await zaRenderVerlauf();
+  else box.innerHTML=`<p style="color:var(--ink-40);font-size:13px">Für ${esc(konto.label)} sind noch keine Buchungen gespeichert.</p>`;
+}
 
 /* Sicht 1: Mietkonto je Mieter – Soll-Ist je Monat, Stellplatz aufgeschlüsselt */
 function zaRenderMietkonto(buch, mieter, monate, konto){
@@ -26439,6 +26924,211 @@ function zaRenderAuszug(buch, monate, konto){
   return html || '<p style="color:var(--ink-40)">Keine Eingänge.</p>';
 }
 
+
+/* ── v181 (Punkt 10): Sicht 3 – Buchhaltung: Ausgänge kategorisieren ── */
+function zaRenderBuchhaltung(buch, konto){
+  const eur=n=>(Number(n)||0).toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const nurOffen = window._buchFilterOffen===true;
+  let ausgaben=buch.filter(b=>b.typ==='ausgang').sort((a,b)=>(b.datumISO||'').localeCompare(a.datumISO||''));
+  const offenAnz=ausgaben.filter(b=>!buchTeile(b)).length;
+  if(nurOffen) ausgaben=ausgaben.filter(b=>!buchTeile(b));
+  if(!buch.some(b=>b.typ==='ausgang')){
+    return `<p style="color:var(--ink-40)">Für dieses Konto sind noch keine Ausgänge gespeichert.
+      Ausgänge werden seit v181 beim Speichern eines CSV-Imports mit erfasst – bitte den letzten
+      Kontoauszug einmal erneut importieren und speichern.</p>`;
+  }
+  const filterBtns=`<div style="display:flex;gap:6px;align-items:center;margin-bottom:10px">
+    <button class="btn btn-sm ${!nurOffen?'btn-primary':''}" onclick="window._buchFilterOffen=false;zaRenderVerlauf()">Alle Ausgänge</button>
+    <button class="btn btn-sm ${nurOffen?'btn-primary':''}" onclick="window._buchFilterOffen=true;zaRenderVerlauf()">Ohne Kategorie (${offenAnz})</button>
+  </div>`;
+  let html=filterBtns, monat='';
+  for(const b of ausgaben){
+    const mo=(b.datumISO||'').slice(0,7);
+    if(mo!==monat){
+      monat=mo;
+      html+=`<div style="background:var(--ink-05);padding:5px 10px;border-radius:6px;margin:12px 0 4px;font-weight:600;font-size:12px">${mo?mo.slice(5)+'/'+mo.slice(0,4):'Ohne Datum'}</div>`;
+    }
+    const teile=buchTeile(b);
+    const istSplit=Array.isArray(b.kategorien)&&b.kategorien.length;
+    const katZelle = istSplit
+      ? `<div style="display:flex;gap:4px;flex-wrap:wrap;align-items:center">
+           ${b.kategorien.map(t=>`<span style="font-size:10px;background:var(--green-l);color:var(--green);border-radius:6px;padding:1px 6px">${esc(buchKatLabel(t.kat))} ${eur(t.betrag)}</span>`).join('')}
+           <button class="btn btn-sm" onclick="modalBuchungSplit('${b.id}')"><i class="ti ti-pencil"></i></button>
+         </div>`
+      : `<div style="display:flex;gap:4px;align-items:center">
+           <select onchange="buchKategorieSetzen('${b.id}', this.value)" style="font-size:11px;padding:4px;border:1px solid var(--ink-10);border-radius:6px;max-width:180px">${buchKatOptionen(b.kategorie||'')}</select>
+           <button class="btn btn-sm" title="Auf mehrere Kategorien aufteilen" onclick="modalBuchungSplit('${b.id}')"><i class="ti ti-arrows-split-2"></i></button>
+         </div>`;
+    html+=`<div style="display:flex;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid var(--line)">
+      <div style="font-size:11px;white-space:nowrap;color:var(--ink-40)">${esc((b.datumISO||'').slice(8)+'.'+(b.datumISO||'').slice(5,7))}</div>
+      <div style="font-size:13px;font-weight:600;color:var(--red,#dc2626);font-variant-numeric:tabular-nums;white-space:nowrap;min-width:80px;text-align:right">−${eur(Math.abs(b.betrag))} €</div>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:12px;font-weight:500">${esc(b.name||'Unbekannt')}</div>
+        <div style="font-size:10px;color:var(--ink-40);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc((b.zweck||'').slice(0,80))}</div>
+      </div>
+      ${katZelle}
+    </div>`;
+  }
+  if(nurOffen && !ausgaben.length) html+='<p style="color:var(--green);font-size:13px">Alle Ausgänge sind kategorisiert ✓</p>';
+  html+=`<p style="font-size:11px;color:var(--ink-40);margin-top:8px">
+    Beim Zuordnen einer Kategorie bietet die App an, weitere unkategorisierte Buchungen desselben
+    Zahlungsempfängers (gleiche IBAN) automatisch mit zu übernehmen. „Aufteilen" verteilt eine
+    Sammelzahlung auf mehrere Kategorien.</p>`;
+  return html;
+}
+
+async function buchKategorieSetzen(id, kat){
+  const rec=await idbGet('buchungen', id).catch(()=>null);
+  if(!rec) return;
+  rec.kategorie = kat||null;
+  delete rec.kategorien;
+  rec.updatedAt = nowIso();
+  await idbPut('buchungen', rec);
+  if(kat){
+    // Massenübernahme: gleiche Gegen-IBAN (ersatzweise gleicher Name), noch ohne Kategorie
+    const alle=await idbGetAll('buchungen').catch(()=>[]);
+    const iban=zaNormIban(rec.iban);
+    const kandidaten=alle.filter(b=>b && b.id!==rec.id && b.kontoId===rec.kontoId && b.typ==='ausgang'
+      && !buchTeile(b)
+      && (iban ? zaNormIban(b.iban)===iban : (b.name||'')===(rec.name||'')));
+    if(kandidaten.length && confirm(`Kategorie „${buchKatLabel(kat)}" auch für ${kandidaten.length} weitere Buchung(en) von „${rec.name||'diesem Empfänger'}" übernehmen?`)){
+      for(const b of kandidaten){ b.kategorie=kat; delete b.kategorien; b.updatedAt=nowIso(); await idbPut('buchungen', b); }
+    }
+  }
+  syncSoon();
+  await zaRenderVerlauf();
+}
+
+/* Sammelzahlung auf mehrere Kategorien aufteilen (Summe muss dem Betrag entsprechen) */
+async function modalBuchungSplit(id){
+  const b=await idbGet('buchungen', id).catch(()=>null);
+  if(!b) return;
+  const eur=n=>(Number(n)||0).toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const zeilen=(Array.isArray(b.kategorien)&&b.kategorien.length)
+    ? b.kategorien : [{kat:b.kategorie||'', betrag:Math.abs(b.betrag)}];
+  window._buchSplitId=id;
+  const zeileHtml=(t)=>`<div class="buchSplitRow" style="display:flex;gap:6px;margin-bottom:6px">
+    <select class="bsKat" style="flex:1;font-size:12px;padding:6px;border:1px solid var(--ink-10);border-radius:6px">${buchKatOptionen(t.kat||'')}</select>
+    <input type="text" inputmode="decimal" class="bsBetrag" value="${t.betrag?String(t.betrag).replace('.',','):''}" placeholder="0,00"
+      oninput="buchSplitSumme()" style="width:100px;font-size:12px;padding:6px;border:1px solid var(--ink-10);border-radius:6px;text-align:right">
+    <button class="btn btn-sm btn-danger" onclick="if(confirm('Diese Zeile wirklich entfernen?')){this.closest('.buchSplitRow').remove();buchSplitSumme();}"><i class="ti ti-x"></i></button>
+  </div>`;
+  window._buchSplitZeile=zeileHtml;
+  showModal(`
+    <div class="m-title"><i class="ti ti-arrows-split-2"></i> Zahlung aufteilen</div>
+    <div style="background:var(--ink-05);border-radius:8px;padding:8px 10px;margin-bottom:10px;font-size:12px">
+      <strong>${esc(b.name||'Unbekannt')}</strong> · ${esc((b.datumISO||''))}<br>
+      Betrag: <strong>−${eur(Math.abs(b.betrag))} €</strong><br>
+      <span style="color:var(--ink-40)">${esc((b.zweck||'').slice(0,100))}</span>
+    </div>
+    <div id="buchSplitListe">${zeilen.map(zeileHtml).join('')}</div>
+    <button class="btn btn-sm" onclick="document.getElementById('buchSplitListe').insertAdjacentHTML('beforeend', window._buchSplitZeile({kat:'',betrag:''}));buchSplitSumme()">
+      <i class="ti ti-plus"></i> Weitere Kategorie</button>
+    <div id="buchSplitSumme" style="font-size:12px;margin-top:8px"></div>
+    <div class="f-row" style="margin-top:12px">
+      <button class="btn btn-copper btn-full" onclick="buchSplitSpeichern()"><i class="ti ti-check"></i> Speichern</button>
+      <button class="btn btn-full" onclick="closeModal();zaRenderVerlauf()">Abbrechen</button>
+    </div>`);
+  buchSplitSumme();
+}
+function buchSplitSumme(){
+  const el=document.getElementById('buchSplitSumme'); if(!el) return;
+  let sum=0;
+  document.querySelectorAll('#buchSplitListe .bsBetrag').forEach(inp=>{ sum+=parseBetrag(inp.value); });
+  window._buchSplitSum=sum;
+  idbGet('buchungen', window._buchSplitId).then(b=>{
+    if(!b) return;
+    const soll=Math.abs(Number(b.betrag)||0);
+    const eur=n=>n.toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:2});
+    const diff=Math.round((soll-sum)*100)/100;
+    el.innerHTML = Math.abs(diff)<=0.01
+      ? `<span style="color:var(--green)">✓ Aufgeteilt: ${eur(sum)} € von ${eur(soll)} €</span>`
+      : `<span style="color:var(--red,#dc2626)">Aufgeteilt: ${eur(sum)} € – es fehlen noch ${eur(diff)} €</span>`;
+  }).catch(()=>{});
+}
+async function buchSplitSpeichern(){
+  const b=await idbGet('buchungen', window._buchSplitId).catch(()=>null);
+  if(!b) return;
+  const teile=[];
+  document.querySelectorAll('#buchSplitListe .buchSplitRow').forEach(row=>{
+    const kat=row.querySelector('.bsKat')?.value;
+    const betrag=parseBetrag(row.querySelector('.bsBetrag')?.value);
+    if(kat && betrag>0) teile.push({kat, betrag:Math.round(betrag*100)/100});
+  });
+  if(!teile.length){ toast('Mindestens eine Kategorie mit Betrag angeben.'); return; }
+  const soll=Math.abs(Number(b.betrag)||0);
+  const sum=teile.reduce((x,t)=>x+t.betrag,0);
+  if(Math.abs(soll-sum)>0.01){ toast('Die Teilbeträge müssen zusammen dem Buchungsbetrag entsprechen.'); return; }
+  if(teile.length===1){ b.kategorie=teile[0].kat; delete b.kategorien; }
+  else { b.kategorien=teile; b.kategorie=null; }
+  b.updatedAt=nowIso();
+  await idbPut('buchungen', b);
+  syncSoon();
+  closeModal();
+  toast('Aufteilung gespeichert ✓');
+  await zaRenderVerlauf();
+}
+
+/* ── v181 (Punkt 10): Sicht 4 – Auswertung je Kategorie über frei wählbaren Zeitraum ── */
+function zaRenderAuswertung(buch, konto){
+  const jetzt=new Date();
+  const von = window._zaAwVon || (jetzt.getFullYear()+'-01-01');
+  const bis = window._zaAwBis || today();
+  setTimeout(()=>zaAuswertungBerechnen(), 0);
+  return `<div style="display:flex;gap:8px;align-items:end;flex-wrap:wrap;margin-bottom:12px">
+      <div class="f" style="margin:0"><label>Von</label>
+        <input type="date" id="zaAwVon" value="${von}" onchange="window._zaAwVon=this.value;zaAuswertungBerechnen()"></div>
+      <div class="f" style="margin:0"><label>Bis</label>
+        <input type="date" id="zaAwBis" value="${bis}" onchange="window._zaAwBis=this.value;zaAuswertungBerechnen()"></div>
+    </div>
+    <div id="zaAwErgebnis"></div>`;
+}
+async function zaAuswertungBerechnen(){
+  const el=document.getElementById('zaAwErgebnis'); if(!el) return;
+  const konto=ZA_STATE.konto; if(!konto) return;
+  const von=document.getElementById('zaAwVon')?.value||'';
+  const bis=document.getElementById('zaAwBis')?.value||'';
+  const alle=await idbGetAll('buchungen').catch(()=>[]);
+  const buch=alle.filter(b=>b && b.kontoId===konto.id);
+  const s=buchKatSummen(buch, von, bis);
+  const eur=n=>(Number(n)||0).toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const kats=BUCH_KATEGORIEN.filter(k=>s.proKat[k.id]);
+  if(!kats.length && !s.ohneKat.anzahl){
+    el.innerHTML='<p style="color:var(--ink-40)">Im gewählten Zeitraum sind keine Ausgänge vorhanden.</p>';
+    return;
+  }
+  const maxSumme=Math.max(1,...kats.map(k=>s.proKat[k.id].summe), s.ohneKat.summe);
+  const zeile=(label,dat,detId,nka)=>`
+    <div style="padding:7px 0;border-bottom:1px solid var(--line);cursor:${detId?'pointer':'default'}" ${detId?`onclick="const d=document.getElementById('${detId}');d.style.display=d.style.display==='none'?'block':'none'"`:''}>
+      <div style="display:flex;align-items:center;gap:8px">
+        <div style="flex:1;font-size:13px">${esc(label)}${nka===false?' <span style="font-size:9px;color:var(--amber)">nicht umlagefähig</span>':''}</div>
+        <div style="font-size:11px;color:var(--ink-40)">${dat.anzahl}×</div>
+        <div style="font-size:13px;font-weight:600;font-variant-numeric:tabular-nums;min-width:100px;text-align:right">${eur(dat.summe)} €</div>
+      </div>
+      <div style="height:5px;background:var(--ink-05);border-radius:3px;margin-top:4px">
+        <div style="height:5px;border-radius:3px;background:var(--copper,#b87333);width:${Math.max(2,Math.round(dat.summe/maxSumme*100))}%"></div>
+      </div>
+    </div>`;
+  let html='';
+  for(const k of kats){
+    const dat=s.proKat[k.id];
+    const detId='zaAwDet_'+k.id;
+    html+=zeile(k.label, dat, detId, k.nka);
+    html+=`<div id="${detId}" style="display:none;padding:4px 0 8px 14px">
+      ${Object.entries(dat.empfaenger).sort((a,b)=>b[1].summe-a[1].summe).map(([name,e])=>
+        `<div style="display:flex;justify-content:space-between;font-size:11px;color:var(--ink-60);padding:2px 0">
+          <span>${esc(name)} (${e.anzahl}×)</span><span style="font-variant-numeric:tabular-nums">${eur(e.summe)} €</span></div>`).join('')}
+    </div>`;
+  }
+  if(s.ohneKat.anzahl) html+=zeile('Ohne Kategorie', s.ohneKat, null);
+  const katSumme=kats.reduce((x,k)=>x+s.proKat[k.id].summe,0)+s.ohneKat.summe;
+  html+=`<div style="display:flex;justify-content:space-between;padding:10px 0;font-weight:700;font-size:14px">
+    <span>Gesamt</span><span style="font-variant-numeric:tabular-nums">${eur(katSumme)} €</span></div>
+    <p style="font-size:11px;color:var(--ink-40)">Zeile antippen zeigt die Aufschlüsselung je Zahlungsempfänger –
+    so bleiben z. B. bei einem Versorgerwechsel beide Anbieter getrennt sichtbar.
+    Diese Summen stehen in der Nebenkostenabrechnung über „Aus Buchhaltung übernehmen" bereit.</p>`;
+  el.innerHTML=html;
+}
 
 function zaRenderErgebnis(){
   const box = document.getElementById('zaErgebnis');
@@ -26951,7 +27641,7 @@ let _rechnBeleg = null; // { data, mimeType, name }
 async function renderRechnungen(){
   const el=document.getElementById('page-rechnungen');
   if(!el) return;
-  if(!istVerwalter()){ el.innerHTML='<div class="empty"><i class="ti ti-lock"></i><p>Nur für Administratoren</p></div>'; return; }
+  if(!istVerwalter()){ el.innerHTML='<div class="empty"><i class="ti ti-lock"></i><p>Nur für Admins</p></div>'; return; }
 
   const myObj=await getMyObjekte();
   const myIds=myObj.map(o=>o.id);
@@ -27072,7 +27762,7 @@ function fmtDatumKurz(ds){
 
 // ── Erfassungs-Modal ──
 async function modalRechnungErfassen(rechnung){
-  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Admins'); return; }
   _rechnBeleg = rechnung?.beleg ? {data:rechnung.beleg, mimeType:rechnung.belegMime, name:rechnung.belegName||'Beleg'} : null;
   const myObj=await getMyObjekte();
   const isEdit=!!rechnung;
@@ -27421,7 +28111,7 @@ async function modalPacklistenTermine(){
 }
 
 async function modalPackliste(terminId){
-  if(!istVerwalter()){ toast('Nur für Administratoren'); return; }
+  if(!istVerwalter()){ toast('Nur für Admins'); return; }
   const termin=await idbGet('termine', terminId);
   if(!termin){ toast('Termin nicht gefunden'); return; }
   const items=(await idbGetAll('packliste','terminId',terminId).catch(()=>[]))
@@ -27981,6 +28671,7 @@ function renderEmFotoGrid(){
 }
 
 function delEmFoto(i){
+  if(!confirm('Foto wirklich entfernen?')) return;
   window._emFotos=(window._emFotos||[]).filter((_,idx)=>idx!==i);
   renderEmFotoGrid();
 }
