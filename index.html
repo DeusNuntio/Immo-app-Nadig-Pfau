@@ -796,7 +796,7 @@ body.printing-active #printRoot{display:block!important}
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=31;
-const APP_VERSION = '2026-07-06-v179';
+const APP_VERSION = '2026-07-06-v180';
 /* v157 (02.07.2026): Drei Fixes/Features – Sync, Mail-Papierkorb, QR-ZIP-Export.
    1) SYNC-TOMBSTONES: mergeRecord holte geleerte Felder immer von der Gegen-
       seite zurück ("gefüllt schlägt leer") – Feld-Löschungen konnten dadurch
@@ -5937,7 +5937,9 @@ async function saveSitzungNachtrag(sId){
   const d=document.getElementById('snDatum')?.value;
   const t=document.getElementById('snZeit')?.value;
   if(!d||!t){ toast('Bitte Datum und Zeit angeben'); return; }
-  const endeIso=new Date(d+'T'+t+':00').toISOString();
+  const _ende=new Date(d+'T'+t+':00');
+  if(isNaN(_ende)){ toast('Ungültiges Datum/Uhrzeit'); return; }   // v180 (Review N3)
+  const endeIso=_ende.toISOString();
   if(new Date(endeIso)<=new Date(s.start)){ toast('Ende muss nach dem Beginn liegen'); return; }
   // offene Segmente/Pausen schließen
   const seg=offenesSegment(s); if(seg) seg.ende=endeIso;
@@ -6503,6 +6505,9 @@ function nowIso(){ return new Date().toISOString(); }
 /* ── fetch mit Timeout (Review B4) ──
    Bricht hängende Verbindungen (Mobilfunk) nach ms ab, statt Sync/Mailversand
    unbegrenzt „in Arbeit" zu lassen. Wird in den Backend-/OneDrive-Pfaden genutzt. */
+/* ── v180 (Review H2): settings-Datensätze, die als Geheimnis gelten und das
+   Gerät nie verlassen dürfen (kein Sync-Push, kein Backup-Export). ── */
+const SETTINGS_GEHEIM = ['backendKey','saEncKey'];
 async function fetchMitTimeout(url, opts={}, ms=15000){
   const ac=new AbortController();
   const t=setTimeout(()=>ac.abort(), ms);
@@ -23950,7 +23955,7 @@ async function renderSettings(){
       <hr style="border:none;border-top:1px solid var(--line);margin:16px 0">
       <div class="card-hdr" style="font-size:14px"><i class="ti ti-lock"></i> Selbstauskünfte (verschlüsselt)</div>
       <p style="font-size:13px;color:var(--ink-40);margin:8px 0 12px;line-height:1.6">
-        Selbstauskünfte von der Website werden serverseitig verschlüsselt und nur hier entschlüsselt. Hinterlegen Sie denselben Schlüssel wie in der Azure-Einstellung <code>SA_ENC_KEY</code> (32 Byte, base64). Wird nur lokal auf diesem Gerät gespeichert.
+        Selbstauskünfte von der Website werden serverseitig verschlüsselt und nur hier entschlüsselt. Hinterlegen Sie denselben Schlüssel wie in der Azure-Einstellung <code>SA_ENC_KEY</code> (32 Byte, base64). Wird nur lokal auf diesem Gerät gespeichert und ist von Sync und Backup-Export ausgenommen.
       </p>
       <label style="font-size:12px;color:var(--ink-40);display:block;margin-bottom:4px">Entschlüsselungs-Schlüssel (SA_ENC_KEY)</label>
       <div style="display:flex;gap:8px;align-items:center">
@@ -24584,6 +24589,8 @@ async function exportBackup(){
   const backup={};
   for(const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','versicherungen','versorger_archiv','od_dateien','buchungen','fotos','mietbescheinigungen','kautionsquittungen','mv_entwuerfe','selbstauskuenfte','tenant_mails']){
     backup[s]=await idbGetAll(s);
+    // v180 (Review H2): Function-Key + SA-Schlüssel nie in Export-Dateien schreiben.
+    if(s==='settings') backup[s]=backup[s].filter(r=>!SETTINGS_GEHEIM.includes(r?.id));
   }
   backup.exportedAt=now();backup.version=2;
   const blob=new Blob([JSON.stringify(backup,null,2)],{type:'application/json'});
@@ -25121,6 +25128,10 @@ async function syncToOneDrive() {
     const backup = {};
     for (const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','versorger_archiv','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','versicherungen','od_dateien','buchungen','fotos','mietbescheinigungen','kautionsquittungen','mv_entwuerfe','selbstauskuenfte','tenant_mails']) {
       backup[s] = await idbGetAll(s);
+      // v180 (Review H2): Geheimnisse (Function-Key, SA-Schlüssel) bleiben auf dem Gerät –
+      // sie gehören weder in die OneDrive-JSON noch in Backup-Dateien. settings werden
+      // beim Sync ohnehin nie zurückgelesen (nur gepusht), daher kein Funktionsverlust.
+      if (s === 'settings') backup[s] = backup[s].filter(r => !SETTINGS_GEHEIM.includes(r?.id));
     }
     backup.updatedAt = new Date().toISOString();
     backup.updatedBy = odTokens?.user_name || 'Unbekannt';
@@ -25382,10 +25393,13 @@ async function odGraph(path, opts={}){
   const token=await odGetToken();
   if(!token) throw new Error('Nicht angemeldet');
   const url = path.startsWith('http') ? path : OD_GRAPH+path;
-  const r=await fetch(url, {
+  // v180 (Review M1): Timeout statt rohem fetch – ein hängender Graph-Request
+  // (Mobilfunk) blockierte sonst Datei-Sync/Upload unbegrenzt. 30 s je Request;
+  // Datei-Uploads laufen über eigene Pfade mit OD_SYNC_TIMEOUT.
+  const r=await fetchMitTimeout(url, {
     ...opts,
     headers:{ 'Authorization':'Bearer '+token, ...(opts.headers||{}) },
-  });
+  }, 30000);
   if(r.status===404) return {__notfound:true};
   if(!r.ok){
     let det=''; try{ det=(await r.json())?.error?.message||''; }catch(e){}
