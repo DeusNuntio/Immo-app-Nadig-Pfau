@@ -796,7 +796,7 @@ body.printing-active #printRoot{display:block!important}
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=31;
-const APP_VERSION = '2026-07-05-v178';
+const APP_VERSION = '2026-07-06-v179';
 /* v157 (02.07.2026): Drei Fixes/Features – Sync, Mail-Papierkorb, QR-ZIP-Export.
    1) SYNC-TOMBSTONES: mergeRecord holte geleerte Felder immer von der Gegen-
       seite zurück ("gefüllt schlägt leer") – Feld-Löschungen konnten dadurch
@@ -11751,11 +11751,71 @@ function odGruppeOrdner(gruppe){
   const st=(typeof odStandorte==='function'?odStandorte():[]).find(x=>x.gruppe===gruppe);
   return st?st.ordner:String(gruppe||'');
 }
-// Aktualisiert den Dateibaum und rendert den WE-Block neu.
+/* v179: Gezielter Datei-Sync EINER Wohnung (gruppe + weNr). Ersatz fuer den
+   vollen Baum-Walk im ⟳ des Mieter-Archivs: syncDateibaum feuert >1000
+   Graph-Requests (Baum-Probe + Legacy-Zweige) und brach dadurch ab, bevor
+   der gesuchte Knoten gelistet war (v178-Gerätebefund, Kauven WE 8).
+   Hier: nur die Blattordner dieser WE (je Gebaeude + Legacy) ~ 16 Requests. */
+async function odSyncWeDateien(gruppe, weNr){
+  const token=await odGetToken();
+  if(!token) throw new Error('Nicht mit OneDrive verbunden');
+  const st=odStandorte().find(x=>x.gruppe===gruppe);
+  if(!st) throw new Error('Standort unbekannt');
+  const weKey=odSafeName(String(weNr));
+  const kn='WE '+weKey;
+
+  const bekannt={}, bekanntById={};
+  for(const rec of await idbGetAll('od_dateien')){
+    if(!rec) continue;
+    if(rec.pfad) bekannt[rec.pfad]=rec;
+    if(rec.odItemId) bekanntById[rec.odItemId]=rec;
+  }
+
+  const _mAlle=await idbGetAll('mieter').catch(()=>[]);
+  const zweige=[];
+  for(const g of await odGebaeudeListe(st, _mAlle)){
+    if(g.wes.some(w=>odSafeName(String(w))===weKey))
+      zweige.push({gebaeude:g.geb, pfad:odKnotenPfad(st.ordner, kn, g.geb)});
+  }
+  zweige.push({gebaeude:'', pfad:odKnotenPfad(st.ordner, kn)});  // Legacy-Ebene
+
+  let neu=0;
+  for(const zw of zweige){
+    const _kats=odKategorienFuer(kn);
+    const _blaetter=[{pfad:zw.pfad,unterkat:''},
+      ..._kats.map(k=>({pfad:zw.pfad+'/'+odSafeName(k),unterkat:k}))];
+    for(const _bl of _blaetter){
+      for(const f of await odListFiles(_bl.pfad)){
+        const pfad=_bl.pfad+'/'+f.name;
+        const vorher=bekannt[pfad] || (f.id ? bekanntById[f.id] : null);
+        if(vorher && vorher.eTag===f.eTag) continue;
+        const rec={
+          id: vorher?.id || ('od_'+uid()),
+          pfad, name:f.name, ordner:_bl.pfad,
+          gruppe:st.gruppe, standort:st.ordner,
+          weNr:weKey, kategorie:'wohneinheit', unterkategorie:_bl.unterkat,
+          gebaeude:zw.gebaeude||'',
+          groesse:f.size||0, eTag:f.eTag||'', odItemId:f.id||'',
+          lastModified:f.lastModifiedDateTime||'',
+          quelle:'onedrive', geloescht:false,
+        };
+        await idbPut('od_dateien', rec, {keepStamp:true});
+        bekannt[pfad]=rec;
+        if(!vorher) neu++;
+      }
+    }
+  }
+  await odPendingFlush().catch(()=>{});   // wartende App-Uploads mitnehmen
+  return neu;
+}
+
+// Aktualisiert gezielt die Dateien dieser WE und rendert den Block neu.
 async function odArchivAktualisieren(gruppe, weNr){
   const el=document.getElementById('mieterODEl');
   if(el) el.innerHTML='<div style="font-size:12px;color:var(--ink-40)"><i class="ti ti-loader"></i> Synchronisiere OneDrive …</div>';
-  try{ if(typeof syncDateibaum==='function') await syncDateibaum(true); }catch(_){}
+  // v179: gezielter WE-Sync statt vollem Baum-Walk; Fehler sichtbar statt silent.
+  try{ await odSyncWeDateien(gruppe, weNr); }
+  catch(e){ console.warn('WE-Datei-Sync:', e); toast('OneDrive-Abgleich fehlgeschlagen: '+e.message); }
   await renderODArchivFuerWE(el, gruppe, weNr);
 }
 
@@ -11919,7 +11979,8 @@ async function ausweisAlleLoeschen(){
 const DOK_INLINE_TYPEN = ['ausweis','lastschrift'];
 // Typ -> OneDrive-Kategorie (nur auf WE-Knoten; Allgemein bleibt 'Sonstiges').
 const DOK_OD_KATEGORIE = { vertrag:'Mietvertrag', brief:'Briefe', foto:'Fotos',
-  wohnungsbild:'Fotos', protokoll:'Protokolle', abrechnung:'Rechnungen', nka:'Rechnungen' };
+  wohnungsbild:'Fotos', protokoll:'Protokolle', abrechnung:'Rechnungen', nka:'Rechnungen',
+  wgb:'Mietbescheinigungen', mieterhoehung:'Briefe' };  // v179: fehlten -> landeten in Sonstiges
 
 // Lagert ein Dokument nach OneDrive aus. dok braucht typ/objektId/name/mimeType,
 // dataUrl ist die frische FileReader-dataURL. Liefert Referenz oder null.
@@ -25541,6 +25602,12 @@ async function syncDateibaum(silent){
             { method:'PUT',
               headers:{'Content-Type': rec.mime||'application/octet-stream'},
               body: bytes });
+          // v179: Guard wie in odPendingFlush – fehlgeschlagener PUT darf den
+          // Record NICHT als hochgeladen markieren (sonst Blob-Verlust).
+          if(!up || up.__notfound || !up.id){
+            console.warn('Datei-Upload fehlgeschlagen (bleibt wartend):', zielPfad);
+            continue;
+          }
           const upd={ ...rec,
             name:zielName, pfad:zielPfad,
             eTag:up.eTag||'', odItemId:up.id||'',
