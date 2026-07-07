@@ -796,7 +796,7 @@ body.printing-active #printRoot{display:block!important}
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=32;
-const APP_VERSION = '2026-07-07-v186';
+const APP_VERSION = '2026-07-07-v187';
 /* v157 (02.07.2026): Drei Fixes/Features – Sync, Mail-Papierkorb, QR-ZIP-Export.
    1) SYNC-TOMBSTONES: mergeRecord holte geleerte Felder immer von der Gegen-
       seite zurück ("gefüllt schlägt leer") – Feld-Löschungen konnten dadurch
@@ -3280,6 +3280,72 @@ function zaehlerVerbrauchsPunkte(staendeAsc, modus){
   }
   return out;
 }
+// v187: Verteilt den Verbrauch zwischen je zwei Ablesungen tagesgenau auf die
+// ueberlappenden Kalenderjahre. Liefert { 'JJJJ': {wert, unvollstaendig} }.
+// 'unvollstaendig' = das Jahr wird nicht vollstaendig durch Ablesungen abgedeckt
+// (Rand des Ablesezeitraums oder laufendes Jahr) -> in der Anzeige kennzeichnen.
+function jahresVerbrauchTagesgenau(staendeAsc){
+  const jahre={};
+  const MS=86400000;
+  let minTag=null, maxTag=null;
+  for(let i=1;i<staendeAsc.length;i++){
+    const a=staendeAsc[i-1], b=staendeAsc[i];
+    const d=(parseFloat(b.wert)||0)-(parseFloat(a.wert)||0);
+    if(d<0) continue; // Zaehlerwechsel/Korrektur
+    const t0=new Date(a.datumISO), t1=new Date(b.datumISO);
+    if(!isFinite(t0)||!isFinite(t1)||t1<=t0) continue;
+    if(minTag===null||t0<minTag) minTag=t0;
+    if(maxTag===null||t1>maxTag) maxTag=t1;
+    const gesamtTage=Math.max(1,Math.round((t1-t0)/MS));
+    // Intervall an Jahresgrenzen aufteilen
+    let cur=new Date(t0);
+    while(cur<t1){
+      const jahr=cur.getFullYear();
+      const jahrEnde=new Date(jahr+1,0,1); // 1.1. Folgejahr
+      const stop = jahrEnde<t1 ? jahrEnde : t1;
+      const tage=Math.max(0,Math.round((stop-cur)/MS));
+      const anteil=d*(tage/gesamtTage);
+      if(!jahre[jahr]) jahre[jahr]={wert:0, unvollstaendig:false};
+      jahre[jahr].wert+=anteil;
+      cur=stop;
+    }
+  }
+  // Randjahre / laufendes Jahr als unvollstaendig markieren
+  if(minTag&&maxTag){
+    const heute=new Date();
+    for(const j of Object.keys(jahre)){
+      const jn=+j;
+      const jahrAnfang=new Date(jn,0,1), jahrEnde=new Date(jn,11,31);
+      // unvollstaendig, wenn der Ablesezeitraum das Jahr nicht ganz abdeckt
+      if(minTag>jahrAnfang || maxTag<jahrEnde) jahre[j].unvollstaendig=true;
+      if(jn===heute.getFullYear()) jahre[j].unvollstaendig=true;
+      jahre[j].wert=Math.round(jahre[j].wert*100)/100;
+    }
+  }
+  return jahre;
+}
+// v187: schlichtes vertikales Balkendiagramm (SVG). paare=[{label,wert,teil?}].
+function balkenChartSVG(paare, opts={}){
+  if(!paare||!paare.length) return '';
+  const W=Math.max(220, paare.length*70+40), H=170, padL=8, padB=26, padT=10;
+  const maxW=Math.max(...paare.map(p=>p.wert), 0.0001);
+  const bw=Math.min(48, (W-padL*2)/paare.length*0.6);
+  const gap=(W-padL*2)/paare.length;
+  const eur=n=>(Number(n)||0).toLocaleString('de-DE',{maximumFractionDigits:0});
+  let bars='';
+  paare.forEach((p,i)=>{
+    const h=Math.max(1,(p.wert/maxW)*(H-padB-padT));
+    const x=padL+gap*i+(gap-bw)/2;
+    const y=H-padB-h;
+    const farbe=p.teil?'var(--ink-20,#c7c7c7)':'var(--copper,#b87333)';
+    bars+=`<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${h.toFixed(1)}" rx="3" fill="${farbe}"></rect>`;
+    bars+=`<text x="${(x+bw/2).toFixed(1)}" y="${(y-3).toFixed(1)}" text-anchor="middle" font-size="9" fill="var(--ink-60)">${eur(p.wert)}</text>`;
+    bars+=`<text x="${(x+bw/2).toFixed(1)}" y="${H-padB+13}" text-anchor="middle" font-size="10" fill="var(--ink-60)">${p.label}</text>`;
+  }); 
+  const legende=paare.some(p=>p.teil)?`<text x="${padL}" y="${H-4}" font-size="9" fill="var(--ink-40)">grau = unvollständiges Jahr${opts.einheit?' · '+opts.einheit:''}</text>`:(opts.einheit?`<text x="${padL}" y="${H-4}" font-size="9" fill="var(--ink-40)">${opts.einheit}</text>`:'');
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;max-width:${W}px" xmlns="http://www.w3.org/2000/svg">`+
+    `<line x1="${padL}" y1="${H-padB}" x2="${W-padL}" y2="${H-padB}" stroke="var(--ink-10)"></line>${bars}${legende}</svg>`;
+}
 // Gesamtübersicht einer Kategorie: alle Zähler dieser Art in einem Diagramm,
 // eine Linie je Zähler (Ø Verbrauch/Tag – fair vergleichbar bei unterschiedlichen Ableseabständen)
 async function modalZaehlerKategorieChart(objektId, art){
@@ -3329,28 +3395,27 @@ async function zeigeZaehlerVerlauf(zaehlerId){
         <button class="btn btn-sm btn-danger" onclick="delZaehlerstand('${s.id}','${zaehlerId}')"><i class="ti ti-trash"></i></button>`:''}</td>
     </tr>`;
   }
-  // Jahresvergleich: Verbrauch pro Kalenderjahr
-  const perJahr={};
-  for(let i=0;i<staende.length-1;i++){
-    const neu=staende[i], alt=staende[i+1];
-    const jahr=new Date(neu.datumISO).getFullYear();
-    const d=(parseFloat(neu.wert)||0)-(parseFloat(alt.wert)||0);
-    if(d>=0) perJahr[jahr]=(perJahr[jahr]||0)+d;
-  }
-  const jahrRows=Object.keys(perJahr).sort((a,b)=>b-a).map(j=>
-    `<tr><td style="padding:4px 6px;font-size:12px">${j}</td><td style="padding:4px 6px;font-size:12px;font-weight:600">${perJahr[j].toFixed(2)} ${z.einheit}</td></tr>`).join('');
+  // v187: Jahresvergleich tagesgenau (siehe jahrTagesgenau oben); laufendes Jahr markiert.
+  const jahrRows=Object.keys(jahrTagesgenau).sort((a,b)=>b-a).map(j=>
+    `<tr><td style="padding:4px 6px;font-size:12px">${j}${jahrTagesgenau[j].unvollstaendig?' <span style=\"color:var(--ink-40);font-size:10px\">(unvollständig)</span>':''}</td>`+
+    `<td style="padding:4px 6px;font-size:12px;font-weight:600">${jahrTagesgenau[j].wert.toFixed(2)} ${z.einheit}</td></tr>`).join('');
 
-  // v181 (Punkt 9): grafischer Verlauf des Verbrauchs je Ablesung (ab 3 Ablesungen)
-  const chartPunkte=zaehlerVerbrauchsPunkte([...staende].reverse(),'diff');
+  // v187: Verlaufskurve als Oe Verbrauch/Tag – neutralisiert ungleiche Ableseabstaende,
+  // damit die Kurve echte Trends statt Intervall-Artefakte zeigt.
+  const chartPunkte=zaehlerVerbrauchsPunkte([...staende].reverse(),'proTag');
   const chartHtml=chartPunkte.length>=2
     ? linienChartSVG([{name:z.name||'Zähler', punkte:chartPunkte}],
-        {einheit:z.einheit, hinweis:'Verbrauch ('+z.einheit+') je Ablesung, jeweils seit der vorherigen Ablesung.'})
+        {einheit:(z.einheit?z.einheit+'/Tag':''), hinweis:'Ø Verbrauch pro Tag im jeweiligen Ableseintervall – so sind unterschiedlich lange Ableseabstände fair vergleichbar.'})
     : '';
+  // v187: Jahresverbrauch tagesgenau auf Kalenderjahre umgelegt + Balkendiagramm.
+  const jahrTagesgenau=jahresVerbrauchTagesgenau([...staende].reverse());
+  const jahrPaare=Object.keys(jahrTagesgenau).sort().map(j=>({label:j, wert:jahrTagesgenau[j].wert, teil:jahrTagesgenau[j].unvollstaendig}));
+  const jahrBalkenHtml=jahrPaare.length>=1 ? balkenChartSVG(jahrPaare, {einheit:z.einheit}) : '';
   showModal(`
     <div class="m-title"><i class="ti ti-chart-line"></i> Verlauf – ${z.name}</div>
     ${chartHtml?`<div class="card-hdr" style="margin-bottom:6px">Verbrauchsverlauf</div><div style="margin-bottom:14px">${chartHtml}</div>`:''}
-    ${jahrRows?`<div class="card-hdr" style="margin-bottom:6px">Verbrauch je Kalenderjahr</div>
-    <table style="width:100%;border-collapse:collapse;margin-bottom:14px">
+    ${jahrBalkenHtml?`<div class="card-hdr" style="margin-bottom:6px">Verbrauch je Kalenderjahr</div><div style="margin-bottom:10px">${jahrBalkenHtml}</div>`:''}
+    ${jahrRows?`<table style="width:100%;border-collapse:collapse;margin-bottom:14px">
       <thead><tr style="background:var(--ink-05)"><th style="padding:4px 6px;text-align:left;font-size:11px">Jahr</th><th style="padding:4px 6px;text-align:left;font-size:11px">Verbrauch</th></tr></thead>
       <tbody>${jahrRows}</tbody></table>`:''}
     <div class="card-hdr" style="margin-bottom:6px">Alle Ablesungen (${staende.length})</div>
@@ -3637,6 +3702,7 @@ function cryptoIstEntsperrt(){ return !!_cryptoKey; }
 async function cryptoEinrichten(masterPw){
   const salt=_b64(crypto.getRandomValues(new Uint8Array(16)));
   _cryptoKey=await _deriveKey(masterPw, salt);
+  cryptoAktivitaet();
   const iv=crypto.getRandomValues(new Uint8Array(12));
   const ct=await crypto.subtle.encrypt({name:'AES-GCM', iv}, _cryptoKey, _txtEnc.encode('CHECK_OK'));
   await idbPut('settings',{id:'cryptoConfig', salt, check:{iv:_b64(iv), ct:_b64(ct)}, erstellt:now()});
@@ -3653,6 +3719,13 @@ async function cryptoEntsperren(masterPw){
   return false;
 }
 function cryptoSperren(){ _cryptoKey=null; }
+// v187: automatische Sperre der Zugangsdaten nach Inaktivitaet (Schutz gegen Mitlesen).
+const CRYPTO_AUTOLOCK_MS = 5*60*1000; // 5 Minuten
+let _cryptoLockTimer = null;
+function cryptoAktivitaet(){
+  if(_cryptoLockTimer) clearTimeout(_cryptoLockTimer);
+  _cryptoLockTimer = setTimeout(()=>{ cryptoSperren(); if(typeof toast==='function') toast('Zugangsdaten automatisch gesperrt.'); }, CRYPTO_AUTOLOCK_MS);
+}
 
 // Dialog: einrichten oder entsperren. onDone() wird nach Erfolg aufgerufen.
 async function modalCryptoUnlock(onDoneName, ...args){
@@ -3779,14 +3852,11 @@ async function modalVersorger(objektId, versorgerId){
   const objZaehler=(await idbGetAll('zaehler','objektId',objektId)).sort((a,b)=>(a.name||'').localeCompare(b.name||''));
   const zOpts=['<option value="">— kein Zähler —</option>']
     .concat(objZaehler.map(z=>`<option value="${z.id}" ${v.zaehlerId===z.id?'selected':''}>${z.name}${z.zaehlernummer?' (Nr. '+z.zaehlernummer+')':''}</option>`)).join('');
-  // Passwort nur anzeigen, wenn entsperrt; sonst Platzhalter
-  let pwWert='', pwHinweis='';
+  // v187: Passwort im Formular NIE automatisch vorbefuellen. Leeres Feld = unveraendert
+  // (saveVersorgerFortsetzen behaelt dann das gespeicherte passwortEnc bei).
+  let pwHinweis='';
   if(v.passwortEnc){
-    if(cryptoIstEntsperrt()){
-      pwWert = await _decryptVal(v.passwortEnc);
-    } else {
-      pwHinweis = '<div style="font-size:11px;color:#C0392B;margin-bottom:4px"><i class="ti ti-lock"></i> Gespeichertes Passwort ist verschlüsselt. Zum Anzeigen/Ändern erst entsperren.</div>';
-    }
+    pwHinweis = '<div style="font-size:11px;color:var(--ink-40);margin-bottom:4px"><i class="ti ti-lock"></i> Passwort gespeichert. Feld leer lassen = unverändert; zum Anzeigen/Ändern auf das Auge tippen.</div>';
   }
   showModal(`
     <div class="m-title"><i class="ti ti-file-dollar"></i> ${isEdit?'Versorger bearbeiten':'Neuer Versorger'}</div>
@@ -3815,7 +3885,11 @@ async function modalVersorger(objektId, versorgerId){
     <div class="f"><label>Website / Kundenportal</label><input type="url" id="vWebsite" value="${v.website||''}" placeholder="https://..."></div>
     <div class="f-row">
       <div class="f"><label>Benutzername / Kundennr.</label><input type="text" id="vLogin" value="${v.login||''}"></div>
-      <div class="f"><label>Passwort</label>${pwHinweis}<input type="text" id="vPasswort" value="${pwWert.replace(/"/g,'&quot;')}" placeholder="${v.passwortEnc&&!cryptoIstEntsperrt()?'•••••• (verschlüsselt)':''}"></div>
+      <div class="f"><label>Passwort</label>${pwHinweis}
+      <div style="display:flex;gap:6px;align-items:center">
+        <input type="password" id="vPasswort" value="" placeholder="${v.passwortEnc?'•••••• (gespeichert)':''}" style="flex:1">
+        ${v.passwortEnc?`<button type="button" class="btn btn-sm" id="vPwShowBtn" title="Anzeigen/Ändern" onclick="vFormPwToggle('${versorgerId||''}')"><i class="ti ti-eye"></i></button>`:''}
+      </div></div>
     </div>
     <div class="f"><label>Notizen</label><textarea spellcheck="true" lang="de" id="vNotiz" style="min-height:50px">${v.notiz||''}</textarea></div>
     <div class="f-row" style="margin-top:12px">
@@ -3978,18 +4052,17 @@ async function zeigeVersorgerDetail(versorgerId){
       <span style="color:var(--ink-40)">${label}</span>
       <span style="font-weight:600;text-align:right;${opts.mono?'font-family:monospace':''}">${opts.link?`<a href="${val}" target="_blank" rel="noopener" style="color:var(--copper)">${val}</a>`:val}</span>
     </div>` : '';
-  // Passwort-Darstellung je nach Entsperr-Status
+  // v187: Passwort NIE automatisch zeigen – Klartext erst auf ausdruecklichen Klick,
+  // auch wenn die Sitzung bereits entsperrt ist (Schutz gegen zufaelliges Mitlesen).
   let pwZeile='';
   if(v.passwortEnc){
-    if(cryptoIstEntsperrt()){
-      const klar=await _decryptVal(v.passwortEnc);
-      pwZeile=zeile('Passwort', klar||'(nicht entschlüsselbar)', {mono:true});
-    } else {
-      pwZeile=`<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--ink-10);font-size:13px">
+    pwZeile=`<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--ink-10);font-size:13px">
         <span style="color:var(--ink-40)">Passwort</span>
-        <button class="btn btn-sm" onclick="modalCryptoUnlock('zeigeVersorgerDetail','${versorgerId}')"><i class="ti ti-lock-open"></i> Entsperren</button>
+        <span style="display:flex;align-items:center;gap:6px">
+          <span id="vpwWert" style="font-family:monospace">••••••</span>
+          <button class="btn btn-sm" id="vpwBtn" onclick="versorgerPwToggle('${versorgerId}')"><i class="ti ti-eye"></i> Anzeigen</button>
+        </span>
       </div>`;
-    }
   }
   showModal(`
     <div class="m-title"><i class="ti ${sp.icon}"></i> ${v.anbieter}</div>
@@ -4026,12 +4099,9 @@ async function renderVersorgerArchiv(versorgerId){
     const sp=getSparte(h.sparte);
     let pwTxt='';
     if(h.passwortEnc){
-      if(cryptoIstEntsperrt()){
-        const klar=await _decryptVal(h.passwortEnc);
-        pwTxt=klar?`<div style="font-size:11px"><span style="color:var(--ink-40)">Passwort:</span> <span style="font-family:monospace">${esc(klar)}</span></div>`:'';
-      } else {
-        pwTxt=`<div style="font-size:11px;color:var(--ink-40)">Passwort verschlüsselt – zum Anzeigen entsperren</div>`;
-      }
+      pwTxt=`<div style="font-size:11px;display:flex;align-items:center;gap:6px"><span style="color:var(--ink-40)">Passwort:</span>
+        <span id="vapw_${esc(h.id)}" style="font-family:monospace">••••••</span>
+        <button class="btn btn-sm" style="padding:1px 6px" onclick="versorgerArchivPwToggle('${esc(h.id)}')"><i class="ti ti-eye"></i></button></div>`;
     }
     rows+=`<div style="background:var(--ink-05);border-radius:8px;padding:8px 10px;margin-bottom:6px">
       <div style="display:flex;justify-content:space-between;font-size:12px">
@@ -4090,6 +4160,47 @@ function getLagerKat(id){ return LAGER_KATEGORIEN.find(k=>k.id===id)||LAGER_KATE
 async function getLagerArtikel(idxField, idxVal){
   const alle = idxField ? await idbGetAll('lager', idxField, idxVal) : await idbGetAll('lager');
   return alle.filter(x=>x._typ!=='lagerort');
+}
+
+// v187: Versorger-Passwort erst auf ausdruecklichen Klick anzeigen. Entsperrt bei
+// Bedarf ueber den Master-Passwort-Dialog; blendet nach kurzer Zeit wieder aus.
+async function versorgerPwToggle(versorgerId){
+  if(!cryptoIstEntsperrt()){ modalCryptoUnlock('versorgerPwToggle', versorgerId); return; }
+  cryptoAktivitaet();
+  const span=document.getElementById('vpwWert'), btn=document.getElementById('vpwBtn');
+  if(!span) return;
+  if(span.dataset.shown==='1'){ span.textContent='••••••'; span.dataset.shown=''; if(btn) btn.innerHTML='<i class="ti ti-eye"></i> Anzeigen'; return; }
+  const v=await idbGet('versorger', versorgerId).catch(()=>null);
+  if(!v||!v.passwortEnc) return;
+  const klar=await _decryptVal(v.passwortEnc);
+  span.textContent=klar||'(nicht entschlüsselbar)'; span.dataset.shown='1';
+  if(btn) btn.innerHTML='<i class="ti ti-eye-off"></i> Verbergen';
+  clearTimeout(window._vpwHide); window._vpwHide=setTimeout(()=>{ if(span){ span.textContent='••••••'; span.dataset.shown=''; } if(btn) btn.innerHTML='<i class="ti ti-eye"></i> Anzeigen'; }, 20000);
+}
+// Formular: Klartext bei Bedarf ins Passwortfeld holen und Sichtbarkeit umschalten.
+async function vFormPwToggle(versorgerId){
+  const inp=document.getElementById('vPasswort'), btn=document.getElementById('vPwShowBtn');
+  if(!inp) return;
+  if(!cryptoIstEntsperrt()){ modalCryptoUnlock('vFormPwToggle', versorgerId); return; }
+  cryptoAktivitaet();
+  if(inp.type==='text'){ inp.type='password'; if(btn) btn.innerHTML='<i class="ti ti-eye"></i>'; return; }
+  if(!inp.value && versorgerId){
+    const v=await idbGet('versorger', versorgerId).catch(()=>null);
+    if(v&&v.passwortEnc){ inp.value=await _decryptVal(v.passwortEnc)||''; }
+  }
+  inp.type='text'; if(btn) btn.innerHTML='<i class="ti ti-eye-off"></i>';
+}
+// Archiv-Eintrag: Passwort erst auf Klick entschluesseln und anzeigen.
+async function versorgerArchivPwToggle(archivId){
+  if(!cryptoIstEntsperrt()){ modalCryptoUnlock('versorgerArchivPwToggle', archivId); return; }
+  cryptoAktivitaet();
+  const span=document.getElementById('vapw_'+archivId);
+  if(!span) return;
+  if(span.dataset.shown==='1'){ span.textContent='••••••'; span.dataset.shown=''; return; }
+  const h=await idbGet('versorger_archiv', archivId).catch(()=>null);
+  if(!h||!h.passwortEnc) return;
+  span.textContent=await _decryptVal(h.passwortEnc)||'(nicht entschlüsselbar)'; span.dataset.shown='1';
+  clearTimeout(window['_vapwHide_'+archivId]); window['_vapwHide_'+archivId]=setTimeout(()=>{ if(span){ span.textContent='••••••'; span.dataset.shown=''; } }, 20000);
 }
 async function getLagerorte(standort){
   const alle = await idbGetAll('lager');
