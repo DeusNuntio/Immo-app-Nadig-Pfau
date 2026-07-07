@@ -795,8 +795,8 @@ body.printing-active #printRoot{display:block!important}
 /* ═══════════════════════════════════════════════════════════
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
-const DB_NAME='immo_v2', DB_VER=31;
-const APP_VERSION = '2026-07-06-v181';
+const DB_NAME='immo_v2', DB_VER=32;
+const APP_VERSION = '2026-07-07-v182';
 /* v157 (02.07.2026): Drei Fixes/Features – Sync, Mail-Papierkorb, QR-ZIP-Export.
    1) SYNC-TOMBSTONES: mergeRecord holte geleerte Felder immer von der Gegen-
       seite zurück ("gefüllt schlägt leer") – Feld-Löschungen konnten dadurch
@@ -1012,7 +1012,7 @@ function openIDB(){
     const req=indexedDB.open(DB_NAME,DB_VER);
     req.onupgradeneeded=e=>{
       const db=e.target.result;
-      ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','fotos','wartung','zaehler','zaehlerstaende','versorger','versorger_archiv','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','ventile','ventilpruefung','taetigkeit_log','sync_log','mieter_snapshots','branchenbuch','interessenten','od_dateien','buchungen','mietbescheinigungen','kautionsquittungen','mv_entwuerfe','selbstauskuenfte','tenant_mails','od_auth'].forEach(s=>{
+      ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','fotos','wartung','zaehler','zaehlerstaende','versorger','versorger_archiv','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','ventile','ventilpruefung','taetigkeit_log','sync_log','mieter_snapshots','branchenbuch','interessenten','od_dateien','buchungen','mietbescheinigungen','kautionsquittungen','mv_entwuerfe','selbstauskuenfte','tenant_mails','stellplaetze','od_auth'].forEach(s=>{
         if(!db.objectStoreNames.contains(s)){
           const store=db.createObjectStore(s,{keyPath:'id'});
           if(s==='mieter'){store.createIndex('objektId','objektId');store.createIndex('weNr','weNr')}
@@ -1028,6 +1028,7 @@ function openIDB(){
           if(s==='fotos'){store.createIndex('protId','protId')}
           if(s==='wartung'){store.createIndex('objektId','objektId')}
           if(s==='zaehler'){store.createIndex('objektId','objektId')}
+          if(s==='stellplaetze'){store.createIndex('objektId','objektId')}
           if(s==='zaehlerstaende'){store.createIndex('objektId','objektId');store.createIndex('zaehlerId','zaehlerId')}
           if(s==='versorger'){store.createIndex('objektId','objektId')}
           if(s==='versicherungen'){store.createIndex('objektId','objektId')}
@@ -1157,6 +1158,8 @@ const OBJEKTE=[
   {id:'wilm9',   gruppe:'krefeld',    name:'Wilmendyk 9',          ort:'47803 Krefeld',       nr:4,color:'c-kr'},
   {id:'wilm11',  gruppe:'krefeld',    name:'Wilmendyk 11',         ort:'47803 Krefeld',       nr:4,color:'c-kr'},
   {id:'wilm13',  gruppe:'krefeld',    name:'Wilmendyk 13',         ort:'47803 Krefeld',       nr:4,color:'c-kr'},
+  {id:'tgkref',  gruppe:'krefeld',    name:'Tiefgarage Krefeld',   ort:'47803 Krefeld',       nr:4,color:'c-kr',
+   tiefgarage:true, adresse:'Inrather Str. 181–185 / Wilmendyk 7–13'},
   {id:'marien22',gruppe:'monheim',    name:'Marienburger Str. 22', ort:'40789 Monheim am Rhein',nr:5,color:'c-mon',
    sichtbarFuer:['u_admin','u_pfau','u_roland'], privat:true},
   {id:'verlach37',gruppe:'mg',         name:'Zur Verlach 37',       ort:'40723 Hilden',        nr:6,color:'c-mg',
@@ -1168,6 +1171,7 @@ const OBJ_MAP={
   'Kyffhäuser 28':'kyff28','Kyffhäuser 30':'kyff30','Kyffhäuser 32':'kyff32',
   'Inrather Str. 181':'inr181','Inrather Str. 183':'inr183','Inrather Str. 185':'inr185',
   'Wilmendyk 7':'wilm7','Wilmendyk 9':'wilm9','Wilmendyk 11':'wilm11','Wilmendyk 13':'wilm13',
+  'Tiefgarage Krefeld':'tgkref',
   'Zur Verlach 37':'verlach37','Amboßstr. 10':'amboss10','Marienburger Str. 22':'marien22',
 };
 const getObj=id=>OBJEKTE.find(o=>o.id===id);
@@ -1180,7 +1184,7 @@ function objNameOderAllgemein(id){ return istAllgemein(id) ? 'Allgemein · alle 
 const DASH_GRUPPEN=[
   {id:'DUS', label:'Düsseldorf',          objektIds:['ruhrt41','mind23','mind25']},
   {id:'MG',  label:'Mönchengladbach',     objektIds:['kyff28','kyff30','kyff32']},
-  {id:'KR',  label:'Krefeld',             objektIds:['inr181','inr183','inr185','wilm7','wilm9','wilm11','wilm13']},
+  {id:'KR',  label:'Krefeld',             objektIds:['inr181','inr183','inr185','wilm7','wilm9','wilm11','wilm13','tgkref']},
   {id:'MON', label:'Monheim am Rhein',    objektIds:['marien22'], einzeln:true},
   {id:'HIL', label:'Hilden',              objektIds:['verlach37'], einzeln:true},
   {id:'AMB', label:'Amboßstr. 10',        objektIds:['amboss10'], einzeln:true},
@@ -1587,6 +1591,8 @@ async function initApp(){
   initMailPoller();
   updateKalBadge();
   pruefeMonatsuebertrag();
+  // v182: fällige Stellplatz-Mieterhöhungen übernehmen (auch ohne Öffnen des TG-Tabs)
+  (async()=>{ try{ const sp=await idbGetAll('stellplaetze'); if(sp&&sp.length) await spErhoehungenAnwenden(sp.filter(x=>x&&!x.geloescht)); }catch(e){} })();
   // Vergessene Zeiterfassung: spätestens 00:00 auto-beendet → Korrektur erzwingen
   pruefeVergesseneSitzungen().then(s=>{ if(s) modalSitzungNachtragen(s.id); });
   // PWA-Shortcut-Ziel auswerten (?go=zeit|protokoll|aufgaben)
@@ -1627,7 +1633,7 @@ async function renderDash() {
   await syncIntervallTodos().catch(()=>{});
   await aktiviereFaelligeMieterwechsel();
   const allMieter = await idbGetAll('mieter');
-  const myMieter  = allMieter.filter(m => myObj.some(o => o.id === m.objektId) && !m._vormieter && !m._zukuenftig);
+  const myMieter  = allMieter.filter(m => myObj.some(o => o.id === m.objektId) && !m._vormieter && !m._zukuenftig && !m._tgMieter);
   const aufgaben  = await idbGetAll('aufgaben');
   const maengel   = await idbGetAll('maengel');
   const prots     = await idbGetAll('protokolle');
@@ -1823,19 +1829,34 @@ async function renderDash() {
   // Objekte
   html += `<div class="s-hdr"><div class="s-title">Meine Objekte</div></div>`;
 
+  // v182: Stellplatz-Belegung je TG-Objekt für die Objektkarte vorbereiten
+  window._dashSpInfo={};
+  for(const o of OBJEKTE.filter(x=>x.tiefgarage)){
+    try{
+      const sps=(await idbGetAll('stellplaetze','objektId',o.id)).filter(x=>x && !x.geloescht);
+      if(sps.length) window._dashSpInfo[o.id]={ total:sps.length,
+        verm:sps.filter(x=>x.status==='vermietet').length,
+        frei:sps.filter(x=>x.status==='frei').length };
+    }catch(e){}
+  }
+
   // Objektkarte als HTML (P1 – wiederverwendbar für Gruppen & Einzelobjekte)
   const objCardHtml = (obj) => {
     const cnt    = myMieter.filter(m=>m.objektId===obj.id).length;
     const aufCnt = myAuf.filter(a=>a.objektId===obj.id).length;
     const mngCnt = myMng.filter(m=>m.objektId===obj.id).length;
     const hoch   = myAuf.filter(a=>a.objektId===obj.id&&a.prio==='hoch').length;
+    // v182: Tiefgarage – Stellplatz-Belegung statt Mieterzahl anzeigen
+    const spInfo = obj.tiefgarage ? (window._dashSpInfo?.[obj.id]||null) : null;
     return `<div class="obj-card" onclick="showObjekt('${obj.id}')">
-      <div class="obj-icon ${obj.color}"><i class="ti ti-building"></i></div>
+      <div class="obj-icon ${obj.color}"><i class="ti ${obj.tiefgarage?'ti-parking':'ti-building'}"></i></div>
       <div class="obj-body">
         <div class="obj-name">${obj.name}</div>
         <div class="obj-meta">${obj.ort}</div>
         <div class="obj-chips">
-          <span class="chip chip-gray">${cnt} Mieter</span>
+          ${obj.tiefgarage
+            ? `<span class="chip chip-gray">${spInfo?`${spInfo.verm}/${spInfo.total} belegt`:'Stellplätze'}</span>${spInfo&&spInfo.frei?`<span class="chip chip-ok">${spInfo.frei} frei</span>`:''}`
+            : `<span class="chip chip-gray">${cnt} Mieter</span>`}
           ${hoch?`<span class="chip chip-err"><i class="ti ti-alert-triangle" style="font-size:10px"></i> ${hoch} dringend</span>`:''}
           ${aufCnt?`<span class="chip chip-warn">${aufCnt} Aufgabe${aufCnt!==1?'n':''}</span>`:''}
           ${mngCnt?`<span class="chip chip-err">${mngCnt} Mangel${mngCnt!==1?'':''}</span>`:''}
@@ -1876,6 +1897,7 @@ async function renderDash() {
           <div class="obj-name">${esc(grp.label)} <span style="font-weight:500;color:var(--ink-40);font-size:13px">· ${objs.length} Objekte</span></div>
           <div class="obj-chips">
             <span class="chip chip-gray">${mietSum} Mieter</span>
+            ${(()=>{ const tg=objs.find(o=>o.tiefgarage); const inf=tg&&window._dashSpInfo?.[tg.id]; return inf?`<span class="chip chip-gray"><i class="ti ti-parking" style="font-size:10px"></i> ${inf.verm}/${inf.total}</span>`:''; })()}
             ${hochSum?`<span class="chip chip-err"><i class="ti ti-alert-triangle" style="font-size:10px"></i> ${hochSum} dringend</span>`:''}
             ${aufSum?`<span class="chip chip-warn">${aufSum} Aufgabe${aufSum!==1?'n':''}</span>`:''}
             ${mngSum?`<span class="chip chip-err">${mngSum} Mangel${mngSum!==1?'':''}</span>`:''}
@@ -1949,6 +1971,19 @@ async function showObjekt(objId){
   const obj=getObj(objId);
   const el=document.getElementById('page-objekt');
   const istPrivat = obj.privat===true;
+  // v182: Tiefgarage – eigene Tab-Struktur (Stellplätze statt Mieter/Protokolle/NKA)
+  if(obj.tiefgarage){
+    el.innerHTML=`<div class="tab-bar">
+      <button class="tab-btn active" onclick="objTab('stellplaetze',this)">Stellplätze</button>
+      <button class="tab-btn" onclick="objTab('aufgaben',this)">Aufgaben</button>
+      <button class="tab-btn" onclick="objTab('maengel',this)">Mängel</button>
+      <button class="tab-btn" onclick="objTab('dokumente',this)">Dokumente</button>
+    </div>
+    <div id="objTabContent"></div>`;
+    nav('objekt',obj.name,obj.ort);
+    await renderObjTab('stellplaetze');
+    return;
+  }
   el.innerHTML=`<div class="tab-bar">
     ${istPrivat?'':`<button class="tab-btn active" onclick="objTab('mieter',this)">Mieter</button>
     <button class="tab-btn" onclick="objTab('protokolle',this)">Protokolle</button>`}
@@ -1978,10 +2013,673 @@ async function renderObjTab(t){
   if(t==='aufgaben')   await renderObjAufgaben(el);
   if(t==='maengel')    await renderObjMaengel(el);
   if(t==='zaehler')    await renderObjZaehler(el);
+  if(t==='stellplaetze') await renderObjStellplaetze(el);
   if(t==='dokumente')  await renderDokumente(el, currentObjId, null);
   if(t==='versorger')  await renderObjVersorger(el);
   if(t==='nka')        await renderNKAArchiv(el, currentObjId);
   if(t==='interessenten') await renderInteressenten(el, currentObjId);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   STELLPLATZ-MIETERHÖHUNG (v182)
+   Stellplatz = kein Wohnraum → §§ 557 ff. BGB (Vergleichsmiete, Kappungs-
+   grenze) gelten NICHT. Erhöhung durch einseitige Änderungserklärung mit
+   angemessener Frist; bei Widerspruch bleibt nur die ordentliche Kündigung.
+   Historie/Wirksamkeit werden vollständig am Stellplatz-Record dokumentiert.
+═══════════════════════════════════════════════════════════ */
+async function modalSpMieterhoehung(spId){
+  const sp=await idbGet('stellplaetze', spId); if(!sp) return;
+  if(!sp.mieterId){ toast('Der Stellplatz ist keinem Mieter zugeordnet.'); return; }
+  const m=await idbGet('mieter', sp.mieterId);
+  // Standard-Wirksamkeit: übernächster Monatserster (2 Monate Ankündigung)
+  const d=new Date(); d.setDate(1); d.setMonth(d.getMonth()+2);
+  const abVor=d.toISOString().slice(0,10);
+  showModal(`
+    <div class="m-title"><i class="ti ti-trending-up"></i> Mieterhöhung – Stellplatz ${sp.nr}</div>
+    <div style="font-size:12px;color:var(--ink-40);margin-bottom:10px">Mieter: <b>${esc(m?.mieter||sp.mieterName)}</b> · aktuelle Miete: <b>${fmtEur(sp.miete)}</b></div>
+    <div class="f-row">
+      <div class="f"><label>Neue Monatsmiete (€) *</label>
+        <input type="text" inputmode="decimal" id="spMhNeu" placeholder="z. B. 50,00"></div>
+      <div class="f"><label>Wirksam ab *</label>
+        <input type="date" id="spMhAb" value="${abVor}"></div>
+    </div>
+    <div class="f"><label>Begründung (optional, erscheint im Schreiben)</label>
+      <textarea id="spMhGrund" rows="2" placeholder="z. B. allgemeine Kostensteigerung, Anpassung an das ortsübliche Niveau vergleichbarer Stellplätze"></textarea></div>
+    <p style="font-size:11px;color:var(--ink-40)">Die Erhöhung wird zum Wirksamkeitsdatum automatisch übernommen. Bis dahin erscheint sie am Stellplatz als geplant. Ein Erhöhungsschreiben wird erzeugt und im Mieter-Archiv abgelegt.</p>
+    <div class="f-row" style="margin-top:12px">
+      <button class="btn btn-copper btn-full" onclick="saveSpMieterhoehung('${sp.id}')"><i class="ti ti-file-text"></i> Schreiben erstellen & vormerken</button>
+      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+    </div>`);
+}
+
+async function saveSpMieterhoehung(spId){
+  const sp=await idbGet('stellplaetze', spId); if(!sp) return;
+  const neu=parseBetrag(document.getElementById('spMhNeu')?.value);
+  const ab=document.getElementById('spMhAb')?.value;
+  const grund=(document.getElementById('spMhGrund')?.value||'').trim();
+  if(!(neu>0)){ toast('Bitte gültige neue Miete eingeben.'); return; }
+  if(!ab){ toast('Bitte Wirksamkeitsdatum wählen.'); return; }
+  if(neu<=sp.miete){ toast('Die neue Miete muss über der aktuellen liegen.'); return; }
+  const m=await idbGet('mieter', sp.mieterId);
+  const obj=getObj(sp.objektId);
+  const alt=sp.miete;
+
+  // Vormerken (Historie + geplante Übernahme); tatsächliche Umstellung via spErhoehungenAnwenden
+  sp.naechsteMiete={ ab, betrag:neu, angekuendigtAm:nowIso(), grund };
+  spHistEintrag(sp,'erhoehung',`Mieterhöhung angekündigt: ${fmtEur(alt)} → ${fmtEur(neu)} ab ${ab.split('-').reverse().join('.')}${grund?' ('+grund+')':''}`);
+  sp.geaendert=now();
+  await idbPut('stellplaetze', sp);
+  syncSoon();
+
+  // Schreiben erzeugen
+  await ladeBriefkopfCache();
+  const bk=getBriefkopfFor('kr');
+  const heute=new Date().toLocaleDateString('de-DE',{day:'2-digit',month:'long',year:'numeric'});
+  const mieterAnschrift = m && m._tgMieter
+    ? (m.anschrift||'')
+    : [obj?.name, 'WE '+(m?.weNr||''), obj?.ort].filter(Boolean).join(', ');
+  const abLang=new Date(ab).toLocaleDateString('de-DE',{day:'2-digit',month:'long',year:'numeric'});
+  const diff=Math.round((neu-alt)*100)/100;
+
+  const html=`<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8">
+<title>Mieterhöhung Stellplatz ${esc(String(sp.nr))} – ${esc(m?.mieter||'')}</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:Arial,sans-serif;font-size:11px;color:#111;padding:20px;max-width:190mm;line-height:1.7}
+.bk-absender{font-size:7px;color:#999;text-decoration:underline;margin-bottom:2mm}
+.anschrift{font-size:11px;line-height:1.6;margin:10mm 0 4mm}
+.datum{text-align:right;font-size:10px;color:#555;margin-bottom:8mm}
+h2{font-size:13px;margin-bottom:8px;color:#0C447C}
+.box{background:#EEF4FB;border-left:3px solid #185FA5;padding:10px;margin:8px 0;border-radius:3px}
+.row{display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid #dde}
+.row.total{font-weight:700;border-bottom:2px solid #185FA5}
+p{margin-bottom:6px}
+.foot{font-size:8px;color:#aaa;margin-top:16mm;padding-top:4mm;border-top:1px solid #eee}
+@page{margin:1.5cm;size:A4}@media print{body{padding:0;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+</style></head><body>
+<div class="bk-absender">${esc(bk.name)} · ${esc(bk.strasse)} · ${esc(bk.ort)}</div>
+<div class="anschrift"><b>${esc(m?.mieter||sp.mieterName)}</b><br>${esc(mieterAnschrift)}</div>
+<div class="datum">${esc(bk.ort.split(' ').slice(1).join(' ')||'Krefeld')}, den ${heute}</div>
+<h2>Anpassung der Stellplatzmiete – Tiefgarage, Stellplatz Nr. ${esc(String(sp.nr))}</h2>
+<p>${m?getAnredeVertrag(m):'Sehr geehrte Damen und Herren'},</p>
+<p>für den von Ihnen angemieteten Kfz-Einstellplatz Nr. ${esc(String(sp.nr))} in der Tiefgarage ${esc(obj?.adresse||'Inrather Str. 181–185 / Wilmendyk 7–13, 47803 Krefeld')} passen wir die monatliche Miete mit Wirkung zum <b>${abLang}</b> wie folgt an:</p>
+<div class="box">
+  <div class="row"><span>Bisherige Stellplatzmiete</span><span>${fmtEur(alt)}</span></div>
+  <div class="row total"><span>Neue Stellplatzmiete</span><span>${fmtEur(neu)}</span></div>
+  <div style="font-size:10px;color:#555;margin-top:4px">Erhöhung: ${fmtEur(diff)} monatlich</div>
+</div>
+${grund?`<p>${esc(grund)}</p>`:''}
+<p>Bei der Vermietung eines Kfz-Stellplatzes handelt es sich nicht um Wohnraum; die Vorschriften über die ortsübliche Vergleichsmiete und die Kappungsgrenze (§§ 557 ff. BGB) finden keine Anwendung. Die Anpassung erfolgt im Rahmen des zwischen uns bestehenden Stellplatzmietvertrages unter Wahrung einer Ankündigungsfrist von zwei Monaten.</p>
+<p>Bitte richten Sie Ihren Dauerauftrag bzw. die Zahlung ab dem ${abLang} auf den neuen Betrag von <b>${fmtEur(neu)}</b> ein. Ein etwaiges SEPA-Lastschriftmandat passen wir entsprechend an.</p>
+<p>Sollten Sie mit der Anpassung nicht einverstanden sein, teilen Sie uns dies bitte bis zum Wirksamkeitsdatum mit. In diesem Fall bleibt es beiden Seiten unbenommen, das Stellplatzmietverhältnis im Rahmen der vertraglichen Kündigungsfristen zu beenden.</p>
+<p style="margin-top:10mm">Mit freundlichen Grüßen<br><br>${esc(bk.name)}</p>
+<div class="foot">Mieterhöhung Stellplatz ${esc(String(sp.nr))} · ${esc(m?.mieter||'')} · wirksam ${abLang} · erstellt ${heute} · Nadig Pfau Hausverwaltung</div>
+\x3cscript\x3e(function(){var p=function(){setTimeout(function(){window.focus();window.print();},600);};if(document.readyState==='complete'){p();}else{window.addEventListener('load',p);}})()\x3c/script\x3e
+</body></html>`;
+
+  try{
+    const archivHtml=html.replace(/\x3cscript\x3e[\s\S]*?\x3c\/script\x3e/gi,'');
+    if(m) await archiviereMieterDokument({ mieterId:m.id, objektId:sp.objektId, typ:'mieterhoehung',
+      name:`Mieterhöhung Stellplatz ${sp.nr} – ${fmtEur(neu)} ab ${ab.split('-').reverse().join('.')}`, html:archivHtml });
+  }catch(e){ console.warn('SP-Mieterhöhung-Archiv:', e); }
+
+  closeModal();
+  toast(`Erhöhung vorgemerkt: ${fmtEur(neu)} ab ${ab.split('-').reverse().join('.')} ✓`);
+  druckHTML(html, 'Mieterhöhung Stellplatz '+sp.nr, null, true);
+  if(curPage==='objekt') await renderObjTab('stellplaetze');
+}
+
+/* ═══════════════════════════════════════════════════════════
+   TIEFGARAGEN-MIETVERTRAG (v182) – modern, rechtssicher
+   Ersetzt den Bestandsvertrag (2 Seiten, 13 Ziffern, keine DSGVO-Info,
+   keine Handsender-/E-Ladungs-/Salvatorik-Regelung). Grundlage: §§ 535 ff.
+   BGB (Garage/Stellplatz = keine Wohnraummiete → keine §§ 573 ff., freie
+   Kündbarkeit nach § 580a Abs. 1 BGB, Kaution nicht auf § 551 gedeckelt).
+═══════════════════════════════════════════════════════════ */
+function tgMvEsc(x){ return esc(x==null?'':String(x)); }
+
+async function modalTgMietvertrag(spId){
+  const sp=await idbGet('stellplaetze', spId);
+  if(!sp){ toast('Stellplatz nicht gefunden.'); return; }
+  if(!sp.mieterId){ toast('Bitte dem Stellplatz zuerst einen Mieter zuordnen.'); return; }
+  showModal(`
+    <div class="m-title"><i class="ti ti-file-text"></i> Tiefgaragen-Mietvertrag – Stellplatz ${sp.nr}</div>
+    <div class="f"><label>Ausgehändigte Zugangsmittel</label>
+      <input type="text" id="tgMvSchluessel" value="1 Tiefgaragenschlüssel / Handsender"></div>
+    <div class="f"><label>Kaution für Schlüssel/Handsender (€)</label>
+      <input type="text" inputmode="decimal" id="tgMvKaution" value="50,00"></div>
+    <p style="font-size:11px;color:var(--ink-40)">Der Vertrag wird als PDF geöffnet (Druck) und im Mieter-Archiv abgelegt.</p>
+    <div class="f-row" style="margin-top:12px">
+      <button class="btn btn-copper btn-full" onclick="tgMietvertragDrucken('${sp.id}')"><i class="ti ti-printer"></i> Vertrag erstellen</button>
+      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+    </div>`);
+}
+
+async function tgMietvertragDrucken(spId){
+  const sp=await idbGet('stellplaetze', spId);
+  if(!sp){ toast('Stellplatz nicht gefunden.'); return; }
+  if(!sp.mieterId){ toast('Bitte dem Stellplatz zuerst einen Mieter zuordnen.'); return; }
+  const kautionEin=document.getElementById('tgMvKaution');
+  const kautionBetrag = kautionEin ? parseBetrag(kautionEin.value) : 50;
+  const schluesselEin=document.getElementById('tgMvSchluessel');
+  const schluesselText = (schluesselEin && schluesselEin.value.trim()) || '1 Tiefgaragenschlüssel / Handsender';
+  const m=await idbGet('mieter', sp.mieterId);
+  const obj=getObj(sp.objektId);
+  await ladeBriefkopfCache();
+  const bk=getBriefkopfFor('kr');
+  const heute=new Date().toLocaleDateString('de-DE',{day:'2-digit',month:'long',year:'numeric'});
+
+  // Mieteranschrift: TG-Mieter hat eigene Anschrift; Wohnungsmieter → seine Wohnung
+  const mieterAnschrift = m._tgMieter
+    ? (m.anschrift||'__________________________')
+    : [obj?.name, 'WE '+(m.weNr||''), obj?.ort].filter(Boolean).join(', ');
+  const beginn = sp.mietBeginn ? sp.mietBeginn.split('-').reverse().join('.') : '__________';
+  const miete = fmtEur(sp.miete);
+
+  const html = `<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8">
+<title>Tiefgaragen-Mietvertrag – Stellplatz ${tgMvEsc(sp.nr)}</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:Georgia,'Times New Roman',serif;font-size:10.5pt;color:#111;padding:18mm 16mm;line-height:1.5}
+h1{font-size:16pt;text-align:center;margin-bottom:2mm;color:#0C447C}
+.sub{text-align:center;font-size:9pt;color:#555;margin-bottom:6mm}
+h2{font-size:11pt;margin:5mm 0 1.5mm;color:#0C447C;border-bottom:1px solid #185FA5;padding-bottom:1mm}
+p{margin-bottom:2mm;text-align:justify}
+.parteien{margin:4mm 0}
+.pbox{background:#f4f7fb;border-left:3px solid #185FA5;padding:3mm 4mm;margin-bottom:3mm;border-radius:2px}
+ol{margin:1mm 0 2mm 6mm}
+li{margin-bottom:1.5mm;text-align:justify}
+.sig{display:flex;justify-content:space-between;margin-top:14mm;gap:10mm}
+.sigbox{flex:1;text-align:center}
+.sigline{border-top:1px solid #333;margin-top:12mm;padding-top:1mm;font-size:8.5pt;color:#555}
+.foot{margin-top:8mm;font-size:7.5pt;color:#999;border-top:1px solid #eee;padding-top:2mm}
+@page{margin:0;size:A4}
+@media print{body{padding:16mm}}
+</style></head><body>
+
+<h1>Tiefgaragen-Mietvertrag</h1>
+<div class="sub">über einen Kfz-Einstellplatz · Stellplatz-Nr. ${tgMvEsc(sp.nr)}</div>
+
+<div class="parteien">
+<p><b>zwischen</b></p>
+<div class="pbox">
+  ${tgMvEsc(bk.name)}<br>
+  ${tgMvEsc(bk.strasse)}, ${tgMvEsc(bk.ort)}<br>
+  <span style="font-size:9pt;color:#555">– nachfolgend „Vermieter" –</span>
+</div>
+<p><b>und</b></p>
+<div class="pbox">
+  <b>${tgMvEsc(m.mieter)}</b><br>
+  ${tgMvEsc(mieterAnschrift)}<br>
+  <span style="font-size:9pt;color:#555">– nachfolgend „Mieter" –</span>
+</div>
+</div>
+
+<h2>§ 1 Mietgegenstand</h2>
+<p>Der Vermieter vermietet dem Mieter den Kfz-Einstellplatz Nr. <b>${tgMvEsc(sp.nr)}</b> in der Tiefgarage des Anwesens <b>${tgMvEsc(obj?.adresse||'Inrather Str. 181–185 / Wilmendyk 7–13, 47803 Krefeld')}</b>. Der Stellplatz dient ausschließlich zum Abstellen eines betriebsbereiten und zugelassenen Personenkraftwagens oder Kraftrades des Mieters.</p>
+
+<h2>§ 2 Mietzeit und Kündigung</h2>
+<ol>
+  <li>Das Mietverhältnis beginnt am <b>${beginn}</b> und läuft auf unbestimmte Zeit.</li>
+  <li>Das Mietverhältnis kann von beiden Parteien spätestens am dritten Werktag eines Kalendermonats zum Ablauf des übernächsten Monats gekündigt werden (§ 580a Abs. 1 Nr. 3 BGB).</li>
+  <li>Die Kündigung bedarf der Schriftform (§ 550 BGB). Das Recht zur außerordentlichen Kündigung aus wichtigem Grund (§ 543 BGB) bleibt unberührt.</li>
+  <li>Wird zwischen den Parteien zugleich ein Wohnraummietvertrag geschlossen, so sind beide Mietverhältnisse rechtlich selbstständig; die Kündigung des einen berührt das andere nicht.</li>
+</ol>
+
+<h2>§ 3 Miete und Zahlung</h2>
+<ol>
+  <li>Die monatliche Miete beträgt <b>${miete}</b> und ist im Voraus, spätestens bis zum dritten Werktag eines Monats, kostenfrei auf das Konto des Vermieters zu zahlen.</li>
+  <li>Der Mieter erteilt dem Vermieter ein SEPA-Lastschriftmandat; ersatzweise erfolgt die Zahlung per Dauerauftrag.</li>
+  <li>Betriebs- und Nebenkosten sind mit der Miete abgegolten, soweit nicht gesondert vereinbart. Der Vermieter ist berechtigt, künftig neu entstehende oder erhöhte öffentliche Abgaben und Betriebskosten anteilig umzulegen.</li>
+  <li>Eine Anpassung der Miete richtet sich nach § 4.</li>
+</ol>
+
+<h2>§ 4 Mietanpassung</h2>
+<p>Der Vermieter kann die Miete durch schriftliche Erklärung mit einer Frist von zwei Monaten zum Monatsende anpassen. Für Stellplätze gelten die Beschränkungen der §§ 557 ff. BGB (ortsübliche Vergleichsmiete, Kappungsgrenze) nicht, da es sich nicht um Wohnraum handelt. Widerspricht der Mieter einer Erhöhung, ist der Vermieter berechtigt, das Mietverhältnis nach § 2 zu kündigen.</p>
+
+${kautionBetrag>0?`<h2>§ 5 Kaution</h2>
+<p>Der Mieter leistet eine Kaution in Höhe von <b>${fmtEur(kautionBetrag)}</b> für die ausgehändigten Zugangsmittel (Schlüssel/Handsender). Die Kaution wird bei ordnungsgemäßer Rückgabe sämtlicher Zugangsmittel und des Stellplatzes unverzinst zurückerstattet.</p>`:''}
+
+<h2>§ 6 Schlüssel und Handsender</h2>
+<ol>
+  <li>Der Mieter erhält für die Dauer der Mietzeit folgende Zugangsmittel: <b>${tgMvEsc(schluesselText)}</b>. Die Anfertigung weiterer Schlüssel oder Sender bedarf der vorherigen Zustimmung des Vermieters und erfolgt auf Kosten des Mieters.</li>
+  <li>Bei Verlust eines Zugangsmittels ist der Vermieter unverzüglich zu informieren. Hat der Mieter den Verlust zu vertreten und ergibt sich hieraus eine Gefahr für die Anlage, trägt der Mieter die Kosten einer erforderlichen Umstellung der Schließ-/Torsteuerung.</li>
+  <li>Bei Beendigung des Mietverhältnisses sind sämtliche Zugangsmittel – auch selbst beschaffte – vollständig an den Vermieter zurückzugeben.</li>
+</ol>
+
+<h2>§ 7 Nutzung, Sorgfalt und Umweltschutz</h2>
+<ol>
+  <li>Der Stellplatz darf nur zum vertragsgemäßen Zweck genutzt werden. Das Abstellen von Wohnwagen, Wohnanhängern oder nicht zugelassenen Fahrzeugen ist nur mit vorheriger schriftlicher Zustimmung des Vermieters gestattet.</li>
+  <li>Die Lagerung von Gegenständen, insbesondere von Reifen, Betriebsstoffen, Brand- oder Gefahrstoffen, ist untersagt. Kraftstoffe und Öl dürfen nur in den betriebsüblichen Fahrzeugtanks mitgeführt werden.</li>
+  <li>Das Waschen, Ölwechseln und die Durchführung von Reparaturen in der Tiefgarage sind nicht gestattet. Auslaufende Betriebsstoffe sind unverzüglich zu beseitigen; entstehende Verunreinigungen hat der Mieter auf eigene Kosten zu entfernen.</li>
+  <li>Das Laden von Elektro- oder Hybridfahrzeugen an vorhandenen Steckdosen ist nur mit vorheriger schriftlicher Zustimmung des Vermieters und über eine hierfür freigegebene Ladeeinrichtung zulässig. Die Kosten des Ladestroms und einer etwaigen Ladeeinrichtung trägt der Mieter.</li>
+  <li>Der Mieter hat die einschlägigen brand- und polizeirechtlichen Vorschriften sowie die Hausordnung der Tiefgarage zu beachten.</li>
+</ol>
+
+<h2>§ 8 Haftung</h2>
+<ol>
+  <li>Der Vermieter haftet nicht für Schäden am Fahrzeug oder dessen Inhalt durch Diebstahl, Brand, Beschädigung oder Witterung, es sei denn, dem Vermieter oder seinen Erfüllungsgehilfen fällt Vorsatz oder grobe Fahrlässigkeit zur Last. Die Haftung für Schäden aus der Verletzung des Lebens, des Körpers oder der Gesundheit bleibt unberührt.</li>
+  <li>Der Mieter haftet für alle Schäden, die er oder von ihm berechtigte Dritte schuldhaft an der Tiefgarage oder dem Stellplatz verursachen.</li>
+  <li>Dem Mieter wird empfohlen, eine ausreichende Kfz-Versicherung zu unterhalten.</li>
+</ol>
+
+<h2>§ 9 Instandhaltung und Betreten durch den Vermieter</h2>
+<p>Der Vermieter oder von ihm Beauftragte dürfen den Stellplatz zur Prüfung des Zustands, zur Durchführung von Arbeiten oder aus wichtigem Grund nach vorheriger Ankündigung in angemessener Frist betreten. Bei Gefahr im Verzug ist ein sofortiger Zutritt zulässig.</p>
+
+<h2>§ 10 Rückgabe</h2>
+<p>Bei Beendigung des Mietverhältnisses ist der Stellplatz geräumt, gereinigt und in vertragsgemäßem Zustand zurückzugeben. Zurückgelassene Gegenstände oder Fahrzeuge darf der Vermieter nach angemessener Fristsetzung auf Kosten des Mieters entfernen und verwahren lassen.</p>
+
+<h2>§ 11 Untervermietung</h2>
+<p>Die entgeltliche oder unentgeltliche Überlassung des Stellplatzes an Dritte ist ohne vorherige schriftliche Zustimmung des Vermieters unzulässig und berechtigt den Vermieter zur außerordentlichen Kündigung.</p>
+
+<h2>§ 12 Datenschutz</h2>
+<p>Der Vermieter verarbeitet die personenbezogenen Daten des Mieters ausschließlich zur Begründung, Durchführung und Beendigung dieses Mietverhältnisses auf Grundlage von Art. 6 Abs. 1 lit. b und f DSGVO. Die Daten werden nicht an unbefugte Dritte weitergegeben und nach Ablauf der gesetzlichen Aufbewahrungsfristen gelöscht. Dem Mieter stehen die Rechte auf Auskunft, Berichtigung, Löschung, Einschränkung und Widerspruch nach Art. 15 ff. DSGVO zu. Einzelheiten ergeben sich aus dem gesondert ausgehändigten Datenschutzhinweis.</p>
+
+<h2>§ 13 Schlussbestimmungen</h2>
+<ol>
+  <li>Mündliche Nebenabreden bestehen nicht. Änderungen und Ergänzungen dieses Vertrages bedürfen der Schriftform; dies gilt auch für die Aufhebung des Schriftformerfordernisses.</li>
+  <li>Sollte eine Bestimmung dieses Vertrages unwirksam sein oder werden, so bleibt die Wirksamkeit der übrigen Bestimmungen unberührt. An die Stelle der unwirksamen Regelung tritt eine solche, die dem wirtschaftlich Gewollten am nächsten kommt.</li>
+  <li>Erfüllungsort und Gerichtsstand ist, soweit gesetzlich zulässig, der Ort der Tiefgarage.</li>
+</ol>
+
+<div class="sig">
+  <div class="sigbox"><div class="sigline">Ort, Datum · Vermieter<br>${tgMvEsc(bk.name)}</div></div>
+  <div class="sigbox"><div class="sigline">Ort, Datum · Mieter<br>${tgMvEsc(m.mieter)}</div></div>
+</div>
+<p style="margin-top:6mm;font-size:9pt">${tgMvEsc(bk.ort.split(' ').slice(1).join(' ')||'Krefeld')}, den ${heute}</p>
+
+<div class="foot">Tiefgaragen-Mietvertrag · Stellplatz ${tgMvEsc(sp.nr)} · ${tgMvEsc(m.mieter)} · erstellt am ${heute} · Nadig Pfau Hausverwaltung</div>
+\x3cscript\x3e(function(){var p=function(){setTimeout(function(){window.focus();window.print();},600);};if(document.readyState==='complete'){p();}else{window.addEventListener('load',p);}})()\x3c/script\x3e
+</body></html>`;
+
+  // Im Mieter-Archiv ablegen (ohne Auto-Print-Script)
+  try{
+    const archivHtml=html.replace(/\x3cscript\x3e[\s\S]*?\x3c\/script\x3e/gi,'');
+    await archiviereMieterDokument({
+      mieterId:m.id, objektId:sp.objektId, typ:'brief',
+      name:`Tiefgaragen-Mietvertrag Stellplatz ${sp.nr} – ${miete}`,
+      html:archivHtml,
+    });
+  }catch(e){ console.warn('TG-MV-Archiv:', e); }
+
+  spHistEintrag(sp,'vertrag',`Tiefgaragen-Mietvertrag erstellt (Stellplatz ${sp.nr}, ${miete}/Monat)`);
+  sp.geaendert=now();
+  await idbPut('stellplaetze', sp);
+  syncSoon();
+  druckHTML(html, 'Tiefgaragen-Mietvertrag Stellplatz '+sp.nr, null, true);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   TIEFGARAGE / STELLPLATZVERWALTUNG (v182)
+   Store 'stellplaetze': {id, objektId, nr, status:'frei'|'vermietet'|'gesperrt',
+   miete, mieterId, mieterName, mietBeginn, sperrGrund, naechsteMiete:{ab,betrag},
+   historie:[{datum, typ, text, von}], geaendert}
+   TG-Mieter ohne Wohnung = mieter-Record mit objektId der Tiefgarage und
+   _tgMieter:true (Miete steht am Stellplatz, nicht am Mieter-Record).
+═══════════════════════════════════════════════════════════ */
+const TG_SP_ANZAHL_STANDARD = 65;   // Stellplätze 1–65 (Stand CSV 07/2026)
+/* Einmalige Erst-Belegung aus Kontoauszug KRefeld 07/2026 (Verwendungszwecke).
+   weNr gesetzt = Wohnungsmieter (Zuordnung per WE-Nr. in Krefeld), extern=true =
+   eigenständiger TG-Mieter (wird als _tgMieter-Record angelegt). Wird nur beim
+   allerersten Anlegen der Stellplätze angewandt; spätere Änderungen bleiben. */
+const TG_SP_SEED = {"3":{"name":"Klug Olga","weNr":"67","extern":false},"4":{"name":"Jurtz Uwe","weNr":"49","extern":false},"5":{"name":"Betcher Lucas","weNr":"","extern":true},"6":{"name":"Witting Matthias","weNr":"32","extern":false},"7":{"name":"Stabel Viktor","weNr":"56","extern":false},"8":{"name":"Röttjes-Weitjens Anette","weNr":"","extern":true},"9":{"name":"Röttjes-Weitjens Anette","weNr":"","extern":true},"10":{"name":"Giebing Beate","weNr":"10","extern":false},"12":{"name":"Beller Herrmann","weNr":"12","extern":false},"14":{"name":"Cezary Jarosik","weNr":"19","extern":false},"16":{"name":"Benedens Petra","weNr":"","extern":true},"17":{"name":"Jurtz Uwe","weNr":"49","extern":false},"18":{"name":"Szczepaniak Jan","weNr":"29","extern":false},"19":{"name":"Kuhs Peter","weNr":"6","extern":false},"21":{"name":"Pantin Tanja","weNr":"46","extern":false},"23":{"name":"Busche Alexander","weNr":"","extern":true},"25":{"name":"Busche Alexander","weNr":"","extern":true},"26":{"name":"Busche Alexander","weNr":"","extern":true},"27":{"name":"Westphal Ines","weNr":"","extern":true},"28":{"name":"Majachrzak  Jan","weNr":"28","extern":false},"29":{"name":"Burzan Franz","weNr":"18","extern":false},"30":{"name":"Derichs Monika","weNr":"","extern":true},"33":{"name":"Gergely Tomas","weNr":"39","extern":false},"34":{"name":"Gergely Tomas","weNr":"39","extern":false},"36":{"name":"Jurtz Uwe","weNr":"49","extern":false},"37":{"name":"Nicolay Karen","weNr":"55","extern":false},"38":{"name":"Laenen.Heino","weNr":"47","extern":false},"39":{"name":"Papapstaikois Nikoloas","weNr":"4","extern":false},"40":{"name":"Kühn Dirk","weNr":"","extern":true},"41":{"name":"Letsche Jürgen","weNr":"","extern":true},"42":{"name":"Chormaya Ella","weNr":"42","extern":false},"43":{"name":"Baicu Nicu-Julian","weNr":"","extern":true},"45":{"name":"Ernst Edgar","weNr":"2","extern":false},"46":{"name":"Nöcker Hermann-Dieter","weNr":"37","extern":false},"47":{"name":"Sperling Daniel","weNr":"","extern":true},"49":{"name":"Kirchner Barbara","weNr":"66","extern":false},"51":{"name":"Rotariu Alexandru","weNr":"","extern":true},"52":{"name":"Wilde Daniel","weNr":"","extern":true},"53":{"name":"Banaszczuk Sabrina","weNr":"53","extern":false},"54":{"name":"Sperling Daniel","weNr":"","extern":true},"55":{"name":"Tari Mohammadi Merhad","weNr":"25","extern":false},"56":{"name":"Cieslok Jozef","weNr":"60","extern":false},"59":{"name":"Cezary Jarosik","weNr":"19","extern":false},"62":{"name":"Kaiser Melanie","weNr":"","extern":true},"63":{"name":"Netta  Andre","weNr":"59","extern":false},"64":{"name":"Rotariu Alexandru","weNr":"","extern":true},"65":{"name":"Bonten Ralf","weNr":"","extern":true}};
+const TG_SP_MIETE_STANDARD  = 45;   // €/Monat; Abweichungen je Platz am Record
+
+function spHistEintrag(sp, typ, text){
+  sp.historie = sp.historie||[];
+  sp.historie.push({datum: nowIso(), typ, text, von: CU?.name||''});
+}
+
+// Fällige, vorgemerkte Mieterhöhungen übernehmen (wird bei jedem Rendern geprüft)
+async function spErhoehungenAnwenden(spListe){
+  const heute = today();
+  for(const sp of spListe){
+    if(sp.naechsteMiete && sp.naechsteMiete.ab && sp.naechsteMiete.ab <= heute){
+      const alt = sp.miete;
+      sp.miete = Number(sp.naechsteMiete.betrag)||sp.miete;
+      spHistEintrag(sp, 'miete', `Mieterhöhung wirksam: ${fmtEur(alt)} → ${fmtEur(sp.miete)} (ab ${sp.naechsteMiete.ab.split('-').reverse().join('.')})`);
+      delete sp.naechsteMiete;
+      sp.geaendert = now();
+      await idbPut('stellplaetze', sp);
+    }
+  }
+}
+
+async function ensureStellplaetze(objektId){
+  let vorhandene = (await idbGetAll('stellplaetze','objektId',objektId)).filter(x=>x && !x.geloescht);
+  if(!vorhandene.length){
+    for(let n=1;n<=TG_SP_ANZAHL_STANDARD;n++){
+      const sp={ id:'sp_'+objektId+'_'+n, objektId, nr:n, status:'frei',
+        miete: n===14 ? 55 : TG_SP_MIETE_STANDARD,   // SP 14 laut Bestandsvertrag 55 €
+        mieterId:null, mieterName:'', mietBeginn:'', sperrGrund:'',
+        historie:[{datum:nowIso(), typ:'anlage', text:'Stellplatz angelegt', von:CU?.name||''}],
+        erstellt:now(), geaendert:now() };
+      await idbPut('stellplaetze', sp);
+    }
+    await tgSeedAnwenden(objektId);   // Erst-Belegung aus CSV 07/2026
+    syncSoon();
+    vorhandene = await idbGetAll('stellplaetze','objektId',objektId);
+  }
+  await spErhoehungenAnwenden(vorhandene);
+  return vorhandene.filter(x=>x && !x.geloescht).sort((a,b)=>a.nr-b.nr);
+}
+
+/* Erst-Belegung: Wohnungsmieter per WE-Nr. (Krefeld) zuordnen, echte Externe als
+   TG-Mieter anlegen. Namensabgleich zusätzlich als Sicherung/Anzeige. Idempotent
+   über spSeeded-Flag je Stellplatz. */
+async function tgSeedAnwenden(objektId){
+  const obj=getObj(objektId);
+  const krefeldObjIds=OBJEKTE.filter(o=>o.gruppe===obj.gruppe && !o.tiefgarage).map(o=>o.id);
+  const alleMieter=await idbGetAll('mieter');
+  const wohner=alleMieter.filter(m=>m && m.mieter && krefeldObjIds.includes(m.objektId) && !m._vormieter && m.aktiv!==false);
+  const nachname=voll=>{ const t=String(voll||'').replace(/\s+/g,' ').trim(); return (t.includes(',')?t.split(',')[0]:t.split(' ').slice(-1)[0]||t).toLowerCase(); };
+  const tgMieterCache={};   // Name -> angelegter TG-Mieter-Record (Externe zusammenfassen)
+  for(const [nrStr, info] of Object.entries(TG_SP_SEED)){
+    const nr=parseInt(nrStr);
+    const sp=await idbGet('stellplaetze','sp_'+objektId+'_'+nr).catch(()=>null);
+    if(!sp || sp.spSeeded) continue;
+    let mieter=null;
+    if(info.weNr){
+      // Wohnungsmieter über WE-Nummer (eindeutig je Krefeld-Objekt); Namensnachname als Tiebreak
+      const kand=wohner.filter(m=>String(m.weNr)===String(info.weNr));
+      mieter = kand.find(m=>nachname(m.mieter)===nachname(info.name)) || kand[0] || null;
+    }
+    if(!mieter && info.extern){
+      const key=info.name.toLowerCase().trim();
+      if(tgMieterCache[key]) mieter=tgMieterCache[key];
+      else {
+        mieter={ id:'m_tg_'+uid(), objektId, _tgMieter:true, mieter:info.name, weNr:'',
+          anschrift:'', telefon:'', email:'', iban:'', ibans:[],
+          miete:0, nk:0, gesamt:0, aktiv:true,
+          _importHinweis:'Aus Kontoauszug 07/2026 angelegt – Anschrift/IBAN ergänzen',
+          einzugISO:today(), erstellt:now(), geaendert:now() };
+        await idbPut('mieter', mieter);
+        tgMieterCache[key]=mieter;
+      }
+    }
+    if(mieter){
+      sp.mieterId=mieter.id; sp.mieterName=mieter.mieter; sp.status='vermietet';
+      sp.mietBeginn=''; sp.spSeeded=true;
+      spHistEintrag(sp,'zuordnung',`Erst-Belegung aus Kontoauszug 07/2026: ${mieter.mieter}${mieter._tgMieter?' (TG-Mieter)':(' (WE '+info.weNr+')')}`);
+    } else {
+      sp.spSeeded=true;   // markiert, damit nicht erneut versucht
+      if(info.name) spHistEintrag(sp,'hinweis',`CSV nennt „${info.name}"${info.weNr?' (WE '+info.weNr+')':''}, aber kein passender Mieter gefunden – bitte manuell zuordnen`);
+    }
+    sp.geaendert=now();
+    await idbPut('stellplaetze', sp);
+  }
+}
+
+// Index Stellplatz-Nr -> Record (für Bankimport & Soll-Berechnung)
+async function spIndexFuerGruppe(gruppe){
+  const tgObj = OBJEKTE.find(o=>o.tiefgarage && o.gruppe===gruppe);
+  if(!tgObj) return {byNr:{}, byMieter:{}, objekt:null};
+  const alle=(await idbGetAll('stellplaetze','objektId',tgObj.id)).filter(x=>x && !x.geloescht);
+  const byNr={}, byMieter={};
+  for(const sp of alle){
+    byNr[String(sp.nr)]=sp;
+    if(sp.mieterId)(byMieter[sp.mieterId]=byMieter[sp.mieterId]||[]).push(sp);
+  }
+  return {byNr, byMieter, objekt:tgObj};
+}
+
+async function renderObjStellplaetze(el){
+  const objektId=currentObjId;
+  const spListe=await ensureStellplaetze(objektId);
+  const frei=spListe.filter(x=>x.status==='frei').length;
+  const verm=spListe.filter(x=>x.status==='vermietet').length;
+  const gesp=spListe.filter(x=>x.status==='gesperrt').length;
+  const summe=spListe.filter(x=>x.status==='vermietet').reduce((a,x)=>a+(Number(x.miete)||0),0);
+  const farbe={frei:'var(--ink-40)', vermietet:'var(--green)', gesperrt:'var(--red,#dc2626)'};
+  const statusLabel={frei:'frei', vermietet:'vermietet', gesperrt:'gesperrt'};
+  let h=`<div class="s-hdr"><div class="s-title"><i class="ti ti-parking"></i> Stellplätze (${spListe.length})</div>
+    ${istVerwalter()?`<button class="btn btn-sm" onclick="modalNeuerStellplatz('${objektId}')"><i class="ti ti-plus"></i> Stellplatz</button>`:''}
+  </div>
+  <div class="stats-row" style="grid-template-columns:repeat(4,1fr);margin-bottom:12px">
+    <div class="stat"><div class="stat-n" style="color:var(--green)">${verm}</div><div class="stat-l">Vermietet</div></div>
+    <div class="stat"><div class="stat-n">${frei}</div><div class="stat-l">Frei</div></div>
+    <div class="stat"><div class="stat-n" style="color:${gesp?'var(--red,#dc2626)':'var(--ink-40)'}">${gesp}</div><div class="stat-l">Gesperrt</div></div>
+    <div class="stat"><div class="stat-n" style="font-size:16px">${fmtEur(summe)}</div><div class="stat-l">Miete/Monat</div></div>
+  </div>`;
+  for(const sp of spListe){
+    const st=sp.status||'frei';
+    h+=`<div class="card" style="margin-bottom:8px;border-left:3px solid ${farbe[st]}">
+      <div style="display:flex;align-items:center;gap:10px">
+        <div style="width:44px;height:38px;border-radius:8px;background:var(--ink-05);display:flex;align-items:center;justify-content:center;font-weight:700;color:var(--copper)">${sp.nr}</div>
+        <div style="flex:1;min-width:0">
+          <div style="font-size:13px;font-weight:600">
+            ${st==='vermietet' ? esc(sp.mieterName||'–')
+              : st==='gesperrt' ? `<span style="color:var(--red,#dc2626)">Gesperrt</span>${sp.sperrGrund?` <span style="font-weight:400;color:var(--ink-60)">· ${esc(sp.sperrGrund)}</span>`:''}`
+              : '<span style="color:var(--ink-40)">frei</span>'}
+          </div>
+          <div style="font-size:11px;color:var(--ink-40)">
+            ${fmtEur(sp.miete)}/Monat
+            ${sp.naechsteMiete?` · <span style="color:var(--amber)">ab ${sp.naechsteMiete.ab.split('-').reverse().join('.')}: ${fmtEur(sp.naechsteMiete.betrag)}</span>`:''}
+            ${st==='vermietet'&&sp.mietBeginn?` · seit ${sp.mietBeginn.split('-').reverse().join('.')}`:''}
+          </div>
+        </div>
+        ${istVerwalter()?`<div style="display:flex;flex-direction:column;gap:4px">
+          ${st==='vermietet'
+            ? `<button class="btn btn-sm" onclick="modalSpZuordnen('${sp.id}')"><i class="ti ti-exchange"></i> Wechseln</button>
+               <button class="btn btn-sm" onclick="spFreigeben('${sp.id}')"><i class="ti ti-home-off"></i> Freigeben</button>`
+            : st==='gesperrt'
+            ? `<button class="btn btn-sm" onclick="spEntsperren('${sp.id}')"><i class="ti ti-lock-open"></i> Entsperren</button>`
+            : `<button class="btn btn-sm btn-copper" onclick="modalSpZuordnen('${sp.id}')"><i class="ti ti-user-plus"></i> Zuordnen</button>
+               <button class="btn btn-sm" onclick="modalSpSperren('${sp.id}')"><i class="ti ti-lock"></i> Sperren</button>`}
+        </div>`:''}
+      </div>
+      ${istVerwalter()?`<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">
+        ${st==='vermietet'?`<button class="btn btn-sm" onclick="modalTgMietvertrag('${sp.id}')"><i class="ti ti-file-text"></i> TG-Mietvertrag</button>
+        <button class="btn btn-sm" onclick="modalSpMieterhoehung('${sp.id}')"><i class="ti ti-trending-up"></i> Mieterhöhung</button>
+        ${sp.mieterId?`<button class="btn btn-sm" onclick="modalEditMieter('${sp.mieterId}')"><i class="ti ti-user-edit"></i> Mieter</button>`:''}`:''}
+        <button class="btn btn-sm" onclick="modalSpMiete('${sp.id}')"><i class="ti ti-currency-euro"></i> Miete</button>
+        <button class="btn btn-sm" onclick="modalSpHistorie('${sp.id}')"><i class="ti ti-history"></i> Historie (${(sp.historie||[]).length})</button>
+      </div>`:''}
+    </div>`;
+  }
+  el.innerHTML=h;
+}
+
+/* Zuordnen/Wechseln: Krefelder Wohnungsmieter, bestehende TG-Mieter oder Neuanlage */
+async function modalSpZuordnen(spId){
+  const sp=await idbGet('stellplaetze', spId); if(!sp) return;
+  const obj=getObj(sp.objektId);
+  const alleMieter=await idbGetAll('mieter');
+  const gruppenObjIds=OBJEKTE.filter(o=>o.gruppe===obj.gruppe && !o.tiefgarage).map(o=>o.id);
+  const wohner=alleMieter.filter(m=>m && m.mieter && gruppenObjIds.includes(m.objektId) && !m._vormieter && !m._zukuenftig && m.aktiv!==false)
+    .sort((a,b)=>(a.mieter||'').localeCompare(b.mieter||'','de'));
+  const tgMieter=alleMieter.filter(m=>m && m.mieter && m.objektId===sp.objektId && m._tgMieter && !m._vormieter && m.aktiv!==false)
+    .sort((a,b)=>(a.mieter||'').localeCompare(b.mieter||'','de'));
+  const opt=m=>`<option value="${m.id}" ${m.id===sp.mieterId?'selected':''}>${esc(m.mieter)}${m.weNr?` (WE ${esc(String(m.weNr))}, ${esc(getObj(m.objektId)?.name||'')})`:' (TG-Mieter)'}</option>`;
+  showModal(`
+    <div class="m-title"><i class="ti ti-user-plus"></i> Stellplatz ${sp.nr} – Mieter zuordnen</div>
+    <div class="f"><label>Mieter</label>
+      <select id="spMieterSel">
+        <option value="">– bitte wählen –</option>
+        ${tgMieter.length?`<optgroup label="TG-Mieter (ohne Wohnung)">${tgMieter.map(opt).join('')}</optgroup>`:''}
+        <optgroup label="Wohnungsmieter Krefeld">${wohner.map(opt).join('')}</optgroup>
+      </select></div>
+    <div class="f"><label>Mietbeginn Stellplatz</label>
+      <input type="date" id="spMietBeginn" value="${sp.mietBeginn||today()}"></div>
+    <div class="f"><label>Monatsmiete (€)</label>
+      <input type="text" inputmode="decimal" id="spMieteIn" value="${String(sp.miete).replace('.',',')}"></div>
+    <div class="f-row" style="margin-top:12px">
+      <button class="btn btn-copper btn-full" onclick="saveSpZuordnung('${sp.id}')"><i class="ti ti-check"></i> Zuordnen</button>
+      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+    </div>
+    <div style="border-top:1px solid var(--ink-10);margin-top:14px;padding-top:10px">
+      <div style="font-size:12px;color:var(--ink-40);margin-bottom:6px">Mieter ist noch nicht angelegt (externer Stellplatzmieter)?</div>
+      <button class="btn btn-sm btn-full" onclick="modalNeuerTgMieter('${sp.objektId}','${sp.id}')"><i class="ti ti-user-plus"></i> Neuen TG-Mieter anlegen</button>
+    </div>`);
+}
+
+async function saveSpZuordnung(spId){
+  const sp=await idbGet('stellplaetze', spId); if(!sp) return;
+  const mid=document.getElementById('spMieterSel')?.value;
+  if(!mid){ toast('Bitte einen Mieter wählen.'); return; }
+  const m=await idbGet('mieter', mid); if(!m){ toast('Mieter nicht gefunden.'); return; }
+  const beginn=document.getElementById('spMietBeginn')?.value||today();
+  const miete=parseBetrag(document.getElementById('spMieteIn')?.value);
+  const vorher=sp.mieterName;
+  if(sp.mieterId && sp.mieterId!==mid) spHistEintrag(sp,'freigabe',`Zuordnung beendet: ${vorher}`);
+  sp.mieterId=m.id; sp.mieterName=m.mieter; sp.status='vermietet';
+  sp.mietBeginn=beginn; if(miete>0) sp.miete=miete; sp.sperrGrund='';
+  spHistEintrag(sp,'zuordnung',`Vermietet an ${m.mieter}${m.weNr?` (WE ${m.weNr})`:' (TG-Mieter)'} ab ${beginn.split('-').reverse().join('.')} · ${fmtEur(sp.miete)}/Monat`);
+  sp.geaendert=now();
+  await idbPut('stellplaetze', sp);
+  syncSoon(); closeModal();
+  toast(`Stellplatz ${sp.nr} → ${m.mieter} ✓`);
+  if(curPage==='objekt') await renderObjTab('stellplaetze');
+}
+
+/* Externen TG-Mieter anlegen (Person ohne Wohnung im Bestand) */
+async function modalNeuerTgMieter(objektId, spId){
+  showModal(`
+    <div class="m-title"><i class="ti ti-user-plus"></i> Neuer TG-Mieter</div>
+    <div class="f"><label>Name *</label><input type="text" id="tgmName" placeholder="Nachname, Vorname"></div>
+    <div class="f"><label>Anschrift</label><input type="text" id="tgmAnschrift" placeholder="Straße Nr., PLZ Ort"></div>
+    <div class="f-row">
+      <div class="f"><label>Telefon</label><input type="tel" id="tgmTel"></div>
+      <div class="f"><label>E-Mail</label><input type="email" id="tgmMail"></div>
+    </div>
+    <div class="f"><label>IBAN (für Zahlungszuordnung)</label><input type="text" id="tgmIban" placeholder="DE.."></div>
+    <div class="f-row" style="margin-top:12px">
+      <button class="btn btn-copper btn-full" onclick="saveNeuerTgMieter('${objektId}','${spId||''}')"><i class="ti ti-check"></i> Anlegen</button>
+      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+    </div>`);
+}
+
+async function saveNeuerTgMieter(objektId, spId){
+  const name=(document.getElementById('tgmName')?.value||'').trim();
+  if(!name){ toast('Bitte Namen eingeben.'); return; }
+  const iban=(document.getElementById('tgmIban')?.value||'').replace(/\s+/g,'').toUpperCase();
+  const m={ id:'m_tg_'+uid(), objektId, _tgMieter:true, mieter:name, weNr:'',
+    anschrift:(document.getElementById('tgmAnschrift')?.value||'').trim(),
+    telefon:(document.getElementById('tgmTel')?.value||'').trim(),
+    email:(document.getElementById('tgmMail')?.value||'').trim(),
+    iban, ibans: iban?[{iban, status:'aktiv'}]:[],
+    miete:0, nk:0, gesamt:0, aktiv:true,
+    einzugISO: today(), erstellt:now(), geaendert:now() };
+  await idbPut('mieter', m);
+  syncSoon();
+  toast('TG-Mieter angelegt ✓');
+  if(spId){
+    // direkt dem Stellplatz zuordnen
+    closeModal();
+    await modalSpZuordnen(spId);
+    const sel=document.getElementById('spMieterSel'); if(sel) sel.value=m.id;
+  } else closeModal();
+}
+
+async function spFreigeben(spId){
+  const sp=await idbGet('stellplaetze', spId); if(!sp) return;
+  if(!confirm(`Stellplatz ${sp.nr} wirklich freigeben?\nDie Zuordnung zu „${sp.mieterName||''}" wird beendet (Historie bleibt erhalten).`)) return;
+  spHistEintrag(sp,'freigabe',`Zuordnung beendet: ${sp.mieterName||'–'}`);
+  sp.status='frei'; sp.mieterId=null; sp.mieterName=''; sp.mietBeginn='';
+  sp.geaendert=now();
+  await idbPut('stellplaetze', sp); syncSoon();
+  toast(`Stellplatz ${sp.nr} freigegeben`);
+  if(curPage==='objekt') await renderObjTab('stellplaetze');
+}
+
+async function modalSpSperren(spId){
+  const sp=await idbGet('stellplaetze', spId); if(!sp) return;
+  showModal(`
+    <div class="m-title"><i class="ti ti-lock"></i> Stellplatz ${sp.nr} sperren</div>
+    <p style="font-size:12px;color:var(--ink-40);margin-bottom:10px">Gesperrte Stellplätze werden nicht als vermietbar angezeigt (z. B. Hausmeister-Nutzung, Materiallager).</p>
+    <div class="f"><label>Grund</label><input type="text" id="spSperrGrund" placeholder="z. B. Hausmeister / Materiallager"></div>
+    <div class="f-row" style="margin-top:12px">
+      <button class="btn btn-danger btn-full" onclick="saveSpSperre('${sp.id}')"><i class="ti ti-lock"></i> Sperren</button>
+      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+    </div>`);
+}
+async function saveSpSperre(spId){
+  const sp=await idbGet('stellplaetze', spId); if(!sp) return;
+  sp.status='gesperrt';
+  sp.sperrGrund=(document.getElementById('spSperrGrund')?.value||'').trim();
+  spHistEintrag(sp,'sperre',`Gesperrt${sp.sperrGrund?': '+sp.sperrGrund:''}`);
+  sp.geaendert=now();
+  await idbPut('stellplaetze', sp); syncSoon(); closeModal();
+  toast(`Stellplatz ${sp.nr} gesperrt`);
+  if(curPage==='objekt') await renderObjTab('stellplaetze');
+}
+async function spEntsperren(spId){
+  const sp=await idbGet('stellplaetze', spId); if(!sp) return;
+  if(!confirm(`Sperre für Stellplatz ${sp.nr} aufheben?`)) return;
+  spHistEintrag(sp,'sperre','Sperre aufgehoben');
+  sp.status='frei'; sp.sperrGrund='';
+  sp.geaendert=now();
+  await idbPut('stellplaetze', sp); syncSoon();
+  toast(`Stellplatz ${sp.nr} wieder frei`);
+  if(curPage==='objekt') await renderObjTab('stellplaetze');
+}
+
+async function modalSpHistorie(spId){
+  const sp=await idbGet('stellplaetze', spId); if(!sp) return;
+  const rows=[...(sp.historie||[])].reverse().map(h=>`
+    <div style="padding:6px 0;border-bottom:1px solid var(--ink-10)">
+      <div style="font-size:12px">${esc(h.text||'')}</div>
+      <div style="font-size:10px;color:var(--ink-40)">${new Date(h.datum).toLocaleString('de-DE')}${h.von?' · '+esc(h.von):''}</div>
+    </div>`).join('');
+  showModal(`
+    <div class="m-title"><i class="ti ti-history"></i> Historie – Stellplatz ${sp.nr}</div>
+    <div style="max-height:60vh;overflow-y:auto">${rows||'<p style="color:var(--ink-40)">Keine Einträge.</p>'}</div>
+    <button class="btn btn-full" style="margin-top:12px" onclick="closeModal()">Schließen</button>`);
+}
+
+/* Miete direkt ändern (ohne Schreiben, z. B. Korrektur/Neuvermietung) */
+async function modalSpMiete(spId){
+  const sp=await idbGet('stellplaetze', spId); if(!sp) return;
+  showModal(`
+    <div class="m-title"><i class="ti ti-currency-euro"></i> Stellplatz ${sp.nr} – Miete ändern</div>
+    <div class="f"><label>Monatsmiete (€)</label>
+      <input type="text" inputmode="decimal" id="spMieteNeu" value="${String(sp.miete).replace('.',',')}"></div>
+    <p style="font-size:11px;color:var(--ink-40)">Für eine formelle Erhöhung mit Schreiben an den Mieter bitte „Mieterhöhung" verwenden – dort werden Wirksamkeitsdatum und Historie vollständig dokumentiert.</p>
+    <div class="f-row" style="margin-top:12px">
+      <button class="btn btn-copper btn-full" onclick="saveSpMiete('${sp.id}')"><i class="ti ti-check"></i> Speichern</button>
+      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+    </div>`);
+}
+async function saveSpMiete(spId){
+  const sp=await idbGet('stellplaetze', spId); if(!sp) return;
+  const neu=parseBetrag(document.getElementById('spMieteNeu')?.value);
+  if(!(neu>0)){ toast('Bitte gültigen Betrag eingeben.'); return; }
+  if(neu!==sp.miete){
+    spHistEintrag(sp,'miete',`Miete geändert: ${fmtEur(sp.miete)} → ${fmtEur(neu)}`);
+    sp.miete=neu; sp.geaendert=now();
+    await idbPut('stellplaetze', sp); syncSoon();
+  }
+  closeModal();
+  if(curPage==='objekt') await renderObjTab('stellplaetze');
+}
+
+async function modalNeuerStellplatz(objektId){
+  const spListe=await ensureStellplaetze(objektId);
+  const naechste=Math.max(0,...spListe.map(x=>x.nr))+1;
+  showModal(`
+    <div class="m-title"><i class="ti ti-plus"></i> Stellplatz hinzufügen</div>
+    <div class="f"><label>Stellplatz-Nummer</label>
+      <input type="number" id="spNeuNr" value="${naechste}" min="1"></div>
+    <div class="f"><label>Monatsmiete (€)</label>
+      <input type="text" inputmode="decimal" id="spNeuMiete" value="${String(TG_SP_MIETE_STANDARD)}"></div>
+    <div class="f-row" style="margin-top:12px">
+      <button class="btn btn-copper btn-full" onclick="saveNeuerStellplatz('${objektId}')"><i class="ti ti-check"></i> Anlegen</button>
+      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+    </div>`);
+}
+async function saveNeuerStellplatz(objektId){
+  const nr=parseInt(document.getElementById('spNeuNr')?.value);
+  if(!(nr>0)){ toast('Bitte gültige Nummer eingeben.'); return; }
+  const existiert=(await idbGetAll('stellplaetze','objektId',objektId)).some(x=>x && !x.geloescht && x.nr===nr);
+  if(existiert){ toast('Stellplatz '+nr+' existiert bereits.'); return; }
+  const sp={ id:'sp_'+objektId+'_'+nr, objektId, nr, status:'frei',
+    miete:parseBetrag(document.getElementById('spNeuMiete')?.value)||TG_SP_MIETE_STANDARD,
+    mieterId:null, mieterName:'', mietBeginn:'', sperrGrund:'',
+    historie:[{datum:nowIso(), typ:'anlage', text:'Stellplatz angelegt', von:CU?.name||''}],
+    erstellt:now(), geaendert:now() };
+  await idbPut('stellplaetze', sp); syncSoon(); closeModal();
+  toast('Stellplatz '+nr+' angelegt ✓');
+  if(curPage==='objekt') await renderObjTab('stellplaetze');
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -24962,7 +25660,7 @@ async function delUser(id){
 async function exportBackup(){
   if(!istSystemAdmin()){ toast('Nur für Admins'); return; }
   const backup={};
-  for(const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','versicherungen','versorger_archiv','od_dateien','buchungen','fotos','mietbescheinigungen','kautionsquittungen','mv_entwuerfe','selbstauskuenfte','tenant_mails']){
+  for(const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','versicherungen','versorger_archiv','od_dateien','buchungen','fotos','mietbescheinigungen','kautionsquittungen','mv_entwuerfe','selbstauskuenfte','tenant_mails','stellplaetze']){
     backup[s]=await idbGetAll(s);
     // v180 (Review H2): Function-Key + SA-Schlüssel nie in Export-Dateien schreiben.
     if(s==='settings') backup[s]=backup[s].filter(r=>!SETTINGS_GEHEIM.includes(r?.id));
@@ -25215,7 +25913,7 @@ async function importBackupAusfuehren(modus){
   const backup = window._pendingBackup;
   if(!backup){ toast('Keine Backup-Datei geladen'); closeModal(); return; }
   closeModal();
-  const alleStores=['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','versorger_archiv','od_dateien','buchungen','fotos','mietbescheinigungen','kautionsquittungen','mv_entwuerfe','selbstauskuenfte','tenant_mails'];
+  const alleStores=['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','versorger_archiv','od_dateien','buchungen','fotos','mietbescheinigungen','kautionsquittungen','mv_entwuerfe','selbstauskuenfte','tenant_mails','stellplaetze'];
   try{
     await erstelleMieterSnapshot('vor Import ('+modus+')');
     if(modus==='ersetzen'){
@@ -25501,7 +26199,7 @@ async function syncToOneDrive() {
     } catch(e){ /* offline o. 404: normaler Upload-Weg unten */ }
 
     const backup = {};
-    for (const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','versorger_archiv','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','versicherungen','od_dateien','buchungen','fotos','mietbescheinigungen','kautionsquittungen','mv_entwuerfe','selbstauskuenfte','tenant_mails']) {
+    for (const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','versorger_archiv','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','versicherungen','od_dateien','buchungen','fotos','mietbescheinigungen','kautionsquittungen','mv_entwuerfe','selbstauskuenfte','tenant_mails','stellplaetze']) {
       backup[s] = await idbGetAll(s);
       // v180 (Review H2): Geheimnisse (Function-Key, SA-Schlüssel) bleiben auf dem Gerät –
       // sie gehören weder in die OneDrive-JSON noch in Backup-Dateien. settings werden
@@ -25606,7 +26304,7 @@ async function syncFromOneDrive() {
       await idbPut('settings', { id:'tombstones', value: mergedTomb });
 
       // Merge: ID-basiert, nur übernehmen wenn remote neuer oder lokal fehlt
-      const mergeStores = ['protokolle','aufgaben','maengel','reparaturen','dokumente','nka_archiv','einkaufsliste','wartung','termine','zaehler','zaehlerstaende','versorger','versorger_archiv','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','od_dateien','fotos','mietbescheinigungen','kautionsquittungen','mv_entwuerfe','selbstauskuenfte','tenant_mails','buchungen'];
+      const mergeStores = ['protokolle','aufgaben','maengel','reparaturen','dokumente','nka_archiv','einkaufsliste','wartung','termine','zaehler','zaehlerstaende','versorger','versorger_archiv','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','od_dateien','fotos','mietbescheinigungen','kautionsquittungen','mv_entwuerfe','selbstauskuenfte','tenant_mails','buchungen','stellplaetze'];
       for (const s of mergeStores) {
         if (!backup[s]) continue;
         const tombS = mergedTomb[s] || {};
@@ -26509,7 +27207,7 @@ const ZA_KONTEN = [
   { id:'ruhrt', label:'Ruhrtalstr. 41',      objekte:['ruhrt41'] },
   { id:'mind',  label:'Mindener Str. 23/25', objekte:['mind23','mind25'] },
   { id:'mg',    label:'Mönchengladbach',     objekte:['kyff28','kyff30','kyff32'] },
-  { id:'kref',  label:'Krefeld',             objekte:['inr181','inr183','inr185','wilm7','wilm9','wilm11','wilm13'] },
+  { id:'kref',  label:'Krefeld',             objekte:['inr181','inr183','inr185','wilm7','wilm9','wilm11','wilm13','tgkref'] },
   { id:'amboss',label:'Amboßstr. 10',        objekte:['amboss10'] },
 ];
 
@@ -26632,7 +27330,7 @@ function zaParseCSV(text){
 function zaNurEingaenge(buchungen){
   return buchungen.filter(b=>b.typ==='eingang' && b.iban && b.iban.startsWith('DE'));
 }
-function zaMatch(buchungen, mieterListe, konto){
+function zaMatch(buchungen, mieterListe, konto, spIdx){
   const objSet=konto?new Set(konto.objekte):null;
   const pool=mieterListe.filter(m=>!objSet || objSet.has(m.objektId));
   const ibanIdx={};
@@ -26660,7 +27358,21 @@ function zaMatch(buchungen, mieterListe, konto){
         match={mieterId:cand[0].id,name:cand[0].mieter,weNr:cand[0].weNr,via:'we',status:'neu',score:85};
       }
     }
-    results.push({buchung:b,match});
+    // v182 (TG): reine Stellplatz-Zahlung ohne IBAN-/WE-Treffer -> über das
+    // Stellplatz-Register zuordnen (Nummer im Zweck -> hinterlegter SP-Mieter)
+    const spNrn = zaSpNummern(b.zweck);
+    if(!match && spNrn.length && spIdx && spIdx.byNr){
+      for(const nr of spNrn){
+        const sp=spIdx.byNr[String(nr)];
+        if(sp && sp.mieterId){
+          const mm=mieterListe.find(x=>x.id===sp.mieterId);
+          match={mieterId:sp.mieterId, name:(mm?mm.mieter:sp.mieterName), weNr:mm?.weNr||'',
+                 via:'sp', status:'aktiv', score:90, spNr:nr};
+          break;
+        }
+      }
+    }
+    results.push({buchung:b, match, spNummern:spNrn});
   }
   return results;
 }
@@ -26720,7 +27432,10 @@ async function zaVerarbeiten(text){
   // zusätzlich auf Objekte beschränken, auf die der Benutzer Zugriff hat.
   const pool = alleMieter.filter(m => m && m.mieter && !m._vormieter && m.aktiv!==false && darfObjekt(m.objektId));
   window._zaMieterCache = pool; // für manuelle Dropdown-Zuordnung
-  ZA_STATE.results = zaMatch(eingaenge, pool, konto);
+  // v182 (TG): Stellplatz-Register der Kontogruppe für SP-Matching und Soll-Aufteilung
+  const kontoGruppe = getObj(konto.objekte[0])?.gruppe || '';
+  ZA_STATE.spIdx = await spIndexFuerGruppe(kontoGruppe);
+  ZA_STATE.results = zaMatch(eingaenge, pool, konto, ZA_STATE.spIdx);
   ZA_STATE.alleBuchungen = parsed.buchungen; // für Speicherung (auch Ausgänge)
   zaRenderErgebnis();
 }
@@ -26789,6 +27504,8 @@ async function zaRenderVerlauf(){
   const alleMieter = await idbGetAll('mieter');
   const objSet = new Set(konto.objekte);
   const mieter = alleMieter.filter(m=>m && m.mieter && objSet.has(m.objektId) && !m._vormieter && m.aktiv!==false);
+  // v182 (TG): Stellplatz-Register für Soll-Berechnung und SP-Aufteilung
+  const spIdx = await spIndexFuerGruppe(getObj(konto.objekte[0])?.gruppe||'');
 
   // Monate mit substanziellen Eingängen (Randmonate mit Einzelzahlungen ausblenden)
   const monateSet = {};
@@ -26812,7 +27529,7 @@ async function zaRenderVerlauf(){
 
   let inhalt;
   if(ZA_VERLAUF.sicht==='mietkonto'){
-    inhalt = zaRenderMietkonto(buch, mieter, monate, konto);
+    inhalt = zaRenderMietkonto(buch, mieter, monate, konto, spIdx);
   } else if(ZA_VERLAUF.sicht==='buchhaltung'){
     inhalt = zaRenderBuchhaltung(buch, konto);
   } else if(ZA_VERLAUF.sicht==='auswertung'){
@@ -26849,8 +27566,8 @@ async function zaVerlaufInit(){
 }
 
 /* Sicht 1: Mietkonto je Mieter – Soll-Ist je Monat, Stellplatz aufgeschlüsselt */
-function zaRenderMietkonto(buch, mieter, monate, konto){
-  const rows = zaSollIst(buch, mieter, monate);
+function zaRenderMietkonto(buch, mieter, monate, konto, spIdx){
+  const rows = zaSollIst(buch, mieter, monate, spIdx);
   const eur = n => (Number(n)||0).toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:2});
   const monHdr = monate.map(m=>`<th colspan="2" style="padding:6px;text-align:center;border-left:1px solid var(--line)">${m.slice(5)}/${m.slice(2,4)}</th>`).join('');
   const subHdr = monate.map(()=>`<th style="padding:4px;text-align:right;font-size:10px;color:var(--ink-40)">Ist</th><th style="padding:4px;text-align:right;font-size:10px;color:var(--ink-40)">Δ Soll</th>`).join('');
@@ -26870,10 +27587,10 @@ function zaRenderMietkonto(buch, mieter, monate, konto){
     }).join('');
     const bg = r.warnung ? 'background:#fff8f0' : '';
     return `<tr style="border-bottom:1px solid var(--line);${bg}">
-      <td style="padding:6px;font-size:11px;color:var(--ink-40)">${esc(r.weNr||'')}</td>
+      <td style="padding:6px;font-size:11px;color:var(--ink-40)">${esc(r.weNr||(r.tg?'TG':''))}</td>
       <td style="padding:6px;font-size:13px">${esc(r.mieter)}</td>
       <td style="padding:6px;text-align:right;font-variant-numeric:tabular-nums;font-size:12px">
-        ${eur(r.soll)}<div style="font-size:9px;color:var(--ink-40)">${eur(r.netto)}+${eur(r.nk)}</div></td>
+        ${eur(r.soll)}<div style="font-size:9px;color:var(--ink-40)">${r.tg?('SP '+eur(r.spSoll)):(eur(r.netto)+'+'+eur(r.nk)+(r.spSoll?'+SP '+eur(r.spSoll):''))}</div></td>
       ${cells}</tr>`;
   }).join('');
 
@@ -27153,6 +27870,9 @@ function zaRenderErgebnis(){
       statusHtml = `<span style="color:var(--ink-70)"><i class="ti ti-help-circle"></i> Vorschlag: ${esc(m.name)} (WE ${esc(m.weNr)})</span>`;
       aktion = `<button class="btn btn-sm btn-primary" onclick="zaZuordnen(${i})">
                   <i class="ti ti-link"></i> IBAN übernehmen</button>`;
+    } else if(m && m.via==='sp'){
+      statusHtml = `<span style="color:var(--green);font-weight:600"><i class="ti ti-parking"></i> ${esc(m.name)}</span>
+                    <span style="font-size:11px;color:var(--ink-40)"> · via Stellplatz ${esc(String(m.spNr))}</span>`;
     } else {
       statusHtml = `<span style="color:var(--ink-40)">Kein Mieter – Auswahl:</span>`;
       aktion = zaMieterDropdown(i);
@@ -27163,6 +27883,7 @@ function zaRenderErgebnis(){
       <td style="padding:8px 6px;font-size:12px">
         <div>${esc(b.name)}</div>
         <div style="font-size:11px;color:var(--ink-40);font-variant-numeric:tabular-nums">${esc(fmtIban(b.iban))}</div>
+        ${(r.spNummern&&r.spNummern.length)?`<div style="font-size:10px;color:var(--copper)"><i class="ti ti-parking"></i> Stellplatz ${r.spNummern.join(', ')}</div>`:''}
       </td>
       <td style="padding:8px 6px">${statusHtml}<div style="margin-top:4px">${aktion}</div></td>
     </tr>`;
@@ -27170,11 +27891,13 @@ function zaRenderErgebnis(){
 
   const nIban = res.filter(r=>r.match?.via==='iban').length;
   const nWe   = res.filter(r=>r.match?.via==='we').length;
+  const nSp   = res.filter(r=>r.match?.via==='sp').length;
   const nOffen= res.filter(r=>!r.match).length;
 
   box.innerHTML = `
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
       <span class="badge" style="background:var(--green-l);color:var(--green)">${nIban} per IBAN erkannt</span>
+      ${nSp?`<span class="badge" style="background:var(--green-l);color:var(--green)">${nSp} per Stellplatz</span>`:''}
       ${nWe?`<span class="badge" style="background:var(--blue-l,#e8f0fe);color:var(--blue,#1a56db)">${nWe} Vorschläge (WE)</span>`:''}
       ${nOffen?`<span class="badge" style="background:var(--line);color:var(--ink-40)">${nOffen} offen</span>`:''}
     </div>
@@ -27207,10 +27930,16 @@ function zaMieterDropdown(i){
   const objSet=new Set(konto.objekte);
   // Mieter werden beim Render erst gebraucht; wir holen sie synchron aus Cache
   // Fallback: leeres Dropdown, wird über zaZuordnenManuell gefüllt
+  const liste=(window._zaMieterCache||[]).filter(m=>objSet.has(m.objektId));
+  const wohner=liste.filter(m=>!m._tgMieter), tg=liste.filter(m=>m._tgMieter);
+  // v182 (TG): externe Stellplatzzahler direkt als TG-Mieter anlegen
+  const tgObj=OBJEKTE.find(o=>o.tiefgarage && objSet.has(o.id));
+  const neuOpt=tgObj?`<option value="__neu_tg__">➕ Neuen TG-Mieter anlegen …</option>`:'';
   return `<select class="inp" style="font-size:12px;padding:4px" onchange="zaZuordnenManuell(${i}, this.value)">
             <option value="">– Mieter wählen –</option>
-            ${(window._zaMieterCache||[]).filter(m=>objSet.has(m.objektId))
-              .map(m=>`<option value="${m.id}">WE ${esc(m.weNr||'?')} · ${esc(m.mieter)}</option>`).join('')}
+            ${neuOpt}
+            ${tg.length?`<optgroup label="TG-Mieter">${tg.map(m=>`<option value="${m.id}">TG · ${esc(m.mieter)}</option>`).join('')}</optgroup>`:''}
+            <optgroup label="Wohnungsmieter">${wohner.map(m=>`<option value="${m.id}">WE ${esc(m.weNr||'?')} · ${esc(m.mieter)}</option>`).join('')}</optgroup>
           </select>`;
 }
 
@@ -27229,10 +27958,40 @@ async function zaZuordnenManuell(i, mieterId){
   if(!mieterId) return;
   const r = ZA_STATE.results[i];
   if(!r) return;
+  // v182 (TG): neuen externen TG-Mieter direkt aus der Buchung anlegen
+  if(mieterId==='__neu_tg__'){
+    const tgObj=OBJEKTE.find(o=>o.tiefgarage && ZA_STATE.konto.objekte.includes(o.id));
+    if(!tgObj){ toast('Keine Tiefgarage für dieses Konto.'); return; }
+    const name=(r.buchung.name||'').trim()||'TG-Mieter';
+    const iban=zaNormIban(r.buchung.iban);
+    const neu={ id:'m_tg_'+uid(), objektId:tgObj.id, _tgMieter:true, mieter:name, weNr:'',
+      anschrift:'', telefon:'', email:'', iban:iban||'', ibans: iban?[{iban, status:'aktiv', inhaber:name}]:[],
+      miete:0, nk:0, gesamt:0, aktiv:true,
+      _importHinweis:'Aus Bankimport angelegt – Anschrift/IBAN prüfen',
+      einzugISO:today(), erstellt:now(), geaendert:now() };
+    await idbPut('mieter', neu);
+    (window._zaMieterCache=window._zaMieterCache||[]).push(neu);
+    const spNrn=r.spNummern||zaSpNummern(r.buchung.zweck);
+    r.match={mieterId:neu.id, name, weNr:'', via:'sp', status:'aktiv', score:100, spNr:spNrn[0]};
+    // wenn SP-Nummer bekannt: gleich am Stellplatz hinterlegen
+    if(spNrn.length){
+      const sp=await idbGet('stellplaetze','sp_'+tgObj.id+'_'+spNrn[0]).catch(()=>null);
+      if(sp && !sp.mieterId){
+        sp.mieterId=neu.id; sp.mieterName=name; sp.status='vermietet';
+        if(r.buchung.betrag>0 && spNrn.length===1) sp.miete=r.buchung.betrag;
+        spHistEintrag(sp,'zuordnung',`Aus Bankimport zugeordnet: ${name}`);
+        sp.geaendert=now(); await idbPut('stellplaetze', sp);
+      }
+    }
+    syncSoon();
+    toast('TG-Mieter „'+name+'" angelegt ✓');
+    zaRenderErgebnis();
+    return;
+  }
   const m = await idbGet('mieter', mieterId);
   if(!m){ toast('Mieter nicht gefunden.'); return; }
   await zaIbanAnMieter(mieterId, r.buchung.iban, r.buchung.name);
-  r.match = {mieterId, name:m.mieter, weNr:m.weNr, via:'iban', status:'aktiv', score:100};
+  r.match = {mieterId, name:m.mieter, weNr:m.weNr, via:m._tgMieter?'sp':'iban', status:'aktiv', score:100};
   zaRenderErgebnis();
 }
 
@@ -27308,6 +28067,24 @@ function zaMietmonat(b){
 function zaIstStellplatz(zweck){
   return /stellplatz|garage|tiefgarage|tg-platz/i.test(zweck||'') && !/wohnung|WE\s*\d/i.test((zweck||'').replace(/stellplatz.*/i,''));
 }
+/* v182 (TG Krefeld): Stellplatz-Nummern aus dem Verwendungszweck lesen.
+   Erkennt Listen nach Schlüsselwort: "Stellplatz 59", "Stellplätze 33, 34",
+   "Stellplatz 53, 54+47", "Mieten Tiefgarage 23,25,26", "Stellplatz 51 + 64".
+   Leerzeichen allein trennt KEINE Liste (sonst würden Monat/Jahr wie
+   "stellplatz 59  7.2026" mit eingesammelt); "- WE 66" beendet die Liste. */
+function zaSpNummern(zweck){
+  const t=String(zweck||'');
+  const re=/(?:stellpl(?:a|ä|ae)tz\w*|garagenstellpl\w*|einstellplatz\w*|tiefgarage|(?:^|[\s\-.,])tg(?=[\s\-.:0-9]))[^0-9]{0,14}(\d{1,3}(?:\s*(?:[,+\/]|und)\s*\d{1,3})*)/gi;
+  const out=new Set();
+  let m;
+  while((m=re.exec(t))!==null){
+    for(const z of m[1].split(/[,+\/]|und/)){
+      const n=parseInt(z.trim(),10);
+      if(n>=1 && n<=200) out.add(n);
+    }
+  }
+  return [...out].sort((a,b)=>a-b);
+}
 function zaStellplatzAnteil(b){
   // grobe Heuristik: reine Stellplatzzahlung
   if(zaIstStellplatz(b.zweck)) return b.betrag;
@@ -27328,6 +28105,7 @@ function zaBuchungRecord(kontoId, b, match){
     buchungstext: b.buchungstext||'',
     typ: b.betrag>0 ? 'eingang' : 'ausgang',
     istStellplatz: zaIstStellplatz(b.zweck),
+    spNummern: b.betrag>0 ? zaSpNummern(b.zweck) : [],
     mieterId: match?.mieterId || null,
     mieterName: match?.name || null,
     zuordnungVia: match?.via || null,
@@ -27337,11 +28115,16 @@ function zaBuchungRecord(kontoId, b, match){
 }
 
 /* Soll-Ist-Aggregation: pro Mieter je Monat Ist-Summe gegen Soll (gesamt) */
-function zaSollIst(buchungen, mieterListe, monate){
+function zaSollIst(buchungen, mieterListe, monate, spIdx){
+  const byMieterSp=(spIdx&&spIdx.byMieter)||{};
+  const byNrSp=(spIdx&&spIdx.byNr)||{};
   const sollIdx={};
   for(const m of mieterListe){
+    // v182 (TG): Stellplatz-Soll aus dem Register (Summe der zugeordneten Plätze)
+    const spSoll=(byMieterSp[m.id]||[]).reduce((a,sp)=>a+(Number(sp.miete)||0),0);
     sollIdx[m.id]={ mieter:m.mieter, weNr:m.weNr, objektId:m.objektId,
-      soll: Number(m.gesamt)||0, netto:Number(m.miete)||0, nk:Number(m.nk)||0 };
+      soll: (Number(m.gesamt)||0)+spSoll, netto:Number(m.miete)||0, nk:Number(m.nk)||0,
+      spSoll, tg: !!m._tgMieter };
   }
   // Ist je Mieter+Monat
   const ist={}; // mieterId -> {monat -> {miete, stellplatz}}
@@ -27351,8 +28134,18 @@ function zaSollIst(buchungen, mieterListe, monate){
     const key=b.mieterId;
     (ist[key]=ist[key]||{});
     (ist[key][b.mietmonat]=ist[key][b.mietmonat]||{miete:0,stellplatz:0});
-    if(b.istStellplatz) ist[key][b.mietmonat].stellplatz += b.betrag;
-    else ist[key][b.mietmonat].miete += b.betrag;
+    const spNrn=b.spNummern||[];
+    if(b.istStellplatz){
+      ist[key][b.mietmonat].stellplatz += b.betrag;
+    } else if(spNrn.length){
+      // v182 (TG): Kombizahlung Wohnung + Stellplatz -> SP-Anteil herausrechnen
+      let spAnteil=spNrn.reduce((a,nr)=>a+(Number(byNrSp[String(nr)]?.miete)||TG_SP_MIETE_STANDARD),0);
+      spAnteil=Math.min(spAnteil, b.betrag);
+      ist[key][b.mietmonat].stellplatz += spAnteil;
+      ist[key][b.mietmonat].miete += (b.betrag - spAnteil);
+    } else {
+      ist[key][b.mietmonat].miete += b.betrag;
+    }
   }
   // Ergebnis je Mieter
   const rows=[];
@@ -27369,13 +28162,14 @@ function zaSollIst(buchungen, mieterListe, monate){
       if(istGesamt===0 || Math.abs(diff)>=0.5) warnung=true;
     }
     rows.push({mieterId:mid, mieter:s.mieter, weNr:s.weNr, objektId:s.objektId,
-      soll:s.soll, netto:s.netto, nk:s.nk, monate:monatsWerte, warnung});
+      soll:s.soll, netto:s.netto, nk:s.nk, spSoll:s.spSoll||0, tg:!!s.tg, monate:monatsWerte, warnung});
   }
-  rows.sort((a,b)=>{
+  const gefiltert=rows.filter(r=>!(r.tg && r.soll<=0 && !Object.values(r.monate).some(v=>v.ist>0)));
+  gefiltert.sort((a,b)=>{
     const wa=parseInt(a.weNr)||999, wb=parseInt(b.weNr)||999;
     return wa-wb || String(a.mieter).localeCompare(String(b.mieter));
   });
-  return rows;
+  return gefiltert;
 }
 
 
