@@ -796,7 +796,7 @@ body.printing-active #printRoot{display:block!important}
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=32;
-const APP_VERSION = '2026-07-07-v185';
+const APP_VERSION = '2026-07-07-v186';
 /* v157 (02.07.2026): Drei Fixes/Features – Sync, Mail-Papierkorb, QR-ZIP-Export.
    1) SYNC-TOMBSTONES: mergeRecord holte geleerte Felder immer von der Gegen-
       seite zurück ("gefüllt schlägt leer") – Feld-Löschungen konnten dadurch
@@ -10361,6 +10361,24 @@ async function togglePersonVerstorben(mieterId, idx){
 // Liefert das Auszugsdatum eines Mieters als ISO-String (oder null).
 function _auszugISOvon(m){
   return m.auszugISO || (m.auszug&&m.auszug.includes('.')?m.auszug.split('.').reverse().join('-'):m.auszug) || null;
+}
+// Liefert das Einzugsdatum eines Mieters als ISO-String (oder null).
+function _einzugISOvon(m){
+  return m.einzugISO || (m.einzug&&m.einzug.includes('.')?m.einzug.split('.').reverse().join('-'):m.einzug) || null;
+}
+// Prueft, ob ein Mieter im angegebenen Mietmonat ('YYYY-MM') Vertragspartei war.
+// Unbekannter Einzug => nicht ausschliessen (true, sofern Auszug den Monat nicht ausschliesst).
+function _mieterAktivImMonat(m, mietmonat){
+  if(!mietmonat || !/^\d{4}-\d{2}$/.test(mietmonat)) return true;
+  const anfang = mietmonat + '-01';
+  const [y,mo] = mietmonat.split('-').map(Number);
+  const ende = new Date(y, mo, 0);
+  const endeISO = `${y}-${String(mo).padStart(2,'0')}-${String(ende.getDate()).padStart(2,'0')}`;
+  const ein = _einzugISOvon(m);
+  const aus = _auszugISOvon(m);
+  if(ein && ein > endeISO) return false;   // Einzug erst nach diesem Monat
+  if(aus && aus < anfang) return false;    // Auszug bereits vor diesem Monat
+  return true;
 }
 // Wohnung gilt als faktisch leer, wenn der 'steht leer'-Haken gesetzt ist
 // ODER das Auszugsdatum bereits erreicht/vergangen ist.
@@ -27221,6 +27239,7 @@ const BUCH_KATEGORIEN=[
   {id:'strom',               label:'Strom',                  seite:'aus', umlage:'voll', nka:true},
   {id:'wasser',              label:'Wasser',                 seite:'aus', umlage:'voll', nka:true},
   {id:'abwasser',            label:'Abwasser',               seite:'aus', umlage:'voll', nka:true},
+  {id:'regenwasser',         label:'Regenwasser/Niederschlag',seite:'aus', umlage:'voll', nka:true},
   {id:'heizkosten',          label:'Heizkosten',             seite:'aus', umlage:'voll', nka:true},
   {id:'allgemeinstrom',      label:'Allgemeinstrom',         seite:'aus', umlage:'voll', nka:true},
   {id:'grundsteuer',         label:'Grundsteuer',            seite:'aus', umlage:'voll', nka:true},
@@ -27291,7 +27310,7 @@ function buchKonfidenzBadge(b){
    Liefert stets nur VORSCHLÄGE (§15). Nichts wird automatisch festgeschrieben.
 ═══════════════════════════════════════════════════════════ */
 /* Sparte (Versorger) → Buchungs-Kategorie */
-const BUCH_SPARTE_KAT={strom:'strom',gas:'gas',wasser:'wasser',heizung:'heizkosten',muell:'muell',internet:'sonstiges',sonstige:'sonstiges'};
+const BUCH_SPARTE_KAT={strom:'strom',gas:'gas',wasser:'wasser',regenwasser:'regenwasser',heizung:'heizkosten',muell:'muell',internet:'sonstiges',sonstige:'sonstiges'};
 /* Zähler-Art → Buchungs-Kategorie */
 const BUCH_ZART_KAT={strom:'strom',gas:'gas',wasser:'wasser',warmwasser:'heizkosten',heizung:'heizkosten',tiefgarage:'sonstiges',sonstige:'sonstiges'};
 
@@ -27348,6 +27367,10 @@ function buchAnalyseAusgang(b, versorgerListe, zaehlerListe){
   // 6) Versicherungs-Muster
   if(/(geb(ä|ae)udevers|wohngeb(ä|ae)ude|versicherung|allianz|axa|gothaer|provinzial|r\+v|huk|vhv|w(ü|ue)rttembergische)/i.test(text)){
     return {kat:'gebaeudeversicherung', konfidenz:'wahrscheinlich', quelle:'Versicherungs-Muster', erkannt:{}};
+  }
+  // 6b) Niederschlags-/Regenwasser (getrennte Gebuehr; oft ueber die Stadtkasse)
+  if(/(niederschlagswasser|regenwasser|oberfl(ä|ae)chenwasser|versiegel)/i.test(text)){
+    return {kat:'regenwasser', konfidenz:'wahrscheinlich', quelle:'Regenwasser-Muster', erkannt:{}};
   }
   // 7) Grundsteuer / kommunale Kasse
   if(/(grundsteuer|stadtkasse|gemeindekasse|finanzkasse|kommunalkasse|stadt\s|kreiskasse)/i.test(text)){
@@ -27571,13 +27594,23 @@ function zaMatch(buchungen, mieterListe, konto, spIdx){
     let match=null;
     const hit=ibanIdx[b.iban];
     if(hit){
+      const ehem=!!hit.m._vormieter;
       match={mieterId:hit.m.id,name:hit.m.mieter,weNr:hit.m.weNr,via:'iban',
-             status:hit.status,score:hit.status==='alt'?70:100};
+             status:ehem?'ehem':hit.status,score:(ehem||hit.status==='alt')?70:100,ehem};
     }
     if(!match && b.weHint){
       const cand=weIdx[String(b.weHint).replace(/^0+/,'')]||[];
-      if(cand.length===1){
-        match={mieterId:cand[0].id,name:cand[0].mieter,weNr:cand[0].weNr,via:'we',status:'neu',score:85};
+      let pick=null;
+      if(cand.length===1){ pick=cand[0]; }
+      else if(cand.length>1){
+        // §3: mehrere Mieter derselben WE (aktuell + ehemalige) -> nach Mietzeitraum
+        const mo=zaMietmonat(b);
+        const imZeitraum=cand.filter(m=>_mieterAktivImMonat(m,mo));
+        pick = imZeitraum.length===1 ? imZeitraum[0] : (cand.find(m=>!m._vormieter)||null);
+      }
+      if(pick){
+        const ehem=!!pick._vormieter;
+        match={mieterId:pick.id,name:pick.mieter,weNr:pick.weNr,via:'we',status:ehem?'ehem':'neu',score:ehem?65:85,ehem};
       }
     }
     // v182 (TG): reine Stellplatz-Zahlung ohne IBAN-/WE-Treffer -> über das
@@ -27652,7 +27685,9 @@ async function zaVerarbeiten(text){
   const alleMieter = await idbGetAll('mieter');
   // Nur aktive, echte Mieter (kein Vormieter-/Zukunfts-Eintrag) für Matching-Pool;
   // zusätzlich auf Objekte beschränken, auf die der Benutzer Zugriff hat.
-  const pool = alleMieter.filter(m => m && m.mieter && !m._vormieter && m.aktiv!==false && darfObjekt(m.objektId));
+  // §3 (Etappe C): historische Mieter im Pool belassen – Bankzahlungen ausgezogener
+  // Mieter (Nachzahlungen, Kautionsrueckzahlung) muessen zuordenbar bleiben.
+  const pool = alleMieter.filter(m => m && m.mieter && !m._zukuenftig && darfObjekt(m.objektId));
   window._zaMieterCache = pool; // für manuelle Dropdown-Zuordnung
   // v182 (TG): Stellplatz-Register der Kontogruppe für SP-Matching und Soll-Aufteilung
   const kontoGruppe = getObj(konto.objekte[0])?.gruppe || '';
@@ -27725,7 +27760,7 @@ async function zaRenderVerlauf(){
   // Mieter dieses Kontos
   const alleMieter = await idbGetAll('mieter');
   const objSet = new Set(konto.objekte);
-  const mieter = alleMieter.filter(m=>m && m.mieter && objSet.has(m.objektId) && !m._vormieter && m.aktiv!==false);
+  const mieterAktiv = alleMieter.filter(m=>m && m.mieter && objSet.has(m.objektId) && !m._vormieter && m.aktiv!==false);
   // v182 (TG): Stellplatz-Register für Soll-Berechnung und SP-Aufteilung
   const spIdx = await spIndexFuerGruppe(getObj(konto.objekte[0])?.gruppe||'');
   // Etappe B1: Versorger-/Zähler-Stammdaten des Kontos für Kategorie-Vorschläge
@@ -27738,6 +27773,13 @@ async function zaRenderVerlauf(){
   // Schwelle: mind. 25% des stärksten Monats (so fallen vereinzelte Vormonats-Überweisungen raus)
   const schwelle = Math.max(2, Math.floor(maxCnt*0.25));
   const monate = Object.keys(monateSet).filter(m=>monateSet[m]>=schwelle).sort();
+  // §3 (Etappe C): ehemalige Mieter nur einblenden, wenn ihr Mietzeitraum in das
+  // angezeigte Monatsfenster faellt oder eine Buchung ihnen zugeordnet ist.
+  const buchMieterIds = new Set(buch.filter(b=>b.mieterId).map(b=>b.mieterId));
+  const vormieterRelevant = alleMieter.filter(m=>
+    m && m.mieter && objSet.has(m.objektId) && m._vormieter &&
+    ( buchMieterIds.has(m.id) || monate.some(mo=>_mieterAktivImMonat(m,mo)) ));
+  const mieter = [...mieterAktiv, ...vormieterRelevant];
 
   const sichtBtns = `
     <div style="display:flex;gap:6px;margin-bottom:12px">
@@ -27802,17 +27844,22 @@ function zaRenderMietkonto(buch, mieter, monate, konto, spIdx){
       let farbe='', dmark='';
       if(v.status==='ok'){ farbe='var(--green)'; dmark='✓'; }
       else if(v.status==='offen'){ farbe='var(--ink-40)'; dmark='—'; }
+      else if(v.status==='inaktiv'){ farbe='var(--ink-20,#ccc)'; dmark='·'; }
+      else if(v.status==='fremd'){ farbe='var(--amber)'; dmark='?'; }
       else if(v.status==='mehr'){ farbe='#1a56db'; dmark='+'+eur(v.diff); }
       else { farbe='var(--red,#dc2626)'; dmark=eur(v.diff); }
       const spInfo = v.stellplatz>0 ? `<div style="font-size:9px;color:var(--ink-40)">davon SP ${eur(v.stellplatz)}</div>` : '';
+      // §6: Aufschluesselung der Wohnungsmiete in Kaltmiete/NK (nur wenn beide belegt)
+      const kmNk = (v.aktiv && (v.miete>0) && (v.nk>0) && (v.kaltmiete>0))
+        ? `<div style="font-size:9px;color:var(--ink-40)">KM ${eur(v.kaltmiete)} · NK ${eur(v.nk)}</div>` : '';
       return `<td style="padding:5px;text-align:right;border-left:1px solid var(--line);font-variant-numeric:tabular-nums">
-                ${v.ist>0?eur(v.ist):'<span style="color:var(--ink-40)">—</span>'}${spInfo}</td>
+                ${v.ist>0?eur(v.ist):(v.status==='inaktiv'?'<span style="color:var(--ink-20,#ccc)">·</span>':'<span style="color:var(--ink-40)">—</span>')}${spInfo}${kmNk}</td>
               <td style="padding:5px;text-align:right;color:${farbe};font-weight:600;font-size:12px">${dmark}</td>`;
     }).join('');
     const bg = r.warnung ? 'background:#fff8f0' : '';
     return `<tr style="border-bottom:1px solid var(--line);${bg}">
       <td style="padding:6px;font-size:11px;color:var(--ink-40)">${esc(r.weNr||(r.tg?'TG':''))}</td>
-      <td style="padding:6px;font-size:13px">${esc(r.mieter)}</td>
+      <td style="padding:6px;font-size:13px">${esc(r.mieter)}${r.ehem?' <span class="chip chip-warn" style="font-size:9px">ehem.</span>':''}</td>
       <td style="padding:6px;text-align:right;font-variant-numeric:tabular-nums;font-size:12px">
         ${eur(r.soll)}<div style="font-size:9px;color:var(--ink-40)">${r.tg?('SP '+eur(r.spSoll)):(eur(r.netto)+'+'+eur(r.nk)+(r.spSoll?'+SP '+eur(r.spSoll):''))}</div></td>
       ${cells}</tr>`;
@@ -28161,7 +28208,9 @@ function zaMieterDropdown(i){
   // Mieter werden beim Render erst gebraucht; wir holen sie synchron aus Cache
   // Fallback: leeres Dropdown, wird über zaZuordnenManuell gefüllt
   const liste=(window._zaMieterCache||[]).filter(m=>objSet.has(m.objektId));
-  const wohner=liste.filter(m=>!m._tgMieter), tg=liste.filter(m=>m._tgMieter);
+  const aktiv=liste.filter(m=>!m._vormieter);
+  const wohner=aktiv.filter(m=>!m._tgMieter), tg=aktiv.filter(m=>m._tgMieter);
+  const ehemalige=liste.filter(m=>m._vormieter);
   // v182 (TG): externe Stellplatzzahler direkt als TG-Mieter anlegen
   const tgObj=OBJEKTE.find(o=>o.tiefgarage && objSet.has(o.id));
   const neuOpt=tgObj?`<option value="__neu_tg__">➕ Neuen TG-Mieter anlegen …</option>`:'';
@@ -28170,6 +28219,7 @@ function zaMieterDropdown(i){
             ${neuOpt}
             ${tg.length?`<optgroup label="TG-Mieter">${tg.map(m=>`<option value="${m.id}">TG · ${esc(m.mieter)}</option>`).join('')}</optgroup>`:''}
             <optgroup label="Wohnungsmieter">${wohner.map(m=>`<option value="${m.id}">WE ${esc(m.weNr||'?')} · ${esc(m.mieter)}</option>`).join('')}</optgroup>
+            ${ehemalige.length?`<optgroup label="Ehemalige Mieter">${ehemalige.map(m=>`<option value="${m.id}">WE ${esc(m.weNr||'?')} · ${esc(m.mieter)} (ehem.)</option>`).join('')}</optgroup>`:''}
           </select>`;
 }
 
@@ -28356,7 +28406,8 @@ function zaSollIst(buchungen, mieterListe, monate, spIdx){
     const spSoll=(byMieterSp[m.id]||[]).reduce((a,sp)=>a+(Number(sp.miete)||0),0);
     sollIdx[m.id]={ mieter:m.mieter, weNr:m.weNr, objektId:m.objektId,
       soll: (Number(m.gesamt)||0)+spSoll, netto:Number(m.miete)||0, nk:Number(m.nk)||0,
-      spSoll, tg: !!m._tgMieter };
+      spSoll, tg: !!m._tgMieter,
+      ehem: !!m._vormieter, einzugISO:_einzugISOvon(m), auszugISO:_auszugISOvon(m) };
   }
   // Ist je Mieter+Monat
   const ist={}; // mieterId -> {monat -> {miete, stellplatz}}
@@ -28388,13 +28439,26 @@ function zaSollIst(buchungen, mieterListe, monate, spIdx){
     for(const mo of (monate||[])){
       const i=ist[mid]?.[mo] || {miete:0,stellplatz:0};
       const istGesamt=Math.round((i.miete+i.stellplatz)*100)/100;
-      const diff=Math.round((istGesamt - s.soll)*100)/100;
-      monatsWerte[mo]={ist:istGesamt, miete:i.miete, stellplatz:i.stellplatz, diff,
-        status: istGesamt===0?'offen':(Math.abs(diff)<0.5?'ok':(diff>0?'mehr':'weniger'))};
-      if(istGesamt===0 || Math.abs(diff)>=0.5) warnung=true;
+      // §3: Soll nur ansetzen, wenn der Mieter in diesem Monat Vertragspartei war
+      const aktivMo = _mieterAktivImMonat({einzugISO:s.einzugISO, auszugISO:s.auszugISO}, mo);
+      const sollMo = aktivMo ? s.soll : 0;
+      const diff=Math.round((istGesamt - sollMo)*100)/100;
+      // §6: reine Wohnungsmiete (ohne SP-Anteil) in NK-Vorauszahlung + Kaltmiete zerlegen –
+      // NK zuerst (§ 366 Abs. 2 BGB analog), Rest Kaltmiete. Nur zur Anzeige, veraendert diff nicht.
+      const nkAnteil = Math.min(Math.max(i.miete,0), s.nk);
+      const kmAnteil = Math.round((Math.max(i.miete,0) - nkAnteil)*100)/100;
+      let status;
+      if(!aktivMo){ status = istGesamt>0 ? 'fremd' : 'inaktiv'; }
+      else if(istGesamt===0){ status='offen'; }
+      else if(Math.abs(diff)<0.5){ status='ok'; }
+      else { status = diff>0 ? 'mehr' : 'weniger'; }
+      monatsWerte[mo]={ist:istGesamt, miete:i.miete, stellplatz:i.stellplatz,
+        kaltmiete:kmAnteil, nk:Math.round(nkAnteil*100)/100, sollMo, aktiv:aktivMo, diff, status};
+      // Warnung nur fuer aktive Mietmonate (inaktive Monate erzeugen keine Rot-Markierung)
+      if(aktivMo && (istGesamt===0 || Math.abs(diff)>=0.5)) warnung=true;
     }
     rows.push({mieterId:mid, mieter:s.mieter, weNr:s.weNr, objektId:s.objektId,
-      soll:s.soll, netto:s.netto, nk:s.nk, spSoll:s.spSoll||0, tg:!!s.tg, monate:monatsWerte, warnung});
+      soll:s.soll, netto:s.netto, nk:s.nk, spSoll:s.spSoll||0, tg:!!s.tg, ehem:!!s.ehem, monate:monatsWerte, warnung});
   }
   const gefiltert=rows.filter(r=>!(r.tg && r.soll<=0 && !Object.values(r.monate).some(v=>v.ist>0)));
   gefiltert.sort((a,b)=>{
