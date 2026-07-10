@@ -795,8 +795,8 @@ body.printing-active #printRoot{display:block!important}
 /* ═══════════════════════════════════════════════════════════
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
-const DB_NAME='immo_v2', DB_VER=32;
-const APP_VERSION = '2026-07-07-v187';
+const DB_NAME='immo_v2', DB_VER=34;
+const APP_VERSION = '2026-07-10-v196';
 /* v157 (02.07.2026): Drei Fixes/Features – Sync, Mail-Papierkorb, QR-ZIP-Export.
    1) SYNC-TOMBSTONES: mergeRecord holte geleerte Felder immer von der Gegen-
       seite zurück ("gefüllt schlägt leer") – Feld-Löschungen konnten dadurch
@@ -1012,7 +1012,7 @@ function openIDB(){
     const req=indexedDB.open(DB_NAME,DB_VER);
     req.onupgradeneeded=e=>{
       const db=e.target.result;
-      ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','fotos','wartung','zaehler','zaehlerstaende','versorger','versorger_archiv','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','ventile','ventilpruefung','taetigkeit_log','sync_log','mieter_snapshots','branchenbuch','interessenten','od_dateien','buchungen','mietbescheinigungen','kautionsquittungen','mv_entwuerfe','selbstauskuenfte','tenant_mails','stellplaetze','od_auth'].forEach(s=>{
+      ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','fotos','wartung','zaehler','zaehlerstaende','versorger','versorger_archiv','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','ventile','ventilpruefung','taetigkeit_log','sync_log','mieter_snapshots','branchenbuch','interessenten','od_dateien','buchungen','mietbescheinigungen','kautionsquittungen','mv_entwuerfe','selbstauskuenfte','tenant_mails','stellplaetze','od_auth','buch_regeln','buchungs_batches'].forEach(s=>{
         if(!db.objectStoreNames.contains(s)){
           const store=db.createObjectStore(s,{keyPath:'id'});
           if(s==='mieter'){store.createIndex('objektId','objektId');store.createIndex('weNr','weNr')}
@@ -1050,6 +1050,8 @@ function openIDB(){
           if(s==='mv_entwuerfe'){store.createIndex('mieterId','mieterId');store.createIndex('objektId','objektId')}
           if(s==='selbstauskuenfte'){store.createIndex('objektId','objektId');store.createIndex('status','status')}
           if(s==='tenant_mails'){store.createIndex('mieterId','mieterId');store.createIndex('objektId','objektId')}
+          if(s==='buch_regeln'){store.createIndex('schluessel','schluessel');store.createIndex('kontoId','kontoId')}
+          if(s==='buchungs_batches'){store.createIndex('kontoId','kontoId')}
         }
       });
     };
@@ -1104,7 +1106,14 @@ function idbPut(store,obj,opts){
     const tx=idb.transaction(store,'readwrite');
     const req=tx.objectStore(store).put(obj);
     req.onsuccess=()=>res(req.result);
-    req.onerror=()=>rej(req.error);
+    req.onerror=()=>{
+      const err=req.error;
+      // v195 (A2): Speicher voll klar melden statt still zu scheitern
+      if(err && (err.name==='QuotaExceededError' || /quota/i.test(err.message||''))){
+        try{ toast('Speicher voll! Aenderung NICHT gespeichert - bitte Fotos auslagern oder alte Daten bereinigen.', 6000); }catch(_){}
+      }
+      rej(err);
+    };
   });
 }
 function idbDelete(store,id){
@@ -1582,6 +1591,18 @@ function refreshCurrentPage(){if(curPage==='dash')renderDash();}
 ═══════════════════════════════════════════════════════════ */
 async function initApp(){
   document.getElementById('hdrSub').textContent='';
+  // v195 (A1): persistenten Speicher anfordern - schuetzt IndexedDB vor Browser-Raeumung
+  try{
+    if(navigator.storage && navigator.storage.persist){
+      const bereits = await navigator.storage.persisted();
+      if(!bereits){
+        const ok = await navigator.storage.persist();
+        if(!ok) console.warn('Persistenter Speicher vom Browser abgelehnt - Installation als PWA empfohlen');
+      }
+    }
+  }catch(e){ /* optionales Feature, kein Blocker */ }
+  // v196 (A3): Geraete-Sync-Profil laden - bestimmt, welche Daten dieses Geraet synchronisiert
+  try{ const pr=await idbGet('settings','syncProfil'); if(pr?.value==='hm') SYNC_PROFIL='hm'; }catch(e){}
   await migriereBenutzernamenVoll().catch(e=>console.warn('Namensmigration:', e));
   await renderDash();
   nav('dash','Dashboard','',false);
@@ -2429,7 +2450,7 @@ async function renderObjStellplaetze(el){
   const frei=spListe.filter(x=>x.status==='frei').length;
   const verm=spListe.filter(x=>x.status==='vermietet').length;
   const gesp=spListe.filter(x=>x.status==='gesperrt').length;
-  const summe=spListe.filter(x=>x.status==='vermietet').reduce((a,x)=>a+(Number(x.miete)||0),0);
+  const summe=rc(spListe.filter(x=>x.status==='vermietet').reduce((a,x)=>a+(Number(x.miete)||0),0));
   const farbe={frei:'var(--ink-40)', vermietet:'var(--green)', gesperrt:'var(--red,#dc2626)'};
   const statusLabel={frei:'frei', vermietet:'vermietet', gesperrt:'gesperrt'};
   let h=`<div class="s-hdr"><div class="s-title"><i class="ti ti-parking"></i> Stellplätze (${spListe.length})</div>
@@ -11170,6 +11191,7 @@ async function showMieter(id){
     <button class="btn btn-sm" onclick="druckeWohnungsgeberBescheinigung('${m.id}')"><i class="ti ti-file-certificate"></i> WGB</button>
     ${istVerwalter()?`<button class="btn btn-sm" onclick="modalMietbescheinigung('${m.id}')"><i class="ti ti-receipt-2"></i> Mietbescheinigung</button>`:''}
     ${istVerwalter()?`<button class="btn btn-sm" onclick="modalKautionsquittung('${m.id}')"><i class="ti ti-receipt"></i> Kautionsquittung</button>`:''}
+    ${istVerwalter()?`<button class="btn btn-sm" onclick="modalKautionsabrechnung('${m.id}')"><i class="ti ti-file-invoice"></i> Kautionsabrechnung</button>`:''}
     <button class="btn btn-sm" onclick="modalBrief('${m.id}','${m.objektId}')"><i class="ti ti-mail"></i> Brief</button>
     ${m._vormieterId?`<button class="btn btn-sm" onclick="zeigeVormieter('${m._vormieterId}')"><i class="ti ti-history"></i> Vormieter</button>`:(istVerwalter()&&!m._vormieter&&!m._zukuenftig?`<button class="btn btn-sm" onclick="modalVormieterAnlegen('${m.id}')"><i class="ti ti-history"></i> Vormieter anlegen</button>`:'')}
     ${m._vormieter?`<button class="btn btn-sm" onclick="modalNeueAdresse('${m.id}')"><i class="ti ti-map-pin"></i> Neue Anschrift</button>`:''}
@@ -11281,7 +11303,7 @@ async function showMieter(id){
       const kqs = (await idbGetAll('kautionsquittungen','mieterId',id))
         .sort((a,b)=>new Date(b.erstelltAm||0)-new Date(a.erstelltAm||0));
       if(kqs.length){
-        h+=`<div class="card" style="margin-top:12px"><div class="card-hdr"><i class="ti ti-receipt"></i> Kautionsquittungen (${kqs.length})</div>`;
+        h+=`<div class="card" style="margin-top:12px"><div class="card-hdr"><i class="ti ti-receipt"></i> Kautionsdokumente (${kqs.length})</div>`;
         kqs.forEach(b=>{
           const d=b.erstelltAm?new Date(b.erstelltAm).toLocaleDateString('de-DE'):'';
           const bt=(typeof b.betrag==='number'&&b.betrag)?b.betrag.toFixed(2).replace('.',',')+' €':'';
@@ -11967,8 +11989,8 @@ function mangelHTML(m){
 function reparaturHTML(r){
   const obj=getObj(r.objektId);
   const done=r.status==='erledigt';
-  const arbGes=(r.arbeit||[]).reduce((s,a)=>s+a.betrag,0);
-  const teilGes=(r.teile||[]).reduce((s,t)=>s+t.betrag,0);
+  const arbGes=rc((r.arbeit||[]).reduce((s,a)=>s+a.betrag,0));
+  const teilGes=rc((r.teile||[]).reduce((s,t)=>s+t.betrag,0));
   const extStr=r.extern==='extern'?'<span class="chip chip-warn" style="font-size:10px;padding:1px 6px">Extern</span>':'';
   const details=[
     ...(r.arbeit||[]).filter(a=>a.stunden>0).map(a=>`${a.stunden}h × ${fmtEur(a.stundensatz)}`),
@@ -13474,6 +13496,10 @@ function getNKAVorlage(objektId) {
 
 // ── NKA-Teilpositionen speichern & laden (pro Objekt + Jahr) ──────────────
 // ── Toleranter Betrags-Parser: akzeptiert "1.070,- €", "180 €", "1.234,56" ──
+/* v195 (A4): zentrale Cent-Rundung fuer Geld-Summen/-Salden.
+   Nur an Summen-/Vergleichsstellen einsetzen, nicht auf Roh-Eingaben. */
+function rc(x){ return Math.round(((Number(x)||0) + Number.EPSILON) * 100) / 100; }
+
 function parseBetrag(v){
   if(typeof v==='number') return isFinite(v)?v:0;
   if(v==null) return 0;
@@ -17867,6 +17893,159 @@ async function erstelleKautionsquittung(mieterId){
   toast('Kautionsquittung erstellt & gespeichert ✓');
 }
 
+// ── §10 (v191): Kautionsendabrechnung bei Auszug ──────────────────────────────
+function kaAbzugAdd(){ (window._kaAbzuege=window._kaAbzuege||[]).push({grund:'',betrag:''}); kaAbzugRender(); }
+function kaAbzugDel(i){ (window._kaAbzuege||[]).splice(i,1); kaAbzugRender(); }
+function kaAbzugCollect(){
+  const out=[]; const list=window._kaAbzuege||[];
+  for(let i=0;i<list.length;i++){
+    const g=document.getElementById('kaAbzGrund_'+i), b=document.getElementById('kaAbzBet_'+i);
+    if(!b) continue;
+    const betrag=parseBetrag(b.value);
+    if(betrag>0) out.push({grund:g?.value?.trim()||'Abzug', betrag});
+  }
+  return out;
+}
+function kaAbzugRender(){
+  const wrap=document.getElementById('kaAbzugListe'); if(!wrap) return;
+  const list=window._kaAbzuege||[];
+  wrap.innerHTML = list.length ? list.map((a,i)=>`
+    <div class="f-row" style="align-items:flex-end;margin-bottom:4px">
+      <div class="f"><label style="font-size:10px">Grund</label>
+        <input type="text" id="kaAbzGrund_${i}" value="${esc(a.grund||'')}" placeholder="z. B. offene Miete, NK-Nachzahlung, Schaden"></div>
+      <div class="f" style="flex:0 0 30%"><label style="font-size:10px">Betrag (€)</label>
+        <input type="number" id="kaAbzBet_${i}" value="${a.betrag||''}" step="0.01" oninput="kaAuszahlungAktualisieren()"></div>
+      <button type="button" class="btn btn-sm btn-danger" onclick="kaAbzugDel(${i})" style="margin-bottom:2px"><i class="ti ti-trash"></i></button>
+    </div>`).join('') : '<div style="font-size:11px;color:var(--ink-40);font-style:italic">Keine Abzüge – die Kaution wird vollständig ausgezahlt.</div>';
+  kaAuszahlungAktualisieren();
+}
+function kaAuszahlungAktualisieren(){
+  const el=document.getElementById('kaAuszahlung'); if(!el) return;
+  const saldo=Number(window._kaSaldo)||0;
+  const abz=rc(kaAbzugCollect().reduce((s,a)=>s+a.betrag,0));
+  const rest=Math.round((saldo-abz)*100)/100;
+  const eur=n=>n.toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:2});
+  el.textContent=eur(rest)+' €';
+  el.style.color = rest<0 ? 'var(--red,#dc2626)' : 'var(--green)';
+  const hint=document.getElementById('kaAuszahlungHint');
+  if(hint) hint.textContent = rest<0 ? '→ Nachforderung an den Mieter' : '→ Auszahlung an den Mieter';
+}
+async function modalKautionsabrechnung(mieterId){
+  const m=await idbGet('mieter',mieterId); if(!m){ toast('Mieter nicht gefunden.'); return; }
+  const kd=kautionDetailVon(m);
+  const grund = kd.art==='raten' ? kautionRatenSumme(kd) : parseBetrag(kd.betrag);
+  const zinsen = kautionZinsSumme(kd);
+  const abgang = kautionAbgangSumme(kd);
+  const saldo = kautionSaldo(kd);
+  window._kaSaldo = saldo;
+  window._kaAbzuege = Array.isArray(window._kaAbzuege)?window._kaAbzuege:[];
+  const eur=n=>(Number(n)||0).toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const iban = m.iban || (Array.isArray(m.ibans)&&m.ibans[0]?.iban) || '';
+  showModal(`
+    <h3 style="margin:0 0 4px"><i class="ti ti-file-invoice"></i> Kautionsabrechnung</h3>
+    <p style="font-size:12px;color:var(--ink-40);margin:0 0 12px">${esc(m.mieter||'')}${m.weNr?' · WE '+esc(m.weNr):''}</p>
+    <table style="width:100%;font-size:13px;border-collapse:collapse;margin-bottom:10px">
+      <tr><td style="padding:3px 0">Kaution (${kd.art==='raten'?'eingegangene Raten':'Grundbetrag'})</td><td style="text-align:right">${eur(grund)} €</td></tr>
+      <tr><td style="padding:3px 0">+ Zinsen</td><td style="text-align:right">${eur(zinsen)} €</td></tr>
+      ${abgang>0?`<tr><td style="padding:3px 0">− bereits verrechnet/ausgezahlt</td><td style="text-align:right">−${eur(abgang)} €</td></tr>`:''}
+      <tr style="border-top:1px solid var(--line)"><td style="padding:5px 0;font-weight:600">Verfügbarer Kautionsrest</td><td style="text-align:right;font-weight:600">${eur(saldo)} €</td></tr>
+    </table>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin:10px 0 4px">
+      <div style="font-size:12px;font-weight:600;color:var(--ink-60)"><i class="ti ti-minus"></i> Abzüge (offene Miete, NK-Nachzahlung, Schäden)</div>
+      <button type="button" class="btn btn-sm" onclick="kaAbzugAdd()"><i class="ti ti-plus"></i></button>
+    </div>
+    <div id="kaAbzugListe"></div>
+    <div style="display:flex;justify-content:space-between;align-items:baseline;background:var(--green-l);padding:8px 10px;border-radius:6px;margin:12px 0">
+      <div><div style="font-weight:700" id="kaAuszahlung">–</div><div style="font-size:10px;color:var(--ink-40)" id="kaAuszahlungHint">→ Auszahlung an den Mieter</div></div>
+    </div>
+    <div class="f"><label>Auszahlungskonto (IBAN)</label><input type="text" id="kaIban" class="inp" value="${esc(iban)}" placeholder="DE.."></div>
+    <div class="f-row">
+      <div class="f"><label>Abrechnungsdatum</label><input type="date" id="kaDatum" class="inp" value="${today()}"></div>
+      <div class="f"><label>Zahlbar binnen (Tagen)</label><input type="number" id="kaFrist" class="inp" value="14" min="1"></div>
+    </div>
+    <div style="font-size:11px;color:var(--ink-40);margin:4px 0 12px"><i class="ti ti-scale"></i> Abrechnung gem. § 551 BGB. Ein Einbehalt für eine noch nicht vorliegende Betriebskostenabrechnung ist gesondert auszuweisen. Die rechtliche Prüfung im Einzelfall bleibt vorbehalten.</div>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-copper" onclick="erstelleKautionsEndabrechnung('${m.id}')"><i class="ti ti-printer"></i> Abrechnung erstellen</button>
+    </div>`);
+  kaAbzugRender();
+}
+async function erstelleKautionsEndabrechnung(mieterId){
+  const m=await idbGet('mieter',mieterId); if(!m) return;
+  const obj=getObj(m.objektId);
+  await ladeBriefkopfCache();
+  const kd=kautionDetailVon(m);
+  const grund = kd.art==='raten' ? kautionRatenSumme(kd) : parseBetrag(kd.betrag);
+  const zinsen = kautionZinsSumme(kd);
+  const abgang = kautionAbgangSumme(kd);
+  const saldo = kautionSaldo(kd);
+  const abzuege = kaAbzugCollect();
+  const abzSum = rc(abzuege.reduce((s,a)=>s+a.betrag,0));
+  const auszahlung = Math.round((saldo-abzSum)*100)/100;
+  const iban=(document.getElementById('kaIban')?.value||'').trim();
+  const datumRoh=document.getElementById('kaDatum')?.value||today();
+  const frist=parseInt(document.getElementById('kaFrist')?.value||'14',10)||14;
+  const vermName=await _kqVermieterName(m);
+  const eur=n=>(Number(n)||0).toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const datumStr=new Date(datumRoh).toLocaleDateString('de-DE');
+  const zahlBis=new Date(new Date(datumRoh).getTime()+frist*86400000).toLocaleDateString('de-DE');
+  const objAdr = obj ? [obj.name, obj.ort].filter(Boolean).join(', ') : '';
+  const objZeile = objAdr + (m.weNr?(' , WE '+m.weNr):'');
+  const bk=getBriefkopf(m.objektId)||{};
+  const fussName=bk.name||vermName||''; const fussStr=bk.strasse||''; const fussOrt=[bk.plz,bk.ort].filter(Boolean).join(' '); const fussTel=bk.telefon||''; const fussMail=bk.email||'';
+  const posAbz = abzuege.map(a=>`<tr><td class="lbl">− ${esc(a.grund)}</td><td class="amt">−${eur(a.betrag)} €</td></tr>`).join('');
+  const negativ = auszahlung<0;
+  const auszWort = kautionBetragInWorte(Math.abs(auszahlung));
+  const style=`<style>
+    *{box-sizing:border-box}body{font-family:'Segoe UI',Arial,sans-serif;color:#1a1a1a;font-size:14px;line-height:1.55;padding:22mm 22mm;max-width:210mm;margin:0 auto}
+    .ea-h{font-size:19px;font-weight:700;margin:0 0 4px}.ea-obj{font-size:13px;color:#444;margin:0 0 18px}
+    .ea-an{margin:0 0 16px}.ea-body{margin:0 0 14px;text-align:justify}
+    table.ea-t{width:100%;border-collapse:collapse;margin:10px 0 6px}
+    table.ea-t td{padding:5px 0;border-bottom:1px solid #e5e5e5}table.ea-t td.amt{text-align:right;font-variant-numeric:tabular-nums}
+    table.ea-t tr.sum td{border-top:2px solid #333;border-bottom:none;font-weight:700;padding-top:8px}
+    .ea-konto{margin:14px 0;font-size:13px}.ea-sig{margin-top:40px}.ea-sig .line{border-top:1px solid #333;width:60%;margin-bottom:3px}.ea-sig .cap{font-size:11px;color:#555}
+    .ea-foot{margin-top:44px;border-top:1px solid #999;padding-top:8px;text-align:center;font-size:11px;color:#444;line-height:1.5}.ea-foot .fn{font-weight:700;color:#222;font-size:12px}
+    @page{margin:0;size:A4}@media print{body{padding:20mm 20mm;-webkit-print-color-adjust:exact;print-color-adjust:exact}}body>*{page-break-inside:avoid}
+  </style>`;
+  const inhalt=`
+    <div class="ea-h">Abrechnung der Mietkaution</div>
+    <div class="ea-obj">für das Objekt ${esc(objZeile)}</div>
+    <div class="ea-an">An: <strong>${esc(m.mieter||'')}</strong></div>
+    <div class="ea-body">Sehr geehrte/r Mieter/in,<br>im Zuge der Beendigung des Mietverhältnisses rechnen wir die von Ihnen geleistete Mietkaution wie folgt ab:</div>
+    <table class="ea-t">
+      <tr><td class="lbl">Geleistete Kaution${kd.art==='raten'?' (eingegangene Raten)':''}</td><td class="amt">${eur(grund)} €</td></tr>
+      <tr><td class="lbl">Zinsen</td><td class="amt">${eur(zinsen)} €</td></tr>
+      ${abgang>0?`<tr><td class="lbl">− bereits verrechnet/ausgezahlt</td><td class="amt">−${eur(abgang)} €</td></tr>`:''}
+      ${posAbz}
+      <tr class="sum"><td class="lbl">${negativ?'Von Ihnen nachzuzahlen':'An Sie auszuzahlen'}</td><td class="amt">${eur(Math.abs(auszahlung))} €</td></tr>
+    </table>
+    <div class="ea-body">in Worten: <em>${esc(auszWort)}</em></div>
+    ${negativ
+      ? `<div class="ea-konto">Bitte überweisen Sie den offenen Betrag bis zum <strong>${zahlBis}</strong> auf das Ihnen bekannte Konto der Hausverwaltung.</div>`
+      : `<div class="ea-konto">Der Auszahlungsbetrag wird bis zum <strong>${zahlBis}</strong> auf folgendes Konto überwiesen:<br>IBAN: <strong>${esc(iban||'________________________')}</strong></div>`}
+    <div class="ea-body" style="font-size:12px;color:#555">Die Abrechnung erfolgt gem. § 551 BGB. Die Nachberechnung noch nicht abgerechneter Betriebskosten bleibt vorbehalten.</div>
+    <div style="margin:26px 0 0;font-size:13px">Ort, Datum: ${esc(datumStr)}</div>
+    <div class="ea-sig"><div class="line">&nbsp;</div><div class="cap">${esc(vermName||fussName)}</div></div>
+    <div class="ea-foot"><div class="fn">${esc(fussName)}</div>${(fussStr||fussOrt)?`<div>${esc([fussStr,fussOrt].filter(Boolean).join(' · '))}</div>`:''}${fussTel?`<div>Tel: ${esc(fussTel)}</div>`:''}${fussMail?`<div>${esc(fussMail)}</div>`:''}</div>`;
+  const html='<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8"><title>Kautionsabrechnung – '+esc(m.mieter||'')+'</title>'+style+'</head><body>'+inhalt
+    +'<scr'+'ipt>(function(){var p=function(){setTimeout(function(){window.focus();window.print();},500);};if(document.readyState==="complete"){p();}else{window.addEventListener("load",p);}})()</scr'+'ipt></body></html>';
+  try{
+    const archivHtml = html.replace(/<scr(ipt|.)*?>[\s\S]*?window\.print\(\)[\s\S]*?<\/scr.{0,3}ipt>/gi,'');
+    await idbPut('kautionsquittungen',{
+      id:'kea_'+m.id+'_'+Date.now().toString(36), typ:'endabrechnung',
+      mieterId:m.id, objektId:m.objektId, mieterName:m.mieter||'', objektName:obj?.name||'', weNr:m.weNr||'',
+      erstelltAm:new Date().toISOString(), erstelltVon:CU?.name||'',
+      betrag:saldo, auszahlung, abzuege, iban, datum:datumRoh, html:archivHtml });
+    bcSend('kautionsquittung_saved',{mieterId:m.id});
+    clearTimeout(window._syncTimer); window._syncTimer=setTimeout(()=>{ if(typeof syncToOneDrive==='function') syncToOneDrive(); },2000);
+  }catch(e){ console.warn('Kautionsabrechnung-Archiv:',e); }
+  const heute=new Date().toLocaleDateString('de-DE');
+  const _eaName=['Kautionsabrechnung',(obj?.name||'').replace(/[\\/:*?"<>|]+/g,' ').trim(),m.weNr?('WE '+m.weNr):'','-',(m.mieter||'').replace(/[\\/:*?"<>|,]+/g,' ').trim(),'-',heute].filter(Boolean).join(' ').replace(/\s+/g,' ').trim();
+  druckHTML(html,'Kautionsabrechnung – '+(m.mieter||''),_eaName);
+  closeModal();
+  toast('Kautionsabrechnung erstellt & gespeichert ✓');
+}
+
 // Gespeicherte Kautionsquittung erneut anzeigen / drucken (offline, aus HTML)
 async function zeigeGespKautionsquittung(kqId){
   const b=await idbGet('kautionsquittungen',kqId);
@@ -19023,8 +19202,8 @@ async function saveReparatur() {
   const extBetrag = extern==='extern' ? (parseFloat(document.getElementById('repExtBetrag')?.value)||0) : 0;
   const rechnFile = document.getElementById('repRechnung')?.files[0];
 
-  const arbeitGes = arbeit.reduce((s,a)=>s+a.betrag,0);
-  const teileGes  = teile.reduce((s,t)=>s+t.betrag,0);
+  const arbeitGes = rc(arbeit.reduce((s,a)=>s+a.betrag,0));
+  const teileGes  = rc(teile.reduce((s,t)=>s+t.betrag,0));
   const gesamt    = arbeitGes + teileGes + extBetrag;
 
   const saveEntry = async (rechnData) => {
@@ -19339,8 +19518,8 @@ async function showReparaturDetail(id) {
   const obj = getObj(r.objektId);
   const m   = r.mieterId ? (await idbGet('mieter',r.mieterId).catch(()=>null)) : null;
   const done = r.status === 'erledigt';
-  const arbGes  = (r.arbeit||[]).reduce((s,a)=>s+a.betrag,0);
-  const teilGes = (r.teile||[]).reduce((s,t)=>s+t.betrag,0);
+  const arbGes  = rc((r.arbeit||[]).reduce((s,a)=>s+a.betrag,0));
+  const teilGes = rc((r.teile||[]).reduce((s,t)=>s+t.betrag,0));
 
   let arbHTML = '';
   (r.arbeit||[]).forEach(a=>{
@@ -20050,8 +20229,8 @@ async function exportExcel() {
   // Blatt 4: Reparaturen
   const repRows = [['Objekt','WE','Titel','Status','Datum','Intern/Extern','Arbeitsstunden (€)','Material (€)','Ext. Rechnung (€)','Gesamt (€)','Erstellt von']];
   reps.forEach(r => {
-    const arbGes  = (r.arbeit||[]).reduce((s,a)=>s+a.betrag,0);
-    const teilGes = (r.teile||[]).reduce((s,t)=>s+t.betrag,0);
+    const arbGes  = rc((r.arbeit||[]).reduce((s,a)=>s+a.betrag,0));
+    const teilGes = rc((r.teile||[]).reduce((s,t)=>s+t.betrag,0));
     repRows.push([
       getObj(r.objektId)?.name||'', r.weNr||'', r.titel||'',
       r.status||'', r.datum||'', r.extern||'intern',
@@ -22243,17 +22422,17 @@ function rateIstErhalten(r){
   return !!(r.erhaltenAm || r.datum); // Altdaten-Fallback
 }
 // Summe TATSÄCHLICH eingegangener Raten (für Saldo)
-function kautionRatenSumme(kd){ return (kd.raten||[]).filter(rateIstErhalten).reduce((s,r)=>s+parseBetrag(r.betrag),0); }
+function kautionRatenSumme(kd){ return rc((kd.raten||[]).filter(rateIstErhalten).reduce((s,r)=>s+parseBetrag(r.betrag),0)); }
 // Summe ALLER vereinbarten Raten (für Soll-/Vollständigkeitsanzeige)
-function kautionRatenVereinbart(kd){ return (kd.raten||[]).reduce((s,r)=>s+parseBetrag(r.betrag),0); }
+function kautionRatenVereinbart(kd){ return rc((kd.raten||[]).reduce((s,r)=>s+parseBetrag(r.betrag),0)); }
 // Summe Zinsgutschriften
-function kautionZinsSumme(kd){ return (kd.bewegungen||[]).filter(b=>b.art==='zins').reduce((s,b)=>s+parseBetrag(b.betrag),0); }
+function kautionZinsSumme(kd){ return rc((kd.bewegungen||[]).filter(b=>b.art==='zins').reduce((s,b)=>s+parseBetrag(b.betrag),0)); }
 // Summe Verrechnungen + Auszahlungen (Abgänge)
-function kautionAbgangSumme(kd){ return (kd.bewegungen||[]).filter(b=>b.art==='verrechnung'||b.art==='auszahlung').reduce((s,b)=>s+parseBetrag(b.betrag),0); }
+function kautionAbgangSumme(kd){ return rc((kd.bewegungen||[]).filter(b=>b.art==='verrechnung'||b.art==='auszahlung').reduce((s,b)=>s+parseBetrag(b.betrag),0)); }
 // Aktueller Saldo: Soll-Betrag + Zinsen − Abgänge (bei Raten: bisher eingegangene Raten + Zinsen − Abgänge)
 function kautionSaldo(kd){
   const grund = kd.art==='raten' ? kautionRatenSumme(kd) : parseBetrag(kd.betrag);
-  return grund + kautionZinsSumme(kd) - kautionAbgangSumme(kd);
+  return rc(grund + kautionZinsSumme(kd) - kautionAbgangSumme(kd));
 }
 
 async function modalKaution(mieterId){
@@ -22649,8 +22828,8 @@ function kautionRatenRender(){
           <input type="text" id="kdRatenNot_${i}" value="${esc(r.notiz||'')}" style="font-size:12px"></div>
       </div>
     </div>`;}).join('') || '<div style="font-size:11px;color:var(--ink-40)">Noch keine Raten erfasst.</div>';
-  const vereinbart=ps.reduce((s,r)=>s+parseBetrag(r.betrag),0);
-  const erhalten=ps.filter(rateIstErhalten).reduce((s,r)=>s+parseBetrag(r.betrag),0);
+  const vereinbart=rc(ps.reduce((s,r)=>s+parseBetrag(r.betrag),0));
+  const erhalten=rc(ps.filter(rateIstErhalten).reduce((s,r)=>s+parseBetrag(r.betrag),0));
   const sumEl=document.getElementById('kdRatenSumme'); if(sumEl) sumEl.textContent=`Erhalten: ${fmtEur(erhalten)} von ${fmtEur(vereinbart)} vereinbart`;
   kautionSaldoRender();
 }
@@ -22707,10 +22886,10 @@ function kautionBewRemove(i){ window._kautionBew=kautionBewCollect().filter((_,x
 function kautionSaldoRender(){
   const art=document.getElementById('kdArt')?.value;
   const betrag=parseBetrag(document.getElementById('kdBetrag')?.value);
-  const raten=kautionRatenCollect().reduce((s,r)=>s+parseBetrag(r.betrag),0);
+  const raten=rc(kautionRatenCollect().reduce((s,r)=>s+parseBetrag(r.betrag),0));
   const bew=kautionBewCollect();
-  const zins=bew.filter(b=>b.art==='zins').reduce((s,b)=>s+parseBetrag(b.betrag),0);
-  const abgang=bew.filter(b=>b.art==='verrechnung'||b.art==='auszahlung').reduce((s,b)=>s+parseBetrag(b.betrag),0);
+  const zins=rc(bew.filter(b=>b.art==='zins').reduce((s,b)=>s+parseBetrag(b.betrag),0));
+  const abgang=rc(bew.filter(b=>b.art==='verrechnung'||b.art==='auszahlung').reduce((s,b)=>s+parseBetrag(b.betrag),0));
   const grund = art==='raten' ? raten : betrag;
   const saldo = grund + zins - abgang;
   const el=document.getElementById('kdSaldo');
@@ -25127,6 +25306,24 @@ async function renderSettings(){
     </div>`:''}
 
     ${istSysAdmin?`<div class="settings-card" data-tab="system">
+      <div class="card-hdr"><i class="ti ti-devices"></i> Geräte-Sync-Profil</div>
+      <p style="font-size:13px;color:var(--ink-40);margin-bottom:12px;line-height:1.6">
+        Bestimmt, welche Daten <strong>dieses Gerät</strong> synchronisiert. <strong>Hausmeister-Profil:</strong>
+        nur Betriebsdaten (Aufgaben, Mängel, Protokolle, Zähler, Lager, Zeiterfassung …) über eine
+        separate Datei – Buchhaltung, Kautionen, Verträge und sensible Mieterdaten werden weder
+        geladen noch lokal gespeichert. Mieter erscheinen nur mit Name, WE und Kontakt.
+      </p>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <select id="syncProfilSel" style="flex:1;min-width:180px">
+          <option value="voll">Voll (Verwalter-Gerät)</option>
+          <option value="hm">Hausmeister (reduziert)</option>
+        </select>
+        <button class="btn btn-primary" onclick="syncProfilUmstellen()"><i class="ti ti-device-floppy"></i> Übernehmen</button>
+      </div>
+      <div id="syncProfilStatus" style="font-size:12px;color:var(--ink-60);margin-top:8px"></div>
+    </div>`:''}
+
+    ${istSysAdmin?`<div class="settings-card" data-tab="system">
       <div class="card-hdr"><i class="ti ti-shield"></i> Benutzerverwaltung</div>
       <div id="userListEl"></div>
       <button class="btn btn-primary btn-full" style="margin-top:10px" onclick="modalAddUser()">
@@ -25237,6 +25434,7 @@ async function renderSettings(){
     ${istSysAdmin?`<div class="settings-card" data-tab="daten">
       <div class="card-hdr"><i class="ti ti-database"></i> Datenspeicher</div>
       <p style="font-size:13px;color:var(--ink-40);margin-bottom:12px">Alle Daten werden lokal in IndexedDB auf diesem Gerät gespeichert.</p>
+      <div id="speicherInfo" style="font-size:12px;color:var(--ink-60);margin-bottom:12px"></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn" onclick="exportBackup()"><i class="ti ti-download"></i> Backup exportieren</button>
         <button class="btn" onclick="exportExcel()"><i class="ti ti-file-spreadsheet"></i> Excel exportieren</button>
@@ -25356,6 +25554,13 @@ async function renderSettings(){
   if(isAdmin){ try{ await wohnungenExportInfo(); }catch(e){} }
   if(isAdmin){ try{ await backendKeyLaden(); }catch(e){} try{ await saEncKeyLaden(); }catch(e){} try{ await saTokInteressentBefuellen(); }catch(e){} }
   await renderMeineSignatur();
+  speicherInfoLaden().catch(()=>{});   // v195: Speicherbelegung/Persistenz anzeigen
+  // v196: Sync-Profil-Auswahl vorbelegen
+  try{
+    const spSel=document.getElementById('syncProfilSel'); if(spSel) spSel.value=SYNC_PROFIL;
+    const spSt=document.getElementById('syncProfilStatus');
+    if(spSt) spSt.textContent='Aktuell: '+(SYNC_PROFIL==='hm'?'Hausmeister (reduziert)':'Voll (Verwalter-Gerät)');
+  }catch(e){}
   // Niimbot-Druckdichte vorselektieren
   try{
     const nd=await idbGet('settings','niimbotDichte').catch(()=>null);
@@ -25786,10 +25991,24 @@ async function delUser(id){
 /* ═══════════════════════════════════════════════════════════
    BACKUP EXPORT / IMPORT
 ═══════════════════════════════════════════════════════════ */
+/* v195 (A1/A2): Speicherbelegung + Persistenz-Status fuer die Einstellungen. */
+async function speicherInfoLaden(){
+  const el=document.getElementById('speicherInfo'); if(!el) return;
+  try{
+    if(!navigator.storage || !navigator.storage.estimate){ el.textContent=''; return; }
+    const est=await navigator.storage.estimate();
+    const pers=navigator.storage.persisted ? await navigator.storage.persisted() : false;
+    const mb=x=>((x||0)/1048576).toFixed(1).replace('.',',');
+    el.innerHTML='<i class="ti ti-server"></i> Belegt: <strong>'+mb(est.usage)+' MB</strong> von '+mb(est.quota)+' MB'
+      +' · Persistent: <strong>'+(pers?'ja':'nein')+'</strong>'
+      +(pers?'':' <span style="color:var(--copper)">(Browser darf Daten räumen – App-Installation empfohlen)</span>');
+  }catch(e){ el.textContent=''; }
+}
+
 async function exportBackup(){
   if(!istSystemAdmin()){ toast('Nur für Admins'); return; }
   const backup={};
-  for(const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','versicherungen','versorger_archiv','od_dateien','buchungen','fotos','mietbescheinigungen','kautionsquittungen','mv_entwuerfe','selbstauskuenfte','tenant_mails','stellplaetze']){
+  for(const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','versicherungen','versorger_archiv','od_dateien','buchungen','fotos','mietbescheinigungen','kautionsquittungen','mv_entwuerfe','selbstauskuenfte','tenant_mails','stellplaetze','buch_regeln','buchungs_batches']){
     backup[s]=await idbGetAll(s);
     // v180 (Review H2): Function-Key + SA-Schlüssel nie in Export-Dateien schreiben.
     if(s==='settings') backup[s]=backup[s].filter(r=>!SETTINGS_GEHEIM.includes(r?.id));
@@ -26042,7 +26261,7 @@ async function importBackupAusfuehren(modus){
   const backup = window._pendingBackup;
   if(!backup){ toast('Keine Backup-Datei geladen'); closeModal(); return; }
   closeModal();
-  const alleStores=['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','versorger_archiv','od_dateien','buchungen','fotos','mietbescheinigungen','kautionsquittungen','mv_entwuerfe','selbstauskuenfte','tenant_mails','stellplaetze'];
+  const alleStores=['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','versorger_archiv','od_dateien','buchungen','fotos','mietbescheinigungen','kautionsquittungen','mv_entwuerfe','selbstauskuenfte','tenant_mails','stellplaetze','buch_regeln','buchungs_batches'];
   try{
     await erstelleMieterSnapshot('vor Import ('+modus+')');
     if(modus==='ersetzen'){
@@ -26105,6 +26324,268 @@ const OD_SCOPES     = 'Files.ReadWrite User.Read offline_access';
 const OD_AUTH_URL   = 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize';
 const OD_TOKEN_URL  = 'https://login.microsoftonline.com/common/oauth2/v2.0/token';
 const OD_FILE_URL   = 'https://graph.microsoft.com/v1.0/me/drive/root:/NadigPfau/immo_daten.json:/content';
+/* v196 (A3/Option 1): Geraete-Sync-Profil + Hausmeister-Datei.
+   'voll' = bisheriges Verhalten (Gesamtbestand ueber immo_daten.json).
+   'hm'   = Hausmeister-Geraet: synchronisiert NUR Betriebsdaten ueber die separate
+            Datei immo_daten_hm.json. Buchhaltung, Kautionen, Vertraege und sensible
+            Mieterdaten werden weder geladen noch lokal gespeichert (Art. 5 DSGVO,
+            Datenminimierung; begrenzt zudem den Schaden bei Geraeteverlust).
+   Grenze der Massnahme (dokumentiert): Solange alle Geraete mit demselben
+   Microsoft-Konto syncen, ist die Trennung App-seitig. Harte Trennung erfordert
+   ein eigenes Microsoft-Konto je Hausmeister mit Freigabe NUR auf die HM-Datei. */
+const OD_FILE_URL_HM = 'https://graph.microsoft.com/v1.0/me/drive/root:/NadigPfau/immo_daten_hm.json:/content';
+
+let SYNC_PROFIL = 'voll';   // wird in initApp aus settings/syncProfil geladen
+
+const HM_SYNC = {
+  // Stores, die ein HM-Geraet ERHAELT (Betriebsdaten + reduzierte Mieter-/Benutzerliste)
+  stores: ['users','mieter','aufgaben','maengel','protokolle','fotos','reparaturen',
+           'lager','lager_anforderung','einkaufsliste','termine','wartung','zaehler',
+           'zaehlerstaende','arbeitszeit','abwesenheit','taetigkeit_kat','taetigkeit_log',
+           'packliste','ventile','ventilpruefung','objekt_stamm','branchenbuch','od_dateien'],
+  // Stores, die ein HM-Geraet SCHREIBT (users/mieter/objekt_stamm bewusst NICHT:
+  // verhindert Rechteausweitung und Rueckfluss feldreduzierter Records)
+  schreibStores: ['aufgaben','maengel','protokolle','fotos','reparaturen','lager',
+                  'lager_anforderung','einkaufsliste','termine','wartung','zaehler',
+                  'zaehlerstaende','arbeitszeit','abwesenheit','taetigkeit_kat',
+                  'taetigkeit_log','packliste','ventile','ventilpruefung','branchenbuch','od_dateien'],
+  // Mieter-Whitelist: nur was der Hausmeister fuer Terminabsprachen/Protokolle braucht
+  mieterFelder: ['id','objektId','weNr','mieter','telefon','email','etage','personen',
+                 'einzug','auszug','_vormieter','_zukuenftig','_tgMieter','geloescht',
+                 '_geleert','updatedAt','geaendert','erstellt']
+};
+
+function istHmSyncGeraet(){ return SYNC_PROFIL === 'hm'; }
+
+// Mieter-Record auf HM-Whitelist reduzieren (keine IBAN, Miete, Kaution, SA-Daten ...)
+function mieterFuerHM(m){
+  const o = {};
+  for (const f of HM_SYNC.mieterFelder){ if (m && m[f] !== undefined) o[f] = m[f]; }
+  return o;
+}
+// Nur Hausmeister-Benutzer in die HM-Datei (Admin-/Eigentuemer-PIN-Hashes bleiben fern)
+function userFuerHM(u){ return !!(u && u.role !== 'admin' && u.role !== 'eigentuemer'); }
+
+// Gefilterten HM-Datenstand aus dem lokalen Vollbestand erzeugen (Verwalter-Geraet)
+async function hmBackupErzeugen(){
+  const b = {};
+  for (const st of HM_SYNC.stores){
+    let rows = await idbGetAll(st);
+    if (st === 'mieter') rows = rows.map(mieterFuerHM);
+    if (st === 'users')  rows = rows.filter(userFuerHM);
+    b[st] = rows;
+  }
+  b.updatedAt = new Date().toISOString();
+  b.updatedBy = (odTokens?.user_name || 'Verwalter');
+  try {
+    const t = await idbGet('settings','tombstones');
+    const tv = t?.value || {}; const ft = {};
+    for (const st of HM_SYNC.stores){ if (tv[st]) ft[st] = tv[st]; }
+    b.tombstones = ft;
+  } catch(e){ b.tombstones = {}; }
+  return b;
+}
+
+/* Datensatzweiser Merge eines fremden Backups (HM-Datei) in die lokale DB.
+   Bewusst kompakte Zweitfassung der Merge-Schleife aus syncFromOneDrive, damit der
+   bewaehrte Hauptpfad unangetastet bleibt. Feldsicher via mergeRecord, respektiert
+   Tombstones (juengster Loeschzeitpunkt gewinnt, spaeter Bearbeitetes ueberlebt). */
+async function mergeFremdBackup(backup, stores){
+  const rec = await idbGet('settings','tombstones').catch(()=>null) || {id:'tombstones', value:{}};
+  const localTomb = rec.value || {};
+  const remoteTomb = backup.tombstones || {};
+  for (const st in remoteTomb){
+    if (!stores.includes(st)) continue;
+    localTomb[st] = localTomb[st] || {};
+    for (const id in remoteTomb[st]){
+      if (!localTomb[st][id] || remoteTomb[st][id] > localTomb[st][id]) localTomb[st][id] = remoteTomb[st][id];
+    }
+  }
+  for (const st of stores){
+    const tS = localTomb[st] || {};
+    for (const id in tS){
+      const loc = await idbGet(st, id).catch(()=>null);
+      if (loc){
+        const stamp = loc.geaendert || loc.updatedAt || loc.erstellt || '';
+        if (!(stamp && stamp > tS[id])) await idbDelete(st, id).catch(()=>{});
+      }
+    }
+  }
+  await idbPut('settings', {id:'tombstones', value: localTomb});
+  for (const st of stores){
+    if (!backup[st]) continue;
+    const tS = localTomb[st] || {};
+    for (const item of backup[st]){
+      if (!item || !item.id) continue;
+      const remoteStamp = item.geaendert || item.updatedAt || item.erstellt || '';
+      if (tS[item.id] && !(remoteStamp && remoteStamp > tS[item.id])) continue;
+      const local = await idbGet(st, item.id).catch(()=>null);
+      const {merged} = mergeRecord(local, item);
+      await idbPut(st, merged, {keepStamp:true});
+    }
+  }
+}
+
+// ── HM-Geraet: Download (immo_daten_hm.json -> lokal) ──────
+async function syncFromOneDriveHM(){
+  const token = await odGetToken();
+  if (!token) return;
+  setSyncStatus('pending');
+  try {
+    const r = await fetchMitTimeout(OD_FILE_URL_HM, {headers:{'Authorization':'Bearer '+token}}, OD_SYNC_TIMEOUT);
+    if (r.status === 404){
+      setSyncStatus('offline');
+      toast('Hausmeister-Daten noch nicht bereitgestellt – bitte einmal am Verwalter-Gerät synchronisieren.');
+      return;
+    }
+    if (!r.ok) throw new Error('HTTP '+r.status);
+    const backup = await r.json();
+    const ls = await idbGet('settings','lastSync').catch(()=>null);
+    if (window._forceSyncDownload || (backup.updatedAt||'') > (ls?.value||'')){
+      await mergeFremdBackup(backup, HM_SYNC.stores);
+      await idbPut('settings', {id:'lastSync', value: backup.updatedAt || new Date().toISOString()});
+      await renderDash(); await updateBadge();
+      toast('✓ Synchronisiert (' + (backup.updatedBy||'') + ')');
+    }
+    setSyncStatus('ok');
+  } catch(e){
+    console.warn('HM-Sync Download:', e);
+    setSyncStatus('offline');
+  }
+}
+
+// ── HM-Geraet: Upload (lokale Schreib-Stores -> immo_daten_hm.json) ──
+async function syncToOneDriveHM(){
+  if (syncInProgress) return;
+  const token = await odGetToken();
+  if (!token) return;
+  syncInProgress = true;
+  setSyncStatus('pending');
+  try {
+    // Remote-Stand laden: (1) neuere Fremdaenderungen erst mergen, (2) die vom
+    // Verwalter gelieferten Nur-Lese-Anteile (mieter, users, objekt_stamm ...)
+    // beim Upload unveraendert erhalten.
+    let remote = null;
+    try {
+      const head = await fetchMitTimeout(OD_FILE_URL_HM, {headers:{'Authorization':'Bearer '+token}}, OD_SYNC_TIMEOUT);
+      if (head.ok) remote = await head.json();
+    } catch(e){ /* offline/404: unten normaler Upload */ }
+    if (remote){
+      const ls = await idbGet('settings','lastSync').catch(()=>null);
+      if ((remote.updatedAt||'') > (ls?.value||'')){
+        syncInProgress = false;
+        await syncFromOneDriveHM();
+        syncInProgress = true;
+      }
+    }
+    const out = (remote && typeof remote === 'object') ? remote : {};
+    for (const st of HM_SYNC.schreibStores){ out[st] = await idbGetAll(st); }
+    out.updatedAt = new Date().toISOString();
+    out.updatedBy = (odTokens?.user_name || 'Unbekannt') + ' (HM)';
+    try {
+      const t = await idbGet('settings','tombstones');
+      const tv = t?.value || {};
+      out.tombstones = out.tombstones || {};
+      for (const st of HM_SYNC.schreibStores){
+        if (!tv[st]) continue;
+        out.tombstones[st] = out.tombstones[st] || {};
+        for (const id in tv[st]){
+          if (!out.tombstones[st][id] || tv[st][id] > out.tombstones[st][id]) out.tombstones[st][id] = tv[st][id];
+        }
+      }
+    } catch(e){}
+    const json = JSON.stringify(out);
+    const r = await fetchMitTimeout(OD_FILE_URL_HM, {
+      method:'PUT',
+      headers:{'Authorization':'Bearer '+token,'Content-Type':'application/json'},
+      body: json,
+    }, OD_SYNC_TIMEOUT);
+    if (!r.ok) throw new Error('HTTP '+r.status);
+    try { await idbPut('settings', {id:'lastSync', value: new Date().toISOString()}); } catch(e){}
+    setSyncStatus('ok');
+  } catch(e){
+    console.warn('HM-Sync Upload:', e);
+    setSyncStatus('offline');
+  }
+  syncInProgress = false;
+}
+
+// ── Verwalter-Geraet: HM-Aenderungen zurueckholen (VOR dem Voll-Upload) ──
+async function hmRueckwegMergen(token){
+  try {
+    const r = await fetchMitTimeout(OD_FILE_URL_HM, {headers:{'Authorization':'Bearer '+token}}, OD_SYNC_TIMEOUT);
+    if (!r.ok) return;
+    const remote = await r.json();
+    if (!remote || !remote.updatedAt) return;
+    const ls = await idbGet('settings','lastSyncHM').catch(()=>null);
+    // Nur mergen, wenn die Datei zuletzt von einem HM-Geraet geschrieben wurde
+    // und neuer ist als unser letzter Abgleich.
+    if (String(remote.updatedBy||'').includes('(HM)') && (remote.updatedAt||'') > (ls?.value||'')){
+      await mergeFremdBackup(remote, HM_SYNC.schreibStores);
+      await idbPut('settings', {id:'lastSyncHM', value: remote.updatedAt});
+    }
+  } catch(e){ /* offline/404: kein Rueckweg noetig */ }
+}
+
+// ── Verwalter-Geraet: frischen gefilterten Stand bereitstellen (NACH Voll-Upload) ──
+async function hmDateiSchreiben(token){
+  try {
+    const b = await hmBackupErzeugen();
+    const r = await fetchMitTimeout(OD_FILE_URL_HM, {
+      method:'PUT',
+      headers:{'Authorization':'Bearer '+token,'Content-Type':'application/json'},
+      body: JSON.stringify(b),
+    }, OD_SYNC_TIMEOUT);
+    if (r.ok) await idbPut('settings', {id:'lastSyncHM', value: b.updatedAt});
+  } catch(e){ console.warn('HM-Datei schreiben:', e); }
+}
+
+/* v196 (A3): Sync-Profil dieses Geraets umstellen. Beim Wechsel auf 'hm' werden alle
+   Nicht-HM-Stores lokal geleert und Mieter feldreduziert (Datenminimierung) - der
+   Bestand bleibt auf dem Verwalter-Geraet und in OneDrive vollstaendig erhalten.
+   Ruecknahme hm->voll ist auf dem HM-Geraet bewusst nicht per UI moeglich (kein
+   Admin-Benutzer mehr vorhanden); Rueckweg = Browser-Websitedaten loeschen + Neuanmeldung. */
+async function syncProfilUmstellen(){
+  const sel = document.getElementById('syncProfilSel');
+  if (!sel) return;
+  const neu = sel.value === 'hm' ? 'hm' : 'voll';
+  if (neu === SYNC_PROFIL){ toast('Profil unverändert'); return; }
+  if (neu === 'hm'){
+    if (!confirm('Dieses Gerät auf HAUSMEISTER-Profil umstellen?\n\nAlle kaufmännischen und sensiblen Daten (Buchhaltung, Kautionen, Verträge, Mieterdetails, Verwalter-Zugänge) werden LOKAL von diesem Gerät entfernt. In OneDrive und auf dem Verwalter-Gerät bleiben sie vollständig erhalten.\n\nHinweis: Die Rückkehr zum Voll-Profil erfordert eine Neueinrichtung des Geräts.')){
+      sel.value = SYNC_PROFIL; return;
+    }
+    const behalten = new Set([...HM_SYNC.stores, 'settings', 'sync_log', 'mieter_snapshots', 'od_auth']);
+    for (const st of alleStores){ if (!behalten.has(st)) await idbClear(st).catch(()=>{}); }
+    // Mieter auf Whitelist reduzieren (IBAN, Miete, Kaution, SA-Daten entfernen)
+    try {
+      const ms = await idbGetAll('mieter');
+      for (const m of ms){ await idbPut('mieter', mieterFuerHM(m), {keepStamp:true}); }
+    } catch(e){}
+    // Verwalter-Benutzer lokal entfernen (deren PIN-Hashes gehoeren nicht auf das Geraet)
+    try {
+      const us = await idbGetAll('users');
+      for (const u of us){ if (!userFuerHM(u)) await idbDelete('users', u.id).catch(()=>{}); }
+    } catch(e){}
+    // Snapshots koennen Voll-Mieterdaten enthalten -> ebenfalls leeren
+    await idbClear('mieter_snapshots').catch(()=>{});
+  } else {
+    if (!confirm('Dieses Gerät auf VOLL-Profil umstellen? Es lädt künftig wieder den gesamten Datenbestand aus OneDrive.')){
+      sel.value = SYNC_PROFIL; return;
+    }
+  }
+  SYNC_PROFIL = neu;
+  await idbPut('settings', {id:'syncProfil', value: neu});
+  lastSyncHash = null;
+  const st = document.getElementById('syncProfilStatus');
+  if (st) st.textContent = 'Aktuell: ' + (neu==='hm' ? 'Hausmeister (reduziert)' : 'Voll (Verwalter-Gerät)');
+  toast('Sync-Profil umgestellt');
+  if (neu === 'voll'){
+    window._forceSyncDownload = true;
+    try { await syncFromOneDrive(); } finally { window._forceSyncDownload = false; }
+  } else {
+    await syncFromOneDriveHM();
+  }
+}
 // v161: Sync-Datei kann durch eingebettete Protokollfotos groß werden (>20 MB). Der generische
 // fetchMitTimeout-Standard (15 s) reicht dann über Mobilfunk nicht -> Abbruch -> Gerät bleibt auf altem
 // Stand. Deshalb für die drei OneDrive-Sync-Requests ein großzügigeres Timeout. (Dauerlösung: Fotos in
@@ -26303,6 +26784,7 @@ async function msalLogout() {
 
 // ── Sync zu OneDrive ──────────────────────────────────────
 async function syncToOneDrive() {
+  if (istHmSyncGeraet()) return syncToOneDriveHM();   // v196 (A3)
   if (syncInProgress) return;
   const token = await odGetToken();
   if (!token) return;
@@ -26327,8 +26809,12 @@ async function syncToOneDrive() {
       }
     } catch(e){ /* offline o. 404: normaler Upload-Weg unten */ }
 
+    // v196 (A3): HM-Aenderungen VOR dem Aufbau des Voll-Backups zurueckholen,
+    // damit sie sofort in immo_daten.json landen.
+    await hmRueckwegMergen(token);
+
     const backup = {};
-    for (const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','versorger_archiv','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','versicherungen','od_dateien','buchungen','fotos','mietbescheinigungen','kautionsquittungen','mv_entwuerfe','selbstauskuenfte','tenant_mails','stellplaetze']) {
+    for (const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','versorger_archiv','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','versicherungen','od_dateien','buchungen','fotos','mietbescheinigungen','kautionsquittungen','mv_entwuerfe','selbstauskuenfte','tenant_mails','stellplaetze','buch_regeln','buchungs_batches']) {
       backup[s] = await idbGetAll(s);
       // v180 (Review H2): Geheimnisse (Function-Key, SA-Schlüssel) bleiben auf dem Gerät –
       // sie gehören weder in die OneDrive-JSON noch in Backup-Dateien. settings werden
@@ -26356,6 +26842,8 @@ async function syncToOneDrive() {
     if (!r.ok) throw new Error('HTTP '+r.status);
     lastSyncHash = hash;
     try { await idbPut('settings', { id:'lastSync', value: new Date().toISOString() }); } catch(e){}
+    // v196 (A3): frischen gefilterten Stand fuer HM-Geraete bereitstellen
+    await hmDateiSchreiben(token);
     setSyncStatus('ok');
   } catch(e) {
     console.warn('Sync Upload:', e);
@@ -26376,6 +26864,7 @@ async function syncFromOneDriveForce(){
 }
 
 async function syncFromOneDrive() {
+  if (istHmSyncGeraet()) return syncFromOneDriveHM();   // v196 (A3)
   const token = await odGetToken();
   if (!token) return;
   setSyncStatus('pending');
@@ -26433,7 +26922,7 @@ async function syncFromOneDrive() {
       await idbPut('settings', { id:'tombstones', value: mergedTomb });
 
       // Merge: ID-basiert, nur übernehmen wenn remote neuer oder lokal fehlt
-      const mergeStores = ['protokolle','aufgaben','maengel','reparaturen','dokumente','nka_archiv','einkaufsliste','wartung','termine','zaehler','zaehlerstaende','versorger','versorger_archiv','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','od_dateien','fotos','mietbescheinigungen','kautionsquittungen','mv_entwuerfe','selbstauskuenfte','tenant_mails','buchungen','stellplaetze'];
+      const mergeStores = ['protokolle','aufgaben','maengel','reparaturen','dokumente','nka_archiv','einkaufsliste','wartung','termine','zaehler','zaehlerstaende','versorger','versorger_archiv','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','od_dateien','fotos','mietbescheinigungen','kautionsquittungen','mv_entwuerfe','selbstauskuenfte','tenant_mails','buchungen','stellplaetze','buch_regeln','buchungs_batches'];
       for (const s of mergeStores) {
         if (!backup[s]) continue;
         const tombS = mergedTomb[s] || {};
@@ -27435,11 +27924,48 @@ async function buchStammLaden(konto){
     try{ (await idbGetAll('versorger','objektId',oid)).forEach(v=>versorger.push(v)); }catch(_){ }
     try{ (await idbGetAll('zaehler','objektId',oid)).forEach(z=>zaehler.push(z)); }catch(_){ }
   }
-  return {versorger, zaehler};
+  // §14 (v189): gelernte Kategorie-Regeln als Schlüssel→Kategorie-Map bereitstellen
+  const regeln={};
+  try{ (await idbGetAll('buch_regeln')).forEach(r=>{ if(r&&r.schluessel&&r.kategorie) regeln[r.schluessel]=r.kategorie; }); }catch(_){ }
+  return {versorger, zaehler, regeln};
+}
+// §14: eindeutiger Lern-Schlüssel einer Buchung – IBAN bevorzugt, sonst normalisierter Name.
+function buchRegelSchluessel(b){
+  if(!b) return '';
+  const iban=zaNormIban(b.iban);
+  if(iban) return 'iban:'+iban;
+  const name=String(b.name||'').trim().toLowerCase().replace(/\s+/g,' ');
+  return name ? 'name:'+name : '';
+}
+// §14: aus einer bestätigten manuellen Kategorisierung eine Regel lernen/auffrischen.
+async function buchRegelLernen(rec, kat){
+  if(!rec || !kat) return;
+  const schluessel=buchRegelSchluessel(rec);
+  if(!schluessel) return;
+  let regel=await idbGet('buch_regeln', schluessel).catch(()=>null);
+  if(regel){
+    regel.kategorie=kat;
+    regel.seite=rec.typ==='eingang'?'ein':'aus';
+    regel.name=rec.name||regel.name||'';
+    regel.trefferzahl=(regel.trefferzahl||1)+1;
+    regel.updatedAt=nowIso();
+  } else {
+    regel={ id:schluessel, schluessel, kategorie:kat, seite:rec.typ==='eingang'?'ein':'aus',
+            name:rec.name||'', trefferzahl:1, erstelltAm:nowIso(), updatedAt:nowIso() };
+  }
+  try{ await idbPut('buch_regeln', regel); }catch(_){ return; }
+  // sofort im Analyse-Cache wirksam machen
+  if(window._buchStamm){ window._buchStamm.regeln=window._buchStamm.regeln||{}; window._buchStamm.regeln[schluessel]=kat; }
 }
 
 /* Analyse eines Ausgangs → {kat, konfidenz, quelle, erkannt, hinweis} oder null */
 function buchAnalyseAusgang(b, versorgerListe, zaehlerListe){
+  // §14 (v189): zuerst gelernte Regeln – vom Nutzer bestätigt, daher höchste Priorität.
+  const _rmap = window._buchStamm && window._buchStamm.regeln;
+  if(_rmap){
+    const _k=buchRegelSchluessel(b);
+    if(_k && _rmap[_k]) return {kat:_rmap[_k], konfidenz:'sicher', quelle:'Gelernte Regel', erkannt:{regel:_k}};
+  }
   const text  = buchNorm((b.zweck||'')+' '+(b.buchungstext||'')+' '+(b.name||''));
   const textNr= buchNormNr((b.zweck||'')+' '+(b.buchungstext||''));
   // 1) Zählernummer (starke Erkennung)
@@ -27813,11 +28339,13 @@ async function zaSpeichern(){
   const konto = ZA_STATE.konto;
   if(!konto || !ZA_STATE.results.length){ toast('Nichts zu speichern.'); return; }
   let neu=0, dup=0;
+  const batchId='batch_'+uid(); const batchIds=[];
   for(const r of ZA_STATE.results){
     const rec = zaBuchungRecord(konto.id, r.buchung, r.match);
     let exists=false;
     try { const e=await idbGet('buchungen', rec.id); exists=!!e; } catch(_){}
     if(exists){ dup++; continue; }
+    rec.batchId=batchId; batchIds.push(rec.id);
     await idbPut('buchungen', rec);
     neu++;
   }
@@ -27830,8 +28358,14 @@ async function zaSpeichern(){
     let exists=false;
     try { const e=await idbGet('buchungen', rec.id); exists=!!e; } catch(_){}
     if(exists) continue;
+    rec.batchId=batchId; batchIds.push(rec.id);
     await idbPut('buchungen', rec);
     neuAus++;
+  }
+  if(batchIds.length){
+    try{ await idbPut('buchungs_batches', { id:batchId, kontoId:konto.id, kontoLabel:konto.label||'', quelle:'csv',
+      erstelltAm:nowIso(), erstelltVon:(typeof CU!=='undefined'&&CU)?CU.name:'',
+      anzahlEingang:neu, anzahlAusgang:neuAus, anzahlDuplikate:dup, buchungIds:batchIds, status:'aktiv' }); }catch(_){ }
   }
   toast(`${neu} Eingänge${neuAus?` und ${neuAus} Ausgänge`:''} gespeichert${dup?`, ${dup} bereits vorhanden`:''}.`);
   clearTimeout(window._syncTimer);
@@ -27902,6 +28436,11 @@ async function zaRenderVerlauf(){
         <i class="ti ti-cash-banknote"></i> Buchhaltung (Ausgaben)</button>
       <button class="btn btn-sm ${ZA_VERLAUF.sicht==='auswertung'?'btn-primary':''}" onclick="zaSetSicht('auswertung')">
         <i class="ti ti-chart-pie"></i> Auswertung</button>
+      <span style="flex:1"></span>
+      <button class="btn btn-sm" title="Barzahlung eines Mieters erfassen (bar erhaltene Miete/Kaution)" onclick="modalBarzahlung()"><i class="ti ti-coin"></i> Barzahlung</button>
+      <button class="btn btn-sm" title="Alle Buchungen dieses Kontos als Excel exportieren" onclick="zaExportBuchungen()"><i class="ti ti-file-spreadsheet"></i> Excel</button>
+      <button class="btn btn-sm" title="Import-Verlauf ansehen / Import rückgängig machen" onclick="modalImportVerlauf()"><i class="ti ti-file-import"></i> Importe</button>
+      <button class="btn btn-sm" title="Gelernte Kategorie-Regeln ansehen und löschen" onclick="modalRegeln()"><i class="ti ti-bulb"></i> Regeln</button>
     </div>`;
 
   let inhalt;
@@ -27920,6 +28459,223 @@ async function zaRenderVerlauf(){
 }
 
 function zaSetSicht(s){ ZA_VERLAUF.sicht=s; zaRenderVerlauf(); }
+
+// §4 (v190): Barzahlung eines Mieters erfassen. Wird als regulaere Einnahme gespeichert
+// (typ 'eingang', bar:true) – steuerlich sichtbar, schliesst das Soll im Mietkonto,
+// erscheint aber nicht im Bank-CSV. Im Excel-Export eigens als „bar" ausgewiesen.
+async function modalBarzahlung(){
+  const konto = ZA_STATE.konto;
+  if(!konto){ toast('Bitte zuerst ein Konto wählen.'); return; }
+  const alleMieter = await idbGetAll('mieter').catch(()=>[]);
+  const objSet = new Set(konto.objekte);
+  const mieter = alleMieter.filter(m=>m && m.mieter && objSet.has(m.objektId))
+    .sort((a,b)=>String(a.weNr||'').localeCompare(String(b.weNr||''),'de',{numeric:true}));
+  if(!mieter.length){ toast('Für dieses Konto sind keine Mieter hinterlegt.'); return; }
+  const heute=today(); const mo=heute.slice(0,7);
+  const opts=mieter.map(m=>`<option value="${m.id}">${esc((m.weNr?'WE '+m.weNr+' · ':'')+m.mieter)}${m._vormieter?' (ehem.)':''}</option>`).join('');
+  showModal(`
+    <h3 style="margin:0 0 12px"><i class="ti ti-coin"></i> Barzahlung erfassen</h3>
+    <div class="f"><label>Mieter</label><select id="bzMieter" class="inp">${opts}</select></div>
+    <div class="f"><label>Betrag (€)</label><input type="number" step="0.01" id="bzBetrag" class="inp" placeholder="0,00"></div>
+    <div class="f"><label>Zahlungsdatum</label><input type="date" id="bzDatum" class="inp" value="${heute}"></div>
+    <div class="f"><label>Für Monat</label><input type="month" id="bzMonat" class="inp" value="${mo}"></div>
+    <div class="f"><label>Notiz (optional)</label><input type="text" id="bzNotiz" class="inp" placeholder="z. B. Miete Mai bar erhalten"></div>
+    <div style="font-size:11px;color:var(--ink-40);margin:6px 0 12px"><i class="ti ti-info-circle"></i> Barzahlungen sind steuerpflichtige Einnahmen und werden in der Buchführung sowie im Excel-Export als „bar" ausgewiesen.</div>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-primary" onclick="barzahlungSpeichern()">Speichern</button>
+    </div>`);
+}
+async function barzahlungSpeichern(){
+  const konto = ZA_STATE.konto; if(!konto) return;
+  const mieterId=document.getElementById('bzMieter')?.value;
+  const betrag=parseFloat(String(document.getElementById('bzBetrag')?.value||'').replace(',','.'));
+  const datum=document.getElementById('bzDatum')?.value||today();
+  const monat=document.getElementById('bzMonat')?.value||datum.slice(0,7);
+  const notiz=(document.getElementById('bzNotiz')?.value||'').trim();
+  if(!mieterId){ toast('Bitte einen Mieter wählen.'); return; }
+  if(!(betrag>0)){ toast('Bitte einen gültigen Betrag eingeben.'); return; }
+  const m=await idbGet('mieter', mieterId).catch(()=>null);
+  const rec={ id:'bar_'+uid(), kontoId:konto.id, typ:'eingang', bar:true,
+    mieterId, mieterName:m?.mieter||'', name:m?.mieter||'',
+    betrag:Math.round(betrag*100)/100, datumISO:datum, mietmonat:monat,
+    zweck:'Barzahlung'+(notiz?' – '+notiz:''), notiz, status:'geprueft',
+    quelle:'bar', erstellt:nowIso(), updatedAt:nowIso() };
+  await idbPut('buchungen', rec);
+  syncSoon(); closeModal();
+  toast('Barzahlung erfasst ✓');
+  await zaRenderVerlauf();
+}
+// §4/§24 (v190): alle Buchungen des aktuellen Kontos als Excel exportieren.
+// Barzahlungen werden in der Spalte „Bar" mit „Ja" gekennzeichnet.
+async function zaExportBuchungen(){
+  const konto = ZA_STATE.konto;
+  if(!konto){ toast('Bitte zuerst ein Konto wählen.'); return; }
+  if(typeof XLSX==='undefined'){ toast('Excel-Bibliothek nicht geladen.'); return; }
+  let alle=[]; try{ alle=await idbGetAll('buchungen'); }catch(_){ }
+  const buch=alle.filter(b=>b && b.kontoId===konto.id)
+    .sort((a,b)=>(a.datumISO||'').localeCompare(b.datumISO||''));
+  if(!buch.length){ toast('Keine Buchungen zum Export.'); return; }
+  const num=n=>Math.round((Number(n)||0)*100)/100;
+  const kopf=['Datum','Art','Betrag (€)','Bar','Mieter/Empfänger','Für Monat','Kategorie','Verwendungszweck','IBAN','Status'];
+  const zeilen=buch.map(b=>{
+    const teile=buchTeile(b);
+    const kat = teile ? teile.map(t=>buchKatLabel(t.kategorie)).join(' + ') : (b.kategorie?buchKatLabel(b.kategorie):'');
+    return [ b.datumISO||'', b.typ==='eingang'?'Einnahme':'Ausgabe',
+      num(b.typ==='ausgang'?-Math.abs(b.betrag):b.betrag),
+      b.bar?'Ja':'', b.mieterName||b.name||'', b.mietmonat||'', kat,
+      b.zweck||'', b.iban||'', b.status||'' ];
+  });
+  const ws=XLSX.utils.aoa_to_sheet([kopf, ...zeilen]);
+  ws['!cols']=[{wch:11},{wch:9},{wch:11},{wch:5},{wch:26},{wch:9},{wch:20},{wch:40},{wch:24},{wch:10}];
+  const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Buchungen');
+  const name=(konto.label||'Konto').replace(/[^\wäöüÄÖÜß-]+/g,'_');
+  XLSX.writeFile(wb, `Buchungen_${name}_${today()}.xlsx`);
+  toast('Excel exportiert ✓');
+}
+// Etappe D1 (v192): Import-Verlauf – jeder CSV-Import ist ein Batch, der als Einheit
+// rueckgaengig gemacht werden kann. Der Batch bleibt als 'storniert' erhalten (GoBD-Nachvollziehbarkeit).
+async function modalImportVerlauf(){
+  const konto=ZA_STATE.konto;
+  if(!konto){ toast('Bitte zuerst ein Konto wählen.'); return; }
+  let batches=[];
+  try{ batches=await idbGetAll('buchungs_batches','kontoId',konto.id); }catch(_){ }
+  batches.sort((a,b)=>(b.erstelltAm||'').localeCompare(a.erstelltAm||''));
+  const fmtDt=iso=>{ try{ return new Date(iso).toLocaleString('de-DE'); }catch(_){ return iso||''; } };
+  const rows = batches.length ? batches.map(b=>{
+    const storniert=b.status==='storniert';
+    return `<div style="padding:9px 0;border-bottom:1px solid var(--ink-10);${storniert?'opacity:.55':''}">
+      <div style="display:flex;justify-content:space-between;gap:8px;align-items:center">
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:600;font-size:13px">${fmtDt(b.erstelltAm)}${storniert?' · storniert':''}</div>
+          <div style="font-size:11px;color:var(--ink-40)">${b.anzahlEingang||0} Eingänge · ${b.anzahlAusgang||0} Ausgänge${b.anzahlDuplikate?` · ${b.anzahlDuplikate} übersprungen`:''}${b.erstelltVon?' · '+esc(b.erstelltVon):''}</div>
+        </div>
+        <button class="btn btn-sm" onclick="modalBatchDetail('${b.id}')" title="Buchungen dieses Imports ansehen"><i class="ti ti-list-details"></i></button>${storniert?'':`<button class="btn btn-sm btn-danger" onclick="zaBatchRueckgaengig('${b.id}')" title="Diesen Import rückgängig machen"><i class="ti ti-arrow-back-up"></i></button>`}
+      </div></div>`;
+  }).join('') : '<div style="font-size:12px;color:var(--ink-40);font-style:italic">Noch keine Importe protokolliert.</div>';
+  showModal(`
+    <h3 style="margin:0 0 4px"><i class="ti ti-file-import"></i> Import-Verlauf</h3>
+    <p style="font-size:12px;color:var(--ink-40);margin:0 0 12px">${esc(konto.label||'')}</p>
+    ${rows}
+    <div style="font-size:11px;color:var(--ink-40);margin:12px 0"><i class="ti ti-info-circle"></i> „Rückgängig“ entfernt alle mit diesem Import angelegten Buchungen – auch bereits kategorisierte. Der Import bleibt zur Nachvollziehbarkeit als „storniert“ protokolliert.</div>
+    <div style="display:flex;justify-content:flex-end"><button class="btn" onclick="closeModal()">Schließen</button></div>`);
+}
+async function zaBatchRueckgaengig(batchId){
+  const batch=await idbGet('buchungs_batches',batchId).catch(()=>null);
+  if(!batch){ toast('Import nicht gefunden.'); return; }
+  const anz=(batch.buchungIds||[]).length;
+  if(!confirm(`Diesen Import wirklich rückgängig machen?\n\n${anz} Buchung(en) werden gelöscht. Bereits vorgenommene Kategorisierungen gehen dabei verloren.\nDieser Schritt kann nicht rückgängig gemacht werden.`)) return;
+  let del=0;
+  for(const id of (batch.buchungIds||[])){
+    try{ await deleteMitTombstone('buchungen', id); del++; }catch(_){ }
+  }
+  batch.status='storniert'; batch.storniertAm=nowIso(); batch.storniertVon=(typeof CU!=='undefined'&&CU)?CU.name:'';
+  try{ await idbPut('buchungs_batches', batch); }catch(_){ }
+  clearTimeout(window._syncTimer);
+  window._syncTimer=setTimeout(()=>{ if(typeof syncToOneDrive==='function') syncToOneDrive(); },2000);
+  toast(`${del} Buchung(en) entfernt, Import storniert.`);
+  closeModal();
+  await zaRenderVerlauf();
+}
+// Etappe D2 (v194): Batch-Detailansicht + selektives Rueckgaengig.
+// „Bearbeitet" = manuell kategorisiert oder geprueft; solche Buchungen werden beim
+// selektiven Zuruecknehmen geschuetzt (kein Verlust von Nutzerarbeit).
+function _batchBearbeitet(b){ return !!(b && (b.status==='geprueft' || b.kategorie || (Array.isArray(b.kategorien)&&b.kategorien.length))); }
+async function modalBatchDetail(batchId){
+  const batch=await idbGet('buchungs_batches',batchId).catch(()=>null);
+  if(!batch){ toast('Import nicht gefunden.'); return; }
+  const ids=batch.buchungIds||[];
+  const buch=[];
+  for(const id of ids){ const b=await idbGet('buchungen',id).catch(()=>null); if(b) buch.push(b); }
+  const fmtDt=iso=>{ try{ return new Date(iso).toLocaleDateString('de-DE'); }catch(_){ return iso||''; } };
+  const eur=n=>(Number(n)||0).toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:2});
+  let unbearbeitet=0;
+  const rows = buch.length ? buch.map(b=>{
+    const bearb=_batchBearbeitet(b); if(!bearb) unbearbeitet++;
+    const kat = b.kategorie?buchKatLabel(b.kategorie):((Array.isArray(b.kategorien)&&b.kategorien.length)?b.kategorien.map(t=>buchKatLabel(t.kategorie)).join(' + '):'');
+    return `<div style="padding:6px 0;border-bottom:1px solid var(--ink-10);display:flex;justify-content:space-between;gap:8px">
+      <div style="flex:1;min-width:0">
+        <div style="font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(b.name||b.zweck||'—')}</div>
+        <div style="font-size:10px;color:var(--ink-40)">${fmtDt(b.datumISO)} · ${b.typ==='eingang'?'Eingang':'Ausgang'}${kat?' · '+esc(kat):''}</div>
+      </div>
+      <div style="text-align:right;white-space:nowrap">
+        <div style="font-size:12px;font-weight:600;font-variant-numeric:tabular-nums">${eur(b.betrag)} €</div>
+        <div style="font-size:9px;color:${bearb?'var(--green)':'var(--ink-40)'}">${bearb?'bearbeitet':'unverändert'}</div>
+      </div>
+    </div>`;
+  }).join('') : '<div style="font-size:12px;color:var(--ink-40);font-style:italic">Zu diesem Import sind keine Buchungen (mehr) vorhanden.</div>';
+  const storniert=batch.status==='storniert';
+  showModal(`
+    <h3 style="margin:0 0 4px"><i class="ti ti-list-details"></i> Import-Details</h3>
+    <p style="font-size:12px;color:var(--ink-40);margin:0 0 10px">${fmtDt(batch.erstelltAm)} · ${buch.length} Buchung(en)${storniert?' · storniert':''}</p>
+    <div style="max-height:44vh;overflow:auto">${rows}</div>
+    ${(!storniert && buch.length)?`<div style="font-size:11px;color:var(--ink-40);margin:12px 0"><i class="ti ti-info-circle"></i> „Nur unveränderte entfernen“ nimmt die ${unbearbeitet} noch nicht bearbeitete(n) Buchung(en) zurück; bereits kategorisierte bleiben erhalten.</div>`:''}
+    <div style="display:flex;gap:8px;justify-content:space-between;flex-wrap:wrap;margin-top:8px">
+      <button class="btn btn-sm" onclick="modalImportVerlauf()"><i class="ti ti-arrow-left"></i> Zurück</button>
+      ${(!storniert && buch.length)?`<span style="display:flex;gap:8px">
+        <button class="btn btn-sm" ${unbearbeitet?'':'disabled'} onclick="zaBatchRueckgaengigSelektiv('${batch.id}')">Nur unveränderte (${unbearbeitet})</button>
+        <button class="btn btn-sm btn-danger" onclick="zaBatchRueckgaengig('${batch.id}')">Kompletter Import</button>
+      </span>`:''}
+    </div>`);
+}
+async function zaBatchRueckgaengigSelektiv(batchId){
+  const batch=await idbGet('buchungs_batches',batchId).catch(()=>null);
+  if(!batch){ toast('Import nicht gefunden.'); return; }
+  const ids=batch.buchungIds||[];
+  const zuLoeschen=[], verbleibend=[];
+  for(const id of ids){
+    const b=await idbGet('buchungen',id).catch(()=>null);
+    if(!b) continue;
+    if(_batchBearbeitet(b)) verbleibend.push(id); else zuLoeschen.push(id);
+  }
+  if(!zuLoeschen.length){ toast('Keine unveränderten Buchungen zum Entfernen.'); return; }
+  if(!confirm(`${zuLoeschen.length} noch nicht bearbeitete Buchung(en) entfernen?\n\nBereits kategorisierte Buchungen dieses Imports bleiben erhalten.`)) return;
+  let del=0;
+  for(const id of zuLoeschen){ try{ await deleteMitTombstone('buchungen', id); del++; }catch(_){ } }
+  batch.buchungIds=verbleibend;
+  if(!verbleibend.length){ batch.status='storniert'; batch.storniertAm=nowIso(); batch.storniertVon=(typeof CU!=='undefined'&&CU)?CU.name:''; }
+  else { batch.teilRueckgaengigAm=nowIso(); }
+  try{ await idbPut('buchungs_batches', batch); }catch(_){ }
+  clearTimeout(window._syncTimer);
+  window._syncTimer=setTimeout(()=>{ if(typeof syncToOneDrive==='function') syncToOneDrive(); },2000);
+  toast(`${del} unveränderte Buchung(en) entfernt.`);
+  await zaRenderVerlauf();
+  modalBatchDetail(batchId);
+}
+// §14 (v193): Verwaltung der gelernten Kategorie-Regeln (ansehen / löschen).
+async function modalRegeln(){
+  let regeln=[];
+  try{ regeln=await idbGetAll('buch_regeln'); }catch(_){ }
+  regeln.sort((a,b)=>(b.trefferzahl||0)-(a.trefferzahl||0) || String(a.name||'').localeCompare(String(b.name||''),'de'));
+  window._regelListe = regeln;
+  const fmtDt=iso=>{ try{ return new Date(iso).toLocaleDateString('de-DE'); }catch(_){ return ''; } };
+  const rows = regeln.length ? regeln.map((r,i)=>{
+    const istIban=String(r.schluessel||'').startsWith('iban:');
+    const bez = r.name || String(r.schluessel||'').replace(/^(iban:|name:)/,'');
+    return `<div style="display:flex;justify-content:space-between;gap:8px;align-items:center;padding:8px 0;border-bottom:1px solid var(--ink-10)">
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:600;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(bez)}${istIban?' <span style="font-size:9px;color:var(--ink-40);border:1px solid var(--ink-20);border-radius:3px;padding:0 3px">IBAN</span>':''}</div>
+        <div style="font-size:11px;color:var(--ink-40)">→ ${esc(buchKatLabel(r.kategorie))}${(r.trefferzahl>1)?` · ${r.trefferzahl}× angewendet`:''}${r.updatedAt?` · zuletzt ${fmtDt(r.updatedAt)}`:''}</div>
+      </div>
+      <button class="btn btn-sm btn-danger" onclick="buchRegelLoeschen(${i})" title="Regel löschen"><i class="ti ti-trash"></i></button>
+    </div>`;
+  }).join('') : '<div style="font-size:12px;color:var(--ink-40);font-style:italic">Noch keine Regeln gelernt. Sobald Sie eine Ausgangsbuchung kategorisieren, merkt sich die App die Zuordnung für denselben Empfänger und schlägt sie künftig vor.</div>';
+  showModal(`
+    <h3 style="margin:0 0 4px"><i class="ti ti-bulb"></i> Gelernte Kategorie-Regeln${regeln.length?` (${regeln.length})`:''}</h3>
+    <p style="font-size:12px;color:var(--ink-40);margin:0 0 12px">Diese Zuordnungen schlägt die App bei künftigen Buchungen automatisch vor – angewendet wird nur nach Ihrer Bestätigung.</p>
+    ${rows}
+    <div style="display:flex;justify-content:flex-end;margin-top:12px"><button class="btn" onclick="closeModal()">Schließen</button></div>`);
+}
+async function buchRegelLoeschen(i){
+  const r=(window._regelListe||[])[i]; if(!r||!r.id) return;
+  try{ await deleteMitTombstone('buch_regeln', r.id); }catch(_){ }
+  if(window._buchStamm && window._buchStamm.regeln){ delete window._buchStamm.regeln[r.schluessel||r.id]; }
+  clearTimeout(window._syncTimer);
+  window._syncTimer=setTimeout(()=>{ if(typeof syncToOneDrive==='function') syncToOneDrive(); },2000);
+  toast('Regel gelöscht.');
+  await modalRegeln();
+}
 
 /* v181 (Punkt 10): Verlauf ohne neuen Import anzeigen – beim Öffnen des
    Zahlungen-Tabs und beim Kontowechsel direkt aus den gespeicherten Buchungen. */
@@ -28004,12 +28760,12 @@ function zaRenderAuszug(buch, monate, konto){
   for(const mo of [...monate].reverse()){
     const liste = eingaenge.filter(b=>b.mietmonat===mo);
     if(!liste.length) continue;
-    const summe = liste.reduce((s,b)=>s+b.betrag,0);
+    const summe = rc(liste.reduce((s,b)=>s+b.betrag,0));
     const rows = liste.map(b=>`
       <tr style="border-bottom:1px solid var(--line)">
         <td style="padding:5px;font-size:11px;white-space:nowrap">${esc((b.datumISO||'').slice(8)+'.'+(b.datumISO||'').slice(5,7))}</td>
         <td style="padding:5px;text-align:right;font-variant-numeric:tabular-nums;font-weight:600">${eur(b.betrag)}</td>
-        <td style="padding:5px;font-size:12px">${esc(b.mieterName||b.name)}${buchKonfidenzBadge(b)}${b.istStellplatz?' <span style="font-size:9px;color:var(--ink-40)">[SP]</span>':''}
+        <td style="padding:5px;font-size:12px">${esc(b.mieterName||b.name)}${buchKonfidenzBadge(b)}${b.bar?' <span class="chip" style="font-size:9px;background:var(--copper,#b87333);color:#fff;padding:1px 5px;border-radius:8px">bar</span>':''}${b.istStellplatz?' <span style="font-size:9px;color:var(--ink-40)">[SP]</span>':''}
           ${b.mieterId?'':' <span style="font-size:9px;color:var(--amber)">nicht zugeordnet</span>'}${!b.mieterId?(b.kategorie?` <span style="font-size:9px;color:var(--copper,#b87333)" title="Erstattung/sonstige Einnahme">↩ ${esc(buchKatLabel(b.kategorie))}</span>`:` <button class="btn btn-sm" title="Als Erstattung/sonstige Einnahme erfassen" onclick="modalErstattung('${b.id}')" style="font-size:9px;padding:1px 5px"><i class="ti ti-arrow-back-up"></i></button>`):''}</td>
       </tr>`).join('');
     html += `<div style="margin-bottom:16px">
@@ -28089,6 +28845,8 @@ async function buchKategorieSetzen(id, kat){
   rec.updatedAt = nowIso();
   await idbPut('buchungen', rec);
   if(kat){
+    // §14 (v189): Regel lernen, damit derselbe Empfänger künftig automatisch vorgeschlagen wird
+    await buchRegelLernen(rec, kat);
     // Massenübernahme: gleiche Gegen-IBAN (ersatzweise gleicher Name), noch ohne Kategorie
     const alle=await idbGetAll('buchungen').catch(()=>[]);
     const iban=zaNormIban(rec.iban);
@@ -28869,8 +29627,8 @@ async function renderRechnungen(){
   }).sort((a,b)=>(b.datum||'').localeCompare(a.datum||'')||(b.erstelltIso||'').localeCompare(a.erstelltIso||''));
 
   // Summen
-  const summe=liste.reduce((s,r)=>s+(Number(r.betrag)||0),0);
-  const summeOffen=liste.filter(r=>!r.bezahlt).reduce((s,r)=>s+(Number(r.betrag)||0),0);
+  const summe=rc(liste.reduce((s,r)=>s+(Number(r.betrag)||0),0));
+  const summeOffen=rc(liste.filter(r=>!r.bezahlt).reduce((s,r)=>s+(Number(r.betrag)||0),0));
 
   let h=`<div class="s-hdr"><div class="s-title"><i class="ti ti-file-invoice"></i> Rechnungen</div>
     <button class="btn btn-sm btn-copper" onclick="modalRechnungErfassen()"><i class="ti ti-plus"></i> Erfassen</button>
@@ -29018,7 +29776,9 @@ async function modalRechnungErfassen(rechnung){
         <button type="button" class="btn btn-sm" onclick="rechnBelegKamera()"><i class="ti ti-camera"></i> Foto</button>
         <button type="button" class="btn btn-sm" onclick="document.getElementById('rBelegGalerie').click()"><i class="ti ti-photo"></i> Galerie</button>
         <button type="button" class="btn btn-sm" onclick="document.getElementById('rBelegPdf').click()"><i class="ti ti-file-type-pdf"></i> PDF</button>
+        <button type="button" class="btn btn-sm btn-copper" id="rOcrBtn" onclick="rechnungOcrErkennen()"><i class="ti ti-sparkles"></i> KI-Erkennung</button>
       </div>
+      <div style="font-size:10px;color:var(--ink-40);margin-top:4px"><i class="ti ti-info-circle"></i> Bei „KI-Erkennung" wird der Beleg zur automatischen Auswertung an den KI-Dienst (Anthropic, Auftragsverarbeiter) übermittelt.</div>
       <input type="file" id="rBelegGalerie" accept="image/*" style="display:none" onchange="rechnBelegGalerie(this)">
       <input type="file" id="rBelegPdf" accept="application/pdf" style="display:none" onchange="rechnBelegPdf(this)">
     </div>
@@ -29040,6 +29800,71 @@ async function modalRechnungErfassen(rechnung){
     if(r.reparaturId){ const rp=document.getElementById('rReparatur'); if(rp) rp.value=r.reparaturId; }
   }
   rechnBelegVorschau();
+}
+
+// v188: KI-gestützte Rechnungserkennung. Sendet den angehängten Beleg an den
+// serverseitigen Endpunkt /api/rechnung-ocr (der Anthropic-Key bleibt im Backend)
+// und füllt die Formularfelder mit dem Vorschlag vor. Der Nutzer prüft/korrigiert
+// anschließend wie gewohnt. DSGVO: Übermittlung an einen Auftragsverarbeiter.
+async function rechnungOcrErkennen(){
+  if(!_rechnBeleg || !_rechnBeleg.data){ toast('Bitte zuerst ein Foto oder PDF des Belegs anhängen.'); return; }
+  const key=(await idbGet('settings','backendKey').catch(()=>null))?.value;
+  if(!key){ toast('Kein Backend-Schlüssel hinterlegt (Einstellungen → Backend).'); return; }
+  const btn=document.getElementById('rOcrBtn');
+  const altHtml = btn?btn.innerHTML:'';
+  if(btn){ btn.disabled=true; btn.innerHTML='<i class="ti ti-loader"></i> Erkenne …'; }
+  try{
+    const base64=(_rechnBeleg.data.split(',')[1])||'';
+    const mimeType=_rechnBeleg.mimeType || 'image/jpeg';
+    const myObj=await getMyObjekte();
+    const res=await fetchMitTimeout(BACKEND_AZURE+'/api/rechnung-ocr',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-functions-key':key},
+      body:JSON.stringify({ fileBase64:base64, mimeType,
+        objekte: myObj.map(o=>({ id:o.id, name:o.name, adresse:o.adresse||o.strasse||'' })) })
+    }, 45000);
+    if(res.status===404){ toast('KI-Endpunkt ist noch nicht eingerichtet (/api/rechnung-ocr).'); return; }
+    if(res.status===401||res.status===403){ toast('Backend-Schlüssel abgelehnt (401/403).'); return; }
+    if(!res.ok){ toast('KI-Auswertung fehlgeschlagen ('+res.status+').'); return; }
+    let v=null; try{ v=await res.json(); }catch(_){ }
+    if(!v || v.error){ toast('Keine auswertbare Antwort erhalten.'); return; }
+    rechnungOcrVorschlagAnwenden(v);
+    toast('Beleg ausgewertet – bitte Angaben prüfen ✓');
+  }catch(e){
+    toast((e&&e.name==='AbortError') ? 'Zeitüberschreitung bei der KI-Auswertung.' : 'Fehler bei der KI-Auswertung (Netzwerk?).');
+  }finally{
+    if(btn){ btn.disabled=false; btn.innerHTML=altHtml; }
+  }
+}
+// Trägt den KI-Vorschlag in die Formularfelder ein – befüllt nur erkannte Werte,
+// erzwingt nichts und lässt vom Nutzer bereits Eingetragenes wo möglich bestehen.
+function rechnungOcrVorschlagAnwenden(v){
+  if(!v||typeof v!=='object') return;
+  const setV=(id,val)=>{ const e=document.getElementById(id); if(e && val!=null && val!=='') e.value=val; };
+  setV('rLieferant', v.lieferant);
+  setV('rNr', v.rechnungsnr);
+  if(v.datum && /^\d{4}-\d{2}-\d{2}$/.test(v.datum)) setV('rDatum', v.datum);
+  if(v.faellig && /^\d{4}-\d{2}-\d{2}$/.test(v.faellig)) setV('rFaellig', v.faellig);
+  if(v.betrag!=null && !isNaN(Number(v.betrag))) setV('rBetrag', v.betrag);
+  // Objektvorschlag nur bei brauchbarer Konfidenz und tatsächlich vorhandenem Objekt
+  const ov=v.objektVorschlag;
+  if(ov && ov.objektId && (ov.konfidenz==='hoch'||ov.konfidenz==='mittel')){
+    const sel=document.getElementById('rObj');
+    if(sel && [...sel.options].some(o=>o.value===ov.objektId)){ sel.value=ov.objektId; if(typeof rechnObjWechsel==='function') rechnObjWechsel(); }
+  }
+  // Zusatzangaben (Kategorie-/MwSt-/IBAN-/Notizvorschlag) als Hinweis in die Notiz –
+  // nicht in strikte Auswahlfelder zwingen, damit nichts falsch vorbelegt wird.
+  const hinweise=[];
+  if(v.kostenkategorieVorschlag) hinweise.push('KI-Kategorie: '+v.kostenkategorieVorschlag);
+  if(v.betragNetto!=null) hinweise.push('Netto: '+v.betragNetto);
+  if(v.mwstSatz!=null) hinweise.push('MwSt: '+v.mwstSatz+'%');
+  if(v.leistungszeitraum) hinweise.push('Zeitraum: '+v.leistungszeitraum);
+  if(v.iban) hinweise.push('IBAN: '+v.iban);
+  if(v.notizVorschlag) hinweise.push(v.notizVorschlag);
+  if(hinweise.length){
+    const nt=document.getElementById('rNotiz');
+    if(nt){ nt.value = (nt.value?nt.value+'\n':'') + hinweise.join(' · '); }
+  }
 }
 
 // Zuordnungsart gewechselt → passende Felder zeigen

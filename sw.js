@@ -7,11 +7,23 @@
 // an respondWith übergeben (führte zu TypeError); stattdessen kontrollierte
 // 503/504-Antworten.
 
-const CACHE = 'nadigpfau-v187';
+const CACHE = 'nadigpfau-v196';
 
-self.addEventListener('install', () => {
-  // Sofort aktivieren, nicht auf alten SW warten
-  self.skipWaiting();
+// v195 (B4): Kern-Assets beim Install vorab cachen, damit die App auch nach
+// einer Browser-Cache-Raeumung offline startet (bisher nur On-the-fly-Cache).
+const PRECACHE = ['./index.html', './manifest.json', './icon-192.png', './icon-512.png'];
+
+self.addEventListener('install', (e) => {
+  e.waitUntil((async () => {
+    try {
+      const cache = await caches.open(CACHE);
+      await cache.addAll(PRECACHE);
+    } catch (err) {
+      // Precache-Fehler (z. B. offline beim Update) darf die Installation nicht blockieren
+    }
+    // Sofort aktivieren, nicht auf alten SW warten
+    await self.skipWaiting();
+  })());
 });
 
 self.addEventListener('activate', (e) => {
