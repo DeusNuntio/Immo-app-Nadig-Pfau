@@ -202,6 +202,9 @@ button.chip.chip-active{background:var(--ink);color:#fff;border-color:var(--ink)
 .btn-success{background:var(--green);color:#fff;border-color:var(--green)}
 .btn-danger{border-color:#fcc;color:var(--red);background:var(--red-l)}
 .btn-sm{padding:6px 10px;font-size:12px}
+/* v200: Zahlungen-Toolbar horizontal scrollbar (Mobil: hintere Buttons waren unerreichbar) */
+.za-toolbar{display:flex;gap:6px;margin-bottom:12px;overflow-x:auto;-webkit-overflow-scrolling:touch;padding-bottom:4px}
+.za-toolbar>.btn{flex:0 0 auto;white-space:nowrap}
 .btn-full{width:100%;justify-content:center}
 .btn-lg{padding:13px 22px;font-size:15px;border-radius:12px}
 
@@ -796,7 +799,7 @@ body.printing-active #printRoot{display:block!important}
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=34;
-const APP_VERSION = '2026-07-10-v199';
+const APP_VERSION = '2026-07-11-v200';
 /* v157 (02.07.2026): Drei Fixes/Features – Sync, Mail-Papierkorb, QR-ZIP-Export.
    1) SYNC-TOMBSTONES: mergeRecord holte geleerte Felder immer von der Gegen-
       seite zurück ("gefüllt schlägt leer") – Feld-Löschungen konnten dadurch
@@ -3416,7 +3419,10 @@ async function zeigeZaehlerVerlauf(zaehlerId){
         <button class="btn btn-sm btn-danger" onclick="delZaehlerstand('${s.id}','${zaehlerId}')"><i class="ti ti-trash"></i></button>`:''}</td>
     </tr>`;
   }
-  // v187: Jahresvergleich tagesgenau (siehe jahrTagesgenau oben); laufendes Jahr markiert.
+  // v187: Jahresverbrauch tagesgenau auf Kalenderjahre umgelegt (v200-Fix: Deklaration VOR erster Verwendung,
+  // vorher ReferenceError durch Temporal Dead Zone -> Verlauf-Modal oeffnete nicht).
+  const jahrTagesgenau=jahresVerbrauchTagesgenau([...staende].reverse());
+  // v187: Jahresvergleich tagesgenau; laufendes Jahr markiert.
   const jahrRows=Object.keys(jahrTagesgenau).sort((a,b)=>b-a).map(j=>
     `<tr><td style="padding:4px 6px;font-size:12px">${j}${jahrTagesgenau[j].unvollstaendig?' <span style=\"color:var(--ink-40);font-size:10px\">(unvollständig)</span>':''}</td>`+
     `<td style="padding:4px 6px;font-size:12px;font-weight:600">${jahrTagesgenau[j].wert.toFixed(2)} ${z.einheit}</td></tr>`).join('');
@@ -3428,8 +3434,7 @@ async function zeigeZaehlerVerlauf(zaehlerId){
     ? linienChartSVG([{name:z.name||'Zähler', punkte:chartPunkte}],
         {einheit:(z.einheit?z.einheit+'/Tag':''), hinweis:'Ø Verbrauch pro Tag im jeweiligen Ableseintervall – so sind unterschiedlich lange Ableseabstände fair vergleichbar.'})
     : '';
-  // v187: Jahresverbrauch tagesgenau auf Kalenderjahre umgelegt + Balkendiagramm.
-  const jahrTagesgenau=jahresVerbrauchTagesgenau([...staende].reverse());
+  // v187: Jahresverbrauch als Balkendiagramm (jahrTagesgenau oben deklariert).
   const jahrPaare=Object.keys(jahrTagesgenau).sort().map(j=>({label:j, wert:jahrTagesgenau[j].wert, teil:jahrTagesgenau[j].unvollstaendig}));
   const jahrBalkenHtml=jahrPaare.length>=1 ? balkenChartSVG(jahrPaare, {einheit:z.einheit}) : '';
   showModal(`
@@ -27931,6 +27936,7 @@ const BUCH_KATEGORIEN=[
   {id:'sonstiges',           label:'Sonstiges',              seite:'aus', umlage:'nein', nka:false},
   /* ── EINNAHMEN (§ 6 · Aufschlüsselung folgt in Etappe C) ── */
   {id:'kaltmiete',           label:'Kaltmiete',                    seite:'ein', nka:false},
+  {id:'stellplatzmiete',     label:'Stellplatzmiete',              seite:'ein', nka:false},
   {id:'nk_vorauszahlung',    label:'Nebenkostenvorauszahlung',     seite:'ein', nka:false},
   {id:'nk_nachzahlung',      label:'Nebenkostennachzahlung',       seite:'ein', nka:false},
   {id:'nk_guthaben',         label:'Nebenkostenguthaben',          seite:'ein', nka:false},
@@ -28082,6 +28088,9 @@ function buchAnalyseAusgang(b, versorgerListe, zaehlerListe){
    bereits als Engine + Hinweis-Badge im Kontoauszug verfügbar. */
 function buchAnalyseErstattung(b){
   const t=buchNorm((b.zweck||'')+' '+(b.name||''));
+  // v200: Stellplatz-/Garagenmiete erkennen (haeufigster Fall nicht zugeordneter Eingaenge, z. B. externe TG-Mieter)
+  if(/(stellplatz|einstellplatz|tiefgarage|garage|parkplatz)/.test(t) && /(miete|pacht)/.test(t))
+    return {kat:'stellplatzmiete', konfidenz:'wahrscheinlich', quelle:'Stellplatz-/Garagenmiete im Buchungstext'};
   if(!/(erstattung|r(ü|ue)ckzahlung|r(ü|ue)ckerstattung|gutschrift|guthaben|erstatt)/.test(t)) return null;
   if(/versicherung/.test(t)) return {kat:'versicherungserstattung', konfidenz:'wahrscheinlich', quelle:'Versicherungs-Erstattung'};
   if(/(stadtwerke|energie|strom|gas|wasser|versorg)/.test(t)) return {kat:'versorger_erstattung', konfidenz:'wahrscheinlich', quelle:'Versorger-Erstattung'};
@@ -28488,7 +28497,7 @@ async function zaRenderVerlauf(){
   const mieter = [...mieterAktiv, ...vormieterRelevant];
 
   const sichtBtns = `
-    <div style="display:flex;gap:6px;margin-bottom:12px">
+    <div class="za-toolbar">
       <button class="btn btn-sm ${ZA_VERLAUF.sicht==='mietkonto'?'btn-primary':''}" onclick="zaSetSicht('mietkonto')">
         <i class="ti ti-user"></i> Mietkonto (je Mieter)</button>
       <button class="btn btn-sm ${ZA_VERLAUF.sicht==='auszug'?'btn-primary':''}" onclick="zaSetSicht('auszug')">
@@ -29548,6 +29557,7 @@ async function mahnungDrucken(){
 const ANLAGE_V_GRUPPEN=[
   // Einnahmen
   {g:'E1', seite:'ein', label:'Mieteinnahmen (Kaltmiete)',                     kats:['kaltmiete'], sb:true},
+  {g:'E1b',seite:'ein', label:'Mieteinnahmen Stellplätze/Garagen',              kats:['stellplatzmiete'], sb:true},
   {g:'E2', seite:'ein', label:'Miet-Eingänge brutto (nicht aufgeschlüsselt, inkl. Umlagen)', kats:['__mieteBrutto'], sb:true},
   {g:'E3', seite:'ein', label:'Umlagen (NK-Vorauszahlungen und -Nachzahlungen)', kats:['nk_vorauszahlung','nk_nachzahlung'], sb:true},
   {g:'E4', seite:'ein', label:'Sonstige Einnahmen / Erstattungen',             kats:['erstattung_kosten','versicherungserstattung','versorger_erstattung','sonstige_einnahmen','nk_guthaben'], sb:true},
