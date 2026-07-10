@@ -7,7 +7,7 @@
 // an respondWith übergeben (führte zu TypeError); stattdessen kontrollierte
 // 503/504-Antworten.
 
-const CACHE = 'nadigpfau-v196';
+const CACHE = 'nadigpfau-v199';
 
 // v195 (B4): Kern-Assets beim Install vorab cachen, damit die App auch nach
 // einer Browser-Cache-Raeumung offline startet (bisher nur On-the-fly-Cache).
@@ -17,7 +17,11 @@ self.addEventListener('install', (e) => {
   e.waitUntil((async () => {
     try {
       const cache = await caches.open(CACHE);
-      await cache.addAll(PRECACHE);
+      // v199-Härtung: einzeln cachen statt addAll – ein fehlendes Asset (404)
+      // verwirft sonst atomar den GESAMTEN Precache.
+      for (const url of PRECACHE) {
+        try { await cache.add(url); } catch (err) { /* einzelnes Asset fehlt: Rest trotzdem cachen */ }
+      }
     } catch (err) {
       // Precache-Fehler (z. B. offline beim Update) darf die Installation nicht blockieren
     }

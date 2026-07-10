@@ -796,7 +796,7 @@ body.printing-active #printRoot{display:block!important}
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=34;
-const APP_VERSION = '2026-07-10-v196';
+const APP_VERSION = '2026-07-10-v199';
 /* v157 (02.07.2026): Drei Fixes/Features – Sync, Mail-Papierkorb, QR-ZIP-Export.
    1) SYNC-TOMBSTONES: mergeRecord holte geleerte Felder immer von der Gegen-
       seite zurück ("gefüllt schlägt leer") – Feld-Löschungen konnten dadurch
@@ -25435,6 +25435,7 @@ async function renderSettings(){
       <div class="card-hdr"><i class="ti ti-database"></i> Datenspeicher</div>
       <p style="font-size:13px;color:var(--ink-40);margin-bottom:12px">Alle Daten werden lokal in IndexedDB auf diesem Gerät gespeichert.</p>
       <div id="speicherInfo" style="font-size:12px;color:var(--ink-60);margin-bottom:12px"></div>
+      <p style="font-size:11px;color:var(--ink-40);margin-bottom:12px">Zusätzlich legt der Sync wöchentlich eine Backup-Generation unter OneDrive → NadigPfau → backup ab (die 4 neuesten Wochen bleiben erhalten). Wiederherstellen: gewünschte Datei dort nach immo_daten.json kopieren und in der App „Vom Server laden" ausführen.</p>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn" onclick="exportBackup()"><i class="ti ti-download"></i> Backup exportieren</button>
         <button class="btn" onclick="exportExcel()"><i class="ti ti-file-spreadsheet"></i> Excel exportieren</button>
@@ -26540,6 +26541,64 @@ async function hmDateiSchreiben(token){
   } catch(e){ console.warn('HM-Datei schreiben:', e); }
 }
 
+/* ── v199 (B5): Wöchentliche Backup-Generationen in OneDrive ──
+   Schutz gegen fehlerhafte Merges/Nutzerfehler, die sonst als einziger Stand
+   auf alle Geräte propagieren. Je ISO-Kalenderwoche wird beim ersten
+   erfolgreichen Voll-Sync eine Kopie nach /NadigPfau/backup/ geschrieben;
+   die 4 neuesten Generationen bleiben erhalten. Wiederherstellung (manuell,
+   bewusst ohne Ein-Klick-UI): gewünschte Generation in OneDrive nach
+   immo_daten.json kopieren, dann in der App „Vom Server laden" ausführen. */
+const OD_GENBACKUP_DIR='https://graph.microsoft.com/v1.0/me/drive/root:/NadigPfau/backup';
+
+// ISO-8601-Kalenderwoche inkl. ISO-Jahr (Donnerstag-Regel), z. B. '2026-KW28'
+function isoWoche(d){
+  const dt=new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+  const tag=(dt.getUTCDay()+6)%7;              // Mo=0 … So=6
+  dt.setUTCDate(dt.getUTCDate()-tag+3);        // auf den Donnerstag der Woche
+  const jahr=dt.getUTCFullYear();              // = ISO-Jahr
+  const jan4=new Date(Date.UTC(jahr,0,4));
+  const kw=1+Math.round(((dt-jan4)/86400000 - 3 + ((jan4.getUTCDay()+6)%7))/7);
+  return jahr+'-KW'+String(kw).padStart(2,'0');
+}
+
+async function genBackupSichern(token, json){
+  try{
+    const kw=isoWoche(new Date());
+    const st=await idbGet('settings','lastGenBackup').catch(()=>null);
+    if(st?.value===kw) return;   // diese Woche bereits gesichert
+    const url=OD_GENBACKUP_DIR+'/immo_daten_'+kw+'.json:/content';
+    const put=()=>fetchMitTimeout(url,{method:'PUT',
+      headers:{'Authorization':'Bearer '+token,'Content-Type':'application/json'},
+      body:json},OD_SYNC_TIMEOUT);
+    let r=await put();
+    if(!r.ok){
+      // backup-Ordner ggf. anlegen (409 = existiert bereits, ok) und einmal wiederholen
+      try{
+        await fetchMitTimeout('https://graph.microsoft.com/v1.0/me/drive/root:/NadigPfau:/children',{
+          method:'POST', headers:{'Authorization':'Bearer '+token,'Content-Type':'application/json'},
+          body:JSON.stringify({name:'backup', folder:{}, '@microsoft.graph.conflictBehavior':'fail'})},OD_SYNC_TIMEOUT);
+      }catch(_){}
+      r=await put();
+    }
+    if(!r.ok){ console.warn('Generationen-Backup: HTTP '+r.status); return; }
+    await idbPut('settings',{id:'lastGenBackup', value:kw});
+    // Aufräumen: nur die 4 neuesten Generationen behalten ('JJJJ-KWnn' sortiert lexikografisch = chronologisch)
+    try{
+      const l=await fetchMitTimeout(OD_GENBACKUP_DIR+':/children?$select=id,name',
+        {headers:{'Authorization':'Bearer '+token}},OD_SYNC_TIMEOUT);
+      if(l.ok){
+        const kids=(await l.json()).value||[];
+        const gens=kids.filter(k=>/^immo_daten_\d{4}-KW\d{2}\.json$/.test(k.name))
+          .sort((a,b)=>b.name.localeCompare(a.name));
+        for(const alte of gens.slice(4)){
+          await fetchMitTimeout('https://graph.microsoft.com/v1.0/me/drive/items/'+alte.id,
+            {method:'DELETE',headers:{'Authorization':'Bearer '+token}},OD_SYNC_TIMEOUT).catch(()=>{});
+        }
+      }
+    }catch(_){}
+  }catch(e){ console.warn('Generationen-Backup:', e); }
+}
+
 /* v196 (A3): Sync-Profil dieses Geraets umstellen. Beim Wechsel auf 'hm' werden alle
    Nicht-HM-Stores lokal geleert und Mieter feldreduziert (Datenminimierung) - der
    Bestand bleibt auf dem Verwalter-Geraet und in OneDrive vollstaendig erhalten.
@@ -26844,6 +26903,8 @@ async function syncToOneDrive() {
     try { await idbPut('settings', { id:'lastSync', value: new Date().toISOString() }); } catch(e){}
     // v196 (A3): frischen gefilterten Stand fuer HM-Geraete bereitstellen
     await hmDateiSchreiben(token);
+    // v199 (B5): wöchentliche Backup-Generation ablegen (fehlertolerant, blockiert nie)
+    await genBackupSichern(token, json);
     setSyncStatus('ok');
   } catch(e) {
     console.warn('Sync Upload:', e);
@@ -28441,6 +28502,8 @@ async function zaRenderVerlauf(){
       <button class="btn btn-sm" title="Alle Buchungen dieses Kontos als Excel exportieren" onclick="zaExportBuchungen()"><i class="ti ti-file-spreadsheet"></i> Excel</button>
       <button class="btn btn-sm" title="Import-Verlauf ansehen / Import rückgängig machen" onclick="modalImportVerlauf()"><i class="ti ti-file-import"></i> Importe</button>
       <button class="btn btn-sm" title="Gelernte Kategorie-Regeln ansehen und löschen" onclick="modalRegeln()"><i class="ti ti-bulb"></i> Regeln</button>
+      <button class="btn btn-sm" title="Mietrückstände und Mahnwesen" onclick="modalOffenePosten()"><i class="ti ti-alert-circle"></i> Offene Posten</button>
+      <button class="btn btn-sm" title="Steuer-Jahresauswertung nach Anlage-V-Gliederung (Excel)" onclick="modalAnlageV()"><i class="ti ti-receipt-tax"></i> Anlage V</button>
     </div>`;
 
   let inhalt;
@@ -28520,7 +28583,8 @@ async function zaExportBuchungen(){
   const kopf=['Datum','Art','Betrag (€)','Bar','Mieter/Empfänger','Für Monat','Kategorie','Verwendungszweck','IBAN','Status'];
   const zeilen=buch.map(b=>{
     const teile=buchTeile(b);
-    const kat = teile ? teile.map(t=>buchKatLabel(t.kategorie)).join(' + ') : (b.kategorie?buchKatLabel(b.kategorie):'');
+    // v198-Fix: buchTeile liefert {kat}, nicht {kategorie} – Spalte war bei Splitbuchungen leer
+    const kat = teile ? teile.map(t=>buchKatLabel(t.kat)).join(' + ') : (b.kategorie?buchKatLabel(b.kategorie):'');
     return [ b.datumISO||'', b.typ==='eingang'?'Einnahme':'Ausgabe',
       num(b.typ==='ausgang'?-Math.abs(b.betrag):b.betrag),
       b.bar?'Ja':'', b.mieterName||b.name||'', b.mietmonat||'', kat,
@@ -29238,6 +29302,400 @@ function zaStellplatzAnteil(b){
   // grobe Heuristik: reine Stellplatzzahlung
   if(zaIstStellplatz(b.zweck)) return b.betrag;
   return 0;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   v197 (B1): OFFENE POSTEN & MAHNWESEN
+   Setzt vollstaendig auf zaSollIst auf (Soll = m.gesamt + Stellplatz-Register,
+   Ist = zugeordnete Eingaenge inkl. Barzahlungen und SP-Aufteilung).
+   Rueckstand = Kontokorrent-Sicht ueber das Monatsfenster:
+   max(0, Summe Soll(aktive Monate) - Summe Ist) - so gleichen Ueberzahlungen
+   frueherer Monate spaetere Luecken aus (kein Fehlalarm bei Doppelzahlung).
+   Faelligkeit: Miete ist gem. \u00a7 556b Abs. 1 BGB bis zum 3. Werktag faellig;
+   der laufende Monat wird erst ab dem 7. Kalendertag gewertet (konservativ).
+   Mahnhistorie: Metadaten-Array m.mahnungen am Mieter-Record (kein neuer Store,
+   kein HTML-Archiv - das gedruckte Schreiben ist der Nachweis). Verwalter-only;
+   das Feld steht bewusst NICHT in HM_SYNC.mieterFelder.
+═══════════════════════════════════════════════════════════ */
+
+// Letzte n Monate als ['YYYY-MM', ...]; laufender Monat erst ab dem 7. Kalendertag
+function opMonatsfenster(n){
+  const jetzt = new Date();
+  const inklAktuell = jetzt.getDate() >= 7;
+  const out = [];
+  const d = new Date(jetzt.getFullYear(), jetzt.getMonth() - (inklAktuell ? 0 : 1), 1);
+  for (let i = 0; i < n; i++){
+    out.unshift(d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0'));
+    d.setMonth(d.getMonth() - 1);
+  }
+  return out;
+}
+
+// Stellplatz-Index ueber ALLE Tiefgaragen (globale OP-Sicht, gruppenunabhaengig)
+async function spIndexAlle(){
+  const byNr = {}, byMieter = {};
+  try {
+    for (const o of OBJEKTE.filter(x => x.tiefgarage)){
+      const alle = (await idbGetAll('stellplaetze','objektId',o.id)).filter(x => x && !x.geloescht);
+      for (const sp of alle){
+        byNr[String(sp.nr)] = sp;
+        if (sp.mieterId) (byMieter[sp.mieterId] = byMieter[sp.mieterId] || []).push(sp);
+      }
+    }
+  } catch(e){}
+  return {byNr, byMieter, objekt:null};
+}
+
+// Rueckstaende aller Mieter (aktive + ehemalige) ueber das Monatsfenster
+async function opRueckstaende(fensterMonate){
+  const monate = opMonatsfenster(fensterMonate || 12);
+  const alle = await idbGetAll('buchungen').catch(()=>[]);
+  const buch = alle.filter(b => b && !b.geloescht);
+  const alleMieter = await idbGetAll('mieter');
+  const mieter = alleMieter.filter(m => m && m.mieter && !m.geloescht && !m._zukuenftig && m.aktiv !== false);
+  const spIdx = await spIndexAlle();
+  const rows = zaSollIst(buch, mieter, monate, spIdx);
+  const erg = [];
+  for (const r of rows){
+    let soll = 0, ist = 0; const offeneMonate = [];
+    for (const mo of monate){
+      const v = r.monate[mo];
+      if (!v || !v.aktiv) continue;
+      soll += v.sollMo; ist += v.ist;
+      if (v.status === 'offen' || v.status === 'weniger') offeneMonate.push({monat:mo, fehlt: rc(v.sollMo - v.ist)});
+    }
+    const rueckstand = rc(Math.max(0, soll - ist));
+    if (rueckstand < 0.5) continue;
+    const monatsmieten = r.soll > 0 ? rueckstand / r.soll : 0;
+    erg.push({ mieterId:r.mieterId, mieter:r.mieter, weNr:r.weNr, objektId:r.objektId,
+      soll:r.soll, rueckstand, monatsmieten: Math.round(monatsmieten*10)/10, mmExakt: monatsmieten,
+      offeneMonate, ehem:!!r.ehem, tg:!!r.tg });
+  }
+  erg.sort((a,b) => b.rueckstand - a.rueckstand);
+  return {rows:erg, monate};
+}
+
+function _opStufeLabel(st){ return st===1 ? 'Zahlungserinnerung' : (st===2 ? '1. Mahnung' : '2. Mahnung (letzte)'); }
+
+async function modalOffenePosten(){
+  if (!istVerwalter()){ toast('Nur f\u00fcr Verwalter'); return; }
+  const {rows, monate} = await opRueckstaende(12);
+  // Mahnhistorie-Index (mieterId -> Record) fuer die Anzeige der letzten Mahnung
+  window._opMieterIdx = {};
+  try {
+    for (const mm of await idbGetAll('mieter')){ if (mm && mm.id) window._opMieterIdx[mm.id] = mm; }
+  } catch(e){}
+  const eur = n => (Number(n)||0).toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const trs = rows.map(r => {
+    // Ampel: >= 2 Monatsmieten = Kuendigungsrelevanz \u00a7 543 II Nr. 3 BGB (rot),
+    // >= 1 Monatsmiete orange, darunter gelb.
+    // Schwellen auf dem UNGERUNDETEN Verhaeltnis pruefen (v197-Fix: 1.299/650
+    // wuerde sonst auf "2,0" gerundet und faelschlich als §-543-relevant markiert)
+    const farbe = r.mmExakt >= 2 ? 'var(--red,#dc2626)' : (r.mmExakt >= 1 ? '#d97706' : '#ca8a04');
+    const badge = r.mmExakt >= 2 ? ' <span class="chip" style="font-size:9px;background:var(--red,#dc2626);color:#fff;padding:1px 6px;border-radius:8px" title="R\u00fcckstand \u2265 2 Monatsmieten: fristlose K\u00fcndigung nach \u00a7 543 Abs. 2 Nr. 3 BGB m\u00f6glich \u2013 anwaltliche Pr\u00fcfung empfohlen">\u00a7 543 BGB</span>' : '';
+    const hist = (window._opMieterIdx[r.mieterId]?.mahnungen || []);
+    const letzte = hist.length ? hist[hist.length-1] : null;
+    const histTxt = letzte ? `${_opStufeLabel(letzte.stufe)} am ${new Date(letzte.datum).toLocaleDateString('de-DE')}` : 'noch keine';
+    const moTxt = r.offeneMonate.slice(-4).map(o => o.monat.slice(5)+'/'+o.monat.slice(2,4)).join(', ') + (r.offeneMonate.length > 4 ? ' \u2026' : '');
+    return `<tr style="border-bottom:1px solid var(--line)">
+      <td style="padding:6px;font-size:11px;color:var(--ink-40)">${esc(r.weNr||(r.tg?'TG':''))}</td>
+      <td style="padding:6px;font-size:13px">${esc(r.mieter)}${r.ehem?' <span class="chip chip-warn" style="font-size:9px">ehem.</span>':''}${badge}
+        <div style="font-size:10px;color:var(--ink-40)">offen: ${esc(moTxt||'-')} \u00b7 letzte Mahnung: ${esc(histTxt)}</div></td>
+      <td style="padding:6px;text-align:right;font-variant-numeric:tabular-nums;font-weight:700;color:${farbe}">${eur(r.rueckstand)} \u20ac
+        <div style="font-size:10px;font-weight:400;color:var(--ink-40)">\u2248 ${String(r.monatsmieten).replace('.',',')} Monatsmieten</div></td>
+      <td style="padding:6px;text-align:right"><button class="btn btn-sm btn-copper" onclick="modalMahnung('${r.mieterId}')"><i class="ti ti-mail-exclamation"></i> Mahnen</button></td>
+    </tr>`;
+  }).join('');
+  const gesamt = rc(rows.reduce((a,r) => a + r.rueckstand, 0));
+  showModal(`
+    <div class="m-title"><i class="ti ti-alert-circle"></i> Offene Posten (Mietr\u00fcckst\u00e4nde)</div>
+    <div style="font-size:11px;color:var(--ink-40);margin-bottom:10px">Zeitraum: ${esc(monate[0])} bis ${esc(monate[monate.length-1])} \u00b7 Kontokorrent-Sicht (\u00dcberzahlungen gleichen L\u00fccken aus) \u00b7 laufender Monat ab dem 7. gewertet (\u00a7 556b BGB)</div>
+    ${rows.length ? `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">
+      <thead><tr style="border-bottom:2px solid var(--line)">
+        <th style="padding:6px;text-align:left;font-size:11px;color:var(--ink-40)">WE</th>
+        <th style="padding:6px;text-align:left;font-size:11px;color:var(--ink-40)">Mieter</th>
+        <th style="padding:6px;text-align:right;font-size:11px;color:var(--ink-40)">R\u00fcckstand</th>
+        <th></th></tr></thead>
+      <tbody>${trs}</tbody></table></div>
+      <div style="margin-top:10px;font-size:13px;text-align:right">Summe R\u00fcckst\u00e4nde: <strong>${eur(gesamt)} \u20ac</strong></div>`
+      : `<p style="color:var(--green);font-size:14px"><i class="ti ti-circle-check"></i> Keine R\u00fcckst\u00e4nde \u2013 alle Mietkonten sind ausgeglichen.</p>`}
+    <div style="font-size:10px;color:var(--ink-40);margin-top:12px">Hinweis: Verzug tritt bei der Miete kalenderm\u00e4\u00dfig ohne Mahnung ein (\u00a7\u00a7 556b Abs. 1, 286 Abs. 2 Nr. 1 BGB). Bei k\u00fcndigungsrelevanten R\u00fcckst\u00e4nden anwaltliche Pr\u00fcfung empfohlen.</div>
+    <button class="btn btn-full" style="margin-top:12px" onclick="closeModal()">Schlie\u00dfen</button>`);
+}
+
+async function modalMahnung(mieterId){
+  if (!istVerwalter()){ toast('Nur f\u00fcr Verwalter'); return; }
+  const m = await idbGet('mieter', mieterId);
+  if (!m){ toast('Mieter nicht gefunden'); return; }
+  const {rows} = await opRueckstaende(12);
+  const r = rows.find(x => x.mieterId === mieterId);
+  if (!r){ toast('Kein R\u00fcckstand (mehr) vorhanden.'); return; }
+  const eur = n => (Number(n)||0).toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const hist = m.mahnungen || [];
+  const letzteStufe = hist.length ? (hist[hist.length-1].stufe || 0) : 0;
+  const vorschlag = Math.min(3, letzteStufe + 1);
+  window._mahnKontext = {mieterId, rueckstand:r.rueckstand, offeneMonate:r.offeneMonate, monatsmieten:r.monatsmieten};
+  const histHtml = hist.length ? hist.slice(-5).reverse().map(h =>
+    `<div style="font-size:11px;color:var(--ink-60)">\u2022 ${_opStufeLabel(h.stufe)} \u00b7 ${new Date(h.datum).toLocaleDateString('de-DE')} \u00b7 ${eur(h.betrag)} \u20ac \u00b7 ${esc(h.von||'')}</div>`).join('')
+    : '<div style="font-size:11px;color:var(--ink-40)">Noch keine Mahnungen erfasst.</div>';
+  showModal(`
+    <div class="m-title"><i class="ti ti-mail-exclamation"></i> Mahnschreiben \u2013 ${esc(m.mieter)}</div>
+    <div style="font-size:12px;margin-bottom:10px">R\u00fcckstand: <strong style="color:var(--red,#dc2626)">${eur(r.rueckstand)} \u20ac</strong> (\u2248 ${String(r.monatsmieten).replace('.',',')} Monatsmieten)</div>
+    <div class="f"><label>Stufe</label>
+      <select id="mahnStufe">
+        <option value="1" ${vorschlag===1?'selected':''}>Zahlungserinnerung (freundlich)</option>
+        <option value="2" ${vorschlag===2?'selected':''}>1. Mahnung</option>
+        <option value="3" ${vorschlag===3?'selected':''}>2. Mahnung (letzte, mit \u00a7-543-Hinweis)</option>
+      </select></div>
+    <div class="f-row">
+      <div class="f"><label>Datum</label><input type="date" id="mahnDatum" value="${today()}"></div>
+      <div class="f"><label>Zahlungsfrist (Tage)</label><input type="number" id="mahnFrist" value="10" min="5" max="30"></div>
+    </div>
+    <div class="f"><label>Konto f\u00fcr die Zahlung (IBAN, optional)</label><input type="text" id="mahnIban" placeholder="leer = \u201eauf das Ihnen bekannte Mietkonto\u201c"></div>
+    <div style="margin:10px 0"><div style="font-size:11px;font-weight:600;color:var(--ink-60);margin-bottom:4px">Bisherige Mahnungen</div>${histHtml}</div>
+    <button class="btn btn-copper btn-full" onclick="mahnungDrucken()"><i class="ti ti-printer"></i> Schreiben erzeugen &amp; Historie vermerken</button>
+    <button class="btn btn-full" style="margin-top:8px" onclick="modalOffenePosten()">Zur\u00fcck zur \u00dcbersicht</button>`);
+}
+
+async function mahnungDrucken(){
+  const ctx = window._mahnKontext;
+  if (!ctx) return;
+  const m = await idbGet('mieter', ctx.mieterId);
+  if (!m) return;
+  const obj = getObj(m.objektId);
+  const stufe = parseInt(document.getElementById('mahnStufe')?.value || '1', 10) || 1;
+  const datumRoh = document.getElementById('mahnDatum')?.value || today();
+  const frist = parseInt(document.getElementById('mahnFrist')?.value || '10', 10) || 10;
+  const iban = (document.getElementById('mahnIban')?.value || '').trim();
+  const eur = n => (Number(n)||0).toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const datumStr = new Date(datumRoh).toLocaleDateString('de-DE');
+  const zahlBis = new Date(new Date(datumRoh).getTime() + frist*86400000).toLocaleDateString('de-DE');
+  const bk = getBriefkopf(m.objektId) || {};
+  const vermName = bk.name || '';
+  const fussStr = bk.strasse || ''; const fussOrt = [bk.plz, bk.ort].filter(Boolean).join(' ');
+  const fussTel = bk.telefon || ''; const fussMail = bk.email || '';
+  const objAdr = obj ? [obj.name, obj.ort].filter(Boolean).join(', ') : '';
+  const objZeile = objAdr + (m.weNr ? (', WE ' + m.weNr) : '');
+  const moTab = ctx.offeneMonate.map(o =>
+    `<tr><td class="lbl">Miete ${o.monat.slice(5)}/${o.monat.slice(0,4)}</td><td class="amt">${eur(o.fehlt)} \u20ac</td></tr>`).join('');
+  const titel = _opStufeLabel(stufe);
+  const anrede = 'Sehr geehrte/r Mieter/in,';
+  let einleitung, schluss;
+  if (stufe === 1){
+    einleitung = `bei der Durchsicht unserer Mietkonten haben wir festgestellt, dass f\u00fcr Ihre Wohnung derzeit ein offener Betrag in H\u00f6he von <strong>${eur(ctx.rueckstand)} \u20ac</strong> besteht. Sicherlich handelt es sich um ein Versehen.`;
+    schluss = `Wir bitten Sie, den offenen Betrag bis zum <strong>${zahlBis}</strong> auszugleichen. Sollte sich Ihre Zahlung mit diesem Schreiben \u00fcberschnitten haben, betrachten Sie es bitte als gegenstandslos. Bei Fragen oder Zahlungsschwierigkeiten sprechen Sie uns gerne an \u2013 gemeinsam finden wir eine L\u00f6sung.`;
+  } else if (stufe === 2){
+    einleitung = `trotz F\u00e4lligkeit (\u00a7 556b Abs. 1 BGB: die Miete ist sp\u00e4testens am dritten Werktag des Monats zu entrichten) ist auf Ihrem Mietkonto ein R\u00fcckstand in H\u00f6he von <strong>${eur(ctx.rueckstand)} \u20ac</strong> offen. Wir mahnen diesen Betrag hiermit an.`;
+    schluss = `Bitte gleichen Sie den R\u00fcckstand bis sp\u00e4testens <strong>${zahlBis}</strong> aus. Wir weisen darauf hin, dass sich Ihr Mietkonto bereits in Verzug befindet (\u00a7 286 Abs. 2 Nr. 1 BGB) und wir uns die Geltendmachung von Verzugszinsen (\u00a7 288 BGB) vorbehalten. Bei Zahlungsschwierigkeiten bitten wir um kurzfristige Kontaktaufnahme.`;
+  } else {
+    einleitung = `trotz vorheriger Mahnung besteht auf Ihrem Mietkonto weiterhin ein R\u00fcckstand in H\u00f6he von <strong>${eur(ctx.rueckstand)} \u20ac</strong>. Wir fordern Sie hiermit letztmalig zur Zahlung auf.`;
+    schluss = `Sollte der Gesamtbetrag nicht bis sp\u00e4testens <strong>${zahlBis}</strong> bei uns eingehen, werden wir ohne weitere Ank\u00fcndigung gerichtliche Schritte (gerichtliches Mahnverfahren) einleiten. Wir weisen zudem darauf hin, dass ein Mietr\u00fcckstand in H\u00f6he von zwei Monatsmieten zur fristlosen K\u00fcndigung des Mietverh\u00e4ltnisses berechtigen kann (\u00a7 543 Abs. 2 Satz 1 Nr. 3, \u00a7 569 Abs. 3 BGB). Es liegt in Ihrem Interesse, dies durch umgehende Zahlung oder Kontaktaufnahme abzuwenden.`;
+  }
+  const kontoZeile = iban
+    ? `Bitte \u00fcberweisen Sie den Betrag auf folgendes Konto:<br>IBAN: <strong>${esc(iban)}</strong>`
+    : `Bitte \u00fcberweisen Sie den Betrag auf das Ihnen bekannte Mietkonto.`;
+  const style = `<style>
+    *{box-sizing:border-box}body{font-family:'Segoe UI',Arial,sans-serif;color:#1a1a1a;font-size:14px;line-height:1.55;padding:22mm 22mm;max-width:210mm;margin:0 auto}
+    .ea-h{font-size:19px;font-weight:700;margin:0 0 4px}.ea-obj{font-size:13px;color:#444;margin:0 0 18px}
+    .ea-an{margin:0 0 16px}.ea-body{margin:0 0 14px;text-align:justify}
+    table.ea-t{width:100%;border-collapse:collapse;margin:10px 0 6px}
+    table.ea-t td{padding:5px 0;border-bottom:1px solid #e5e5e5}table.ea-t td.amt{text-align:right;font-variant-numeric:tabular-nums}
+    table.ea-t tr.sum td{border-top:2px solid #333;border-bottom:none;font-weight:700;padding-top:8px}
+    .ea-sig{margin-top:40px}.ea-sig .line{border-top:1px solid #333;width:60%;margin-bottom:3px}.ea-sig .cap{font-size:11px;color:#555}
+    .ea-foot{margin-top:44px;border-top:1px solid #999;padding-top:8px;text-align:center;font-size:11px;color:#444;line-height:1.5}.ea-foot .fn{font-weight:700;color:#222;font-size:12px}
+    @page{margin:0;size:A4}@media print{body{padding:20mm 20mm;-webkit-print-color-adjust:exact;print-color-adjust:exact}}body>*{page-break-inside:avoid}
+  </style>`;
+  const inhalt = `
+    <div class="ea-h">${esc(titel)}</div>
+    <div class="ea-obj">Mietverh\u00e4ltnis ${esc(objZeile)}</div>
+    <div class="ea-an">An: <strong>${esc(m.mieter||'')}</strong></div>
+    <div class="ea-body">${anrede}<br>${einleitung}</div>
+    <table class="ea-t">
+      ${moTab}
+      <tr class="sum"><td class="lbl">Offener Gesamtbetrag</td><td class="amt">${eur(ctx.rueckstand)} \u20ac</td></tr>
+    </table>
+    <div class="ea-body">${schluss}</div>
+    <div class="ea-body">${kontoZeile}</div>
+    <div style="margin:26px 0 0;font-size:13px">Ort, Datum: ${esc(datumStr)}</div>
+    <div class="ea-sig"><div class="line">&nbsp;</div><div class="cap">${esc(vermName)}</div></div>
+    <div class="ea-foot"><div class="fn">${esc(vermName)}</div>${(fussStr||fussOrt)?`<div>${esc([fussStr,fussOrt].filter(Boolean).join(' \u00b7 '))}</div>`:''}${fussTel?`<div>Tel: ${esc(fussTel)}</div>`:''}${fussMail?`<div>${esc(fussMail)}</div>`:''}</div>`;
+  const html = '<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8"><title>' + esc(titel) + ' \u2013 ' + esc(m.mieter||'') + '</title>' + style + '</head><body>' + inhalt
+    + '<scr'+'ipt>(function(){var p=function(){setTimeout(function(){window.focus();window.print();},500);};if(document.readyState==="complete"){p();}else{window.addEventListener("load",p);}})()</scr'+'ipt></body></html>';
+  // Historie am Mieter vermerken (Metadaten; das gedruckte Schreiben ist der Nachweis)
+  m.mahnungen = m.mahnungen || [];
+  m.mahnungen.push({ stufe, datum:new Date(datumRoh).toISOString(), betrag:ctx.rueckstand,
+    monate:ctx.offeneMonate.map(o=>o.monat), frist, von:CU?.name||'' });
+  await idbPut('mieter', m);
+  syncSoon();
+  const _name = [titel, (obj?.name||'').replace(/[\\/:*?"<>|]+/g,' ').trim(), m.weNr?('WE '+m.weNr):'', '-', (m.mieter||'').replace(/[\\/:*?"<>|,]+/g,' ').trim()].filter(Boolean).join(' ').replace(/\s+/g,' ').trim();
+  druckHTML(html, titel + ' \u2013 ' + (m.mieter||''), _name);
+  toast(titel + ' erstellt & vermerkt \u2713');
+  closeModal();
+}
+
+/* ═══════════════════════════════════════════════════════════
+   v198 (B2): ANLAGE-V-JAHRESEXPORT (Steuerauswertung V+V)
+   Gruppiert alle Buchungen eines Kontos/Jahres nach den Positionen der
+   Anlage V und exportiert sie als Excel-Arbeitsmappe (Übersicht +
+   Einzelnachweis + Mieteinnahmen je Objekt). KEINE Steuerberatung –
+   Vorbereitung für den Steuerberater: AfA und die Verteilung größerer
+   Erhaltungsaufwendungen (§ 82b EStDV) kennt die App nicht und weist sie
+   als offene Positionen aus. Nicht steuerbar/nicht abziehbar (Kaution,
+   Tilgung, Privatentnahmen, Fehlbuchungen) wird nachrichtlich getrennt.
+═══════════════════════════════════════════════════════════ */
+
+// Kategorie -> Anlage-V-Gruppe. sb:false = nicht steuerbar / nicht abziehbar (nachrichtlich)
+const ANLAGE_V_GRUPPEN=[
+  // Einnahmen
+  {g:'E1', seite:'ein', label:'Mieteinnahmen (Kaltmiete)',                     kats:['kaltmiete'], sb:true},
+  {g:'E2', seite:'ein', label:'Miet-Eingänge brutto (nicht aufgeschlüsselt, inkl. Umlagen)', kats:['__mieteBrutto'], sb:true},
+  {g:'E3', seite:'ein', label:'Umlagen (NK-Vorauszahlungen und -Nachzahlungen)', kats:['nk_vorauszahlung','nk_nachzahlung'], sb:true},
+  {g:'E4', seite:'ein', label:'Sonstige Einnahmen / Erstattungen',             kats:['erstattung_kosten','versicherungserstattung','versorger_erstattung','sonstige_einnahmen','nk_guthaben'], sb:true},
+  {g:'E5', seite:'ein', label:'Einnahmen unkategorisiert (bitte prüfen)',      kats:['__einUnkat'], sb:true},
+  {g:'NE1',seite:'ein', label:'Kaution erhalten (durchlaufend, nicht steuerbar; steuerbar erst bei Verrechnung)', kats:['kaution_erhalten'], sb:false},
+  {g:'NE2',seite:'ein', label:'Fehlbuchung / Rückerstattung (neutral)',        kats:['fehlbuchung_rueck'], sb:false},
+  // Werbungskosten
+  {g:'W1', seite:'aus', label:'Grundsteuer',                                   kats:['grundsteuer'], sb:true},
+  {g:'W2', seite:'aus', label:'Wasser / Abwasser / Niederschlagswasser',       kats:['wasser','abwasser','regenwasser'], sb:true},
+  {g:'W3', seite:'aus', label:'Heizung / Energie / Allgemeinstrom',            kats:['gas','heizkosten','strom','allgemeinstrom'], sb:true},
+  {g:'W4', seite:'aus', label:'Müll / Straßenreinigung / Gebäudereinigung',    kats:['muell','strassenreinigung','reinigung'], sb:true},
+  {g:'W5', seite:'aus', label:'Hausmeister / Gartenpflege',                    kats:['hausmeister','gartenpflege'], sb:true},
+  {g:'W6', seite:'aus', label:'Schornsteinfeger',                              kats:['schornsteinfeger'], sb:true},
+  {g:'W7', seite:'aus', label:'Gebäudeversicherung',                           kats:['gebaeudeversicherung'], sb:true},
+  {g:'W8', seite:'aus', label:'Sonstige umlagefähige Betriebskosten',          kats:['sonstige_bk'], sb:true},
+  {g:'W9', seite:'aus', label:'Erhaltungsaufwendungen (§ 82b EStDV: Verteilung auf 2–5 Jahre möglich – mit StB klären)', kats:['instandhaltung','reparaturen','handwerker','ersatzteile','geraetekauf'], sb:true},
+  {g:'W10',seite:'aus', label:'Verwaltungskosten',                             kats:['verwaltung'], sb:true},
+  {g:'W11',seite:'aus', label:'Schuldzinsen / Geldbeschaffungskosten (KEINE Tilgung)', kats:['zinsen','bankgebuehren','bankkosten'], sb:true},
+  {g:'W12',seite:'aus', label:'Sonstige Ausgaben (Zuordnung prüfen)',          kats:['sonstiges','__ausUnkat'], sb:true},
+  {g:'NW1',seite:'aus', label:'Tilgung (nicht abziehbar)',                     kats:['tilgung'], sb:false},
+  {g:'NW2',seite:'aus', label:'Kaution ausgezahlt (durchlaufend)',             kats:['kaution_auszahlung'], sb:false},
+  {g:'NW3',seite:'aus', label:'Auszahlung Eigentümer (Privatentnahme, nicht abziehbar)', kats:['eigentuemer_auszahlung'], sb:false},
+  {g:'NW4',seite:'aus', label:'Fehlbuchung (neutral)',                         kats:['fehlbuchung'], sb:false},
+];
+// Kategorie-Index einmalig aufbauen
+const _AV_KAT_IDX=(()=>{ const m={}; for(const gr of ANLAGE_V_GRUPPEN){ for(const k of gr.kats) m[gr.seite+':'+k]=gr; } return m; })();
+
+// Buchungsteil einer Anlage-V-Gruppe zuordnen (mit Pseudo-Kategorien für Fallbacks)
+function avGruppeFuer(seite, kat, b){
+  if(kat){ const gr=_AV_KAT_IDX[seite+':'+kat]; if(gr) return gr; }
+  if(seite==='ein'){
+    if(b && (b.mietmonat || b.mieterId)) return _AV_KAT_IDX['ein:__mieteBrutto'];
+    return _AV_KAT_IDX['ein:__einUnkat'];
+  }
+  return _AV_KAT_IDX['aus:__ausUnkat'];
+}
+
+async function modalAnlageV(){
+  if(!istVerwalter()){ toast('Nur für Verwalter'); return; }
+  const konto=ZA_STATE.konto;
+  if(!konto){ toast('Bitte zuerst ein Konto wählen.'); return; }
+  let alle=[]; try{ alle=await idbGetAll('buchungen'); }catch(_){ }
+  const buch=alle.filter(b=>b && !b.geloescht && b.status!=='storniert' && b.kontoId===konto.id);
+  const jahre=[...new Set(buch.map(b=>(b.datumISO||'').slice(0,4)).filter(j=>/^\d{4}$/.test(j)))].sort().reverse();
+  if(!jahre.length){ toast('Keine Buchungen für dieses Konto vorhanden.'); return; }
+  const objNamen=(konto.objekte||[]).map(oid=>(getObj(oid)||{}).name).filter(Boolean).join(', ');
+  showModal(`
+    <div class="m-title"><i class="ti ti-receipt-tax"></i> Anlage V – Steuer-Jahresauswertung</div>
+    <div style="font-size:12px;color:var(--ink-60);margin-bottom:10px">Konto: <strong>${esc(konto.label||'')}</strong>${objNamen?` · Objekte: ${esc(objNamen)}`:''}</div>
+    <div class="f"><label>Wirtschaftsjahr</label>
+      <select id="avJahr">${jahre.map(j=>`<option value="${j}">${j}</option>`).join('')}</select></div>
+    <div style="font-size:11px;color:var(--ink-40);line-height:1.55;margin:10px 0">
+      Exportiert alle Buchungen des Jahres gruppiert nach Anlage-V-Positionen (Einnahmen, Werbungskosten,
+      nachrichtliche Posten) als Excel – inkl. Einzelnachweis und Mieteinnahmen je Objekt.
+      <strong>Keine Steuerberatung:</strong> AfA und §-82b-Verteilung sind mit dem Steuerberater zu ergänzen.</div>
+    <button class="btn btn-copper btn-full" onclick="anlageVExport()"><i class="ti ti-file-spreadsheet"></i> Excel erzeugen</button>
+    <button class="btn btn-full" style="margin-top:8px" onclick="closeModal()">Abbrechen</button>`);
+}
+
+async function anlageVExport(){
+  const konto=ZA_STATE.konto;
+  if(!konto) return;
+  if(typeof XLSX==='undefined'){ toast('Excel-Bibliothek nicht geladen.'); return; }
+  const jahr=document.getElementById('avJahr')?.value || String(new Date().getFullYear()-1);
+  let alle=[]; try{ alle=await idbGetAll('buchungen'); }catch(_){ }
+  const buch=alle.filter(b=>b && !b.geloescht && b.status!=='storniert' && b.kontoId===konto.id
+      && (b.datumISO||'').slice(0,4)===jahr)
+    .sort((a,b)=>(a.datumISO||'').localeCompare(b.datumISO||''));
+  if(!buch.length){ toast('Keine Buchungen im Jahr '+jahr+'.'); return; }
+
+  // Mieter-Index für Objekt-Aufschlüsselung der Mieteingänge
+  const mIdx={};
+  try{ for(const m of await idbGetAll('mieter')){ if(m && m.id) mIdx[m.id]=m; } }catch(e){}
+
+  // Aggregation je Anlage-V-Gruppe + Einzelnachweis
+  const summen={};   // g -> Betrag
+  const einzel=[];   // Zeilen für Blatt 2
+  const objEin={};   // objektId -> Mieteingänge (E1+E2)
+  for(const b of buch){
+    const seite=b.typ==='eingang'?'ein':'aus';
+    const teile=buchTeile(b) || [{kat:null, betrag:Math.abs(Number(b.betrag)||0)}];
+    for(const t of teile){
+      const gr=avGruppeFuer(seite, t.kat, b);
+      summen[gr.g]=rc((summen[gr.g]||0)+t.betrag);
+      einzel.push([ b.datumISO||'', seite==='ein'?'Einnahme':'Ausgabe',
+        rc(seite==='aus'?-t.betrag:t.betrag),
+        t.kat?buchKatLabel(t.kat):(seite==='ein'&&(b.mietmonat||b.mieterId)?'Mieteingang (brutto)':'unkategorisiert'),
+        gr.g+' '+gr.label, b.mieterName||b.name||'', b.mietmonat||'', b.zweck||'', b.bar?'bar':'' ]);
+      if(seite==='ein'&&(gr.g==='E1'||gr.g==='E2')){
+        const oid=b.mieterId&&mIdx[b.mieterId]?(mIdx[b.mieterId].objektId||'?'):'?';
+        objEin[oid]=rc((objEin[oid]||0)+t.betrag);
+      }
+    }
+  }
+
+  const su=g=>summen[g]||0;
+  const einSb=rc(['E1','E2','E3','E4','E5'].reduce((a,g)=>a+su(g),0));
+  const wkSb=rc(['W1','W2','W3','W4','W5','W6','W7','W8','W9','W10','W11','W12'].reduce((a,g)=>a+su(g),0));
+  const ueberschuss=rc(einSb-wkSb);
+
+  const objNamen=(konto.objekte||[]).map(oid=>(getObj(oid)||{}).name).filter(Boolean).join(', ');
+  const A=[];
+  A.push(['Anlage V – Vorbereitung Steuererklärung (Einkünfte aus Vermietung und Verpachtung)']);
+  A.push(['Wirtschaftsjahr', jahr]);
+  A.push(['Konto', konto.label||'', 'Objekte', objNamen]);
+  A.push(['Erstellt am', new Date().toLocaleDateString('de-DE'), 'per', 'NadigPfau Hausverwaltung v198']);
+  A.push([]);
+  A.push(['EINNAHMEN', '', 'Betrag (€)']);
+  for(const gr of ANLAGE_V_GRUPPEN.filter(x=>x.seite==='ein'&&x.sb)){ if(su(gr.g)) A.push([gr.g, gr.label, su(gr.g)]); }
+  A.push(['', 'Summe Einnahmen (steuerbar)', einSb]);
+  A.push([]);
+  A.push(['WERBUNGSKOSTEN', '', 'Betrag (€)']);
+  for(const gr of ANLAGE_V_GRUPPEN.filter(x=>x.seite==='aus'&&x.sb)){ if(su(gr.g)) A.push([gr.g, gr.label, su(gr.g)]); }
+  A.push(['', 'AfA (Absetzung für Abnutzung) – vom Steuerberater zu ergänzen', '']);
+  A.push(['', 'Summe Werbungskosten (ohne AfA)', wkSb]);
+  A.push([]);
+  A.push(['', 'ÜBERSCHUSS vor AfA (Einnahmen − Werbungskosten)', ueberschuss]);
+  A.push([]);
+  A.push(['NACHRICHTLICH (nicht steuerbar / nicht abziehbar)', '', 'Betrag (€)']);
+  for(const gr of ANLAGE_V_GRUPPEN.filter(x=>!x.sb)){ if(su(gr.g)) A.push([gr.g, gr.label, su(gr.g)]); }
+  A.push([]);
+  A.push(['Hinweise:']);
+  A.push(['– Keine Steuerberatung. Endgültige Zuordnung, AfA und §-82b-Verteilung durch den Steuerberater.']);
+  A.push(['– Kautionen sind durchlaufende Posten; steuerbar erst bei Verrechnung mit Forderungen.']);
+  A.push(['– „Miet-Eingänge brutto“ enthalten Umlagen; Aufschlüsselung Kaltmiete/NK ggf. über Soll-Werte.']);
+
+  const ws1=XLSX.utils.aoa_to_sheet(A);
+  ws1['!cols']=[{wch:8},{wch:78},{wch:14},{wch:30}];
+
+  const kopf2=['Datum','Art','Betrag (€)','Kategorie','Anlage-V-Position','Mieter/Empfänger','Monat','Verwendungszweck','Bar'];
+  const ws2=XLSX.utils.aoa_to_sheet([kopf2, ...einzel]);
+  ws2['!cols']=[{wch:11},{wch:9},{wch:11},{wch:24},{wch:52},{wch:26},{wch:9},{wch:40},{wch:5}];
+
+  const zeilen3=Object.entries(objEin).map(([oid,betr])=>
+    [ oid==='?'?'ohne Objektzuordnung':((getObj(oid)||{}).name||oid), betr ]);
+  zeilen3.sort((a,b)=>b[1]-a[1]);
+  const ws3=XLSX.utils.aoa_to_sheet([['Objekt','Mieteinnahmen '+jahr+' (€)'], ...zeilen3,
+    ['Summe', rc(zeilen3.reduce((a,z)=>a+z[1],0))]]);
+  ws3['!cols']=[{wch:40},{wch:20}];
+
+  const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws1, 'Anlage V '+jahr);
+  XLSX.utils.book_append_sheet(wb, ws2, 'Einzelnachweis');
+  XLSX.utils.book_append_sheet(wb, ws3, 'Miete je Objekt');
+  const name=(konto.label||'Konto').replace(/[^\wäöüÄÖÜß-]+/g,'_');
+  XLSX.writeFile(wb, `AnlageV_${jahr}_${name}.xlsx`);
+  toast('Anlage-V-Auswertung '+jahr+' exportiert ✓');
+  closeModal();
 }
 
 /* Eine importierte Buchung in Speicherform bringen */
