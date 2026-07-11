@@ -380,7 +380,7 @@ button.chip.chip-active{background:var(--ink);color:#fff;border-color:var(--ink)
 }
 @keyframes fadeInScale{from{opacity:0;transform:scale(.97)}to{opacity:1;transform:scale(1)}}
 @media print{
-  .bottom-nav,.app-header,.fab,.modal-bg{display:none!important}
+  .bottom-nav,.app-header,.fab,.modal-bg,.toast{display:none!important}
   .app-body{padding-bottom:0!important;overflow:visible!important}
   .page{display:block!important}
 }
@@ -403,6 +403,7 @@ body.printing-active #appScreen,
 body.printing-active #loginScreen,
 body.printing-active .modal-bg,
 body.printing-active #installBanner,
+body.printing-active #toastEl,
 body.printing-active #splash{display:none!important}
 body.printing-active #printRoot{display:block!important}
 @media print{
@@ -799,7 +800,7 @@ body.printing-active #printRoot{display:block!important}
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
 const DB_NAME='immo_v2', DB_VER=34;
-const APP_VERSION = '2026-07-11-v200';
+const APP_VERSION = '2026-07-11-v206';
 /* v157 (02.07.2026): Drei Fixes/Features – Sync, Mail-Papierkorb, QR-ZIP-Export.
    1) SYNC-TOMBSTONES: mergeRecord holte geleerte Felder immer von der Gegen-
       seite zurück ("gefüllt schlägt leer") – Feld-Löschungen konnten dadurch
@@ -1360,6 +1361,8 @@ async function ensureDefaultUsers(){
       }
     }
   }
+  // v204 (P16): Alt-Klartext-PINs beim Start migrieren
+  try{ await pinMigrationAlleUser(); }catch(_){}
 }
 
 // ── Ersteinrichtung: OneDrive verbinden, dann Benutzer laden ──
@@ -1451,13 +1454,14 @@ function updatePinDisplay(){
 async function tryLogin(){
   const uid=document.getElementById('loginUserSel').value;
   if(!uid){showLoginErr('Bitte Benutzer wählen');pinBuf='';updatePinDisplay();return;}
-  const user=await idbGet('users',uid);
+  let user=await idbGet('users',uid);
+  // v204 (P16): Rettungsanker – trägt der Datensatz (z. B. gerade erst von einem
+  // Altgerät gemergt) noch einen Klartext-PIN ohne Hash, zuerst migrieren.
+  if(user && !user.pinHash && user.pin!=null){
+    try{ await pinMigrationAlleUser(); user=await idbGet('users',uid); }catch(_){}
+  }
   if(!user || !(await pinPruefen(user, pinBuf))){
     showLoginErr('Falscher PIN');pinBuf='';updatePinDisplay();return;
-  }
-  // A2-Migration: Alt-Benutzer ohne Hash beim ersten erfolgreichen Login umstellen.
-  if(!user.pinHash){
-    try{ await pinSetzen(user, pinBuf); await idbPut('users', user); }catch(e){}
   }
   localStorage.setItem('lastLoginUser', uid);
   // Session-Marker: erlaubt Auto-Wiederanmeldung nach OS-Reload (z. B. nach Kamera-Nutzung)
@@ -3681,14 +3685,12 @@ async function pinHash(pin, saltB64){
   const h=await crypto.subtle.digest('SHA-256', data);
   return _b64(h);
 }
-// Prüft einen eingegebenen PIN gegen einen Benutzer (Hash bevorzugt, Klartext als Übergang).
+// Prüft einen eingegebenen PIN gegen einen Benutzer – NUR noch gegen den Hash.
+// v204 (P16): Klartext-Fallback entfernt; Altbestände migriert pinMigrationAlleUser
+// (Start, Pull-Merge, Login-Rettungsanker), bevor hier geprüft wird.
 async function pinPruefen(user, pinEingabe){
-  if(!user) return false;
-  if(user.pinHash && user.pinSalt){
-    try{ return (await pinHash(pinEingabe, user.pinSalt))===user.pinHash; }catch(e){ return false; }
-  }
-  // Übergangsweise Altbestand ohne Hash:
-  return user.pin!=null && user.pin===pinEingabe;
+  if(!user || !user.pinHash || !user.pinSalt) return false;
+  try{ return (await pinHash(pinEingabe, user.pinSalt))===user.pinHash; }catch(e){ return false; }
 }
 // Setzt pinHash/pinSalt am (übergebenen) Benutzerobjekt und entfernt das Klartextfeld
 // samt Sync-Tombstone, damit das Klartextfeld auch auf anderen Geräten verschwindet.
@@ -3701,6 +3703,36 @@ async function pinSetzen(userObj, pin){
     userObj._geleert={...(userObj._geleert||{}), pin:st};
   }
   return userObj;
+}
+
+// ── v204 (P16): PIN-Migration – ALLE Benutzer auf pinHash/pinSalt, Klartext tilgen ──
+// Idempotent und selbstheilend; läuft beim Start (ensureDefaultUsers), nach jedem
+// Pull-Merge des users-Stores und als Rettungsanker im Login. Konfliktfall
+// (pinHash vorhanden UND abweichender Klartext-PIN von einem Altgerät): der
+// Klartext ist die jüngere Änderung und gewinnt – konsistent zur Merge-Semantik.
+// Das Klartextfeld wird mit _geleert-Tombstone entfernt, damit es auch auf
+// anderen Geräten nicht per Sync zurückkehrt.
+async function pinMigrationAlleUser(){
+  let users=[];
+  try{ users=await idbGetAll('users'); }catch(_){ return 0; }
+  let geaendert=0;
+  for(const u of users){
+    if(!u || u.pin==null) continue;
+    try{
+      const klar=String(u.pin);
+      if(klar==='' || (u.pinHash && u.pinSalt && (await pinHash(klar, u.pinSalt))===u.pinHash)){
+        // Leerer Alt-PIN oder Klartext passt zum vorhandenen Hash: nur Feld tilgen
+        delete u.pin;
+        u._geleert={...(u._geleert||{}), pin:nowIso()};
+      } else {
+        await pinSetzen(u, klar); // setzt Hash/Salt, löscht Klartext, setzt Tombstone
+      }
+      await idbPut('users', u);
+      geaendert++;
+    }catch(e){ console.warn('PIN-Migration', u&&u.id, e); }
+  }
+  if(geaendert){ try{ syncSoon(); }catch(_){} }
+  return geaendert;
 }
 async function _encryptVal(plain){
   if(!_cryptoKey || !plain) return null;
@@ -11312,14 +11344,18 @@ async function showMieter(id){
         kqs.forEach(b=>{
           const d=b.erstelltAm?new Date(b.erstelltAm).toLocaleDateString('de-DE'):'';
           const bt=(typeof b.betrag==='number'&&b.betrag)?b.betrag.toFixed(2).replace('.',',')+' €':'';
+          // v202: Typ unterscheiden – Endabrechnung (v191, typ:'endabrechnung') vs. Quittung (v156, ohne typ)
+          const istEa=b.typ==='endabrechnung';
+          const typLabel=istEa?'Kautionsabrechnung':'Quittung';
+          const editFn=istEa?`modalKautionsabrechnung('${id}')`:`modalKautionsquittung('${id}')`;
           h+=`<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:9px 0;border-bottom:1px solid var(--ink-10)">
             <div style="flex:1;min-width:0">
-              <div style="font-weight:600;font-size:13px">Erstellt am ${d}${b.erstelltVon?' \u00b7 '+esc(b.erstelltVon):''}</div>
-              <div style="font-size:11px;color:var(--ink-40)">Kaution ${bt||'\u2013'}${b.vertreterName?' \u00b7 vertreten durch '+esc(b.vertreterName):''}</div>
+              <div style="font-weight:600;font-size:13px"><span class="chip" style="font-size:9px;margin-right:6px;background:${istEa?'var(--copper-bg)':'var(--ink-05)'};color:${istEa?'var(--copper-d)':'var(--ink-60)'}">${typLabel}</span>Erstellt am ${d}${b.erstelltVon?' \u00b7 '+esc(b.erstelltVon):''}</div>
+              <div style="font-size:11px;color:var(--ink-40)">${istEa?'Auszahlungssaldo':'Kaution'} ${bt||'\u2013'}${b.vertreterName?' \u00b7 vertreten durch '+esc(b.vertreterName):''}</div>
             </div>
             <button class="btn btn-sm" onclick="zeigeGespKautionsquittung('${b.id}')" title="Ansehen / als PDF drucken"><i class="ti ti-printer"></i></button>
             <button class="btn btn-sm" onclick="kqVersandDialog('${b.id}')" title="Per WhatsApp oder E-Mail verschicken"><i class="ti ti-send"></i></button>
-            <button class="btn btn-sm" onclick="modalKautionsquittung('${id}')" title="Neue Quittung erstellen / Werte \u00e4ndern"><i class="ti ti-pencil"></i></button>
+            <button class="btn btn-sm" onclick="${editFn}" title="Neue ${istEa?'Abrechnung':'Quittung'} erstellen / Werte \u00e4ndern"><i class="ti ti-pencil"></i></button>
             <button class="btn btn-sm btn-danger" onclick="loescheGespKautionsquittung('${b.id}','${id}')" title="L\u00f6schen"><i class="ti ti-trash"></i></button>
           </div>`;
         });
@@ -18054,8 +18090,8 @@ async function erstelleKautionsEndabrechnung(mieterId){
 // Gespeicherte Kautionsquittung erneut anzeigen / drucken (offline, aus HTML)
 async function zeigeGespKautionsquittung(kqId){
   const b=await idbGet('kautionsquittungen',kqId);
-  if(!b||!b.html){ toast('Quittung nicht gefunden'); return; }
-  druckHTML(b.html,'Kautionsquittung – '+(b.mieterName||''));
+  if(!b||!b.html){ toast('Dokument nicht gefunden'); return; }
+  druckHTML(b.html,(b.typ==='endabrechnung'?'Kautionsabrechnung':'Kautionsquittung')+' \u2013 '+(b.mieterName||''));
 }
 // Gespeicherte Kautionsquittung löschen
 async function loescheGespKautionsquittung(kqId, mieterId){
@@ -19834,11 +19870,21 @@ const MIETSCHVO_NRW_GEMEINDEN = ['aachen','alfter','bad lippspringe','bergheim',
 const MIETSCHVO_KAPPUNG_BIS = '2030-02-28';   // Kappungsgrenze 15% (§558 Abs.3 BGB)
 const MIETSCHVO_MPB_BIS     = '2029-12-31';   // Mietpreisbremse (§556d BGB, verlängert)
 
-// Gemeindename aus obj.ort ("40239 Düsseldorf" -> "düsseldorf").
+// v205 (B3/V7-Restfälle): Ortsnamen normalisieren, damit Stadtteil-Schreibweisen
+// ("Krefeld-Uerdingen", "Düsseldorf, Rath") und Umlaut-Ersatzschreibweisen
+// ("Duesseldorf") die MietSchVO-Gemeinde korrekt treffen. Fälschliche 20 % statt
+// 15 % würden ein Erhöhungsverlangen über der Kappungsgrenze insoweit unwirksam machen.
+function gemeindeNorm(t){
+  return String(t||'').toLowerCase()
+    .replace(/ä/g,'ae').replace(/ö/g,'oe').replace(/ü/g,'ue').replace(/ß/g,'ss')
+    .replace(/[,\-()\/]+/g,' ')
+    .replace(/\s+/g,' ').trim();
+}
+// Gemeindename aus obj.ort ("40239 Düsseldorf" -> "duesseldorf"), normalisiert.
 function objektGemeinde(obj){
   const ort = String(obj?.ort||'').trim();
   const m = ort.match(/^\d{5}\s+(.+)$/);
-  return (m ? m[1] : ort).toLowerCase().trim();
+  return gemeindeNorm(m ? m[1] : ort);
 }
 
 // Liegt das Objekt in einer MietSchVO-NRW-Gemeinde? Exakter Treffer ODER
@@ -19846,7 +19892,11 @@ function objektGemeinde(obj){
 // Fallback ohne ort-Feld: bisherige Gruppenliste (konservativ, Bestandsschutz).
 function gemeindeInMietSchVO(obj){
   const g = objektGemeinde(obj);
-  if(g) return MIETSCHVO_NRW_GEMEINDEN.some(e => g === e || g.startsWith(e + ' '));
+  if(g){
+    // Vergleichsliste einmalig normalisiert cachen (Umlaute -> ae/oe/ue)
+    if(!gemeindeInMietSchVO._norm) gemeindeInMietSchVO._norm = MIETSCHVO_NRW_GEMEINDEN.map(gemeindeNorm);
+    return gemeindeInMietSchVO._norm.some(e => g === e || g.startsWith(e + ' '));
+  }
   const gr = (obj?.gruppe||'').toLowerCase();
   return ['krefeld','kr','duesseldorf','dus','monheim','pfau'].includes(gr);
 }
@@ -27041,6 +27091,8 @@ async function syncFromOneDrive() {
         // nur echte Tombstones löschen (oben bereits erledigt). So bleiben lokal
         // neu angelegte Mieter/Benutzer erhalten, bis sie synchronisiert sind.
       }
+      // v204 (P16): frisch gemergte Alt-Klartext-PINs sofort hashen
+      try{ await pinMigrationAlleUser(); }catch(_){}
       await pruneSyncLog();
       await idbPut('settings',{id:'lastSync',value:remoteTime});
       await renderDash(); await updateBadge();
@@ -28573,7 +28625,17 @@ async function barzahlungSpeichern(){
     betrag:Math.round(betrag*100)/100, datumISO:datum, mietmonat:monat,
     zweck:'Barzahlung'+(notiz?' – '+notiz:''), notiz, status:'geprueft',
     quelle:'bar', erstellt:nowIso(), updatedAt:nowIso() };
-  await idbPut('buchungen', rec);
+  // v202: Fehler beim Speichern klar melden; Modal bleibt offen, Eingaben gehen nicht verloren
+  try{
+    await idbPut('buchungen', rec);
+  }catch(e){
+    console.warn('Barzahlung speichern:', e);
+    // Quota-Fehler toastet idbPut (v195/A2) bereits selbst – kein Doppel-Toast
+    if(!(e && (e.name==='QuotaExceededError' || /quota/i.test(e.message||'')))){
+      toast('Speichern fehlgeschlagen – bitte erneut versuchen.');
+    }
+    return;
+  }
   syncSoon(); closeModal();
   toast('Barzahlung erfasst ✓');
   await zaRenderVerlauf();
@@ -29969,6 +30031,7 @@ function _druckJetzt(html, dateiname){
     });
 
     let cleaned = false;
+    let warHidden = false;
     const cleanup = () => {
       if(cleaned) return; cleaned = true;
       document.body.classList.remove('printing-active');
@@ -29978,16 +30041,39 @@ function _druckJetzt(html, dateiname){
       });
       root.innerHTML = '';
       window.onafterprint = null;
+      document.removeEventListener('pointerdown', cleanup);
+      document.removeEventListener('keydown', cleanup);
+      document.removeEventListener('visibilitychange', sichtWechsel);
       if(_origTitle!=null){ try{ document.title = _origTitle; }catch(_){} }
     };
-    window.onafterprint = cleanup;
+    // v206: Android-Druckdialog rastert die Seite NACH der Rückkehr von window.print()
+    // erneut (Formatwahl, Scrollen); afterprint feuert dort sofort. Ein frühes Cleanup
+    // leert #printRoot -> weiße Seite im Dialog (Gerätetest-Befund 11.07.). Deshalb:
+    // Cleanup erst, wenn der Nutzer nachweislich zurück in der App ist.
+    const sichtWechsel = () => {
+      if(document.visibilityState === 'hidden'){ warHidden = true; }
+      else if(warHidden){ cleanup(); } // aus dem Druckdialog zurückgekehrt
+    };
+    const spaetCleanupArmieren = () => {
+      document.addEventListener('pointerdown', cleanup);   // erste Berührung in der App
+      document.addEventListener('keydown', cleanup);
+      document.addEventListener('visibilitychange', sichtWechsel);
+      setTimeout(cleanup, 180000);                          // letztes Sicherheitsnetz
+    };
 
     // kurze Verzögerung, damit Layout/SVG/Bilder stehen, dann drucken
     setTimeout(()=>{
+      const t0 = Date.now();
+      // Desktop: print() blockiert bis Dialogende -> afterprint/elapsed>1500 = sofort aufräumen.
+      // Android: print() kehrt sofort zurück -> spätes Cleanup über Nutzer-Rückkehr.
+      window.onafterprint = () => {
+        if(Date.now() - t0 > 1500){ setTimeout(cleanup, 400); }
+        else { spaetCleanupArmieren(); }
+      };
       try{ window.focus(); window.print(); }
       catch(e){ console.warn('window.print:', e); }
-      // Sicherheits-Cleanup, falls onafterprint nicht feuert
-      setTimeout(cleanup, 2000);
+      if(Date.now() - t0 > 1500){ setTimeout(cleanup, 800); }   // blockierender Dialog beendet
+      else if(!cleaned){ spaetCleanupArmieren(); }              // Dialog läuft asynchron weiter
     }, 350);
     return true;
   }catch(e){
@@ -30160,7 +30246,7 @@ function rechnCard(r){
   return `<div class="card" style="margin-bottom:6px;cursor:pointer" onclick="modalRechnungDetail('${r.id}')">
     <div style="display:flex;align-items:flex-start;gap:10px">
       <div style="flex-shrink:0;width:36px;height:36px;border-radius:8px;background:var(--copper-bg);display:flex;align-items:center;justify-content:center">
-        <i class="ti ${r.belegMime?.includes('pdf')?'ti-file-type-pdf':(r.beleg?'ti-photo':'ti-file-invoice')}" style="color:var(--copper);font-size:18px"></i>
+        <i class="ti ${r.belegMime?.includes('pdf')?'ti-file-type-pdf':(r.belegMime?.includes('xml')?'ti-file-type-xml':(r.beleg?'ti-photo':'ti-file-invoice'))}" style="color:var(--copper);font-size:18px"></i>
       </div>
       <div style="flex:1;min-width:0">
         <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px">
@@ -30243,12 +30329,12 @@ async function modalRechnungErfassen(rechnung){
       <div style="display:flex;gap:6px;flex-wrap:wrap">
         <button type="button" class="btn btn-sm" onclick="rechnBelegKamera()"><i class="ti ti-camera"></i> Foto</button>
         <button type="button" class="btn btn-sm" onclick="document.getElementById('rBelegGalerie').click()"><i class="ti ti-photo"></i> Galerie</button>
-        <button type="button" class="btn btn-sm" onclick="document.getElementById('rBelegPdf').click()"><i class="ti ti-file-type-pdf"></i> PDF</button>
+        <button type="button" class="btn btn-sm" onclick="document.getElementById('rBelegPdf').click()"><i class="ti ti-file-type-pdf"></i> PDF/XML</button>
         <button type="button" class="btn btn-sm btn-copper" id="rOcrBtn" onclick="rechnungOcrErkennen()"><i class="ti ti-sparkles"></i> KI-Erkennung</button>
       </div>
-      <div style="font-size:10px;color:var(--ink-40);margin-top:4px"><i class="ti ti-info-circle"></i> Bei „KI-Erkennung" wird der Beleg zur automatischen Auswertung an den KI-Dienst (Anthropic, Auftragsverarbeiter) übermittelt.</div>
+      <div style="font-size:10px;color:var(--ink-40);margin-top:4px"><i class="ti ti-info-circle"></i> E-Rechnungen (ZUGFeRD/XRechnung) werden automatisch LOKAL ausgelesen – ohne Übermittlung. Nur bei „KI-Erkennung" wird der Beleg an den KI-Dienst (Anthropic, Auftragsverarbeiter) übermittelt.</div>
       <input type="file" id="rBelegGalerie" accept="image/*" style="display:none" onchange="rechnBelegGalerie(this)">
-      <input type="file" id="rBelegPdf" accept="application/pdf" style="display:none" onchange="rechnBelegPdf(this)">
+      <input type="file" id="rBelegPdf" accept="application/pdf,text/xml,application/xml,.xml" style="display:none" onchange="rechnBelegPdf(this)">
     </div>
 
     <div class="f"><label>Notiz</label>
@@ -30276,6 +30362,20 @@ async function modalRechnungErfassen(rechnung){
 // anschließend wie gewohnt. DSGVO: Übermittlung an einen Auftragsverarbeiter.
 async function rechnungOcrErkennen(){
   if(!_rechnBeleg || !_rechnBeleg.data){ toast('Bitte zuerst ein Foto oder PDF des Belegs anhängen.'); return; }
+  // v201: E-Rechnung (ZUGFeRD/Factur-X/XRechnung) zuerst LOKAL auslesen – exakter als
+  // KI-OCR und ohne Übermittlung an Dritte. KI nur noch als Fallback für Fotos/Scan-PDFs.
+  if(_rechnBeleg.eRechnung===undefined){
+    try{ _rechnBeleg.eRechnung=(await eRechnungAuslesen(_rechnBeleg))||null; }catch(_){ _rechnBeleg.eRechnung=null; }
+  }
+  if(_rechnBeleg.eRechnung){
+    rechnungOcrVorschlagAnwenden(_rechnBeleg.eRechnung);
+    toast('E-Rechnung erkannt – lokal ausgelesen, keine KI-Übermittlung nötig ✓');
+    return;
+  }
+  if((_rechnBeleg.mimeType||'').indexOf('xml')>-1){
+    toast('XML enthält keine lesbare E-Rechnung – bitte PDF oder Foto verwenden.');
+    return;
+  }
   const key=(await idbGet('settings','backendKey').catch(()=>null))?.value;
   if(!key){ toast('Kein Backend-Schlüssel hinterlegt (Einstellungen → Backend).'); return; }
   const btn=document.getElementById('rOcrBtn');
@@ -30335,6 +30435,184 @@ function rechnungOcrVorschlagAnwenden(v){
   }
 }
 
+// ── v201: E-Rechnungs-Erkennung (ZUGFeRD/Factur-X + XRechnung) – rein LOKAL ──
+// Elektronische Rechnungen (PDF mit eingebettetem XML nach EN 16931 bzw. reine
+// XRechnung-XML-Dateien) werden ohne jeden Netzwerk-Aufruf im Browser ausgelesen.
+// Vorteil gegenüber KI-OCR: exakte strukturierte Werte statt Erkennungsvorschlag,
+// keine Übermittlung an einen Auftragsverarbeiter (kein Drittlandtransfer nötig).
+// Der Vorschlag nutzt dieselbe Feldstruktur/Anwendung wie die KI-Erkennung
+// (rechnungOcrVorschlagAnwenden) – bewusst KEINE zweite Befüll-Logik.
+
+// Automatische Prüfung direkt nach dem Anhängen eines PDF-/XML-Belegs.
+// Ergebnis wird am Beleg-Objekt gecacht (undefined=ungeprüft, null=keine, Objekt=E-Rechnung).
+async function eRechnungAutoPruefen(){
+  const beleg=_rechnBeleg;
+  if(!beleg || !beleg.data) return;
+  try{ beleg.eRechnung = (await eRechnungAuslesen(beleg)) || null; }
+  catch(_){ beleg.eRechnung=null; }
+  if(beleg!==_rechnBeleg) return; // Beleg wurde inzwischen ersetzt/entfernt
+  if(beleg.eRechnung){
+    rechnungOcrVorschlagAnwenden(beleg.eRechnung);
+    toast('E-Rechnung erkannt – Daten lokal übernommen (ohne KI) ✓');
+  }
+}
+
+// Liest einen Beleg (PDF oder XML, dataURL) als E-Rechnung aus. null = keine E-Rechnung.
+async function eRechnungAuslesen(beleg){
+  if(!beleg || !beleg.data) return null;
+  const mt=beleg.mimeType||'';
+  let xml=null;
+  if(mt.indexOf('xml')>-1){
+    try{
+      const b64=(beleg.data.split(',')[1])||'';
+      const bin=atob(b64);
+      const u=new Uint8Array(bin.length);
+      for(let i=0;i<bin.length;i++) u[i]=bin.charCodeAt(i);
+      xml=new TextDecoder('utf-8',{fatal:false}).decode(u); // XRechnung ist UTF-8
+    }catch(_){ xml=null; }
+  } else if(mt.indexOf('pdf')>-1){
+    xml=await pdfXmlExtrahieren(beleg.data); // ZUGFeRD/Factur-X: XML-Anhang im PDF
+  }
+  if(!xml) return null;
+  return eRechnungXmlParsen(xml);
+}
+
+// Extrahiert ein eingebettetes E-Rechnungs-XML aus einem PDF (dataURL).
+// Heuristik ohne PDF-Bibliothek: alle Stream-Objekte durchgehen; FlateDecode-Streams
+// per DecompressionStream('deflate') entpacken (PDF-Flate = zlib), filterlose Streams
+// direkt lesen; Treffer = Text enthält CrossIndustryInvoice (CII) oder ein UBL-Invoice.
+async function pdfXmlExtrahieren(dataUrl){
+  try{
+    const b64=(dataUrl.split(',')[1])||'';
+    const bin=atob(b64);
+    const bytes=new Uint8Array(bin.length);
+    for(let i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
+    const s=bin; // Latin1-Sicht für die Struktursuche
+    const istER=t=>!!t && (t.indexOf('CrossIndustryInvoice')>-1 || /<([A-Za-z0-9]+:)?Invoice[\s>]/.test(t));
+    let idx=0, guard=0;
+    while(guard++<400){
+      const st=s.indexOf('stream', idx);
+      if(st<0) break;
+      const dictStart=s.lastIndexOf('<<', st);
+      const dict=dictStart>-1 ? s.slice(dictStart, st) : '';
+      let ds=st+6;
+      if(s[ds]==='\r') ds++;
+      if(s[ds]==='\n') ds++;
+      const en=s.indexOf('endstream', ds);
+      if(en<0) break;
+      idx=en+9;
+      // EOL vor "endstream" gehoert laut PDF-Spec NICHT zu den Stream-Daten;
+      // strikte DecompressionStream-Implementierungen werfen sonst "trailing junk".
+      let ee=en;
+      while(ee>ds && (s[ee-1]==='\n' || s[ee-1]==='\r')) ee--;
+      const len=ee-ds;
+      if(len<64 || len>6*1024*1024) continue;
+      const raw=bytes.subarray(ds, ee);
+      let text=null;
+      if(dict.indexOf('/FlateDecode')>-1){
+        text=await _pdfInflateText(raw);
+      } else if(dict.indexOf('/Filter')<0){
+        try{ text=new TextDecoder('utf-8',{fatal:false}).decode(raw); }catch(_){ text=null; }
+      }
+      if(text && istER(text)){
+        const p=text.indexOf('<?xml');
+        return p>-1 ? text.slice(p) : text;
+      }
+    }
+    return null;
+  }catch(_){ return null; }
+}
+
+// zlib-Stream (PDF /FlateDecode) im Browser entpacken → UTF-8-Text. null bei Fehler.
+async function _pdfInflateText(bytes){
+  try{
+    if(typeof DecompressionStream==='undefined') return null; // alte Browser: KI-Weg bleibt
+    const ab=await new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate'))).arrayBuffer();
+    return new TextDecoder('utf-8',{fatal:false}).decode(ab);
+  }catch(_){ return null; }
+}
+
+// Parst ein E-Rechnungs-XML (EN 16931: CII-Syntax = ZUGFeRD/Factur-X/XRechnung-CII
+// oder UBL-Syntax = XRechnung-UBL) in die Vorschlagsstruktur der KI-Erkennung.
+// null, wenn das XML keine plausible E-Rechnung ist.
+function eRechnungXmlParsen(xmlText){
+  try{
+    const doc=new DOMParser().parseFromString(xmlText, 'application/xml');
+    if(!doc || !doc.documentElement) return null;
+    const byLocal=(root,name)=>root.getElementsByTagNameNS('*', name);
+    const first=(root,name)=>{ if(!root) return null; const l=byLocal(root,name); return (l && l.length) ? l[0] : null; };
+    const txt=el=>el ? String(el.textContent||'').trim() : '';
+    const num=v=>{ const n=Number(String(v||'').replace(',','.')); return isFinite(n)&&v!==''&&v!=null ? n : null; };
+    // CII: udt:DateTimeString format="102" = JJJJMMTT; UBL liefert bereits ISO
+    const iso=d=>{
+      d=String(d||'').trim();
+      if(/^\d{8}$/.test(d)) return d.slice(0,4)+'-'+d.slice(4,6)+'-'+d.slice(6,8);
+      if(/^\d{4}-\d{2}-\d{2}/.test(d)) return d.slice(0,10);
+      return '';
+    };
+    let typ='', lieferant='', rechnungsnr='', datum='', faellig='', iban='', mwstSatz=null;
+    let brutto=null, netto=null, zStart='', zEnde='';
+
+    if(first(doc,'CrossIndustryInvoice')){
+      typ='ZUGFeRD/Factur-X (CII)';
+      const exDoc=first(doc,'ExchangedDocument');
+      rechnungsnr=txt(first(exDoc,'ID'));
+      datum=iso(txt(first(first(exDoc,'IssueDateTime'),'DateTimeString')));
+      const seller=first(doc,'SellerTradeParty');
+      if(seller){ // direktes Kind "Name" (nicht der Kontakt-PersonName darunter)
+        for(let i=0;i<seller.childNodes.length;i++){
+          const ch=seller.childNodes[i];
+          if(ch.nodeType===1 && ch.localName==='Name'){ lieferant=txt(ch); break; }
+        }
+      }
+      const summ=first(doc,'SpecifiedTradeSettlementHeaderMonetarySummation');
+      brutto=num(txt(first(summ,'GrandTotalAmount')));
+      netto=num(txt(first(summ,'TaxBasisTotalAmount')));
+      faellig=iso(txt(first(first(first(doc,'SpecifiedTradePaymentTerms'),'DueDateDateTime'),'DateTimeString')));
+      mwstSatz=num(txt(first(doc,'RateApplicablePercent')));
+      iban=txt(first(first(doc,'PayeePartyCreditorFinancialAccount'),'IBANID'));
+      const per=first(doc,'BillingSpecifiedPeriod');
+      zStart=iso(txt(first(first(per,'StartDateTime'),'DateTimeString')));
+      zEnde=iso(txt(first(first(per,'EndDateTime'),'DateTimeString')));
+    } else if(doc.documentElement.localName==='Invoice' || doc.documentElement.localName==='CreditNote'){
+      typ='XRechnung (UBL)';
+      const root=doc.documentElement;
+      for(let i=0;i<root.childNodes.length;i++){ // Dokument-ID = direktes Kind (nicht Zeilen-IDs)
+        const ch=root.childNodes[i];
+        if(ch.nodeType===1 && ch.localName==='ID'){ rechnungsnr=txt(ch); break; }
+      }
+      datum=iso(txt(first(doc,'IssueDate')));
+      faellig=iso(txt(first(doc,'DueDate')));
+      const supplier=first(doc,'AccountingSupplierParty');
+      lieferant=txt(first(supplier,'RegistrationName')) || txt(first(supplier,'Name'));
+      const total=first(doc,'LegalMonetaryTotal');
+      brutto=num(txt(first(total,'TaxInclusiveAmount')));
+      if(brutto==null) brutto=num(txt(first(total,'PayableAmount')));
+      netto=num(txt(first(total,'TaxExclusiveAmount')));
+      mwstSatz=num(txt(first(first(doc,'TaxCategory'),'Percent')));
+      iban=txt(first(first(doc,'PayeeFinancialAccount'),'ID'));
+      const per=first(doc,'InvoicePeriod');
+      zStart=iso(txt(first(per,'StartDate')));
+      zEnde=iso(txt(first(per,'EndDate')));
+    } else {
+      return null;
+    }
+    if(brutto==null && !lieferant && !rechnungsnr) return null; // keine plausible E-Rechnung
+    return {
+      lieferant: lieferant||null,
+      rechnungsnr: rechnungsnr||null,
+      datum: datum||null,
+      faellig: faellig||null,
+      betrag: brutto!=null ? rc(brutto) : null,
+      betragNetto: netto!=null ? rc(netto) : null,
+      mwstSatz: mwstSatz,
+      leistungszeitraum: (zStart&&zEnde) ? (zStart+' bis '+zEnde) : '',
+      iban: iban||null,
+      notizVorschlag: 'E-Rechnung ('+typ+') lokal ausgelesen'
+    };
+  }catch(_){ return null; }
+}
+
 // Zuordnungsart gewechselt → passende Felder zeigen
 function rechnZuordnungWechsel(){
   const z=document.getElementById('rZuordnung')?.value;
@@ -30389,16 +30667,25 @@ async function rechnBelegGalerie(input){
 function rechnBelegPdf(input){
   const f=input.files[0]; input.value='';
   if(!f) return;
-  if(f.size>10*1024*1024){ toast('PDF zu groß (max. 10 MB)'); return; }
+  if(f.size>10*1024*1024){ toast('Datei zu groß (max. 10 MB)'); return; }
+  // v201: auch XRechnung-XML zulassen – wird lokal als E-Rechnung ausgelesen
+  const istXml=/xml$/i.test(f.type||'') || /\.xml$/i.test(f.name||'');
   const reader=new FileReader();
-  reader.onload=e=>{ _rechnBeleg={data:e.target.result, mimeType:'application/pdf', name:f.name||'Rechnung.pdf'}; rechnBelegVorschau(); toast('PDF hinzugefügt ✓'); };
+  reader.onload=e=>{
+    _rechnBeleg={ data:e.target.result,
+      mimeType: istXml?'text/xml':'application/pdf',
+      name: f.name||(istXml?'Rechnung.xml':'Rechnung.pdf') };
+    rechnBelegVorschau();
+    toast((istXml?'XML':'PDF')+' hinzugefügt ✓');
+    eRechnungAutoPruefen(); // ZUGFeRD/XRechnung? Dann Felder sofort lokal befüllen
+  };
   reader.readAsDataURL(f);
 }
 function rechnBelegVorschau(){
   const el=document.getElementById('rBelegVorschau');
   if(!el) return;
   if(!_rechnBeleg){ el.innerHTML='<div style="font-size:12px;color:var(--ink-40)">Kein Beleg angehängt</div>'; return; }
-  if(_rechnBeleg.mimeType?.includes('pdf')){
+  if(/pdf|xml/.test(_rechnBeleg.mimeType||'')){
     el.innerHTML=`<div style="display:flex;align-items:center;gap:8px;background:var(--ink-05);border-radius:8px;padding:8px 10px">
       <i class="ti ti-file-type-pdf" style="color:var(--copper);font-size:20px"></i>
       <div style="flex:1;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(_rechnBeleg.name||'PDF')}</div>
@@ -30480,8 +30767,12 @@ async function modalRechnungDetail(id){
 
   let belegHtml='';
   if(r.beleg){
-    if(r.belegMime?.includes('pdf')){
-      belegHtml=`<button class="btn btn-full" style="margin-bottom:8px" onclick="rechnBelegOeffnen('${r.id}')"><i class="ti ti-file-type-pdf"></i> PDF-Beleg öffnen</button>`;
+    if(/pdf|xml/.test(r.belegMime||'')){
+      const istXml=r.belegMime.includes('xml');
+      belegHtml=`<div style="display:flex;gap:8px;margin-bottom:8px">
+        <button class="btn" style="flex:1" onclick="rechnBelegOeffnen('${r.id}')"><i class="ti ${istXml?'ti-file-type-xml':'ti-file-type-pdf'}"></i> ${istXml?'XML':'PDF'}-Beleg öffnen</button>
+        <button class="btn" onclick="rechnBelegTeilen('${r.id}')" title="Über WhatsApp, E-Mail usw. weiterleiten"><i class="ti ti-share"></i></button>
+      </div>`;
     } else {
       belegHtml=`<img src="${r.beleg}" style="width:100%;border-radius:8px;cursor:pointer;margin-bottom:8px" onclick="openFoto('${r.beleg}','Beleg ${esc(r.lieferant||'')}')">`;
     }
@@ -30533,9 +30824,48 @@ async function rechnBelegOeffnen(id){
   try{
     const a=document.createElement('a');
     a.href=r.beleg; a.target='_blank';
-    a.download=(r.belegName||'Rechnung')+(r.belegName?.toLowerCase().endsWith('.pdf')?'':'.pdf');
+    const bn=(r.belegName||'Rechnung');
+    a.download=bn + (/\.(pdf|xml)$/i.test(bn) ? '' : (r.belegMime?.includes('xml')?'.xml':'.pdf'));
     a.click();
   }catch(e){ toast('Beleg konnte nicht geöffnet werden'); }
+}
+
+// ── v203 (23f): zentraler Datei-Teilen-Helfer – nativer OS-Dialog (WhatsApp, Mail, …) ──
+// quelle: dataURL, Blob-URL oder http(s)-URL. Fallback ohne Web-Share-API: Download + Hinweis.
+// Bewusst NEUER generischer Helfer; die bestehenden spezialisierten Teilen-Funktionen
+// (shareFoto, dokTeilen, vcardTeilen, etikettPdfTeilen, druckVorschauTeilen) bleiben unverändert.
+async function dateiTeilen(quelle, dateiname, mime){
+  if(!quelle){ toast('Keine Datei vorhanden'); return; }
+  try{
+    const res=await fetch(quelle);
+    const blob=await res.blob();
+    const typ=mime||blob.type||'application/octet-stream';
+    const file=new File([blob], dateiname||'Datei', {type:typ});
+    if(navigator.canShare && navigator.canShare({files:[file]})){
+      await navigator.share({files:[file], title:(dateiname||'Datei').replace(/\.[^.]+$/,'')});
+      return;
+    }
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    a.href=url; a.download=dateiname||'Datei';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>{ try{ URL.revokeObjectURL(url); }catch(_){} }, 3000);
+    toast('Heruntergeladen – kann jetzt weitergeleitet werden');
+  }catch(e){
+    if(e && e.name==='AbortError') return; // Nutzer hat den Teilen-Dialog abgebrochen
+    console.warn('dateiTeilen:', e);
+    toast('Teilen fehlgeschlagen');
+  }
+}
+
+// Rechnungsbeleg (PDF/XML) über den nativen Teilen-Dialog weiterleiten (v203, 23f/23h)
+async function rechnBelegTeilen(id){
+  const r=await idbGet('rechnungen', id).catch(()=>null);
+  if(!r||!r.beleg){ toast('Kein Beleg vorhanden'); return; }
+  const istXml=(r.belegMime||'').includes('xml');
+  let bn=(r.belegName||'Rechnung').replace(/[\\/:*?"<>|]+/g,' ').trim()||'Rechnung';
+  if(!/\.(pdf|xml)$/i.test(bn)) bn += istXml?'.xml':'.pdf';
+  await dateiTeilen(r.beleg, bn, istXml?'text/xml':'application/pdf');
 }
 
 async function rechnungLoeschen(id){
