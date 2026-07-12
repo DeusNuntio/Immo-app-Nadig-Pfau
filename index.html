@@ -175,7 +175,20 @@ button.chip.chip-active{background:var(--ink);color:#fff;border-color:var(--ink)
 .det-we{font-size:12px;color:var(--ink-20);margin-top:3px}
 .det-grid{display:grid;grid-template-columns:1fr 1fr;gap:7px}
 .det-field{background:rgba(255,255,255,.08);border-radius:8px;padding:9px 11px}
-.det-field label{font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--ink-20);display:block;margin-bottom:2px}
+.det-field label{font-size:10.5px;text-transform:uppercase;letter-spacing:.5px;color:var(--ink-10);display:block;margin-bottom:2px}
+/* v208: Zusatz-/Ampeltexte im dunklen Kopf – eigene Klasse, damit Größe zentral steuerbar */
+.det-field .det-zusatz{font-size:11px;font-weight:500}
+/* v208: Bankverbindung kompakt + eingeklappt (natives <details>) */
+.bank-det{margin-top:10px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.14);border-radius:8px;padding:0}
+.bank-det>summary{list-style:none;cursor:pointer;padding:8px 11px;font-size:11.5px;font-weight:600;color:#fff;display:flex;align-items:center;gap:6px}
+.bank-det>summary::-webkit-details-marker{display:none}
+.bank-det>summary::after{content:'\ea5f';font-family:'tabler-icons';margin-left:auto;font-size:14px;color:var(--ink-10);transition:transform .15s}
+.bank-det[open]>summary::after{transform:rotate(180deg)}
+.bank-kurz{font-weight:400;font-size:10.5px;color:var(--ink-10);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bank-body{padding:2px 11px 9px}
+.bank-zeile{display:flex;justify-content:space-between;gap:10px;padding:4px 0;border-top:1px solid rgba(255,255,255,.10);font-size:12px}
+.bank-zeile>span{color:var(--ink-10);flex-shrink:0}
+.bank-zeile>b{color:#fff;font-weight:500;text-align:right;word-break:break-word}
 .det-field span{font-size:13px;font-weight:500;color:#fff}
 .det-field a{color:var(--copper-l)}
 
@@ -289,7 +302,11 @@ button.chip.chip-active{background:var(--ink);color:#fff;border-color:var(--ink)
 .fab.visible{display:flex}
 
 /* ── SECTION HEADER ── */
-.s-hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+.s-hdr{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+.s-title{min-width:0}
+/* v208: Aktionsgruppen (Objekt-/Mieterdetail) */
+.akt-grp{font-size:10.5px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-40);margin:0 0 5px}
+.akt-row{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:11px}
 .s-title{font-size:16px;font-weight:600;color:var(--ink);letter-spacing:-.2px}
 
 /* ── DIVIDER ── */
@@ -799,8 +816,73 @@ body.printing-active #printRoot{display:block!important}
 /* ═══════════════════════════════════════════════════════════
    INDEXEDDB – Persistente Datenbank
 ═══════════════════════════════════════════════════════════ */
+/* ═══════════════════════════════════════════════════════════════════════
+   STORE_DEFS (v210) – EINE Quelle der Wahrheit für alle IndexedDB-Stores.
+   Vorher lagen die Store-Namen an fünf Stellen redundant (DB-Anlage,
+   Index-Block, exportBackup, alleStores/Snapshot+Sync-Push, mergeStores);
+   ein vergessener Eintrag beim Anlegen eines neuen Stores war die häufigste
+   Fehlerquelle (Risiko V2 „6 Pflichtstellen"). Jetzt genügt EIN Eintrag hier.
+     sync  – wird nach OneDrive synchronisiert und ins Backup exportiert
+             (false = rein lokal: Auth-Token, Logs, Snapshots)
+     merge – wird beim Pull über mergeStores/Tombstones zusammengeführt
+             (false bei sync:true = Sonderbehandlung via mergeRecord:
+              users/mieter/tg/settings)
+     index – Sekundärindizes beim createObjectStore
+═══════════════════════════════════════════════════════════════════════ */
+const STORE_DEFS = {
+  users:               { sync:true, merge:false },
+  mieter:              { sync:true, merge:false, index:['objektId','weNr'] },
+  tg:                  { sync:true, merge:false },
+  protokolle:          { sync:true, merge:true, index:['objektId'] },
+  aufgaben:            { sync:true, merge:true, index:['objektId','status'] },
+  maengel:             { sync:true, merge:true, index:['objektId'] },
+  reparaturen:         { sync:true, merge:true, index:['objektId'] },
+  settings:            { sync:true, merge:false },
+  dokumente:           { sync:true, merge:true, index:['objektId','mieterId'] },
+  nka_archiv:          { sync:true, merge:true, index:['objektId'] },
+  einkaufsliste:       { sync:true, merge:true, index:['objektId','status'] },
+  termine:             { sync:true, merge:true, index:['datum','objektId'] },
+  fotos:               { sync:true, merge:true, index:['protId'] },
+  wartung:             { sync:true, merge:true, index:['objektId'] },
+  zaehler:             { sync:true, merge:true, index:['objektId'] },
+  zaehlerstaende:      { sync:true, merge:true, index:['objektId','zaehlerId'] },
+  versorger:           { sync:true, merge:true, index:['objektId'] },
+  versorger_archiv:    { sync:true, merge:true, index:['objektId','versorgerId'] },
+  versicherungen:      { sync:true, merge:true, index:['objektId'] },
+  lager:               { sync:true, merge:true, index:['objektId','kategorie'] },
+  lager_anforderung:   { sync:true, merge:true, index:['status'] },
+  taetigkeit_kat:      { sync:true, merge:true },
+  arbeitszeit:         { sync:true, merge:true, index:['userId','datum'] },
+  abwesenheit:         { sync:true, merge:true, index:['userId'] },
+  rechnungen:          { sync:true, merge:true, index:['objektId','mieterId','datum'] },
+  packliste:           { sync:true, merge:true, index:['terminId'] },
+  objekt_stamm:        { sync:true, merge:true },
+  ventile:             { sync:true, merge:true, index:['objektId'] },
+  ventilpruefung:      { sync:true, merge:true, index:['ventilId'] },
+  taetigkeit_log:      { sync:true, merge:true, index:['userId','datum'] },
+  sync_log:            { sync:false },
+  mieter_snapshots:    { sync:false },
+  branchenbuch:        { sync:true, merge:true, index:['kategorie'] },
+  interessenten:       { sync:true, merge:true, index:['objektId','status'] },
+  od_dateien:          { sync:true, merge:true, index:['objektId','pfad'] },
+  buchungen:           { sync:true, merge:true, index:['mieterId','kontoId','mietmonat'] },
+  mietbescheinigungen: { sync:true, merge:true, index:['mieterId','objektId'] },
+  kautionsquittungen:  { sync:true, merge:true, index:['mieterId','objektId'] },
+  mv_entwuerfe:        { sync:true, merge:true, index:['mieterId','objektId'] },
+  selbstauskuenfte:    { sync:true, merge:true, index:['objektId','status'] },
+  tenant_mails:        { sync:true, merge:true, index:['mieterId','objektId'] },
+  stellplaetze:        { sync:true, merge:true, index:['objektId'] },
+  od_auth:             { sync:false },
+  buch_regeln:         { sync:true, merge:true, index:['schluessel','kontoId'] },
+  buchungs_batches:    { sync:true, merge:true, index:['kontoId'] },
+};
+/* Abgeleitete Listen – NIE separat pflegen. */
+const STORES_ALLE  = Object.keys(STORE_DEFS);                                     // DB-Anlage
+const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);                 // Backup + Sync + Snapshot
+const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
+
 const DB_NAME='immo_v2', DB_VER=34;
-const APP_VERSION = '2026-07-11-v207';
+const APP_VERSION = '2026-07-12-v210';
 /* v157 (02.07.2026): Drei Fixes/Features – Sync, Mail-Papierkorb, QR-ZIP-Export.
    1) SYNC-TOMBSTONES: mergeRecord holte geleerte Felder immer von der Gegen-
       seite zurück ("gefüllt schlägt leer") – Feld-Löschungen konnten dadurch
@@ -1016,46 +1098,11 @@ function openIDB(){
     const req=indexedDB.open(DB_NAME,DB_VER);
     req.onupgradeneeded=e=>{
       const db=e.target.result;
-      ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','fotos','wartung','zaehler','zaehlerstaende','versorger','versorger_archiv','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','ventile','ventilpruefung','taetigkeit_log','sync_log','mieter_snapshots','branchenbuch','interessenten','od_dateien','buchungen','mietbescheinigungen','kautionsquittungen','mv_entwuerfe','selbstauskuenfte','tenant_mails','stellplaetze','od_auth','buch_regeln','buchungs_batches'].forEach(s=>{
+      // v210: Stores + Indizes kommen aus STORE_DEFS (einzige Quelle der Wahrheit).
+      STORES_ALLE.forEach(s=>{
         if(!db.objectStoreNames.contains(s)){
           const store=db.createObjectStore(s,{keyPath:'id'});
-          if(s==='mieter'){store.createIndex('objektId','objektId');store.createIndex('weNr','weNr')}
-          if(s==='buchungen'){store.createIndex('mieterId','mieterId');store.createIndex('kontoId','kontoId');store.createIndex('mietmonat','mietmonat')}
-          if(s==='aufgaben'){store.createIndex('objektId','objektId');store.createIndex('status','status')}
-          if(s==='maengel'){store.createIndex('objektId','objektId')}
-          if(s==='reparaturen'){store.createIndex('objektId','objektId')}
-          if(s==='protokolle'){store.createIndex('objektId','objektId')}
-          if(s==='dokumente'){store.createIndex('objektId','objektId');store.createIndex('mieterId','mieterId')}
-          if(s==='nka_archiv'){store.createIndex('objektId','objektId')}
-          if(s==='einkaufsliste'){store.createIndex('objektId','objektId');store.createIndex('status','status')}
-          if(s==='termine'){store.createIndex('datum','datum');store.createIndex('objektId','objektId')}
-          if(s==='fotos'){store.createIndex('protId','protId')}
-          if(s==='wartung'){store.createIndex('objektId','objektId')}
-          if(s==='zaehler'){store.createIndex('objektId','objektId')}
-          if(s==='stellplaetze'){store.createIndex('objektId','objektId')}
-          if(s==='zaehlerstaende'){store.createIndex('objektId','objektId');store.createIndex('zaehlerId','zaehlerId')}
-          if(s==='versorger'){store.createIndex('objektId','objektId')}
-          if(s==='versicherungen'){store.createIndex('objektId','objektId')}
-          if(s==='versorger_archiv'){store.createIndex('objektId','objektId');store.createIndex('versorgerId','versorgerId')}
-          if(s==='branchenbuch'){store.createIndex('kategorie','kategorie')}
-          if(s==='lager'){store.createIndex('objektId','objektId');store.createIndex('kategorie','kategorie')}
-          if(s==='lager_anforderung'){store.createIndex('status','status')}
-          if(s==='arbeitszeit'){store.createIndex('userId','userId');store.createIndex('datum','datum')}
-          if(s==='abwesenheit'){store.createIndex('userId','userId')}
-          if(s==='rechnungen'){store.createIndex('objektId','objektId');store.createIndex('mieterId','mieterId');store.createIndex('datum','datum')}
-          if(s==='packliste'){store.createIndex('terminId','terminId')}
-          if(s==='ventile'){store.createIndex('objektId','objektId')}
-          if(s==='ventilpruefung'){store.createIndex('ventilId','ventilId')}
-          if(s==='taetigkeit_log'){store.createIndex('userId','userId');store.createIndex('datum','datum')}
-          if(s==='interessenten'){store.createIndex('objektId','objektId');store.createIndex('status','status')}
-          if(s==='od_dateien'){store.createIndex('objektId','objektId');store.createIndex('pfad','pfad')}
-          if(s==='mietbescheinigungen'){store.createIndex('mieterId','mieterId');store.createIndex('objektId','objektId')}
-          if(s==='kautionsquittungen'){store.createIndex('mieterId','mieterId');store.createIndex('objektId','objektId')}
-          if(s==='mv_entwuerfe'){store.createIndex('mieterId','mieterId');store.createIndex('objektId','objektId')}
-          if(s==='selbstauskuenfte'){store.createIndex('objektId','objektId');store.createIndex('status','status')}
-          if(s==='tenant_mails'){store.createIndex('mieterId','mieterId');store.createIndex('objektId','objektId')}
-          if(s==='buch_regeln'){store.createIndex('schluessel','schluessel');store.createIndex('kontoId','kontoId')}
-          if(s==='buchungs_batches'){store.createIndex('kontoId','kontoId')}
+          (STORE_DEFS[s].index||[]).forEach(i=>store.createIndex(i,i));
         }
       });
     };
@@ -10609,19 +10656,28 @@ async function renderObjMieter(el){
   // Grundrisse laden
   const grundrisse = (await idbGetAll('dokumente')).filter(d=>d.objektId===currentObjId&&d.typ==='plan'&&!d.mieterId);
   let h=gebaeudeStatsHTML(stamm,personenGesamt,mieter.length,istAdmin);
-  h+=`<div class="s-hdr"><div class="s-title">${mieter.length} Mieter · ${personenGesamt} ${personenGesamt===1?'Person':'Personen'}</div>
-    <div style="display:flex;gap:6px;flex-wrap:wrap">
-      <button class="btn btn-sm btn-copper" onclick="modalAddMieter('${currentObjId}')"><i class="ti ti-user-plus"></i> Neu</button>
+  const _oGrp = (label, html) => html.trim()
+    ? `<div class="akt-grp">${label}</div><div class="akt-row">${html}</div>` : '';
+  h+=`<div class="s-title" style="margin-bottom:10px">${mieter.length} Mieter · ${personenGesamt} ${personenGesamt===1?'Person':'Personen'}</div>
+  <div style="margin-bottom:6px">
+    ${_oGrp('Mieter &amp; Wohnungen', `
+      <button class="btn btn-sm btn-copper" onclick="modalAddMieter('${currentObjId}')"><i class="ti ti-user-plus"></i> Neuer Mieter</button>
       <button class="btn btn-sm" onclick="modalGrundriss('${currentObjId}')"><i class="ti ti-map"></i> Grundriss${grundrisse.length>0?` (${grundrisse.length})`:''}</button>
-      <button class="btn btn-sm" onclick="modalVentilliste('${currentObjId}')"><i class="ti ti-pipe"></i> Ventile</button>
+      ${istVerwalter()?`<button class="btn btn-sm" onclick="modalWohnungsQR('${currentObjId}')"><i class="ti ti-qrcode"></i> Wohnungs-QR</button>`:''}
+    `)}
+    ${_oGrp('Vorgänge', `
       <button class="btn btn-sm" onclick="newProtokollForObj('${currentObjId}')"><i class="ti ti-clipboard-check"></i> Protokoll</button>
+      <button class="btn btn-sm" onclick="modalVentilliste('${currentObjId}')"><i class="ti ti-pipe"></i> Ventile</button>
+    `)}
+    ${_oGrp('Schreiben', `
       <button class="btn btn-sm" onclick="modalBrief('','${currentObjId}')"><i class="ti ti-mail"></i> Brief</button>
       <button class="btn btn-sm" onclick="modalAushang('${currentObjId}')"><i class="ti ti-news"></i> Aushang</button>
-      ${istVerwalter()?`<button class="btn btn-sm" onclick="modalWohnungsQR('${currentObjId}')"><i class="ti ti-qrcode"></i> Wohnungs-QR</button>`:''}
+    `)}
+    ${_oGrp('Abrechnung', `
       ${istVerwalter()?`<button class="btn btn-sm" onclick="modalNKA('${currentObjId}')"><i class="ti ti-receipt"></i> NKA</button>`:''}
       ${istVerwalter()&&(getObj(currentObjId)?.gruppe==='krefeld')?`<button class="btn btn-sm btn-copper" onclick="modalNKALiegenschaft('lg_krefeld')"><i class="ti ti-buildings"></i> NKA Krefeld (alle Häuser)</button>`:''}
       ${istVerwalter()&&(getObj(currentObjId)?.gruppe==='mg')?`<button class="btn btn-sm btn-copper" onclick="modalNKALiegenschaft('lg_mg')"><i class="ti ti-buildings"></i> NKA Mönchengladbach (alle Häuser)</button>`:''}
-    </div>
+    `)}
   </div>`;
   mieter.forEach(m=>{
     const ini=initials(m.mieter);
@@ -11169,23 +11225,23 @@ async function showMieter(id){
       <div class="det-field"><label>NK-Vorauszahlung</label><span>${fmtEur(m.nk)}</span></div>
       <div class="det-field"><label>Gesamtmiete</label><span>${fmtEur(m.gesamt)}</span></div>`:''}
       <div class="det-field"><label>Wohnfläche</label><span>${m.flaeche?m.flaeche+' m²':'–'}</span></div>
-      ${istVerwalter()&&mieteProQm(m)!==null?`<div class="det-field"><label>Kaltmiete je m²</label><span>${mieteProQmHTML(m,_stamm.mietspiegel)}${_stamm.mietspiegel?(()=>{const a=mietspiegelAmpel(mieteProQm(m),_stamm.mietspiegel);return a?` <span style="font-size:10px;color:${a.farbe}">· ${a.label} (MS ${String(_stamm.mietspiegel).replace('.',',')} €/m²)</span>`:'';})():' <span style="font-size:10px;color:var(--ink-40)">· kein Mietspiegel hinterlegt</span>'}</span></div>`:''}
+      ${istVerwalter()&&mieteProQm(m)!==null?`<div class="det-field"><label>Kaltmiete je m²</label><span>${mieteProQmHTML(m,_stamm.mietspiegel)}${_stamm.mietspiegel?(()=>{const a=mietspiegelAmpel(mieteProQm(m),_stamm.mietspiegel);return a?` <span class="det-zusatz" style="color:${ampelAufDunkel(a.farbe)}">· ${a.label} (MS ${String(_stamm.mietspiegel).replace('.',',')} €/m²)</span>`:'';})():' <span class="det-zusatz" style="color:var(--ink-10)">· kein Mietspiegel hinterlegt</span>'}</span></div>`:''}
       <div class="det-field"><label>Einzug</label><span>${m.einzug||'–'}</span></div>
-      ${istVerwalter()?(()=>{ const _kd=kautionDetailVon(m); const _si=kautionStatusInfo(_kd.status); const _ai=kautionArtInfo(_kd.art); return `<div class="det-field"><label>Kaution</label><span>${fmtEur(kautionSaldo(_kd))} <span style="font-size:10px;color:${_si.farbe}">· ${_ai.label.split(' (')[0]} · ${_si.label}</span></span></div>`; })():''}
+      ${istVerwalter()?(()=>{ const _kd=kautionDetailVon(m); const _si=kautionStatusInfo(_kd.status); const _ai=kautionArtInfo(_kd.art); return `<div class="det-field"><label>Kaution</label><span>${fmtEur(kautionSaldo(_kd))} <span class="det-zusatz" style="color:${ampelAufDunkel(_si.farbe)}">· ${_ai.label.split(' (')[0]} · ${_si.label}</span></span></div>`; })():''}
       ${m.telefon?`<div class="det-field"><label>Telefon</label><span><a href="${telHref(m.telefon)}">${esc(m.telefon)}</a></span></div>`:''}
       ${m.email?`<div class="det-field"><label>E-Mail</label><span><a href="${mailHref(m.email)}">${esc(m.email)}</a></span></div>`:''}
     </div>
-    ${istVerwalter()&&(m.iban||m.zahlweise||m.sepaMandat)?`<div style="margin-top:10px;background:#fff;border:1px solid var(--ink-10);border-radius:8px;padding:10px 12px;color:#1a2433">
-      <div style="font-size:12px;font-weight:700;color:#0C447C;margin-bottom:6px"><i class="ti ti-building-bank"></i> Bankverbindung</div>
-      <div class="det-grid">
-        ${m.zahlweise?`<div class="det-field"><label style="color:#6b7280">Zahlungsweise</label><span style="color:#1a2433">${m.zahlweise==='sepa'?'SEPA-Lastschrift':'Selbstüberweisung'}</span></div>`:''}
-        ${m.kontoinhaber?`<div class="det-field"><label style="color:#6b7280">Kontoinhaber</label><span style="color:#1a2433">${esc(m.kontoinhaber)}</span></div>`:''}
-        ${m.iban?`<div class="det-field"><label style="color:#6b7280">IBAN</label><span style="font-variant-numeric:tabular-nums;letter-spacing:0.5px;color:#1a2433">${esc(fmtIban(m.iban))}</span></div>`:''}
-        ${m.bic?`<div class="det-field"><label style="color:#6b7280">BIC</label><span style="color:#1a2433">${esc(m.bic)}</span></div>`:''}
-        ${m.sepaMandat?`<div class="det-field"><label style="color:#6b7280">SEPA-Mandat</label><span style="color:#1a2433">${esc(m.sepaMandat)}</span></div>`:''}
+    ${istVerwalter()&&(m.iban||m.zahlweise||m.sepaMandat)?`<details class="bank-det">
+      <summary><i class="ti ti-building-bank"></i> Bankverbindung<span class="bank-kurz">${m.zahlweise==='sepa'?'SEPA-Lastschrift':(m.zahlweise?'Selbstüberweisung':'')}${m.iban?' · '+esc(ibanMaskiert(m.iban)):''}</span></summary>
+      <div class="bank-body">
+        ${m.zahlweise?`<div class="bank-zeile"><span>Zahlungsweise</span><b>${m.zahlweise==='sepa'?'SEPA-Lastschrift':'Selbstüberweisung'}</b></div>`:''}
+        ${m.kontoinhaber?`<div class="bank-zeile"><span>Kontoinhaber</span><b>${esc(m.kontoinhaber)}</b></div>`:''}
+        ${m.iban?`<div class="bank-zeile"><span>IBAN</span><b style="font-variant-numeric:tabular-nums;letter-spacing:.4px">${esc(fmtIban(m.iban))}</b></div>`:''}
+        ${m.bic?`<div class="bank-zeile"><span>BIC</span><b>${esc(m.bic)}</b></div>`:''}
+        ${m.sepaMandat?`<div class="bank-zeile"><span>SEPA-Mandat</span><b>${esc(m.sepaMandat)}</b></div>`:''}
+        ${m.bankBemerkung?`<div class="bank-zeile"><span>Bemerkung</span><b>${esc(m.bankBemerkung)}</b></div>`:''}
       </div>
-      ${m.bankBemerkung?`<div style="font-size:11px;color:#6b7280;margin-top:6px">${esc(m.bankBemerkung)}</div>`:''}
-    </div>`:''}
+    </details>`:''}
     <div style="display:none"><!-- dummy --></div
       ${tg?`<div class="det-field"><label>TG-Stellplatz</label><span>Nr. ${tg.nr} · ${fmtEur(tg.miete)}/Mon.</span></div>`:''}
       ${m.uebergabe?`<div class="det-field"><label>Übergabe</label><span>${m.uebergabe}</span></div>`:''}
@@ -22402,6 +22458,19 @@ const KAUTION_STATUS = [
   {val:'einbehalten',   label:'(teilweise) einbehalten',farbe:'var(--copper)'},
 ];
 function kautionStatusInfo(v){ return KAUTION_STATUS.find(x=>x.val===v) || KAUTION_STATUS[0]; }
+// v208: Ampel-/Statusfarben sind für WEISSEN Grund entworfen (dunkelgrün, grau, amber).
+// Im dunklen Detailkopf (.det-hdr, Hintergrund --ink) waren sie kaum lesbar. Diese Map
+// liefert das aufgehellte Pendant; unbekannte Farben werden unverändert durchgereicht.
+const AMPEL_DUNKEL = {
+  '#C0392B':'#FF9C90',        // rot   (unter Mietspiegel)
+  '#2E7D52':'#7FE0A8',        // grün  (über Mietspiegel / vollständig hinterlegt)
+  '#888780':'#C6D6E6',        // grau  (ortsüblich)
+  'var(--green)':'#7FE0A8',
+  'var(--amber)':'#FFC875',
+  'var(--copper)':'#F2B183',
+  'var(--ink-40)':'#B9D3EC'
+};
+function ampelAufDunkel(farbe){ return AMPEL_DUNKEL[farbe] || farbe; }
 function kautionArtInfo(v){ return KAUTION_ARTEN.find(x=>x.val===v) || KAUTION_ARTEN[0]; }
 
 // ════════════════════════════════════════════════════════════════
@@ -25511,6 +25580,7 @@ async function renderSettings(){
         <button class="btn" onclick="exportExcel()"><i class="ti ti-file-spreadsheet"></i> Excel exportieren</button>
         <button class="btn" onclick="mieterAlleVcardExport()"><i class="ti ti-address-book"></i> Mieter als Telefonkontakte (.vcf)</button>
         <button class="btn" onclick="document.getElementById('importBackupIn').click()"><i class="ti ti-upload"></i> Backup importieren</button>
+        <button class="btn" onclick="modalBackfill()"><i class="ti ti-cloud-upload"></i> Alt-Fotos auslagern</button>
         <button class="btn btn-danger" onclick="confirmReset()"><i class="ti ti-trash"></i> Zurücksetzen</button>
       </div>
       <input type="file" id="importBackupIn" accept=".json" style="display:none" onchange="importBackup(this)">
@@ -26079,7 +26149,7 @@ async function speicherInfoLaden(){
 async function exportBackup(){
   if(!istSystemAdmin()){ toast('Nur für Admins'); return; }
   const backup={};
-  for(const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','versicherungen','versorger_archiv','od_dateien','buchungen','fotos','mietbescheinigungen','kautionsquittungen','mv_entwuerfe','selbstauskuenfte','tenant_mails','stellplaetze','buch_regeln','buchungs_batches']){
+  for(const s of STORES_SYNC){
     backup[s]=await idbGetAll(s);
     // v180 (Review H2): Function-Key + SA-Schlüssel nie in Export-Dateien schreiben.
     if(s==='settings') backup[s]=backup[s].filter(r=>!SETTINGS_GEHEIM.includes(r?.id));
@@ -26332,7 +26402,7 @@ async function importBackupAusfuehren(modus){
   const backup = window._pendingBackup;
   if(!backup){ toast('Keine Backup-Datei geladen'); closeModal(); return; }
   closeModal();
-  const alleStores=['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','versorger_archiv','od_dateien','buchungen','fotos','mietbescheinigungen','kautionsquittungen','mv_entwuerfe','selbstauskuenfte','tenant_mails','stellplaetze','buch_regeln','buchungs_batches'];
+  const alleStores=STORES_SYNC;
   try{
     await erstelleMieterSnapshot('vor Import ('+modus+')');
     if(modus==='ersetzen'){
@@ -26943,7 +27013,7 @@ async function syncToOneDrive() {
     await hmRueckwegMergen(token);
 
     const backup = {};
-    for (const s of ['users','mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings','dokumente','nka_archiv','einkaufsliste','termine','wartung','zaehler','zaehlerstaende','versorger','versorger_archiv','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','versicherungen','od_dateien','buchungen','fotos','mietbescheinigungen','kautionsquittungen','mv_entwuerfe','selbstauskuenfte','tenant_mails','stellplaetze','buch_regeln','buchungs_batches']) {
+    for (const s of STORES_SYNC) {
       backup[s] = await idbGetAll(s);
       // v180 (Review H2): Geheimnisse (Function-Key, SA-Schlüssel) bleiben auf dem Gerät –
       // sie gehören weder in die OneDrive-JSON noch in Backup-Dateien. settings werden
@@ -27053,7 +27123,7 @@ async function syncFromOneDrive() {
       await idbPut('settings', { id:'tombstones', value: mergedTomb });
 
       // Merge: ID-basiert, nur übernehmen wenn remote neuer oder lokal fehlt
-      const mergeStores = ['protokolle','aufgaben','maengel','reparaturen','dokumente','nka_archiv','einkaufsliste','wartung','termine','zaehler','zaehlerstaende','versorger','versorger_archiv','versicherungen','lager','lager_anforderung','taetigkeit_kat','arbeitszeit','abwesenheit','rechnungen','packliste','objekt_stamm','ventile','ventilpruefung','taetigkeit_log','branchenbuch','interessenten','od_dateien','fotos','mietbescheinigungen','kautionsquittungen','mv_entwuerfe','selbstauskuenfte','tenant_mails','buchungen','stellplaetze','buch_regeln','buchungs_batches'];
+      const mergeStores = STORES_MERGE;
       for (const s of mergeStores) {
         if (!backup[s]) continue;
         const tombS = mergedTomb[s] || {};
@@ -27945,6 +28015,13 @@ function fmtIban(iban){
   if(!iban) return '';
   const clean=String(iban).replace(/\s+/g,'').toUpperCase();
   return clean.replace(/(.{4})/g,'$1 ').trim();
+}
+// v208: verkürzte IBAN für die zugeklappte Bankverbindungs-Zeile (Datensparsamkeit:
+// die volle IBAN erscheint erst nach bewusstem Aufklappen). Muster: DE37 …54 09
+function ibanMaskiert(iban){
+  const clean=String(iban||'').replace(/\s+/g,'').toUpperCase();
+  if(clean.length < 8) return clean;
+  return clean.slice(0,4)+' … '+clean.slice(-4);
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -31815,6 +31892,225 @@ function fotoZielFuer(objektId, weNr, storeName){
     else if(cfg.knoten==='auto') knoten = we ? 'WE '+odSafeName(we) : 'Allgemein';
     return { gruppe:st.gruppe, gebaeude:odGebaeudeName(objektId), knoten, kategorie:cfg.kategorie||'Sonstiges' };
   }catch(e){ return null; }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   23a-BACKFILL (v209) – Alt-Fotos aus IndexedDB nach OneDrive auslagern
+   Seit v164–v177 werden NEUE Fotos/Belege als Referenz gespeichert; der
+   ALTBESTAND liegt weiterhin als Base64 in den Records (Haupttreiber der
+   ~21 MB in immo_daten.json, v. a. die Protokollfoto-Duplikate: dieselbe
+   dataURL steckt im protokolle-Record UND im fotos-Store).
+   Sicherheitsprinzipien:
+     · Inline-Daten werden NUR ersetzt, wenn der Upload nachweislich erfolgreich
+       war (Referenz mit odId liegt vor) – sonst bleibt der Record unverändert.
+     · Idempotent: bereits ausgelagerte Referenzen werden übersprungen.
+     · Dedupe: identische dataURL wird nur EINMAL hochgeladen (Cache), Protokoll
+       und fotos-Store erhalten dieselbe Referenz.
+     · Generierte HTML-Archive (data:text/html) und ausweis/lastschrift
+       (DOK_INLINE_TYPEN) bleiben bewusst inline.
+     · Abbrechbar; bereits migrierte Records bleiben gültig (kein Alles-oder-nichts).
+═══════════════════════════════════════════════════════════════════════ */
+// Reihenfolge bewusst: fotos VOR protokolle → der Dedupe-Cache greift beim Duplikat.
+const BF_STORES = ['fotos','protokolle','maengel','aufgaben','objekt_stamm','reparaturen','ventilpruefung','dokumente'];
+let _bfLaeuft = false, _bfAbbruch = false;
+
+/* Auslagerungswürdige Inline-Daten? (HTML-Archive bleiben inline, vgl. v177) */
+function bfIstInline(v){
+  return typeof v === 'string' && v.startsWith('data:') && !v.startsWith('data:text/html');
+}
+/* Dedupe-Schlüssel ohne Hashing: Länge + Kopf + Fuß der dataURL. */
+function bfKey(d){ return d.length + '|' + d.slice(0,64) + '|' + d.slice(-64); }
+/* Endung aus dem dataURL-MIME (Rechnungsbelege können PDFs sein). */
+function bfEndung(d){
+  if(d.startsWith('data:application/pdf')) return '.pdf';
+  if(d.startsWith('data:image/png')) return '.png';
+  if(d.startsWith('data:image/webp')) return '.webp';
+  return '.jpg';
+}
+/* Rekursiver Lesewalker (Analyse) – findet auch verschachtelte Protokollfotos
+   (raeume[..].condPhotos, zaehler[..].foto …). */
+function bfWalkLesen(node, cb, tiefe){
+  tiefe = tiefe || 0;
+  if(tiefe > 8 || !node || typeof node !== 'object') return;
+  const keys = Array.isArray(node) ? node.map((_,i)=>i) : Object.keys(node);
+  for(const k of keys){
+    if(k === '_geleert') continue;
+    const v = node[k];
+    if(bfIstInline(v)) cb(v);
+    else if(v && typeof v === 'object') bfWalkLesen(v, cb, tiefe+1);
+  }
+}
+/* Analyse: zählt Inline-Bestände je Store. Liest nur, schreibt nichts. */
+async function backfillAnalyse(){
+  const res = { stores:{}, anzahl:0, bytes:0 };
+  for(const st of BF_STORES){
+    let recs = [];
+    try{ recs = await idbGetAll(st); }catch(_){ continue; }
+    let n = 0, b = 0;
+    for(const r of recs){
+      if(!r) continue;
+      if(st === 'dokumente'){
+        if(bfIstInline(r.data) && !DOK_INLINE_TYPEN.includes(r.typ)){ n++; b += r.data.length; }
+        continue;
+      }
+      bfWalkLesen(r, v => { n++; b += v.length; });
+    }
+    if(n){ res.stores[st] = { n, b }; res.anzahl += n; res.bytes += b; }
+  }
+  return res;
+}
+/* Upload mit Dedupe-Cache. Liefert Referenz oder null (dann bleibt inline). */
+async function bfHochladen(dataUrl, ziel, cache){
+  if(!ziel) return null;
+  const key = bfKey(dataUrl);
+  if(cache.has(key)) return cache.get(key);
+  const z = Object.assign({}, ziel, { name: 'backfill_' + uid() + bfEndung(dataUrl) });
+  const ref = await fotoAuslagern(dataUrl, z);
+  if(ref) cache.set(key, ref);
+  return ref;
+}
+/* Rekursiver Schreibwalker: ersetzt Inline-dataURLs in-place durch Referenzen. */
+async function bfWalkMigrieren(node, ziel, cache, stat, tiefe){
+  tiefe = tiefe || 0;
+  if(tiefe > 8 || !node || typeof node !== 'object' || _bfAbbruch) return;
+  const keys = Array.isArray(node) ? node.map((_,i)=>i) : Object.keys(node);
+  for(const k of keys){
+    if(_bfAbbruch) return;
+    if(k === '_geleert') continue;
+    const v = node[k];
+    if(bfIstInline(v)){
+      const ref = await bfHochladen(v, ziel, cache);
+      if(ref){ stat.bytes += v.length; node[k] = ref; stat.geaendert++; }
+      else stat.fehler++;
+    } else if(v && typeof v === 'object'){
+      await bfWalkMigrieren(v, ziel, cache, stat, tiefe+1);
+    }
+  }
+}
+/* Ziel-Kontext (Standort/Gebäude/Knoten) je Record. null ⇒ Record überspringen. */
+async function bfZiel(store, rec){
+  if(store === 'fotos'){
+    const pid = rec.protId;
+    if(!pid || String(pid).startsWith('__')) return null;   // z. B. '__mangel_offen__'
+    const p = await idbGet('protokolle', pid).catch(()=>null);
+    if(!p) return null;
+    return fotoZielFuer(p.objektId, p.weNr, 'protokolle');
+  }
+  return fotoZielFuer(rec.objektId, rec.weNr, store);
+}
+
+/* Hauptlauf. Migriert Store für Store; schreibt jeden Record einzeln zurück,
+   sodass ein Abbruch/Fehler nie einen halben Bestand hinterlässt. */
+async function backfillLauf(){
+  if(_bfLaeuft) return;
+  if(!(await odToken())){ toast('Bitte zuerst mit OneDrive verbinden'); return; }
+  _bfLaeuft = true; _bfAbbruch = false;
+  const cache = new Map();
+  const stat = { geaendert:0, fehler:0, bytes:0, records:0 };
+  const melde = txt => { const el = document.getElementById('bfStatus'); if(el) el.innerHTML = txt; };
+  try{
+    for(const st of BF_STORES){
+      if(_bfAbbruch) break;
+      let recs = [];
+      try{ recs = await idbGetAll(st); }catch(_){ continue; }
+      for(let i = 0; i < recs.length; i++){
+        if(_bfAbbruch) break;
+        const rec = recs[i];
+        if(!rec) continue;
+        const vorher = { g: stat.geaendert, f: stat.fehler };
+
+        if(st === 'dokumente'){
+          // Feldwechsel data -> ref (Lesepfad dokQuelle ist dual-format, v177)
+          if(!bfIstInline(rec.data) || DOK_INLINE_TYPEN.includes(rec.typ)) continue;
+          const ref = await dokAuslagernRef(rec, rec.data);
+          if(ref){ stat.bytes += rec.data.length; rec.ref = ref; delete rec.data; stat.geaendert++; }
+          else { stat.fehler++; continue; }
+
+        } else if(st === 'fotos'){
+          // Feldwechsel data -> ref (restoreFotosForPD liest data ODER ref, v175)
+          if(!bfIstInline(rec.data)) continue;
+          const ziel = await bfZiel('fotos', rec);
+          const ref = ziel ? await bfHochladen(rec.data, ziel, cache) : null;
+          if(ref){ stat.bytes += rec.data.length; rec.ref = ref; delete rec.data; stat.geaendert++; }
+          else { stat.fehler++; continue; }
+
+        } else if(st === 'objekt_stamm'){
+          // Zwei Record-Arten: Objekt-Stamm (id=objektId) und 'wohnungen_<objektId>'
+          // mit rec.wohnungen[weNr].{fotos,grundriss} – weNr steckt im Map-Schlüssel.
+          const oid = String(rec.id||'').startsWith('wohnungen_') ? String(rec.id).slice(10) : rec.id;
+          if(rec.wohnungen && typeof rec.wohnungen === 'object'){
+            for(const we of Object.keys(rec.wohnungen)){
+              if(_bfAbbruch) break;
+              const ziel = fotoZielFuer(oid, we, 'objekt_stamm');
+              if(!ziel) continue;
+              await bfWalkMigrieren(rec.wohnungen[we], ziel, cache, stat);
+            }
+          } else {
+            const ziel = fotoZielFuer(oid, '', 'objekt_stamm');
+            if(ziel) await bfWalkMigrieren(rec, ziel, cache, stat);
+          }
+
+        } else {
+          const ziel = await bfZiel(st, rec);
+          if(!ziel){ bfWalkLesen(rec, ()=>{ stat.fehler++; }); continue; }  // kein Standort auflösbar
+          await bfWalkMigrieren(rec, ziel, cache, stat);
+        }
+
+        if(stat.geaendert > vorher.g){
+          rec.geaendert = nowIso();
+          try{ await idbPut(st, rec); stat.records++; }
+          catch(e){ console.warn('Backfill idbPut', st, e); stat.fehler++; }
+        }
+        if((i % 5) === 0 || stat.geaendert > vorher.g){
+          melde(`Läuft… <b>${st}</b> ${i+1}/${recs.length} · ausgelagert: <b>${stat.geaendert}</b> · frei: <b>${(stat.bytes/1048576).toFixed(1)} MB</b>${stat.fehler?` · übersprungen: ${stat.fehler}`:''}`);
+        }
+      }
+    }
+  }catch(e){
+    console.warn('Backfill:', e);
+    melde('Abgebrochen (Fehler): ' + esc(e.message||String(e)));
+  }
+  _bfLaeuft = false;
+  if(stat.geaendert){ try{ syncSoon(); }catch(_){} }
+  const btn = document.getElementById('bfStartBtn'); if(btn) btn.disabled = false;
+  melde(`${_bfAbbruch?'Abgebrochen':'Fertig'}: <b>${stat.geaendert}</b> Dateien ausgelagert, <b>${(stat.bytes/1048576).toFixed(1)} MB</b> aus der Sync-Datei entfernt, ${stat.records} Datensätze aktualisiert${stat.fehler?`, <b>${stat.fehler}</b> übersprungen (bleiben unverändert inline)`:''}. ${stat.geaendert?'Der nächste Sync überträgt den schlankeren Stand.':''}`);
+  return stat;
+}
+function backfillAbbrechen(){ _bfAbbruch = true; toast('Wird nach dem laufenden Foto beendet…'); }
+
+/* Modal: erst Analyse (liest nur), dann bewusster Start. */
+async function modalBackfill(){
+  if(!istSystemAdmin()){ toast('Nur für Admins'); return; }
+  showModal(`<div class="m-title"><i class="ti ti-cloud-upload"></i> Alt-Fotos auslagern</div>
+    <div id="bfAnalyse" style="font-size:13px;color:var(--ink-60)">Bestand wird geprüft…</div>`);
+  const a = await backfillAnalyse();
+  const mb = (a.bytes/1048576).toFixed(1);
+  const zeilen = Object.keys(a.stores).map(st =>
+    `<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:12px">
+       <span>${esc(st)}</span><b>${a.stores[st].n} · ${(a.stores[st].b/1048576).toFixed(1)} MB</b></div>`).join('');
+  showModal(`<div class="m-title"><i class="ti ti-cloud-upload"></i> Alt-Fotos auslagern</div>
+    ${a.anzahl ? `
+    <p style="font-size:13px;color:var(--ink-60);line-height:1.55;margin-bottom:10px">
+      Im Gerätespeicher liegen noch <b>${a.anzahl} Bilder/Belege</b> (<b>${mb} MB</b>) als Base64 in den
+      Datensätzen. Sie werden bei <i>jedem</i> Sync mitübertragen. Der Vorgang lädt sie nach OneDrive
+      (in die bestehende Ordnerstruktur) und ersetzt sie durch Verweise – Anzeige, Druck und Teilen
+      funktionieren unverändert weiter.
+    </p>
+    <div style="background:var(--ink-05);border-radius:8px;padding:9px 11px;margin-bottom:10px">${zeilen}</div>
+    <p style="font-size:11.5px;color:var(--amber);line-height:1.5;margin-bottom:10px">
+      <i class="ti ti-alert-triangle"></i> Bitte vorher ein <b>Backup exportieren</b>. Der Vorgang kann
+      jederzeit abgebrochen werden; bereits übertragene Bilder bleiben gültig. Nur nachweislich
+      hochgeladene Bilder werden aus den Datensätzen entfernt – bei Fehlern bleibt alles, wie es ist.
+      Bei mobiler Verbindung: WLAN empfohlen (${mb} MB Upload).
+    </p>
+    <div id="bfStatus" style="font-size:12px;color:var(--ink-60);margin-bottom:10px"></div>
+    <div class="m-actions">
+      <button class="btn" onclick="closeModal()">Schließen</button>
+      <button class="btn" onclick="backfillAbbrechen()"><i class="ti ti-player-stop"></i> Abbrechen</button>
+      <button class="btn btn-copper" id="bfStartBtn" onclick="this.disabled=true;backfillLauf()"><i class="ti ti-cloud-upload"></i> Jetzt auslagern</button>
+    </div>`
+    : `<p style="font-size:13px;color:var(--ink-60);line-height:1.55">Es liegen keine auslagerbaren Alt-Bilder mehr vor – der Bestand ist bereits vollständig nach OneDrive ausgelagert.</p>
+       <div class="m-actions"><button class="btn btn-copper" onclick="closeModal()">Schließen</button></div>`}`);
 }
 
 /* dual-format <img>-Tag: Alt-dataURL ODER ausgelagerte Referenz. Vorschau nutzt
