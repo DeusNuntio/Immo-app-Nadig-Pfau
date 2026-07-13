@@ -25,7 +25,7 @@
   --highlight:#85B7EB;--highlight-bg:#E8F2FB;
   --green:#2E7D52;--green-l:#E6F4EC;--success:#2E7D52;--line:#D9E2EE;
   --red:#C0392B;--red-l:#FDECEA;
-  --amber:#D4820A;--amber-l:#FEF3E2;
+  --amber:#A86807;--amber-l:#FEF3E2;
   --white:#FFF;--surface:#F0F5FB;
   --radius:10px;--radius-sm:6px;--radius-lg:16px;--radius-xl:20px;
   --shadow:0 2px 12px rgba(12,68,124,.10);--shadow-lg:0 8px 32px rgba(12,68,124,.18);
@@ -34,6 +34,8 @@
 }
 /* v211: Sichtbarer Tastatur-Fokus (WCAG 2.4.7); Touch/Maus unverändert (:focus-visible) */
 button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,[onclick]:focus-visible,summary:focus-visible{outline:2px solid var(--highlight);outline-offset:2px;border-radius:4px}
+/* v212: Systemeinstellung Bewegung-reduzieren respektieren (WCAG 2.3.3) */
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
 html,body{height:100%;overscroll-behavior:none;font-family:var(--font)}
 body{background:var(--surface);color:var(--ink);font-size:15px;-webkit-font-smoothing:antialiased}
@@ -292,8 +294,11 @@ button.chip.chip-active{background:var(--ink);color:#fff;border-color:var(--ink)
 /* ── MODAL ── */
 .modal-bg{position:fixed;inset:0;background:rgba(13,31,45,.7);z-index:200;display:none;align-items:flex-end;backdrop-filter:blur(4px)}
 .modal-bg.open{display:flex}
-.modal{background:#fff;border-radius:22px 22px 0 0;width:100%;max-height:92vh;overflow-y:auto;padding:18px;animation:slideUp .22s ease}
+.modal{position:relative;background:#fff;border-radius:22px 22px 0 0;width:100%;max-height:92vh;overflow-y:auto;padding:18px;animation:slideUp .22s ease}
 .m-handle{width:34px;height:4px;background:var(--ink-10);border-radius:2px;margin:0 auto 14px}
+/* v213 (F3): Modals schließen nur noch bewusst (Speichern/Abbrechen/✕), nicht per Klick daneben */
+.m-close{position:absolute;top:10px;right:12px;width:32px;height:32px;border:none;border-radius:50%;background:var(--ink-05);color:var(--ink-60);font-size:15px;display:flex;align-items:center;justify-content:center;cursor:pointer;z-index:5}
+.m-close:active{background:var(--ink-10)}
 .m-title{font-size:16px;font-weight:600;color:var(--ink);margin-bottom:14px;display:flex;align-items:center;gap:8px}
 .m-title i{color:var(--copper);font-size:18px}
 @keyframes slideUp{from{transform:translateY(100%)}to{transform:translateY(0)}}
@@ -724,9 +729,10 @@ body.printing-active #printRoot{display:block!important}
 </div>
 
 <!-- MODAL -->
-<div class="modal-bg" id="modalBg" onclick="closeModal()">
-  <div class="modal" id="modalBox" onclick="event.stopPropagation()">
+<div class="modal-bg" id="modalBg">
+  <div class="modal" id="modalBox">
     <div class="m-handle"></div>
+    <button class="m-close" type="button" onclick="closeModal()" aria-label="Dialog schließen (ohne Speichern)"><i class="ti ti-x"></i></button>
     <div id="modalBody"></div>
   </div>
 </div>
@@ -761,7 +767,7 @@ body.printing-active #printRoot{display:block!important}
 </div>
 
 <!-- TOAST -->
-<div class="toast" id="toastEl"></div>
+<div class="toast" id="toastEl" role="status" aria-live="polite"></div>
 <input type="file" id="photoIn" accept="image/*" multiple style="display:none">
 <input type="file" id="galleryIn" accept="image/*" multiple style="display:none">
 <input type="file" id="xlsxIn"  accept=".xlsx,.xlsm" style="display:none" onchange="importExcel(this)">
@@ -884,7 +890,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=34;
-const APP_VERSION = '2026-07-12-v211';
+const APP_VERSION = '2026-07-13-v213';
 /* v211-F1: Scrollen über einem fokussierten Zahlenfeld verstellt sonst unbemerkt den Wert
    (Zählerstände/Beträge!). Fokus abgeben statt Wert ändern; passive:true = kein Scroll-Ruckeln. */
 document.addEventListener('wheel', function(e){
@@ -1789,7 +1795,7 @@ async function renderDash() {
   // v181 (Punkt 5): Zähler-Schnellsuche – Nummer (auch Teilstück) oder Bezeichnung
   html += `<div class="card" style="margin-bottom:12px">
     <div class="card-hdr"><i class="ti ti-gauge"></i> Zähler suchen</div>
-    <input type="text" id="dashZaehlerSuche" placeholder="Zählernummer (auch Teilstück) oder Bezeichnung …"
+    <input type="text" id="dashZaehlerSuche" enterkeyhint="search" placeholder="Zählernummer (auch Teilstück) oder Bezeichnung …"
       oninput="zaehlerSucheInput()" style="width:100%;padding:10px;border:1px solid var(--ink-20);border-radius:8px;font-size:14px">
     <div id="dashZaehlerTreffer" style="margin-top:8px"></div>
   </div>`;
@@ -8627,7 +8633,7 @@ async function renderLager(){
   // Globale Suche im Lager + Barcode-Scan (L4)
   h+=`<div style="margin-top:14px">
     <div style="display:flex;gap:8px">
-      <input type="search" id="lagerSuche" placeholder="Artikel, Inventar- oder Barcode-Nr. suchen…"
+      <input type="search" id="lagerSuche" enterkeyhint="search" placeholder="Artikel, Inventar- oder Barcode-Nr. suchen…"
         oninput="sucheLager(this.value)" style="flex:1;padding:10px 12px;border:1px solid var(--ink-10);border-radius:10px;font-size:14px">
       <button class="btn btn-copper" onclick="scanLagerBarcode()" title="Barcode scannen"><i class="ti ti-scan"></i></button>
     </div>
@@ -9674,7 +9680,7 @@ async function materialFuerMangel(mangelId, store){
   const sichtbar=alle.filter(a=>{const st=LAGER_STANDORTE.find(x=>x.id===a.standort);return st&&(st.alleSichtbar||meineGruppen.has(st.id));});
   showModal(`
     <div class="m-title"><i class="ti ti-package"></i> Material für Vorgang</div>
-    <input type="search" id="matSuche" placeholder="Artikel suchen…" oninput="filterMaterialPicker(this.value)"
+    <input type="search" id="matSuche" enterkeyhint="search" placeholder="Artikel suchen…" oninput="filterMaterialPicker(this.value)"
       style="width:100%;padding:10px 12px;border:1px solid var(--ink-10);border-radius:10px;font-size:14px;margin-bottom:10px">
     <div id="matPickerList" style="max-height:55vh;overflow-y:auto">
       ${sichtbar.length?sichtbar.map(a=>materialPickerRow(a, mangelId)).join(''):'<div class="empty"><i class="ti ti-package-off"></i><p>Keine Artikel vorhanden.</p></div>'}
@@ -10900,7 +10906,7 @@ async function modalMieterListe(){
   showModal(`
     <div class="m-title"><i class="ti ti-users"></i> Alle Mieter (${liste.length})</div>
     <div class="f" style="margin-bottom:10px">
-      <input id="mlSuche" type="text" placeholder="Name, Objekt oder WE-Nr. suchen…" oninput="renderMieterListe(this.value)" autocomplete="off">
+      <input id="mlSuche" enterkeyhint="search" type="text" placeholder="Name, Objekt oder WE-Nr. suchen…" oninput="renderMieterListe(this.value)" autocomplete="off">
     </div>
     <div id="mlBody" style="max-height:55vh;overflow-y:auto">${mieterListeRows(liste)}</div>
   `);
@@ -11856,7 +11862,7 @@ async function renderAufgaben(){
   <div class="search-bar" style="margin-bottom:10px">
     <div class="search-wrap" style="flex:1">
       <i class="ti ti-search"></i>
-      <input class="search-input" id="aufSucheInput" placeholder="Titel, Objekt, Beschreibung…"
+      <input class="search-input" id="aufSucheInput" enterkeyhint="search" placeholder="Titel, Objekt, Beschreibung…"
         value="${esc(window._aufFilter?.q||'')}" oninput="aufSuche(this.value)">
     </div>
   </div>
@@ -20458,7 +20464,7 @@ function openGlobalSearch() {
     <div class="search-bar" style="margin-bottom:12px">
       <div class="search-wrap" style="flex:1">
         <i class="ti ti-search"></i>
-        <input class="search-input" id="globalSearchQ" placeholder="Mieter, Objekt, Mangel, Aufgabe..."
+        <input class="search-input" id="globalSearchQ" enterkeyhint="search" placeholder="Mieter, Objekt, Mangel, Aufgabe..."
           oninput="runGlobalSearch(this.value)" autofocus>
       </div>
     </div>
@@ -28096,6 +28102,14 @@ const BUCH_KATEGORIEN=[
   {id:'erstattung_kosten',   label:'Erstattung Kosten',            seite:'ein', nka:false},
   {id:'versicherungserstattung',label:'Versicherungserstattung',   seite:'ein', nka:false},
   {id:'versorger_erstattung',label:'Versorger-Erstattung',         seite:'ein', nka:false},
+  /* v213 (F2): weitere mieterunabhängige Einnahmearten */
+  {id:'versorger_bonus',     label:'Bonus/Prämie Versorger',        seite:'ein', nka:false},
+  {id:'erstattung_umtausch', label:'Erstattung Umtausch/Rückgabe',  seite:'ein', nka:false},
+  {id:'gutschrift_handwerker',label:'Gutschrift Handwerker/Lieferant',seite:'ein', nka:false},
+  {id:'zinsertrag',          label:'Zinsgutschrift/Guthabenzins',   seite:'ein', nka:false},
+  {id:'steuererstattung',    label:'Steuererstattung',              seite:'ein', nka:false},
+  {id:'foerderung',          label:'Zuschuss/Förderung',            seite:'ein', nka:false},
+  {id:'eigentuemer_einlage', label:'Einlage Eigentümer',            seite:'ein', nka:false},
   {id:'sonstige_einnahmen',  label:'Sonstige Einnahmen',           seite:'ein', nka:false},
   {id:'fehlbuchung_rueck',   label:'Fehlbuchung Rückerstattung',   seite:'ein', nka:false},
 ];
@@ -28560,13 +28574,28 @@ async function zaVerarbeiten(text){
 async function zaSpeichern(){
   const konto = ZA_STATE.konto;
   if(!konto || !ZA_STATE.results.length){ toast('Nichts zu speichern.'); return; }
-  let neu=0, dup=0;
+  let neu=0, dup=0, akt=0;
   const batchId='batch_'+uid(); const batchIds=[];
   for(const r of ZA_STATE.results){
-    const rec = zaBuchungRecord(konto.id, r.buchung, r.match);
-    let exists=false;
-    try { const e=await idbGet('buchungen', rec.id); exists=!!e; } catch(_){}
-    if(exists){ dup++; continue; }
+    const rec = zaBuchungRecord(konto.id, r.buchung, r.match, r.einnahme);
+    let vorhanden=null;
+    try { vorhanden=await idbGet('buchungen', rec.id); } catch(_){}
+    if(vorhanden){
+      // v213: Zuordnung/Kategorie nachtragen, wenn der Eintrag bei einem früheren
+      // Import ungeprüft blieb und jetzt zugeordnet/kategorisiert wurde – sonst
+      // ginge die eben getätigte Arbeit beim Re-Import derselben Datei still verloren.
+      if(vorhanden.status==='ungeprueft' && (rec.mieterId || rec.kategorie)){
+        vorhanden.mieterId=rec.mieterId; vorhanden.mieterName=rec.mieterName;
+        vorhanden.zuordnungVia=rec.zuordnungVia; vorhanden.konfidenz=rec.konfidenz;
+        vorhanden.status=rec.status;
+        if(rec.kategorie) vorhanden.kategorie=rec.kategorie;
+        if(rec.notiz) vorhanden.notiz=rec.notiz;
+        vorhanden.updatedAt=nowIso();
+        await idbPut('buchungen', vorhanden);
+        akt++;
+      } else { dup++; }
+      continue;
+    }
     rec.batchId=batchId; batchIds.push(rec.id);
     await idbPut('buchungen', rec);
     neu++;
@@ -28589,7 +28618,7 @@ async function zaSpeichern(){
       erstelltAm:nowIso(), erstelltVon:(typeof CU!=='undefined'&&CU)?CU.name:'',
       anzahlEingang:neu, anzahlAusgang:neuAus, anzahlDuplikate:dup, buchungIds:batchIds, status:'aktiv' }); }catch(_){ }
   }
-  toast(`${neu} Eingänge${neuAus?` und ${neuAus} Ausgänge`:''} gespeichert${dup?`, ${dup} bereits vorhanden`:''}.`);
+  toast(`${neu} Eingänge${neuAus?` und ${neuAus} Ausgänge`:''} gespeichert${akt?`, ${akt} nachträglich zugeordnet`:''}${dup?`, ${dup} bereits vorhanden`:''}.`);
   clearTimeout(window._syncTimer);
   window._syncTimer=setTimeout(()=>{ if(typeof syncToOneDrive==='function') syncToOneDrive(); }, 3000);
   zaRenderVerlauf();
@@ -29247,6 +29276,10 @@ function zaRenderErgebnis(){
     } else if(m && m.via==='iban' && m.status==='alt'){
       statusHtml = `<span style="color:var(--amber);font-weight:600"><i class="ti ti-alert-triangle"></i> ${esc(m.name)}</span>
                     <span style="font-size:11px;color:var(--amber)"> · veraltete IBAN!</span>`;
+    } else if(m && m.via==='iban' && m.status==='ehem'){
+      /* v213 (F4): IBAN-Treffer ehemaliger Mieter wurde bisher als "Kein Mieter" angezeigt */
+      statusHtml = `<span style="color:var(--ink-70);font-weight:600"><i class="ti ti-check"></i> ${esc(m.name)}</span>
+                    <span style="font-size:11px;color:var(--ink-40)"> · via IBAN (ehem. Mieter)</span>`;
     } else if(m && m.via==='we'){
       statusHtml = `<span style="color:var(--ink-70)"><i class="ti ti-help-circle"></i> Vorschlag: ${esc(m.name)} (WE ${esc(m.weNr)})</span>`;
       aktion = `<button class="btn btn-sm btn-primary" onclick="zaZuordnen(${i})">
@@ -29254,9 +29287,14 @@ function zaRenderErgebnis(){
     } else if(m && m.via==='sp'){
       statusHtml = `<span style="color:var(--green);font-weight:600"><i class="ti ti-parking"></i> ${esc(m.name)}</span>
                     <span style="font-size:11px;color:var(--ink-40)"> · via Stellplatz ${esc(String(m.spNr))}</span>`;
+    } else if(r.einnahme){
+      /* v213 (F2): mieterloser Eingang mit Einnahme-Kategorie */
+      statusHtml = `<span style="color:var(--green);font-weight:600"><i class="ti ti-coin-euro"></i> Einnahme: ${esc(buchKatLabel(r.einnahme.kat))}</span>${r.einnahme.notiz?`
+                    <span style="font-size:11px;color:var(--ink-40)"> · ${esc(r.einnahme.notiz)}</span>`:''}`;
+      aktion = `<button class="btn btn-sm" onclick="zaModalEinnahme(${i})"><i class="ti ti-pencil"></i> Ändern</button>`;
     } else {
       statusHtml = `<span style="color:var(--ink-40)">Kein Mieter – Auswahl:</span>`;
-      aktion = zaMieterDropdown(i);
+      aktion = zaMieterDropdown(i) + `<button class="btn btn-sm" style="margin-top:4px" onclick="zaModalEinnahme(${i})"><i class="ti ti-coin-euro"></i> Als Einnahme buchen</button>`;
     }
     return `<tr style="border-bottom:1px solid var(--line)">
       <td style="padding:8px 6px;white-space:nowrap;font-size:12px">${esc(b.datumISO||b.datumRaw)}</td>
@@ -29273,13 +29311,15 @@ function zaRenderErgebnis(){
   const nIban = res.filter(r=>r.match?.via==='iban').length;
   const nWe   = res.filter(r=>r.match?.via==='we').length;
   const nSp   = res.filter(r=>r.match?.via==='sp').length;
-  const nOffen= res.filter(r=>!r.match).length;
+  const nEin  = res.filter(r=>!r.match && r.einnahme).length;
+  const nOffen= res.filter(r=>!r.match && !r.einnahme).length;
 
   box.innerHTML = `
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
       <span class="badge" style="background:var(--green-l);color:var(--green)">${nIban} per IBAN erkannt</span>
       ${nSp?`<span class="badge" style="background:var(--green-l);color:var(--green)">${nSp} per Stellplatz</span>`:''}
       ${nWe?`<span class="badge" style="background:var(--blue-l,#e8f0fe);color:var(--blue,#1a56db)">${nWe} Vorschläge (WE)</span>`:''}
+      ${nEin?`<span class="badge" style="background:var(--green-l);color:var(--green)">${nEin} Einnahmen</span>`:''}
       ${nOffen?`<span class="badge" style="background:var(--line);color:var(--ink-40)">${nOffen} offen</span>`:''}
     </div>
     <div style="overflow-x:auto">
@@ -29318,9 +29358,11 @@ function zaMieterDropdown(i){
   // v182 (TG): externe Stellplatzzahler direkt als TG-Mieter anlegen
   const tgObj=OBJEKTE.find(o=>o.tiefgarage && objSet.has(o.id));
   const neuOpt=tgObj?`<option value="__neu_tg__">➕ Neuen TG-Mieter anlegen …</option>`:'';
+  const altMOpt=`<option value="__neu_alt__">➕ Alt-Mieter anlegen …</option>`; // v213 (F1)
   return `<select class="inp" style="font-size:12px;padding:4px" onchange="zaZuordnenManuell(${i}, this.value)">
             <option value="">– Mieter wählen –</option>
             ${neuOpt}
+            ${altMOpt}
             ${tg.length?`<optgroup label="TG-Mieter">${tg.map(m=>`<option value="${m.id}">TG · ${esc(m.mieter)}</option>`).join('')}</optgroup>`:''}
             <optgroup label="Wohnungsmieter">${wohner.map(m=>`<option value="${m.id}">WE ${esc(m.weNr||'?')} · ${esc(m.mieter)}</option>`).join('')}</optgroup>
             ${ehemalige.length?`<optgroup label="Ehemalige Mieter">${ehemalige.map(m=>`<option value="${m.id}">WE ${esc(m.weNr||'?')} · ${esc(m.mieter)} (ehem.)</option>`).join('')}</optgroup>`:''}
@@ -29372,10 +29414,108 @@ async function zaZuordnenManuell(i, mieterId){
     zaRenderErgebnis();
     return;
   }
+  // v213 (F1): ehemaligen Mieter, der noch nicht in der Datenbank ist, direkt anlegen
+  if(mieterId==='__neu_alt__'){ zaModalAltMieter(i); return; }
   const m = await idbGet('mieter', mieterId);
   if(!m){ toast('Mieter nicht gefunden.'); return; }
   await zaIbanAnMieter(mieterId, r.buchung.iban, r.buchung.name);
   r.match = {mieterId, name:m.mieter, weNr:m.weNr, via:m._tgMieter?'sp':'iban', status:'aktiv', score:100, manuell:true};
+  zaRenderErgebnis();
+}
+
+/* v213 (F1): Ehemaligen Mieter direkt aus einer Bankbuchung anlegen
+   (Nachzahlungen/Erstattungen alter Mietverhältnisse zuordenbar machen) */
+function zaModalAltMieter(i){
+  const r=ZA_STATE.results[i]; if(!r) return;
+  const konto=ZA_STATE.konto; if(!konto) return;
+  const objekte=konto.objekte.map(oid=>getObj(oid)).filter(Boolean);
+  if(!objekte.length){ toast('Kein Objekt für dieses Konto gefunden.'); return; }
+  const objOpts=objekte.map((o,ix)=>`<option value="${o.id}"${ix===0?' selected':''}>${esc(o.name)}</option>`).join('');
+  showModal(`
+    <div class="m-title"><i class="ti ti-history"></i> Alt-Mieter anlegen</div>
+    <div style="background:var(--ink-05);border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:12px;color:var(--ink-60)">
+      Wird als <b>ehemaliger Mieter</b> gespeichert (erscheint nicht in der aktiven Übersicht).
+      Die IBAN <b>${esc(fmtIban(r.buchung.iban))}</b> aus der Buchung wird hinterlegt –
+      künftige Importe ordnen Zahlungen dieser Person automatisch zu.
+    </div>
+    <div class="f"><label>Name (Nachname, Vorname) *</label>
+      <input type="text" id="zaAltName" spellcheck="true" lang="de" value="${esc(r.buchung.name||'')}"></div>
+    <div class="f-row">
+      <div class="f"><label>Objekt *</label><select id="zaAltObj">${objOpts}</select></div>
+      <div class="f"><label>WE-Nr. *</label><input type="text" id="zaAltWe" inputmode="numeric" value="${esc(String(r.buchung.weHint||''))}" placeholder="z. B. 7"></div>
+    </div>
+    <div class="f-row">
+      <div class="f"><label>Einzug (optional)</label><input type="date" id="zaAltEinzug"></div>
+      <div class="f"><label>Auszug (optional)</label><input type="date" id="zaAltAuszug"></div>
+    </div>
+    <div class="f-row" style="margin-top:12px">
+      <button class="btn btn-copper btn-full" onclick="zaAltMieterAnlegen(${i})"><i class="ti ti-check"></i> Anlegen &amp; zuordnen</button>
+      <button class="btn btn-full" onclick="closeModal();zaRenderErgebnis()">Abbrechen</button>
+    </div>`);
+}
+async function zaAltMieterAnlegen(i){
+  const r=ZA_STATE.results[i]; if(!r) return;
+  const name=document.getElementById('zaAltName')?.value?.trim()||'';
+  const objektId=document.getElementById('zaAltObj')?.value||'';
+  const weNr=document.getElementById('zaAltWe')?.value?.trim()||'';
+  if(!name){ toast('Bitte den Namen angeben.'); return; }
+  if(!objektId || !weNr){ toast('Bitte Objekt und WE-Nummer angeben.'); return; }
+  const einzugISO=document.getElementById('zaAltEinzug')?.value||'';
+  const auszugISO=document.getElementById('zaAltAuszug')?.value||'';
+  const obj=getObj(objektId);
+  const iban=zaNormIban(r.buchung.iban);
+  const vm={
+    id:'m_'+objektId+'_'+weNr+'_VM_'+name.replace(/\W/g,'').slice(0,10)+'_'+Date.now().toString(36),
+    objektId, objekt:obj?.name||'', weNr, etage:'', flaeche:'',
+    mieter:name,
+    personen_liste:[{name, anrede:'', vertragspartner:true}],
+    personen:1,
+    telefon:'', email:'', anschrift:'',
+    einzug:einzugISO?new Date(einzugISO).toLocaleDateString('de-DE'):'', einzugISO,
+    auszug:auszugISO?new Date(auszugISO).toLocaleDateString('de-DE'):'', auszugISO,
+    iban:iban||'', ibans: iban?[{iban, inhaber:name, bic:'', status:'aktiv', seit:nowIso(), bis:''}]:[],
+    leerstand:false, _vormieter:true,
+    _importHinweis:'Aus Bankimport angelegt – Daten prüfen',
+  };
+  await idbPut('mieter', vm);
+  (window._zaMieterCache=window._zaMieterCache||[]).push(vm);
+  r.match={mieterId:vm.id, name, weNr, via:'iban', status:'ehem', ehem:true, score:100, manuell:true};
+  delete r.einnahme;
+  syncSoon();
+  closeModal();
+  toast('Alt-Mieter „'+name+'“ angelegt ✓');
+  zaRenderErgebnis();
+}
+
+/* v213 (F2): mieterlosen Eingang als sonstige Einnahme kategorisieren
+   (Versicherungserstattung, Versorger-Bonus, Gutschriften usw.) */
+function zaModalEinnahme(i){
+  const r=ZA_STATE.results[i]; if(!r) return;
+  const b=r.buchung;
+  const eur=n=>(Number(n)||0).toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:2});
+  showModal(`
+    <div class="m-title"><i class="ti ti-coin-euro"></i> Als Einnahme buchen</div>
+    <div style="background:var(--ink-05);border-radius:8px;padding:8px 10px;margin-bottom:10px;font-size:12px">
+      <strong>${esc(b.name||'Unbekannt')}</strong> · ${esc(b.datumISO||'')}<br>
+      Betrag: <strong>${eur(b.betrag)} €</strong><br>
+      <span style="color:var(--ink-40)">${esc((b.zweck||'').slice(0,120))}</span>
+    </div>
+    <div class="f"><label>Kategorie *</label>
+      <select id="zaEinKat">${buchKatOptionen(r.einnahme?.kat||'','ein')}</select></div>
+    <div class="f"><label>Notiz (optional)</label>
+      <input type="text" id="zaEinNotiz" spellcheck="true" lang="de" value="${esc(r.einnahme?.notiz||'')}" placeholder="z. B. Erstattung Wasserschaden WE 7"></div>
+    <div class="f-row" style="margin-top:12px">
+      <button class="btn btn-copper btn-full" onclick="zaEinnahmeSetzen(${i})"><i class="ti ti-check"></i> Übernehmen</button>
+      <button class="btn btn-full" onclick="closeModal();zaRenderErgebnis()">Abbrechen</button>
+    </div>`);
+}
+function zaEinnahmeSetzen(i){
+  const r=ZA_STATE.results[i]; if(!r) return;
+  const kat=document.getElementById('zaEinKat')?.value||'';
+  if(!kat){ toast('Bitte eine Kategorie wählen.'); return; }
+  r.einnahme={kat, notiz:document.getElementById('zaEinNotiz')?.value?.trim()||''};
+  r.match=null;
+  closeModal();
   zaRenderErgebnis();
 }
 
@@ -29522,16 +29662,25 @@ async function opRueckstaende(fensterMonate){
   const monate = opMonatsfenster(fensterMonate || 12);
   const alle = await idbGetAll('buchungen').catch(()=>[]);
   const buch = alle.filter(b => b && !b.geloescht);
+  // v212: Beginn der Zahlungserfassung = fruehester erfasster Mietmonat ueber ALLE Eingaenge.
+  // Monate davor koennen mangels Datenbasis kein "offen" begruenden (Nutzerbefund 13.07.).
+  let datenAb = null;
+  for (const b of buch){
+    if (b.typ === 'eingang' && b.mietmonat && /^\d{4}-\d{2}$/.test(b.mietmonat)){
+      if (!datenAb || b.mietmonat < datenAb) datenAb = b.mietmonat;
+    }
+  }
   const alleMieter = await idbGetAll('mieter');
   const mieter = alleMieter.filter(m => m && m.mieter && !m.geloescht && !m._zukuenftig && m.aktiv !== false);
   const spIdx = await spIndexAlle();
   const rows = zaSollIst(buch, mieter, monate, spIdx);
   const erg = [];
   for (const r of rows){
-    let soll = 0, ist = 0; const offeneMonate = [];
+    let soll = 0, ist = 0, ohneDaten = 0; const offeneMonate = [];
     for (const mo of monate){
       const v = r.monate[mo];
       if (!v || !v.aktiv) continue;
+      if (!datenAb || mo < datenAb){ ohneDaten++; continue; }  // v212: keine Datenbasis (datenAb=null: noch gar keine Eingaenge erfasst)
       soll += v.sollMo; ist += v.ist;
       if (v.status === 'offen' || v.status === 'weniger') offeneMonate.push({monat:mo, fehlt: rc(v.sollMo - v.ist)});
     }
@@ -29540,47 +29689,61 @@ async function opRueckstaende(fensterMonate){
     const monatsmieten = r.soll > 0 ? rueckstand / r.soll : 0;
     erg.push({ mieterId:r.mieterId, mieter:r.mieter, weNr:r.weNr, objektId:r.objektId,
       soll:r.soll, rueckstand, monatsmieten: Math.round(monatsmieten*10)/10, mmExakt: monatsmieten,
-      offeneMonate, ehem:!!r.ehem, tg:!!r.tg });
+      offeneMonate, ehem:!!r.ehem, tg:!!r.tg, ohneDaten, einzugFehlt: !r.einzugISO });
   }
   erg.sort((a,b) => b.rueckstand - a.rueckstand);
-  return {rows:erg, monate};
+  return {rows:erg, monate, datenAb};
 }
 
 function _opStufeLabel(st){ return st===1 ? 'Zahlungserinnerung' : (st===2 ? '1. Mahnung' : '2. Mahnung (letzte)'); }
 
 async function modalOffenePosten(){
   if (!istVerwalter()){ toast('Nur f\u00fcr Verwalter'); return; }
-  const {rows, monate} = await opRueckstaende(12);
+  const {rows, monate, datenAb} = await opRueckstaende(12);
   // Mahnhistorie-Index (mieterId -> Record) fuer die Anzeige der letzten Mahnung
   window._opMieterIdx = {};
   try {
     for (const mm of await idbGetAll('mieter')){ if (mm && mm.id) window._opMieterIdx[mm.id] = mm; }
   } catch(e){}
   const eur = n => (Number(n)||0).toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:2});
-  const trs = rows.map(r => {
+  const zeile = r => {
     // Ampel: >= 2 Monatsmieten = Kuendigungsrelevanz \u00a7 543 II Nr. 3 BGB (rot),
     // >= 1 Monatsmiete orange, darunter gelb.
     // Schwellen auf dem UNGERUNDETEN Verhaeltnis pruefen (v197-Fix: 1.299/650
     // wuerde sonst auf "2,0" gerundet und faelschlich als §-543-relevant markiert)
     const farbe = r.mmExakt >= 2 ? 'var(--red,#dc2626)' : (r.mmExakt >= 1 ? '#d97706' : '#ca8a04');
     const badge = r.mmExakt >= 2 ? ' <span class="chip" style="font-size:9px;background:var(--red,#dc2626);color:#fff;padding:1px 6px;border-radius:8px" title="R\u00fcckstand \u2265 2 Monatsmieten: fristlose K\u00fcndigung nach \u00a7 543 Abs. 2 Nr. 3 BGB m\u00f6glich \u2013 anwaltliche Pr\u00fcfung empfohlen">\u00a7 543 BGB</span>' : '';
+    const chipEinzug = r.einzugFehlt ? ' <span class="chip" style="font-size:9px;background:var(--amber);color:#fff;padding:1px 6px;border-radius:8px" title="Kein Einzugsdatum in der Mieterakte erfasst \u2013 ohne Mietbeginn wird der gesamte Zeitraum gewertet. Bitte nachtragen.">Mietbeginn fehlt</span>' : '';
     const hist = (window._opMieterIdx[r.mieterId]?.mahnungen || []);
     const letzte = hist.length ? hist[hist.length-1] : null;
     const histTxt = letzte ? `${_opStufeLabel(letzte.stufe)} am ${new Date(letzte.datum).toLocaleDateString('de-DE')}` : 'noch keine';
     const moTxt = r.offeneMonate.slice(-4).map(o => o.monat.slice(5)+'/'+o.monat.slice(2,4)).join(', ') + (r.offeneMonate.length > 4 ? ' \u2026' : '');
     return `<tr style="border-bottom:1px solid var(--line)">
       <td style="padding:6px;font-size:11px;color:var(--ink-40)">${esc(r.weNr||(r.tg?'TG':''))}</td>
-      <td style="padding:6px;font-size:13px">${esc(r.mieter)}${r.ehem?' <span class="chip chip-warn" style="font-size:9px">ehem.</span>':''}${badge}
-        <div style="font-size:10px;color:var(--ink-40)">offen: ${esc(moTxt||'-')} \u00b7 letzte Mahnung: ${esc(histTxt)}</div></td>
+      <td style="padding:6px;font-size:13px">${esc(r.mieter)}${r.ehem?' <span class="chip chip-warn" style="font-size:9px">ehem.</span>':''}${badge}${chipEinzug}
+        <div style="font-size:10px;color:var(--ink-40)">offen: ${esc(moTxt||'-')} \u00b7 letzte Mahnung: ${esc(histTxt)}${r.ohneDaten?` \u00b7 ${r.ohneDaten} Mon. vor Erfassungsbeginn nicht gewertet`:''}</div></td>
       <td style="padding:6px;text-align:right;font-variant-numeric:tabular-nums;font-weight:700;color:${farbe}">${eur(r.rueckstand)} \u20ac
         <div style="font-size:10px;font-weight:400;color:var(--ink-40)">\u2248 ${String(r.monatsmieten).replace('.',',')} Monatsmieten</div></td>
       <td style="padding:6px;text-align:right"><button class="btn btn-sm btn-copper" onclick="modalMahnung('${r.mieterId}')"><i class="ti ti-mail-exclamation"></i> Mahnen</button></td>
     </tr>`;
+  };
+  // v212 (F4): Gruppierung nach Objekt (WE-Nummern verschiedener Objekte mischten sich)
+  const gruppen = {};
+  for (const r of rows){ (gruppen[r.objektId || '_'] = gruppen[r.objektId || '_'] || []).push(r); }
+  const gArr = Object.keys(gruppen).map(oid => ({ oid, list: gruppen[oid],
+    summe: gruppen[oid].reduce((a,x) => a + x.rueckstand, 0) }));
+  gArr.sort((a,b) => b.summe - a.summe);
+  const trs = gArr.map(g => {
+    const o = (typeof getObj === 'function') ? getObj(g.oid) : null;
+    const gTitel = o ? [o.name, o.ort].filter(Boolean).join(' \u00b7 ') : 'Ohne Objektzuordnung';
+    const kopf = `<tr><td colspan="4" style="padding:12px 6px 4px;font-size:11px;font-weight:700;color:var(--ink-60);text-transform:uppercase;letter-spacing:.4px">${esc(gTitel)}<span style="float:right">${eur(g.summe)} \u20ac</span></td></tr>`;
+    return kopf + g.list.map(zeile).join('');
   }).join('');
   const gesamt = rc(rows.reduce((a,r) => a + r.rueckstand, 0));
   showModal(`
     <div class="m-title"><i class="ti ti-alert-circle"></i> Offene Posten (Mietr\u00fcckst\u00e4nde)</div>
     <div style="font-size:11px;color:var(--ink-40);margin-bottom:10px">Zeitraum: ${esc(monate[0])} bis ${esc(monate[monate.length-1])} \u00b7 Kontokorrent-Sicht (\u00dcberzahlungen gleichen L\u00fccken aus) \u00b7 laufender Monat ab dem 7. gewertet (\u00a7 556b BGB)</div>
+    ${datenAb && datenAb > monate[0] ? `<div style="background:var(--amber-l);border-left:3px solid var(--amber);padding:8px 10px;border-radius:6px;font-size:11px;margin-bottom:10px"><strong>Hinweis zur Datenlage:</strong> Zahlungseing\u00e4nge sind in der App erst ab <strong>${datenAb.slice(5)}/${datenAb.slice(0,4)}</strong> erfasst. Fr\u00fchere Monate des Zeitraums werden nicht als R\u00fcckstand gewertet und sind hier nicht enthalten.</div>` : ''}
     ${rows.length ? `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">
       <thead><tr style="border-bottom:2px solid var(--line)">
         <th style="padding:6px;text-align:left;font-size:11px;color:var(--ink-40)">WE</th>
@@ -29589,7 +29752,7 @@ async function modalOffenePosten(){
         <th></th></tr></thead>
       <tbody>${trs}</tbody></table></div>
       <div style="margin-top:10px;font-size:13px;text-align:right">Summe R\u00fcckst\u00e4nde: <strong>${eur(gesamt)} \u20ac</strong></div>`
-      : `<p style="color:var(--green);font-size:14px"><i class="ti ti-circle-check"></i> Keine R\u00fcckst\u00e4nde \u2013 alle Mietkonten sind ausgeglichen.</p>`}
+      : (datenAb ? `<p style="color:var(--green);font-size:14px"><i class="ti ti-circle-check"></i> Keine R\u00fcckst\u00e4nde \u2013 alle Mietkonten sind ausgeglichen.</p>` : `<p style="font-size:13px;color:var(--ink-60)"><i class="ti ti-info-circle"></i> Noch keine Zahlungseing\u00e4nge erfasst \u2013 eine R\u00fcckstandsberechnung ist erst nach Erfassung der Mietzahlungen m\u00f6glich.</p>`)}
     <div style="font-size:10px;color:var(--ink-40);margin-top:12px">Hinweis: Verzug tritt bei der Miete kalenderm\u00e4\u00dfig ohne Mahnung ein (\u00a7\u00a7 556b Abs. 1, 286 Abs. 2 Nr. 1 BGB). Bei k\u00fcndigungsrelevanten R\u00fcckst\u00e4nden anwaltliche Pr\u00fcfung empfohlen.</div>
     <button class="btn btn-full" style="margin-top:12px" onclick="closeModal()">Schlie\u00dfen</button>`);
 }
@@ -29871,7 +30034,7 @@ async function anlageVExport(){
 }
 
 /* Eine importierte Buchung in Speicherform bringen */
-function zaBuchungRecord(kontoId, b, match){
+function zaBuchungRecord(kontoId, b, match, einnahme){
   return {
     id: zaBuchungId(kontoId, b),
     kontoId,
@@ -29889,7 +30052,9 @@ function zaBuchungRecord(kontoId, b, match){
     mieterName: match?.name || null,
     zuordnungVia: match?.via || null,
     konfidenz: match ? (match.manuell ? 'sicher' : (match.via==='iban'||match.via==='sp' ? 'sicher' : 'wahrscheinlich')) : null,
-    status: match ? (match.manuell ? 'geprueft' : 'erkannt') : 'ungeprueft',
+    status: match ? (match.manuell ? 'geprueft' : 'erkannt') : (einnahme ? 'geprueft' : 'ungeprueft'),
+    /* v213 (F2): manuell kategorisierte Einnahme ohne Mieterbezug */
+    ...((!match && einnahme) ? { kategorie: einnahme.kat, ...(einnahme.notiz ? {notiz: einnahme.notiz} : {}) } : {}),
     importiertAm: (typeof nowIso==='function'?nowIso():new Date().toISOString()),
     updatedAt: (typeof nowIso==='function'?nowIso():new Date().toISOString()),
   };
@@ -29957,7 +30122,8 @@ function zaSollIst(buchungen, mieterListe, monate, spIdx){
       if(aktivMo && (istGesamt===0 || Math.abs(diff)>=0.5)) warnung=true;
     }
     rows.push({mieterId:mid, mieter:s.mieter, weNr:s.weNr, objektId:s.objektId,
-      soll:s.soll, netto:s.netto, nk:s.nk, spSoll:s.spSoll||0, tg:!!s.tg, ehem:!!s.ehem, monate:monatsWerte, warnung});
+      soll:s.soll, netto:s.netto, nk:s.nk, spSoll:s.spSoll||0, tg:!!s.tg, ehem:!!s.ehem,
+      einzugISO:s.einzugISO||null, monate:monatsWerte, warnung});
   }
   const gefiltert=rows.filter(r=>!(r.tg && r.soll<=0 && !Object.values(r.monate).some(v=>v.ist>0)));
   gefiltert.sort((a,b)=>{
@@ -31126,7 +31292,7 @@ async function packAddAusLager(terminId){
   window._packLagerCache=artikel;
   showModal(`
     <div class="m-title"><i class="ti ti-package"></i> Aus Lager wählen</div>
-    <input type="search" id="packLagerSuche" placeholder="Artikel, Inventar- oder Lagerort-Nr. suchen…"
+    <input type="search" id="packLagerSuche" enterkeyhint="search" placeholder="Artikel, Inventar- oder Lagerort-Nr. suchen…"
       oninput="packLagerFilter()" style="width:100%;padding:10px;border:1px solid var(--ink-20);border-radius:8px;font-size:14px;margin-bottom:10px">
     <div id="packLagerResult" style="max-height:55vh;overflow-y:auto">${packLagerRows(artikel)}</div>
     <button class="btn btn-full" style="margin-top:10px" onclick="modalPackliste('${terminId}')">Zurück</button>
