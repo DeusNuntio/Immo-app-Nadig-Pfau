@@ -748,6 +748,7 @@ body.printing-active #printRoot{display:block!important}
   <div id="dvBar">
     <span id="dvTitel">Vorschau</span>
     <span style="flex:1"></span>
+    <button type="button" class="dv-btn" id="dvPdfBtn" style="display:none" onclick="druckVorschauPdf()"><i class="ti ti-file-type-pdf"></i> PDF teilen</button>
     <button type="button" class="dv-btn" onclick="druckVorschauTeilen()"><i class="ti ti-share"></i> Teilen</button>
     <button type="button" class="dv-btn dv-print" onclick="druckVorschauDrucken()"><i class="ti ti-printer"></i> Drucken</button>
     <button type="button" class="dv-btn dv-close" onclick="schliesseDruckVorschau()"><i class="ti ti-x"></i> Schließen</button>
@@ -890,7 +891,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=34;
-const APP_VERSION = '2026-07-13-v213';
+const APP_VERSION = '2026-07-13-v215';
 /* v211-F1: Scrollen über einem fokussierten Zahlenfeld verstellt sonst unbemerkt den Wert
    (Zählerstände/Beträge!). Fokus abgeben statt Wert ändern; passive:true = kein Scroll-Ruckeln. */
 document.addEventListener('wheel', function(e){
@@ -4750,6 +4751,165 @@ async function renderEtikettCanvas(qrText, zeile1, zeile2, zeile3){
   line(zeile2, 30, '#555', false);
   line(zeile3, 24, '#888', false);
   return { dataUrl: cv.toDataURL('image/jpeg', 0.92), w:wPx, h:hPx };
+}
+
+/* ═══════════════════════════════════════════════════════════
+   v214 – MINI-PDF-WRITER (Vektor-PDF, offline, ohne Bibliothek)
+   Erzeugt echte, versandfertige PDF-Dokumente (Text bleibt Text:
+   scharf, klein, durchsuchbar). Unterstuetzt Helvetica/Helvetica-Bold,
+   Linien, Rechtecke, Flaechen und eingebettete JPEG-Bilder
+   (Unterschriften). Koordinaten in Punkt (pt), y wird von OBEN gezaehlt.
+═══════════════════════════════════════════════════════════ */
+const PDF_A4={w:595.28, h:841.89};
+/* WinAnsi-Kodierung: Umlaute/§/²/€/Gedankenstrich korrekt in die PDF-Datei */
+const _PDF_WIN={0x20AC:0x80,0x201A:0x82,0x201E:0x84,0x2026:0x85,0x2018:0x91,0x2019:0x92,
+                0x201C:0x93,0x201D:0x94,0x2022:0x95,0x2013:0x96,0x2014:0x97};
+function pdfEsc(t){
+  let out='';
+  for(const ch of String(t==null?'':t)){
+    const cp=ch.codePointAt(0);
+    if(ch==='('||ch===')'||ch==='\\'){ out+='\\'+ch; }
+    else if(cp<128){ out+=ch; }
+    else {
+      const code=_PDF_WIN[cp] || (cp<=255?cp:0x3F);
+      out+='\\'+code.toString(8).padStart(3,'0');
+    }
+  }
+  return out;
+}
+/* Textbreite in pt (Helvetica-Metriken, ausreichend genau fuer Umbruch/Zentrierung) */
+const _PDF_WID=(()=>{
+  const w={}; const std=
+    ' !"#$%&\'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~';
+  const m=[278,278,355,556,556,889,667,191,333,333,389,584,278,333,278,278,
+           556,556,556,556,556,556,556,556,556,556,278,278,584,584,584,556,
+           1015,667,667,722,722,667,611,778,722,278,500,667,556,833,722,778,
+           667,778,722,667,611,722,667,944,667,667,611,278,278,278,469,556,
+           333,556,556,500,556,556,278,556,556,222,222,500,222,833,556,556,
+           556,556,333,500,278,556,500,722,500,500,500,334,260,334,584];
+  for(let i=0;i<std.length;i++) w[std[i]]=m[i]||556;
+  return w;
+})();
+function pdfTextWidth(t, size, bold){
+  let w=0;
+  for(const ch of String(t||'')){
+    const b=_PDF_WID[ch]!=null?_PDF_WID[ch]:556;
+    w+=b*(bold?1.06:1);   // Bold ist geringfuegig breiter
+  }
+  return w*size/1000;
+}
+/* Dokument-Objekt: sammelt Zeichenbefehle + Bilder, baut daraus die PDF-Datei */
+function pdfDoc(seite){
+  const S=seite||PDF_A4;
+  const ops=[]; const bilder=[];
+  const Y=y=>(S.h-y).toFixed(2);
+  const api={
+    seite:S,
+    text(t,x,y,{size=10,bold=false,align='left',breite=0,grau=false}={}){
+      const str=String(t==null?'':t); if(!str) return;
+      let px=x;
+      if(align==='center') px = x + (breite - pdfTextWidth(str,size,bold))/2;
+      else if(align==='right') px = x + breite - pdfTextWidth(str,size,bold);
+      ops.push(`BT /${bold?'F2':'F1'} ${size} Tf ${grau?'0.30 0.30 0.30':'0 0 0'} rg ${px.toFixed(2)} ${Y(y)} Td (${pdfEsc(str)}) Tj ET`);
+      ops.push('0 0 0 rg');
+    },
+    linie(x1,y1,x2,y2,{staerke=0.7,grau=0.55}={}){
+      ops.push(`${grau} ${grau} ${grau} RG ${staerke} w ${x1.toFixed(2)} ${Y(y1)} m ${x2.toFixed(2)} ${Y(y2)} l S 0 0 0 RG`);
+    },
+    rahmen(x,y,w,h,{staerke=0.7,grau=0.55}={}){
+      ops.push(`${grau} ${grau} ${grau} RG ${staerke} w ${x.toFixed(2)} ${Y(y+h)} ${w.toFixed(2)} ${h.toFixed(2)} re S 0 0 0 RG`);
+    },
+    flaeche(x,y,w,h,helligkeit){
+      ops.push(`${helligkeit} ${helligkeit} ${helligkeit} rg ${x.toFixed(2)} ${Y(y+h)} ${w.toFixed(2)} ${h.toFixed(2)} re f 0 0 0 rg`);
+    },
+    /* Ankreuzkaestchen; gibt die Breite inkl. Beschriftung zurueck */
+    box(x,y,an,label,size){
+      const sz=size||9.5, k=sz*0.85;
+      api.rahmen(x, y-k+1.2, k, k, {staerke:0.6, grau:0.25});
+      if(an) api.text('X', x+k*0.18, y, {size:sz*0.85, bold:true});
+      let br=k;
+      if(label){ api.text(label, x+k+2.5, y, {size:sz}); br+=2.5+pdfTextWidth(label,sz,false); }
+      return br+7;
+    },
+    /* JPEG-Bild (b64 ohne Praefix) einbetten */
+    bild(b64,x,y,w,h,pxW,pxH){
+      const nr=bilder.length;
+      bilder.push({b64,pxW,pxH});
+      ops.push(`q ${w.toFixed(2)} 0 0 ${h.toFixed(2)} ${x.toFixed(2)} ${Y(y+h)} cm /Im${nr} Do Q`);
+    },
+    bauen(){
+      const content=ops.join('\n')+'\n';
+      const header='%PDF-1.4\n%\xE2\xE3\xCF\xD3\n';
+      let body=''; const off={};
+      const xobj=bilder.map((_,i)=>`/Im${i} ${7+i} 0 R`).join(' ');
+      const emit=(n,str)=>{ off[n]=header.length+body.length; body+=`${n} 0 obj\n${str}\nendobj\n`; };
+      emit(1,'<< /Type /Catalog /Pages 2 0 R >>');
+      emit(2,'<< /Type /Pages /Kids [3 0 R] /Count 1 >>');
+      emit(3,`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${S.w.toFixed(2)} ${S.h.toFixed(2)}] `+
+             `/Resources << /Font << /F1 5 0 R /F2 6 0 R >>${xobj?` /XObject << ${xobj} >>`:''} >> /Contents 4 0 R >>`);
+      emit(4,`<< /Length ${content.length} >>\nstream\n${content}endstream`);
+      emit(5,'<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>');
+      emit(6,'<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>');
+      bilder.forEach((b,i)=>{
+        const bin=atob(b.b64);
+        const n=7+i;
+        off[n]=header.length+body.length;
+        body+=`${n} 0 obj\n<< /Type /XObject /Subtype /Image /Width ${b.pxW} /Height ${b.pxH} `+
+              `/ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${bin.length} >>\nstream\n`+
+              bin+`\nendstream\nendobj\n`;
+      });
+      const anz=6+bilder.length;
+      const xrefStart=header.length+body.length;
+      let xref=`xref\n0 ${anz+1}\n0000000000 65535 f \n`;
+      for(let i=1;i<=anz;i++) xref+=String(off[i]).padStart(10,'0')+' 00000 n \n';
+      return header+body+xref+`trailer\n<< /Size ${anz+1} /Root 1 0 R >>\nstartxref\n${xrefStart}\n%%EOF`;
+    }
+  };
+  return api;
+}
+/* PDF-String -> Bytes */
+function pdfBytes(str){
+  const b=new Uint8Array(str.length);
+  for(let i=0;i<str.length;i++) b[i]=str.charCodeAt(i)&0xff;
+  return b;
+}
+/* Bild-DataURL (PNG/JPEG) -> JPEG-Base64 auf weissem Grund (PDF kennt kein PNG ohne Filter) */
+function pdfBildAufbereiten(dataUrl, maxBreite){
+  return new Promise(resolve=>{
+    const img=new Image();
+    img.onload=()=>{
+      try{
+        const bw=Math.min(maxBreite||660, img.width);
+        const bh=Math.round(img.height*(bw/img.width));
+        const c=document.createElement('canvas'); c.width=bw; c.height=bh;
+        const ctx=c.getContext('2d');
+        ctx.fillStyle='#fff'; ctx.fillRect(0,0,bw,bh);
+        ctx.drawImage(img,0,0,bw,bh);
+        resolve({b64:c.toDataURL('image/jpeg',0.92).split(',')[1], w:bw, h:bh});
+      }catch(e){ resolve(null); }
+    };
+    img.onerror=()=>resolve(null);
+    img.src=dataUrl;
+  });
+}
+/* Fertiges PDF teilen (WhatsApp/Mail) – Fallback: Download */
+async function pdfTeilen(bytes, dateiname){
+  const name=((dateiname||'Dokument').replace(/[^a-zA-Z0-9äöüÄÖÜß _.-]/g,'').slice(0,70)||'Dokument');
+  const datei=name.toLowerCase().endsWith('.pdf')?name:name+'.pdf';
+  const blob=new Blob([bytes], {type:'application/pdf'});
+  try{
+    const file=new File([blob], datei, {type:'application/pdf'});
+    if(navigator.canShare && navigator.canShare({files:[file]})){
+      await navigator.share({files:[file], title:name});
+      return true;
+    }
+  }catch(e){ if(e && e.name==='AbortError') return true; }
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob); a.download=datei;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>{ try{ URL.revokeObjectURL(a.href); }catch(_){} }, 60000);
+  toast('PDF heruntergeladen – kann jetzt weitergeleitet werden');
+  return true;
 }
 
 // Einseitiges PDF mit bildschirmfüllendem JPEG bauen
@@ -14216,7 +14376,7 @@ async function nkaGewaehlteSignaturen(){
   const out=[];
   for(const id of ids){
     const u=await idbGet('users',id).catch(()=>null);
-    if(u&&u.signatur) out.push({name:u.name||'', signatur:sigFuerDruck(u)});
+    if(u&&u.signatur) out.push({name:u.name||'', signatur:await sigDruckbild(u)});
   }
   return out;
 }
@@ -14388,7 +14548,7 @@ async function erstelleNKA(objektId, korrektur) {
   let sigListe=[];
   try{ sigListe = await nkaGewaehlteSignaturen(); }catch(e){}
   if(!sigListe.length){
-    try{ const u=await idbGet('users',CU?.id); const sg=sigFuerDruck(u)||CU?.signaturMitLinie||CU?.signatur||''; if(sg) sigListe=[{name:u?.name||bk.name,signatur:sg}]; }catch(e){}
+    try{ const u=await idbGet('users',CU?.id); const sg=(await sigDruckbild(u))||CU?.signaturMitLinie||CU?.signatur||''; if(sg) sigListe=[{name:u?.name||bk.name,signatur:sg}]; }catch(e){}
   }
   // Gruß-Block-HTML mit 1 oder 2 Unterschriften nebeneinander
   let grussHTML;
@@ -14969,7 +15129,7 @@ function nkaLgSigToggle(userId, checked){
 async function nkaLgGewaehlteSignaturen(){
   const ids=(window._nkaLgSigIds||[]).slice(0,2); const out=[];
   const _uMap=new Map((await idbGetAll('users').catch(()=>[])).map(u=>[u.id,u]));  // B6: einmal laden
-  for(const id of ids){ const u=_uMap.get(id); if(u&&u.signatur) out.push({name:u.name||'',signatur:sigFuerDruck(u)}); }
+  for(const id of ids){ const u=_uMap.get(id); if(u&&u.signatur) out.push({name:u.name||'',signatur:await sigDruckbild(u)}); }
   return out;
 }
 
@@ -15122,7 +15282,7 @@ async function erstelleNKALiegenschaft(lgId, korrektur){
   // Unterschriften
   const today=new Date().toLocaleDateString('de-DE');
   let sigListe=[]; try{ sigListe=await nkaLgGewaehlteSignaturen(); }catch(e){}
-  if(!sigListe.length){ try{ const u=await idbGet('users',CU?.id); if(u?.signatur) sigListe=[{name:u.name||'',signatur:sigFuerDruck(u)}]; }catch(e){} }
+  if(!sigListe.length){ try{ const u=await idbGet('users',CU?.id); if(u?.signatur) sigListe=[{name:u.name||'',signatur:await sigDruckbild(u)}]; }catch(e){} }
 
   // Einzelbriefe
   let briefeHTML='';
@@ -17557,7 +17717,7 @@ async function mbGewaehlteSignaturen(){
   const ids=(window._mbSigUserIds||[]).slice(0,2);
   const out=[];
   const _uMap=new Map((await idbGetAll('users').catch(()=>[])).map(u=>[u.id,u]));  // B6: einmal laden
-  for(const id of ids){ const u=_uMap.get(id); if(u&&u.signatur) out.push({name:u.name||'', signatur:sigFuerDruck(u)}); }
+  for(const id of ids){ const u=_uMap.get(id); if(u&&u.signatur) out.push({name:u.name||'', signatur:await sigDruckbild(u)}); }
   return out;
 }
 
@@ -17568,7 +17728,7 @@ async function erstelleMietbescheinigung(mieterId){
   const bk=getBriefkopf(m.objektId);
   // Punkt 2.2: gewählte Unterschrift(en); Fallback eigene, dann leer
   let sigListe=await mbGewaehlteSignaturen();
-  if(!sigListe.length){ try{ const u=await idbGet('users',CU?.id); const sg=sigFuerDruck(u)||CU?.signaturMitLinie||CU?.signatur||''; if(sg) sigListe=[{name:u?.name||bk.name, signatur:sg}]; }catch(e){} }
+  if(!sigListe.length){ try{ const u=await idbGet('users',CU?.id); const sg=(await sigDruckbild(u))||CU?.signaturMitLinie||CU?.signatur||''; if(sg) sigListe=[{name:u?.name||bk.name, signatur:sg}]; }catch(e){} }
 
   const v=id=>document.getElementById(id);
   const val=id=>v(id)?.value||'';
@@ -17664,21 +17824,24 @@ async function erstelleMietbescheinigung(mieterId){
 
   const style=`<style>
     *{margin:0;padding:0;box-sizing:border-box}
-    body{font-family:Arial,sans-serif;font-size:12.5px;color:#111;padding:13mm 16mm;max-width:210mm;line-height:1.4}
-    .mb-h{font-size:23px;font-weight:700;text-align:center;margin-bottom:14px;letter-spacing:.5px}
-    .mb-h2{font-size:16px;font-weight:700;margin:16px 0 9px;border-bottom:2px solid #333;padding-bottom:3px}
-    .mb-sub{font-size:12px;color:#444;margin-bottom:9px;line-height:1.45}
-    .mb-t{width:100%;border-collapse:collapse;margin:6px 0}
+    /* v214: Dokument insgesamt groesser (Nutzerbefund "zu klein"); passt weiterhin auf eine A4-Seite */
+    body{font-family:Arial,sans-serif;font-size:14px;color:#111;padding:12mm 15mm;max-width:210mm;line-height:1.45}
+    .mb-h{font-size:26px;font-weight:700;text-align:center;margin-bottom:15px;letter-spacing:.5px}
+    .mb-h2{font-size:18px;font-weight:700;margin:17px 0 9px;border-bottom:2px solid #333;padding-bottom:3px}
+    .mb-sub{font-size:13px;color:#444;margin-bottom:9px;line-height:1.45}
+    .mb-t{width:100%;border-collapse:collapse;margin:7px 0}
     .mb-t tr{page-break-inside:avoid}
-    .mb-t td{border:1px solid #999;padding:4.5px 10px;font-size:12.5px}
+    .mb-t td{border:1px solid #999;padding:6px 11px;font-size:14px}
     .mb-t td.l{background:#f4f4f4;width:56%;color:#333}
-    .mb-row{font-size:12.5px;margin:6px 0;line-height:1.5}
-    .mb-vermieter{margin-top:14px;border:1px solid #999;padding:7px 12px;font-size:12px;page-break-inside:avoid}
-    .mb-vermieter span{font-size:11px}
-    .mb-sig{margin-top:22px;display:flex;justify-content:space-between;align-items:flex-end;gap:24px}
+    .mb-row{font-size:13.5px;margin:7px 0;line-height:1.55}
+    .mb-vermieter{margin-top:14px;border:1px solid #999;padding:8px 12px;font-size:13px;page-break-inside:avoid}
+    .mb-vermieter span{font-size:12px}
+    .mb-sig{margin-top:24px;display:flex;justify-content:space-between;align-items:flex-end;gap:24px}
     .mb-sig-wrap{display:flex;gap:24px;align-items:flex-end}
     .mb-sig-line{min-width:175px;text-align:center}
-    .mb-sig-line img{max-height:54px !important}
+    /* v214: feste Hoehe statt max-height – die Druckbilder sind normiert (gleiche
+       Groesse, Linie auf gleicher Hoehe), dadurch liegen beide Linien auf einer Ebene */
+    .mb-sig-line img{height:62px !important;width:auto !important;max-height:none !important}
     .mb-sig-line div{font-size:11px !important}
     /* Sicherung: alles bleibt auf einer Seite */
     body>*{page-break-inside:avoid}
@@ -17731,9 +17894,154 @@ async function erstelleMietbescheinigung(mieterId){
   }catch(e){ console.warn('Mietbescheinigung-Archiv:', e); }
 
   const _mbName = ['Mietbescheinigung', (obj?.name||'').replace(/[\\/:*?"<>|]+/g,' ').trim(), m.weNr?('WE '+m.weNr):'', '-', (m.mieter||'').replace(/[\\/:*?"<>|,]+/g,' ').trim(), '-', heute].filter(Boolean).join(' ').replace(/\s+/g,' ').trim();
-  druckHTML(html, 'Mietbescheinigung – '+(m.mieter||''), _mbName);
+  // v214: Daten fuer das PDF (identische Werte wie im HTML) – Vorschau bietet "PDF teilen"
+  const _mbPdfDaten={
+    adresse:adr, mieterName:hauptmieterNameVoll(m)||m.mieter||'',
+    personen:parseInt(m.personen)||1, mietverhaeltnisSeit:(m.einzug||mieteSeit||''),
+    flaeche:qm(m.flaeche), zimmer:val('mbZimmer'), baujahr:val('mbBaujahr'),
+    lage:radioVal('mbLage'), lage2:radioVal('mbLage2'),
+    etageZahl:val('mbEtageZahl'), lageZusatz:val('mbLageZusatz'),
+    moeblierung:val('mbMoeblierung'), gewerbe:chk('mbGewerbe'), gefoerdert:chk('mbGefoerdert'),
+    modernisiert:chk('mbModern'), modernisiertText:val('mbModernText'),
+    sammelheizung:chk('mbSammelheizung'), bad:chk('mbBad'),
+    gesamt, kalt, nkRest, heiz, garage, moebel, kaution, schulden,
+    staffel:chk('mbStaffel'), brennstoff:radioVal('mbBrennstoff'), brennstoffListe:WOGG_BRENNSTOFF,
+    warmwasser:val('mbWarmwasser'),
+    vermieter:amtlicherName(bk.name)||'', vStrasse:bk.strasse||'', vOrt:bk.ort||'', vTel:bk.tel||'',
+    ort:(bk.ort?bk.ort.replace(/^\d+\s*/,''):''), datum:heute,
+  };
+  druckHTML(html, 'Mietbescheinigung – '+(m.mieter||''), _mbName, false,
+            ()=>mbPdfMitSignaturen(_mbPdfDaten, sigListe));
   closeModal();
   toast('Mietbescheinigung erstellt & gespeichert ✓');
+}
+
+/* ── v214: Mietbescheinigung als echtes PDF (A4, Vektortext) ──────────────
+   Ersetzt beim Versand das HTML-Dokument. Layout bewusst grosszuegiger als die
+   bisherige HTML-Fassung (Nutzerbefund "zu klein"): Basisschrift 10 pt,
+   Tabellenzeilen 21 pt hoch, Titel 18 pt. Die Unterschriften kommen aus
+   sigDruckbild() und liegen daher mit ihren Linien exakt auf einer Ebene. */
+async function mbPdfErzeugen(d){
+  const doc=pdfDoc();
+  const L=45, R=550, B=R-L;                 // Satzspiegel
+  const eur=n=>n?Number(n).toFixed(2).replace('.',',')+' \u20ac':'';
+  let y=52;
+  doc.text('Mietbescheinigung', L, y, {size:18, bold:true, align:'center', breite:B});
+  y+=22;
+  doc.text('Der Vermieter ist nach \u00a7 23 Absatz 3 des Wohngeldgesetzes (WoGG) zur Auskunft verpflichtet.', L, y, {size:9, grau:true});
+  y+=12;
+  doc.text('Grundmiete, Heiz- und Nebenkosten bitte getrennt aufführen!', L, y, {size:9, grau:true});
+  y+=16;
+
+  const ZH=21, LB=Math.round(B*0.56);       // Zeilenhoehe, Breite der Label-Spalte
+  const tabelle=(zeilen)=>{
+    for(const [lab,wert,fett] of zeilen){
+      doc.flaeche(L, y, LB, ZH, 0.95);
+      doc.rahmen(L, y, LB, ZH);
+      doc.rahmen(L+LB, y, B-LB, ZH);
+      doc.text(lab, L+7, y+14.5, {size:10, grau:true});
+      doc.text(wert, L+LB+7, y+14.5, {size:10, bold:!!fett});
+      y+=ZH;
+    }
+    y+=8;
+  };
+  tabelle([
+    ['F\u00fcr die Wohnung', d.adresse],
+    ['F\u00fcr Frau/Herrn', d.mieterName],
+    ['Die Wohnung wird bewohnt mit', d.personen+' Person(en)'],
+    ['Mietverh\u00e4ltnis seit', d.mietverhaeltnisSeit],
+    ['Gesamtfl\u00e4che', d.flaeche+' m\u00b2'],
+    ['Anzahl Zimmer (ohne K\u00fcche/Bad/Diele)', d.zimmer||'\u2013'],
+    ['Baujahr des Hauses', d.baujahr||'\u2013'],
+  ]);
+
+  const ZL=17;                              // Zeilenhoehe der Ankreuzzeilen
+  const kzeile=(teile)=>{                   // teile: [{txt}|{box:bool,label}]
+    let x=L;
+    for(const t of teile){
+      if(t.luft){ x+=t.luft; continue; }
+      if(t.box!==undefined) x+=doc.box(x, y, t.box, t.label, 9.5);
+      else { doc.text(t.txt, x, y, {size:9.5, bold:!!t.bold}); x+=pdfTextWidth(t.txt,9.5,!!t.bold)+5; }
+    }
+    y+=ZL;
+  };
+  const og=(d.lage==='Obergeschoss'&&d.etageZahl)?(d.etageZahl+'. Obergeschoss'):'Obergeschoss';
+  kzeile([{box:d.lage==='Erdgeschoss',label:'Erdgeschoss'},{box:d.lage==='Obergeschoss',label:og},
+          {box:d.lage==='Dachgeschoss',label:'Dachgeschoss'},{luft:10},
+          {box:d.lage2==='Vorne',label:'Vorne'},{box:d.lage2==='Hinten',label:'Hinten'},
+          {box:d.lage2==='Fl\u00fcgel',label:'Fl\u00fcgel'},{box:d.lage2==='Anbau',label:'Anbau'},
+          ...(d.lageZusatz?[{txt:'('+d.lageZusatz+')'}]:[])]);
+  kzeile([{txt:'Vermietungsart:'},{box:d.moeblierung==='leer',label:'leer'},
+          {box:d.moeblierung==='teil',label:'teilm\u00f6bliert'},{box:d.moeblierung==='voll',label:'vollm\u00f6bliert'}]);
+  kzeile([{txt:'Gewerblich/beruflich genutzt:'},{box:d.gewerbe,label:'Ja'},{box:!d.gewerbe,label:'Nein'},{luft:14},
+          {txt:'\u00d6ffentlich gef\u00f6rdert:'},{box:d.gefoerdert,label:'Ja'},{box:!d.gefoerdert,label:'Nein'}]);
+  kzeile([{txt:'Modernisiert:'},{box:d.modernisiert,label:'Ja'},
+          ...(d.modernisiert&&d.modernisiertText?[{txt:'('+d.modernisiertText+')'}]:[]),
+          {box:!d.modernisiert,label:'Nein'}]);
+  kzeile([{txt:'Sammelheizung:'},{box:d.sammelheizung,label:'Ja'},{box:!d.sammelheizung,label:'Nein'},{luft:14},
+          {txt:'Bad/Duschraum:'},{box:d.bad,label:'Ja'},{box:!d.bad,label:'Nein'}]);
+  y+=10;
+
+  doc.text('Miete', L, y+2, {size:13, bold:true});
+  doc.linie(L, y+7, R, y+7, {staerke:1.4, grau:0.2});
+  y+=20;
+  tabelle([
+    ['Gesamtfl\u00e4che der Wohnung', d.flaeche+' m\u00b2'],
+    ['Monatliche Gesamtmiete seit '+d.mietverhaeltnisSeit, eur(d.gesamt), true],
+  ]);
+  doc.text('In der Gesamtmiete enthalten:', L, y+2, {size:9, grau:true});
+  y+=12;
+  const posten=[['Kaltmiete', eur(d.kalt)],
+                ['Betriebs-/Nebenkosten (ohne Heizung)', eur(d.nkRest)],
+                ['Heizkosten', eur(d.heiz)]];
+  if(d.garage) posten.push(['Garage/Stellplatz', eur(d.garage)]);
+  if(d.moebel) posten.push(['M\u00f6blierungszuschlag', eur(d.moebel)]);
+  tabelle(posten);
+
+  kzeile([{txt:'Staffelmiete:'},{box:d.staffel,label:'Ja'},{box:!d.staffel,label:'Nein'},{luft:14},
+          {txt:'Mietkaution:'},{box:d.kaution>0,label:'Ja, '+(d.kaution?eur(d.kaution):'')},{box:!(d.kaution>0),label:'Nein'}]);
+  kzeile([{txt:'Brennstoff:'}, ...(d.brennstoffListe||[]).map(b=>({box:d.brennstoff===b,label:b}))]);
+  kzeile([{txt:'Zentrale Warmwasseraufbereitung:'},{box:d.warmwasser==='zentral',label:'Ja, \u00fcber Heizung'},
+          {box:d.warmwasser==='durchlauferhitzer',label:'Nein, Durchlauferhitzer'},
+          {box:d.warmwasser==='anderweitig',label:'Anderweitig'}]);
+  kzeile([{txt:'Es bestehen derzeit Mietschulden in H\u00f6he von:'},{txt:(d.schulden?eur(d.schulden):'0,\u2013 \u20ac'), bold:true}]);
+  y+=8;
+
+  const vh=34;
+  doc.rahmen(L, y, B, vh);
+  doc.text('Vermieter: '+(d.vermieter||''), L+8, y+14, {size:9.5, bold:false});
+  doc.text([d.vStrasse,d.vOrt,d.vTel].filter(Boolean).join(' \u00b7 '), L+8, y+26, {size:8.5, grau:true});
+  y+=vh+26;
+
+  doc.text((d.ort||'')+', den '+d.datum, L, y+40, {size:10});
+  const sigs=(d.signaturen||[]).slice(0,2);
+  const SB=150, SH=SB*(SIG_CV_H/SIG_CV_W);      // Seitenverhaeltnis des normierten Druckbildes
+  const yLinie=y+SH*(SIG_LINIE_Y/SIG_CV_H);     // gemeinsame Hoehe der Unterschriftslinien
+  let sx=R-sigs.length*SB-(sigs.length>1?20:0);
+  for(const sg of sigs){
+    if(sg.jpeg){
+      // Hoehe proportional zum tatsaechlichen Bild (keine Verzerrung, falls ein nicht
+      // normiertes Alt-Bild als Fallback kommt) und an der gemeinsamen Linie ausgerichtet.
+      const h=SB*(sg.jpeg.h/sg.jpeg.w);
+      doc.bild(sg.jpeg.b64, sx, yLinie-h*(SIG_LINIE_Y/SIG_CV_H), SB, h, sg.jpeg.w, sg.jpeg.h);
+    }
+    doc.text(sg.name||'', sx, yLinie+11, {size:8.5, align:'center', breite:SB, grau:true});
+    sx+=SB+20;
+  }
+  if(!sigs.length){
+    doc.linie(R-200, yLinie, R, yLinie, {staerke:0.8, grau:0.2});
+    doc.text('Unterschrift / Stempel', R-200, yLinie+11, {size:8.5, align:'center', breite:200, grau:true});
+  }
+  return pdfBytes(doc.bauen());
+}
+/* Signaturen fuer das PDF vorbereiten (PNG -> JPEG) und PDF erzeugen */
+async function mbPdfMitSignaturen(daten, sigListe){
+  const sigs=[];
+  for(const sg of (sigListe||[]).slice(0,2)){
+    const jpeg=await pdfBildAufbereiten(sg.signatur, 660).catch(()=>null);
+    sigs.push({name:sg.name||'', jpeg});
+  }
+  return mbPdfErzeugen({...daten, signaturen:sigs});
 }
 
 // Vorschalt-Dialog: hinterlegte Admin-Unterschriften für die WGB wählen (analog NKA)
@@ -18297,7 +18605,7 @@ async function wgbGewaehlteSignaturen(){
   const ids=(window._wgbSigUserIds||[]).slice(0,2);
   const out=[];
   const _uMap=new Map((await idbGetAll('users').catch(()=>[])).map(u=>[u.id,u]));  // B6: einmal laden
-  for(const id of ids){ const u=_uMap.get(id); if(u&&u.signatur) out.push({name:u.name||'', signatur:sigFuerDruck(u)}); }
+  for(const id of ids){ const u=_uMap.get(id); if(u&&u.signatur) out.push({name:u.name||'', signatur:await sigDruckbild(u)}); }
   return out;
 }
 
@@ -18858,7 +19166,7 @@ async function briefGewaehlteSignaturen(){
   const ids=(window._briefSigUserIds||[]).slice(0,2);
   const out=[];
   const _uMap=new Map((await idbGetAll('users').catch(()=>[])).map(u=>[u.id,u]));  // B6: einmal laden
-  for(const id of ids){ const u=_uMap.get(id); if(u&&u.signatur) out.push({name:u.name||'',signatur:sigFuerDruck(u)}); }
+  for(const id of ids){ const u=_uMap.get(id); if(u&&u.signatur) out.push({name:u.name||'',signatur:await sigDruckbild(u)}); }
   return out;
 }
 
@@ -25738,6 +26046,61 @@ function sigFuerDruck(u){
   return u.signaturMitLinie || u.signatur || '';
 }
 
+/* ── v214: Normiertes Druckbild einer Unterschrift ───────────────────────────
+   Problem bis v213: Jede Unterschrift wurde einzeln mit eingebrannter Linie
+   gespeichert. Da Seitenverhaeltnis und gewaehlte Linienhoehe je Person
+   verschieden sind, lagen die Linien zweier Unterschreiber im Dokument auf
+   unterschiedlicher Hoehe (nebeneinander gestellt, an der Unterkante bzw. an
+   max-height ausgerichtet).
+   Loesung: Fuer den Druck wird aus der ROHEN Unterschrift ein Bild fester
+   Groesse erzeugt (SIG_CV_W x SIG_CV_H) und die Signatur so hineinskaliert und
+   verschoben, dass ihr Linienbezugspunkt (u.sigLiniePos, Standard 62 %) exakt
+   auf der festen Linienhoehe SIG_LINIE_Y liegt. Da alle Druckbilder damit
+   identische Abmessungen und dieselbe Linienhoehe haben, liegen die Linien in
+   jedem Dokument automatisch auf einer Ebene – unabhaengig von der Person. */
+const SIG_CV_W=660, SIG_CV_H=230, SIG_LINIE_Y=158; // Linie bei 68,7 % der Hoehe
+const _sigDruckCache={};
+function sigDruckCacheLeeren(uid){ if(uid) delete _sigDruckCache[uid]; else for(const k in _sigDruckCache) delete _sigDruckCache[k]; }
+function sigDruckNormieren(dataUrl, posProzent){
+  return new Promise(resolve=>{
+    const img=new Image();
+    img.onload=()=>{
+      try{
+        const c=document.createElement('canvas'); c.width=SIG_CV_W; c.height=SIG_CV_H;
+        const ctx=c.getContext('2d');
+        // Signatur einpassen: Hoehe bevorzugt, Breite als Grenze (breite Namenszuege)
+        const maxH=SIG_CV_H*0.82, maxW=SIG_CV_W*0.86;
+        let sh=maxH, sw=img.width*(sh/img.height);
+        if(sw>maxW){ sw=maxW; sh=img.height*(sw/img.width); }
+        const pos=Math.min(98, Math.max(5, Number(posProzent)||62))/100;
+        const x=Math.round((SIG_CV_W-sw)/2);
+        const y=Math.round(SIG_LINIE_Y - sh*pos); // Bezugspunkt auf die feste Linie legen
+        ctx.drawImage(img, x, y, sw, sh);
+        const lw=Math.max(2, Math.round(SIG_CV_H*0.014));
+        ctx.strokeStyle='#1e2a4a'; ctx.lineWidth=lw; ctx.lineCap='round';
+        ctx.beginPath();
+        ctx.moveTo(Math.round(SIG_CV_W*0.02), SIG_LINIE_Y);
+        ctx.lineTo(Math.round(SIG_CV_W*0.98), SIG_LINIE_Y);
+        ctx.stroke();
+        resolve(c.toDataURL('image/png'));
+      }catch(e){ resolve(dataUrl); }
+    };
+    img.onerror=()=>resolve(dataUrl);
+    img.src=dataUrl;
+  });
+}
+/* Einheitliches Druckbild eines Benutzers (mit Cache; Fallback = bisheriges Verhalten) */
+async function sigDruckbild(u){
+  if(!u) return '';
+  if(!u.signatur) return sigFuerDruck(u);
+  if(_sigDruckCache[u.id]) return _sigDruckCache[u.id];
+  try{
+    const bild=await sigDruckNormieren(u.signatur, u.sigLiniePos);
+    _sigDruckCache[u.id]=bild;
+    return bild;
+  }catch(e){ return sigFuerDruck(u); }
+}
+
 /* ── Linien-Variante erzeugen: dünne, gerade, schwarze Linie an gewählter Höhe einbrennen ── */
 function signaturLinieEinbrennen(dataUrl, posProzent){
   return new Promise(resolve=>{
@@ -25813,9 +26176,12 @@ async function sigLinieSpeichern(){
   if(!u?.signatur){ toast('Keine Unterschrift vorhanden'); return; }
   toast('Linie wird eingebrannt …');
   const mitLinie=await signaturLinieEinbrennen(u.signatur, _sigLiniePos);
-  u.signaturMitLinie=mitLinie; u.geaendert=now();
+  u.signaturMitLinie=mitLinie;
+  u.sigLiniePos=_sigLiniePos;   // v214: Bezugshoehe merken -> Druckbild normierbar
+  u.geaendert=now();
   await idbPut('users',u);
-  CU.signaturMitLinie=mitLinie;
+  CU.signaturMitLinie=mitLinie; CU.sigLiniePos=_sigLiniePos;
+  sigDruckCacheLeeren(u.id);
   clearTimeout(window._syncTimer);
   window._syncTimer=setTimeout(()=>syncToOneDrive(),3000);
   closeModal();
@@ -25825,8 +26191,9 @@ async function sigLinieSpeichern(){
 async function deleteSignaturLinie(){
   if(!confirm('Linien-Variante der Unterschrift wirklich entfernen?')) return;
   const u=await idbGet('users',CU.id).catch(()=>null);
-  if(u){ delete u.signaturMitLinie; u.geaendert=now(); await idbPut('users',u); }
-  delete CU.signaturMitLinie;
+  if(u){ delete u.signaturMitLinie; delete u.sigLiniePos; u.geaendert=now(); await idbPut('users',u); }
+  delete CU.signaturMitLinie; delete CU.sigLiniePos;
+  sigDruckCacheLeeren(CU.id);
   clearTimeout(window._syncTimer);
   window._syncTimer=setTimeout(()=>syncToOneDrive(),3000);
   await renderMeineSignatur();
@@ -28122,6 +28489,14 @@ function buchKatOptionen(gewaehlt, seite){
 /* §20 Umlagefähigkeit je Kategorie */
 const BUCH_UMLAGE_LABEL={voll:'umlagefähig', teil:'teilweise umlagefähig', nein:'nicht umlagefähig', eig:'Eigentümeranteil'};
 function buchKatUmlage(id){ return (BUCH_KATEGORIEN.find(k=>k.id===id)||{}).umlage || null; }
+/* v215: Neutrale Eingänge (Fehlbuchung, Einlage, Zinsgutschrift …) sind KEINE Einnahme.
+   Datengetrieben aus den Anlage-V-Gruppen (sb:false = nicht steuerbar/nachrichtlich),
+   damit Import-Anzeige und Steuerauswertung nicht auseinanderlaufen können. */
+function katIstNeutral(kat, seite){
+  if(!kat) return false;
+  const gr=(typeof avGruppeFuer==='function') ? avGruppeFuer(seite||'ein', kat, null) : null;
+  return !!(gr && gr.sb===false);
+}
 function buchUmlageBadge(id){
   const u=buchKatUmlage(id); if(!u) return '';
   const farbe = u==='voll'?'var(--green)': u==='teil'?'var(--amber)': u==='eig'?'var(--copper,#b87333)':'var(--ink-40)';
@@ -29125,6 +29500,42 @@ async function buchKategorieSetzen(id, kat){
   await zaRenderVerlauf();
 }
 
+/* v215: Betraege aus dem Buchungstext lesen (Darlehensraten der Banken nennen Zinsen und
+   Tilgung im Verwendungszweck). Erkennt Formen wie "Zinsen 123,45", "Zins EUR 123,45",
+   "Tilgung: 456,78", "Sollzinsen 12,34". Gibt gefundene Werte als Vorschlaege zurueck. */
+const _SPLIT_MUSTER=[
+  // "Zinsanteil"/"Sollzinsen"/"Zinsen:" erfassen, "Zinssatz 3,50 %" aber NICHT (Prozent, kein Betrag)
+  {kat:'zinsen',  re:/(?:soll)?zins(?:en|betrag|anteil)?\b[^0-9\-]{0,18}(\d{1,3}(?:\.\d{3})*,\d{2}|\d+,\d{2})(?!\s*%)/i},
+  {kat:'tilgung', re:/tilgung(?:santeil|sbetrag)?\b[^0-9\-]{0,18}(\d{1,3}(?:\.\d{3})*,\d{2}|\d+,\d{2})(?!\s*%)/i},
+  {kat:'bankgebuehren', re:/(?:geb(?:\u00fc|ue)hr(?:en)?|entgelt)\b[^0-9\-]{0,18}(\d{1,3}(?:\.\d{3})*,\d{2}|\d+,\d{2})(?!\s*%)/i},
+];
+function splitVorschlaegeAusText(zweck){
+  const t=String(zweck||''); const out=[];
+  for(const m of _SPLIT_MUSTER){
+    const tr=t.match(m.re);
+    if(tr && tr[1]){
+      const betrag=parseBetrag(tr[1]);
+      if(betrag>0) out.push({kat:m.kat, betrag:Math.round(betrag*100)/100});
+    }
+  }
+  return out;
+}
+/* Vorschlaege in die Aufteilungs-Liste uebernehmen (ersetzt leere Zeilen) */
+function splitVorschlagUebernehmen(){
+  const v=window._buchSplitVorschlaege||[];
+  if(!v.length) return;
+  const liste=document.getElementById('buchSplitListe');
+  if(!liste) return;
+  liste.innerHTML = v.map(window._buchSplitZeile).join('');
+  // Restbetrag als weitere Zeile anbieten, falls der Text nicht die ganze Rate abdeckt
+  const soll=Math.abs(Number(window._buchSplitBetrag)||0);
+  const summe=v.reduce((x,t)=>x+t.betrag,0);
+  const rest=Math.round((soll-summe)*100)/100;
+  if(rest>0.009) liste.insertAdjacentHTML('beforeend', window._buchSplitZeile({kat:'', betrag:rest}));
+  buchSplitSumme();
+  toast('Vorschlag aus dem Buchungstext \u00fcbernommen \u2013 bitte pr\u00fcfen');
+}
+
 /* Sammelzahlung auf mehrere Kategorien aufteilen (Summe muss dem Betrag entsprechen) */
 async function modalBuchungSplit(id){
   const b=await idbGet('buchungen', id).catch(()=>null);
@@ -29140,13 +29551,32 @@ async function modalBuchungSplit(id){
     <button class="btn btn-sm btn-danger" onclick="if(confirm('Diese Zeile wirklich entfernen?')){this.closest('.buchSplitRow').remove();buchSplitSumme();}"><i class="ti ti-x"></i></button>
   </div>`;
   window._buchSplitZeile=zeileHtml;
+  window._buchSplitBetrag=Math.abs(Number(b.betrag)||0);
+  // v215: Der VOLLSTAENDIGE Buchungstext muss sichtbar sein – bei Darlehensraten stehen
+  // Zinsen und Tilgung dort (bisher nach 100 Zeichen abgeschnitten und damit unbrauchbar).
+  const zweckVoll=String(b.zweck||'').trim();
+  const vorschlaege=splitVorschlaegeAusText(zweckVoll);
+  window._buchSplitVorschlaege=vorschlaege;
+  const vorschlagBox = vorschlaege.length ? `
+    <div style="background:var(--green-l);border-radius:8px;padding:8px 10px;margin-bottom:10px;font-size:12px">
+      <div style="font-weight:600;color:var(--green);margin-bottom:4px"><i class="ti ti-wand"></i> Im Buchungstext gefunden</div>
+      ${vorschlaege.map(v=>`<div>${esc(buchKatLabel(v.kat))}: <strong>${eur(v.betrag)} €</strong></div>`).join('')}
+      <button class="btn btn-sm" style="margin-top:6px" onclick="splitVorschlagUebernehmen()">
+        <i class="ti ti-arrow-down"></i> In die Aufteilung übernehmen</button>
+    </div>` : '';
   showModal(`
     <div class="m-title"><i class="ti ti-arrows-split-2"></i> Zahlung aufteilen</div>
     <div style="background:var(--ink-05);border-radius:8px;padding:8px 10px;margin-bottom:10px;font-size:12px">
       <strong>${esc(b.name||'Unbekannt')}</strong> · ${esc((b.datumISO||''))}<br>
-      Betrag: <strong>−${eur(Math.abs(b.betrag))} €</strong><br>
-      <span style="color:var(--ink-40)">${esc((b.zweck||'').slice(0,100))}</span>
+      Betrag: <strong>−${eur(Math.abs(b.betrag))} €</strong>
     </div>
+    <div style="margin-bottom:10px">
+      <div style="font-size:11px;color:var(--ink-40);margin-bottom:3px">Buchungstext (vollständig)</div>
+      <div style="background:#fff;border:1px solid var(--ink-10);border-radius:8px;padding:8px 10px;
+                  font-size:12px;line-height:1.5;max-height:150px;overflow-y:auto;white-space:pre-wrap;
+                  word-break:break-word;-webkit-user-select:text;user-select:text">${esc(zweckVoll||'– kein Buchungstext –')}</div>
+    </div>
+    ${vorschlagBox}
     <div id="buchSplitListe">${zeilen.map(zeileHtml).join('')}</div>
     <button class="btn btn-sm" onclick="document.getElementById('buchSplitListe').insertAdjacentHTML('beforeend', window._buchSplitZeile({kat:'',betrag:''}));buchSplitSumme()">
       <i class="ti ti-plus"></i> Weitere Kategorie</button>
@@ -29281,16 +29711,28 @@ function zaRenderErgebnis(){
       statusHtml = `<span style="color:var(--ink-70);font-weight:600"><i class="ti ti-check"></i> ${esc(m.name)}</span>
                     <span style="font-size:11px;color:var(--ink-40)"> · via IBAN (ehem. Mieter)</span>`;
     } else if(m && m.via==='we'){
-      statusHtml = `<span style="color:var(--ink-70)"><i class="ti ti-help-circle"></i> Vorschlag: ${esc(m.name)} (WE ${esc(m.weNr)})</span>`;
+      /* v215: Der WE-Vorschlag stammt nur aus dem Verwendungszweck und kann falsch sein
+         (z. B. zahlt ein ehemaliger Mieter auf die WE eines Nachmieters). Deshalb neben
+         "IBAN übernehmen" auch die volle Mieterauswahl inkl. "Alt-Mieter anlegen" und
+         die Einnahme-Buchung anbieten – vorher war die Zeile eine Sackgasse. */
+      statusHtml = `<span style="color:var(--ink-70)"><i class="ti ti-help-circle"></i> Vorschlag: ${esc(m.name)} (WE ${esc(m.weNr)})</span>
+                    <span style="font-size:11px;color:var(--ink-40)"> · nur aus dem Verwendungszweck – bitte prüfen</span>`;
       aktion = `<button class="btn btn-sm btn-primary" onclick="zaZuordnen(${i})">
-                  <i class="ti ti-link"></i> IBAN übernehmen</button>`;
+                  <i class="ti ti-link"></i> IBAN übernehmen</button>
+                <div style="font-size:10px;color:var(--ink-40);margin:5px 0 2px">Vorschlag passt nicht?</div>
+                ${zaMieterDropdown(i)}
+                <button class="btn btn-sm" style="margin-top:4px" onclick="zaModalEinnahme(${i})"><i class="ti ti-coin-euro"></i> Als Einnahme/neutral buchen</button>`;
     } else if(m && m.via==='sp'){
       statusHtml = `<span style="color:var(--green);font-weight:600"><i class="ti ti-parking"></i> ${esc(m.name)}</span>
                     <span style="font-size:11px;color:var(--ink-40)"> · via Stellplatz ${esc(String(m.spNr))}</span>`;
     } else if(r.einnahme){
-      /* v213 (F2): mieterloser Eingang mit Einnahme-Kategorie */
-      statusHtml = `<span style="color:var(--green);font-weight:600"><i class="ti ti-coin-euro"></i> Einnahme: ${esc(buchKatLabel(r.einnahme.kat))}</span>${r.einnahme.notiz?`
-                    <span style="font-size:11px;color:var(--ink-40)"> · ${esc(r.einnahme.notiz)}</span>`:''}`;
+      /* v213 (F2): mieterloser Eingang mit Kategorie – v215: neutral vs. Einnahme trennen */
+      const _neutral = katIstNeutral(r.einnahme.kat, 'ein');
+      statusHtml = _neutral
+        ? `<span style="color:var(--ink-70);font-weight:600"><i class="ti ti-arrows-exchange"></i> Neutral: ${esc(buchKatLabel(r.einnahme.kat))}</span>
+           <span style="font-size:11px;color:var(--ink-40)"> · keine Einnahme</span>`
+        : `<span style="color:var(--green);font-weight:600"><i class="ti ti-coin-euro"></i> Einnahme: ${esc(buchKatLabel(r.einnahme.kat))}</span>`;
+      if(r.einnahme.notiz) statusHtml += `<span style="font-size:11px;color:var(--ink-40)"> · ${esc(r.einnahme.notiz)}</span>`;
       aktion = `<button class="btn btn-sm" onclick="zaModalEinnahme(${i})"><i class="ti ti-pencil"></i> Ändern</button>`;
     } else {
       statusHtml = `<span style="color:var(--ink-40)">Kein Mieter – Auswahl:</span>`;
@@ -29311,7 +29753,8 @@ function zaRenderErgebnis(){
   const nIban = res.filter(r=>r.match?.via==='iban').length;
   const nWe   = res.filter(r=>r.match?.via==='we').length;
   const nSp   = res.filter(r=>r.match?.via==='sp').length;
-  const nEin  = res.filter(r=>!r.match && r.einnahme).length;
+  const nEin  = res.filter(r=>!r.match && r.einnahme && !katIstNeutral(r.einnahme.kat,'ein')).length;
+  const nNeut = res.filter(r=>!r.match && r.einnahme &&  katIstNeutral(r.einnahme.kat,'ein')).length;
   const nOffen= res.filter(r=>!r.match && !r.einnahme).length;
 
   box.innerHTML = `
@@ -29320,6 +29763,7 @@ function zaRenderErgebnis(){
       ${nSp?`<span class="badge" style="background:var(--green-l);color:var(--green)">${nSp} per Stellplatz</span>`:''}
       ${nWe?`<span class="badge" style="background:var(--blue-l,#e8f0fe);color:var(--blue,#1a56db)">${nWe} Vorschläge (WE)</span>`:''}
       ${nEin?`<span class="badge" style="background:var(--green-l);color:var(--green)">${nEin} Einnahmen</span>`:''}
+      ${nNeut?`<span class="badge" style="background:var(--ink-05);color:var(--ink-70)">${nNeut} neutral</span>`:''}
       ${nOffen?`<span class="badge" style="background:var(--line);color:var(--ink-40)">${nOffen} offen</span>`:''}
     </div>
     <div style="overflow-x:auto">
@@ -29494,20 +29938,33 @@ function zaModalEinnahme(i){
   const b=r.buchung;
   const eur=n=>(Number(n)||0).toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:2});
   showModal(`
-    <div class="m-title"><i class="ti ti-coin-euro"></i> Als Einnahme buchen</div>
+    <div class="m-title"><i class="ti ti-coin-euro"></i> Eingang kategorisieren</div>
     <div style="background:var(--ink-05);border-radius:8px;padding:8px 10px;margin-bottom:10px;font-size:12px">
       <strong>${esc(b.name||'Unbekannt')}</strong> · ${esc(b.datumISO||'')}<br>
       Betrag: <strong>${eur(b.betrag)} €</strong><br>
       <span style="color:var(--ink-40)">${esc((b.zweck||'').slice(0,120))}</span>
     </div>
     <div class="f"><label>Kategorie *</label>
-      <select id="zaEinKat">${buchKatOptionen(r.einnahme?.kat||'','ein')}</select></div>
+      <select id="zaEinKat" onchange="zaEinKatHinweis()">${buchKatOptionen(r.einnahme?.kat||'','ein')}</select></div>
+    <div id="zaEinNeutral" style="display:none;background:var(--ink-05);border-left:3px solid var(--ink-40);border-radius:6px;padding:8px 10px;margin-bottom:10px;font-size:12px;color:var(--ink-70)">
+      <i class="ti ti-info-circle"></i> Diese Kategorie ist <b>steuerlich neutral</b> – der Eingang wird
+      <b>nicht als Einnahme</b> gewertet (z. B. Fehlbuchung, die zurückgeht). In der Anlage-V-Auswertung
+      erscheint er nur nachrichtlich.
+    </div>
     <div class="f"><label>Notiz (optional)</label>
       <input type="text" id="zaEinNotiz" spellcheck="true" lang="de" value="${esc(r.einnahme?.notiz||'')}" placeholder="z. B. Erstattung Wasserschaden WE 7"></div>
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="zaEinnahmeSetzen(${i})"><i class="ti ti-check"></i> Übernehmen</button>
       <button class="btn btn-full" onclick="closeModal();zaRenderErgebnis()">Abbrechen</button>
     </div>`);
+  zaEinKatHinweis();
+}
+/* v215: Hinweisbox einblenden, sobald eine neutrale Kategorie gewählt ist */
+function zaEinKatHinweis(){
+  const sel=document.getElementById('zaEinKat');
+  const box=document.getElementById('zaEinNeutral');
+  if(!sel||!box) return;
+  box.style.display = katIstNeutral(sel.value,'ein') ? '' : 'none';
 }
 function zaEinnahmeSetzen(i){
   const r=ZA_STATE.results[i]; if(!r) return;
@@ -29885,10 +30342,19 @@ const ANLAGE_V_GRUPPEN=[
   {g:'E1b',seite:'ein', label:'Mieteinnahmen Stellplätze/Garagen',              kats:['stellplatzmiete'], sb:true},
   {g:'E2', seite:'ein', label:'Miet-Eingänge brutto (nicht aufgeschlüsselt, inkl. Umlagen)', kats:['__mieteBrutto'], sb:true},
   {g:'E3', seite:'ein', label:'Umlagen (NK-Vorauszahlungen und -Nachzahlungen)', kats:['nk_vorauszahlung','nk_nachzahlung'], sb:true},
-  {g:'E4', seite:'ein', label:'Sonstige Einnahmen / Erstattungen',             kats:['erstattung_kosten','versicherungserstattung','versorger_erstattung','sonstige_einnahmen','nk_guthaben'], sb:true},
+  {g:'E4', seite:'ein', label:'Sonstige Einnahmen / Erstattungen',             kats:['erstattung_kosten','versicherungserstattung','versorger_erstattung','sonstige_einnahmen','nk_guthaben','versorger_bonus','erstattung_umtausch','gutschrift_handwerker'], sb:true},
   {g:'E5', seite:'ein', label:'Einnahmen unkategorisiert (bitte prüfen)',      kats:['__einUnkat'], sb:true},
   {g:'NE1',seite:'ein', label:'Kaution erhalten (durchlaufend, nicht steuerbar; steuerbar erst bei Verrechnung)', kats:['kaution_erhalten'], sb:false},
   {g:'NE2',seite:'ein', label:'Fehlbuchung / Rückerstattung (neutral)',        kats:['fehlbuchung_rueck'], sb:false},
+  /* v215: in v213 ergänzte Einnahmearten. Bewusst nachrichtlich (sb:false) statt als
+     Anlage-V-Einnahme – die Zuordnung ist steuerlich nicht eindeutig und gehört geprüft:
+     Zinserträge gehören in die Anlage KAP; eine Steuererstattung kann je nach Steuerart
+     Werbungskosten mindern; ein Zuschuss kann Einnahme ODER AfA-Bemessungsgrundlage
+     mindern. Ohne diesen Eintrag fielen sie in E5 „unkategorisiert“. KEINE Steuerberatung. */
+  {g:'NE3',seite:'ein', label:'Zinsgutschrift (gehört in Anlage KAP, nicht Anlage V)', kats:['zinsertrag'], sb:false},
+  {g:'NE4',seite:'ein', label:'Steuererstattung (Zuordnung mit Steuerberater klären)',  kats:['steuererstattung'], sb:false},
+  {g:'NE5',seite:'ein', label:'Zuschuss/Förderung (Einnahme oder AfA-Minderung – mit Steuerberater klären)', kats:['foerderung'], sb:false},
+  {g:'NE6',seite:'ein', label:'Einlage Eigentümer (privat, nicht steuerbar)',       kats:['eigentuemer_einlage'], sb:false},
   // Werbungskosten
   {g:'W1', seite:'aus', label:'Grundsteuer',                                   kats:['grundsteuer'], sb:true},
   {g:'W2', seite:'aus', label:'Wasser / Abwasser / Niederschlagswasser',       kats:['wasser','abwasser','regenwasser'], sb:true},
@@ -30151,11 +30617,15 @@ let _dvBlobDruck = false; // wenn true: Druck über eigenständigen Blob-Tab sta
 // blobDruck=true: beim Drucken wird das vollständige HTML in einem neuen Tab geöffnet
 //   (zuverlässig für eigenständige Dokumente wie das Protokoll, die im #printRoot-Weg
 //   leer blieben). Das HTML muss dann ein eingebettetes window.print()-Script enthalten.
-function druckHTML(html, titel, dateiname, blobDruck){
+function druckHTML(html, titel, dateiname, blobDruck, pdfBauer){
   try{
     _dvAktuellesHtml = html;
     _dvDateiname = dateiname || '';
     _dvBlobDruck = !!blobDruck;
+    // v214: Dokumente mit hinterlegtem PDF-Bauer koennen direkt als PDF versendet werden
+    _dvPdfBauer = (typeof pdfBauer==='function') ? pdfBauer : null;
+    const pb = document.getElementById('dvPdfBtn');
+    if(pb) pb.style.display = _dvPdfBauer ? '' : 'none';
     const ov = document.getElementById('druckVorschau');
     const fr = document.getElementById('dvFrame');
     const tt = document.getElementById('dvTitel');
@@ -30179,6 +30649,23 @@ function druckHTML(html, titel, dateiname, blobDruck){
     console.warn('Vorschau fehlgeschlagen, drucke direkt:', e);
     return _druckJetzt(html, _dvDateiname);
   }
+}
+
+/* v214: Aktuelles Dokument als echtes PDF teilen (nur wenn ein PDF-Bauer hinterlegt ist) */
+let _dvPdfBauer = null;
+async function druckVorschauPdf(){
+  if(typeof _dvPdfBauer!=='function'){ toast('F\u00fcr dieses Dokument ist kein PDF hinterlegt'); return; }
+  const btn=document.getElementById('dvPdfBtn');
+  try{
+    if(btn) btn.disabled=true;
+    toast('PDF wird erstellt \u2026');
+    const bytes=await _dvPdfBauer();
+    if(!bytes || !bytes.length){ toast('PDF konnte nicht erstellt werden'); return; }
+    await pdfTeilen(bytes, _dvDateiname||'Dokument');
+  }catch(e){
+    console.warn('druckVorschauPdf:', e);
+    toast('PDF konnte nicht erstellt werden');
+  }finally{ if(btn) btn.disabled=false; }
 }
 
 // Schließt die Vorschau ohne zu drucken.
