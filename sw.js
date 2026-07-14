@@ -7,7 +7,7 @@
 // an respondWith übergeben (führte zu TypeError); stattdessen kontrollierte
 // 503/504-Antworten.
 
-const CACHE = 'nadigpfau-v217';
+const CACHE = 'nadigpfau-v219';
 
 // v195 (B4): Kern-Assets beim Install vorab cachen, damit die App auch nach
 // einer Browser-Cache-Raeumung offline startet (bisher nur On-the-fly-Cache).

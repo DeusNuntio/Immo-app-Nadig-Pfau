@@ -891,7 +891,37 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=34;
-const APP_VERSION = '2026-07-14-v217';
+const APP_VERSION = '2026-07-14-v219';
+/* v219 (14.07.2026): "Alt-Fotos auslagern" / Nutzerbefund "beim Klick auf 'Jetzt
+   auslagern' passiert nichts": Aufruf `await odToken()` in backfillLauf – die
+   Funktion existiert nicht (korrekter Name: `odGetToken()`). Ergebnis war ein
+   sofortiger ReferenceError, die async-Funktion terminierte stumm, der Button
+   war per HTML-Attribut `this.disabled=true` bereits deaktiviert -> keine
+   Meldung, keine Statuszeile, keine Reaktivierung. Zusaetzlich: Token-Check
+   lag VOR dem try-Block, daher gab es bei anderen Fruehfehlern keinen
+   Button-Reset. Fix: Namen korrigiert, Token-Check in try-Block gezogen,
+   try/finally garantiert den Button-Reset (btnReset) in jedem Ausstiegspfad.
+   Bei fehlender OneDrive-Verbindung sichtbare rote Statusmeldung. Keine
+   Store-/DB-Aenderung; DB_VER bleibt 34. */
+/* v218 (14.07.2026): Urlaub – vier Korrekturen (Nutzerbefunde vom Kalender-Screenshot).
+   1) KRITISCH: ymd() lieferte via toISOString() ein UTC-Datum. In MEZ/MESZ wurde
+      dadurch jedes Datum um 1 Tag zurueckdatiert – der Kalender zeigte Urlaube
+      einen Tag zu frueh (22.-26.07. -> 21.-25.07.), und feiertageNRW() lieferte
+      Karfreitag/Ostermontag/Christi Himmelfahrt/Pfingstmontag/Fronleichnam
+      systematisch einen Tag zu frueh. Fix: lokale Datumsteile.
+   2) Kalender expandierte Urlaubszeitraum nur auf Mo-Fr (ohne Feiertag) – der
+      Nutzer wollte Sa/So als Urlaub sichtbar sehen (auch wenn diese Tage nicht
+      auf sein Kontingent angerechnet werden). Bedingung entfernt; die Zaehlung
+      laeuft weiter ueber urlaubstageImZeitraum und bleibt korrekt.
+   3) kalDayClick() las direkt aus dem termine-Store (dort ist der Urlaub nur
+      EINMAL mit von/bis abgelegt) – Klick auf 23.07. zeigte den Urlaub deshalb
+      nicht, obwohl der Tag im Zeitraum lag. Fix: Urlaube werden im Klick-Handler
+      analog zur Kalender-Kachel auf jeden Tag ihres Zeitraums expandiert.
+   4) Modal "Urlaub beantragen": Bis-Datum wird jetzt automatisch nachgezogen,
+      sobald es vor dem Von-Datum liegen wuerde (min-Attribute + urlaubDatumSync).
+   Zusatz: Neue Kachel "Urlaub" im Dashboard-Quick-Actions-Block – nur fuer Rolle
+   Hausmeister (istVerwalter hat eigenen Admin-Einstieg bei offenen Antraegen).
+   Keine Store-/DB-Aenderung; DB_VER bleibt 34. */
 /* v217 (14.07.2026): Mietbescheinigung-PDF – drei Layout-Korrekturen (Nutzerbefunde).
    1) Unterschrift wurde unten abgeschnitten: Das normierte Signatur-Druckbild
       (sigDruckNormieren) hatte unter der Linie nur 72 px Fussraum; Unterlaengen
@@ -1800,6 +1830,7 @@ async function renderDash() {
     <button class="qa-btn" onclick="newProtokoll()"><i class="ti ti-clipboard-check"></i> Neues Protokoll</button>
     <button class="qa-btn" onclick="nav('protokoll-archiv')"><i class="ti ti-clipboard-list"></i> Protokolle</button>
     <button class="qa-btn copper" onclick="nav('zeit')"><i class="ti ti-clock"></i> Zeiterfassung</button>
+    ${CU?.role=='hm'?`<button class="qa-btn" onclick="nav('urlaub')"><i class="ti ti-beach"></i> Urlaub</button>`:''}
     <button class="qa-btn" onclick="nav('wartung')"><i class="ti ti-calendar-stats"></i> Wartung</button>
     <button class="qa-btn" onclick="nav('branchenbuch')"><i class="ti ti-address-book"></i> Branchenbuch</button>
     <button class="qa-btn" onclick="modalPacklistenTermine()"><i class="ti ti-backpack"></i> Packliste</button>
@@ -7090,11 +7121,15 @@ function urlaubKarte(u, adminAnsicht){
 }
 
 async function modalUrlaubAntrag(){
+  const heute=today();
+  // v218: Bis-Feld hat min=von, Von-Feld hat max=bis; aendert der Nutzer "Von" nach
+  // vorne oder auf ein Datum nach "Bis", zieht "Bis" automatisch nach – so ist der
+  // Endzeitpunkt garantiert >= Startzeitpunkt (Nutzeranforderung).
   showModal(`
     <div class="m-title"><i class="ti ti-beach"></i> Urlaub beantragen</div>
     <div class="f-row">
-      <div class="f"><label>Von</label><input type="date" id="urVon" value="${today()}" onchange="urlaubVorschau()"></div>
-      <div class="f"><label>Bis</label><input type="date" id="urBis" value="${today()}" onchange="urlaubVorschau()"></div>
+      <div class="f"><label>Von</label><input type="date" id="urVon" value="${heute}" min="${heute}" onchange="urlaubDatumSync('von')"></div>
+      <div class="f"><label>Bis</label><input type="date" id="urBis" value="${heute}" min="${heute}" onchange="urlaubDatumSync('bis')"></div>
     </div>
     <div class="f"><label>Notiz (optional)</label><input type="text" id="urNotiz" placeholder="z. B. Familienurlaub"></div>
     <div id="urVorschau" style="font-size:13px;color:var(--ink-60);background:var(--ink-05);border-radius:8px;padding:8px 12px;margin-bottom:12px"></div>
@@ -7102,6 +7137,18 @@ async function modalUrlaubAntrag(){
       <button class="btn btn-copper btn-full" onclick="urlaubBeantragen()"><i class="ti ti-send"></i> Antrag senden</button>
       <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
     </div>`);
+  urlaubVorschau();
+}
+// v218: Sicherstellen, dass "Bis" nie vor "Von" liegt (auch min-Attribute pflegen)
+function urlaubDatumSync(quelle){
+  const vE=document.getElementById('urVon'), bE=document.getElementById('urBis');
+  if(!vE||!bE) return;
+  if(quelle==='von'){
+    if(bE.value < vE.value) bE.value = vE.value;
+    bE.min = vE.value;
+  } else {
+    if(bE.value < vE.value) bE.value = vE.value;
+  }
   urlaubVorschau();
 }
 function urlaubVorschau(){
@@ -7982,7 +8029,14 @@ function osterSonntag(jahr){
   const monat=Math.floor((h+l-7*m+114)/31), tag=((h+l-7*m+114)%31)+1;
   return new Date(jahr, monat-1, tag);
 }
-function ymd(d){ return d.toISOString().split('T')[0]; }
+/* v218: ymd() lieferte bislang toISOString().split('T')[0] – das rechnet immer
+   nach UTC um; in MEZ/MESZ landete jedes Datum einen Tag zu frueh (Kalender-
+   Symptom: Urlaub 22.-26.07. erschien als 21.-25.07.; Feiertage wie Karfreitag
+   waren als 02.04.2026 hinterlegt statt 03.04.2026). Fix: lokale Datumsteile. */
+function ymd(d){
+  const y=d.getFullYear(), m=String(d.getMonth()+1).padStart(2,'0'), t=String(d.getDate()).padStart(2,'0');
+  return `${y}-${m}-${t}`;
+}
 function plusTage(d, n){ const x=new Date(d); x.setDate(x.getDate()+n); return x; }
 // Gesetzliche Feiertage NRW für ein Jahr -> Map { 'YYYY-MM-DD': 'Name' }
 function feiertageNRW(jahr){
@@ -20912,11 +20966,12 @@ async function renderKalender() {
     if(!istAdmin && ut.userId!==CU?.id) continue; // Hausmeister nur eigener Urlaub
     let d=new Date((ut.datum)+'T00:00:00');
     const bis=new Date((ut.datumBis||ut.datum)+'T00:00:00');
+    // v218: Alle Tage des Urlaubszeitraums werden angezeigt (auch Sa/So/Feiertag);
+    // die Kontingent-Zaehlung laeuft weiter ueber urlaubstageImZeitraum und bleibt
+    // korrekt (Nutzeranforderung: "auch wenn die Tage nicht als Urlaubstage zaehlen").
     while(d<=bis){
       const ds=ymd(d);
-      if(!istWochenende(ds) && !istFreierTag(ds)){
-        alle.push({...ut, datum:ds, _expanded:true});
-      }
+      alle.push({...ut, datum:ds, _expanded:true});
       d=plusTage(d,1);
     }
   }
@@ -21082,7 +21137,22 @@ async function kalDayClick(dateStr) {
   // Zeige Tages-Termine oder füge neuen hinzu
   const myObj  = await getMyObjekte();
   const myIds  = myObj.map(o=>o.id);
-  const termine= (await idbGetAll('termine')).filter(t=>t.datum===dateStr&&(!t.objektId||myIds.includes(t.objektId))&&t.status!=='abgesagt');
+  const istAdmin = istVerwalter();
+  const alleTermine=(await idbGetAll('termine')).filter(t=>!t.objektId||myIds.includes(t.objektId));
+  // v218: Urlaubs-Termine werden im Store nur EINMAL abgelegt (mit von/bis); fuer die
+  // Tagesansicht muessen sie auf jeden Tag des Zeitraums expandiert werden – sonst
+  // ist der Urlaub nur beim Startdatum anklickbar (Nutzerbefund).
+  const termine=[];
+  for(const t of alleTermine){
+    if(t.status==='abgesagt') continue;
+    if(t.typ==='urlaub'){
+      if(!istAdmin && t.userId!==CU?.id) continue;
+      const von=t.datum, bis=(t.datumBis||t.datum);
+      if(dateStr>=von && dateStr<=bis) termine.push({...t, datum:dateStr, _expanded:true});
+    } else if(t.datum===dateStr){
+      termine.push(t);
+    }
+  }
   const d = new Date(dateStr+'T12:00:00').toLocaleDateString('de-DE',{weekday:'long',day:'numeric',month:'long'});
 
   // Feiertag/Sondertag dieses Tages (P2)
@@ -32716,13 +32786,24 @@ async function bfZiel(store, rec){
 /* Hauptlauf. Migriert Store für Store; schreibt jeden Record einzeln zurück,
    sodass ein Abbruch/Fehler nie einen halben Bestand hinterlässt. */
 async function backfillLauf(){
-  if(_bfLaeuft) return;
-  if(!(await odToken())){ toast('Bitte zuerst mit OneDrive verbinden'); return; }
-  _bfLaeuft = true; _bfAbbruch = false;
-  const cache = new Map();
-  const stat = { geaendert:0, fehler:0, bytes:0, records:0 };
+  // v219: Fruehere Version rief die nicht existierende Funktion odToken() auf
+  // (korrekter Name: odGetToken()). Ergebnis: ReferenceError sofort nach Klick,
+  // Button war per this.disabled=true HTML-Attribut deaktiviert, keine Meldung,
+  // "es passiert nichts". Zusaetzlich: Der Token-Check lag VOR dem try-Block, so
+  // dass ein spaeterer Fehler den Button nicht wieder freigab. Beides behoben:
+  // Namen korrigiert, Ablauf komplett in try/finally gekapselt.
+  const btnReset = () => { const b=document.getElementById('bfStartBtn'); if(b) b.disabled=false; };
   const melde = txt => { const el = document.getElementById('bfStatus'); if(el) el.innerHTML = txt; };
+  if(_bfLaeuft){ btnReset(); return; }
+  const stat = { geaendert:0, fehler:0, bytes:0, records:0 };
   try{
+    if(!(await odGetToken())){
+      melde('<span style="color:var(--red)">Bitte zuerst mit OneDrive verbinden. Sync-Verbindung fehlt.</span>');
+      toast('Bitte zuerst mit OneDrive verbinden');
+      return stat;
+    }
+    _bfLaeuft = true; _bfAbbruch = false;
+    const cache = new Map();
     for(const st of BF_STORES){
       if(_bfAbbruch) break;
       let recs = [];
@@ -32783,10 +32864,13 @@ async function backfillLauf(){
   }catch(e){
     console.warn('Backfill:', e);
     melde('Abgebrochen (Fehler): ' + esc(e.message||String(e)));
+  } finally {
+    // v219: garantierter Button-Reset auch bei frühen Returns (kein Token, keine
+    // Analyse) und bei geworfenen Fehlern - ohne finally blieb der Button hängen.
+    _bfLaeuft = false;
+    btnReset();
   }
-  _bfLaeuft = false;
   if(stat.geaendert){ try{ syncSoon(); }catch(_){} }
-  const btn = document.getElementById('bfStartBtn'); if(btn) btn.disabled = false;
   melde(`${_bfAbbruch?'Abgebrochen':'Fertig'}: <b>${stat.geaendert}</b> Dateien ausgelagert, <b>${(stat.bytes/1048576).toFixed(1)} MB</b> aus der Sync-Datei entfernt, ${stat.records} Datensätze aktualisiert${stat.fehler?`, <b>${stat.fehler}</b> übersprungen (bleiben unverändert inline)`:''}. ${stat.geaendert?'Der nächste Sync überträgt den schlankeren Stand.':''}`);
   return stat;
 }
