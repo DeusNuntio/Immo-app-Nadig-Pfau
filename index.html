@@ -891,7 +891,72 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=34;
-const APP_VERSION = '2026-07-14-v219';
+const APP_VERSION = '2026-07-16-v237';
+/* v222 (14.07.2026): KI-Auslesen Zaehlerstand aus Foto (analog rechnungOcrErkennen).
+   Neuer Button "Zaehlerstand aus Foto auslesen (KI)" in modalZaehlerstand,
+   sichtbar sobald ein Foto vorhanden ist. Sendet Base64+MimeType+Zaehlerart
+   an /api/zaehler-ocr (neue Azure Function). Antwort liefert wert, einheit,
+   zaehlernummer, ableseDatum, confidence. Vorschlag fuellt nur leere Felder,
+   ueberschreibt keine Nutzer-Eingaben. DSGVO: gleiche AVV wie Rechnungs-OCR;
+   Beleg bleibt im Speicher der Function, keine Persistenz.
+   Keine Store-/DB-Aenderung; DB_VER bleibt 34. Backend-Datei: zaehlerOcr.js
+   (Azure Functions v4, Node 22, gleiches Muster wie rechnungOcr.js). */
+/* v221 (14.07.2026): Zahlungen – zweite Stufe (Buchhaltungs-Korrektheit + fehlende UX).
+   A) SALDO-SPALTE im Mietkonto: kumulierte Ist-minus-Soll ueber das Anzeigefenster
+      pro Mieter. Positive Werte werden als Guthaben ausgewiesen (Nutzerbefund:
+      „zuviel gezahlt ist meistens nebenkosten die zurueckgezahlt werden guthaben"),
+      negative als Rueckstand.
+   B) AUTO-SPLIT Kombi-Zahlung Wohnung + Stellplatz OHNE SP-Nummer im
+      Verwendungszweck: Wenn ein Mieter einen TG-Platz zugeordnet hat UND der
+      Zahlungsbetrag ± 1 % dem Summensoll entspricht, wird der SP-Anteil
+      gemaess Register automatisch herausgerechnet (Nutzerbefund: „In den
+      Mietzahlungen sind manchmal auch die TG mieten bei einem Mieter drin").
+   C) SPLIT-DIALOG fuer EINNAHMEN (bislang nur Ausgaben). Bei Mieteingaengen
+      neuer Vorschlag „Miete aufteilen" aus Mieterakte -> Kaltmiete +
+      NK-Vorauszahlung + Stellplatz. Kategorienauswahl seiten-abhaengig.
+   D) NACHTRAEGLICHE ZUORDNUNG von Eingaengen im Kontoauszug – bislang war die
+      Buchung nach dem Import „eingefroren", der Mieterschluessel liess sich
+      nicht mehr aendern (Nutzerbefund Screenshot v219: viele „nicht zugeordnet"-
+      Zeilen ohne Aktionsmoeglichkeit). Neuer Button i.ti-user-plus oeffnet
+      modalEingangZuordnen(); zusaetzlich Buttons „Aufteilen" und „Aendern"
+      an JEDER Zeile (auch bereits zugeordneten). Loeschen der Zuordnung
+      moeglich (Zustand wird zurueckgesetzt). Keine Store-/DB-Aenderung;
+      DB_VER bleibt 34. */
+/* v220 (14.07.2026): Zahlungs-Sammelupdate + OneDrive-Login-Robustheit.
+   ZAHLUNGEN:
+   1) Mieter-Dropdown alphabetisch nach Nachnamen sortiert (Bild 3).
+   2) Neue Option "Als Leerstand buchen (steuerlich neutral)" – Bezugsfall
+      Schaefer, Max; markiert Eingang als _leerstand:true, keine Doppelanlage.
+   3) Voller Verwendungszweck in der Zuordnungszeile sichtbar (mehrzeilig,
+      pre-wrap) – Nutzer will alle Zwecktexte sehen bevor er zuordnet.
+   4) Stift-Button "Aendern" an JEDER erkannten Zeile – bereits zugeordnete
+      Positionen (IBAN/WE/SP) lassen sich neu zuordnen.
+   5) Automatische Uebernahme derselben Zuordnung fuer alle weiteren offenen
+      Zeilen mit identischer IBAN (zaAutoUebernehmen) – gilt fuer alle
+      manuellen Zuordnungen inkl. Alt-Mieter-Neuanlage.
+   6) Doppel-Anlage-Sperre: Vor der Alt-Mieter-Anlage wird geprueft, ob in
+      derselben WE bereits ein Mieter mit gleichem Nachnamen existiert;
+      bejahendenfalls wird der bestehende Datensatz zugeordnet.
+   7) Baumarkt/Elektronik-Erkennung (Bauhaus, Hellweg, Obi, toom, Hornbach,
+      MediaMarkt, Saturn, Amazon, Otto, IKEA u. a. + Zweck-Muster
+      Ruecksendung/Widerruf/Refund) -> Kategorie-Vorschlag
+      "Erstattung Umtausch/Rueckgabe" mit "Uebernehmen"/"Aendern"-Buttons.
+   8) Kategorien-Modal (Bild 4): flache 30-Positionen-Liste ersetzt durch
+      Buchhaltungs-Optgroups (Miete / NK / Kaution / Erstattungen / Bonus /
+      Sonstige / Neutral) plus alphabetische Sortierung innerhalb.
+   ONEDRIVE:
+   9) odGetToken() loeschte den refresh_token bei JEDEM Refresh-Fehler –
+      auch bei Netzwerkzeitueberschreitung. Folge: Nutzer musste bei jedem
+      WLAN-Aussetzer sein Microsoft-Passwort neu eingeben. Fix: Tokens
+      NUR bei invalid_grant / invalid_client / unauthorized_client verwerfen,
+      bei Netzwerk-/Server-Fehlern erhalten (Nutzerbefund „nicht immer
+      meine Daten eingeben").
+   OFFEN (v221): Bug „Wienandts angeklickt, Kindsmueller gebucht" – Muster
+   unklar, brauche Screenshot der Import-Zeile (Zeitpunkt + Zeile-Nummer);
+   getrennte MS-Konten pro HM (Kombi-Modus); Yippie-Vertragserkennung
+   (Belege noch nachzureichen); Rueckstand-Anzeige je Mieter mit NK-Guthaben-
+   Verrechnung; steuerliche Neutralitaet Versorger-Erstattung/Zinsertrag als
+   NKA-Kostenminderung statt Einnahme. DB_VER bleibt 34. */
 /* v219 (14.07.2026): "Alt-Fotos auslagern" / Nutzerbefund "beim Klick auf 'Jetzt
    auslagern' passiert nichts": Aufruf `await odToken()` in backfillLauf – die
    Funktion existiert nicht (korrekter Name: `odGetToken()`). Ergebnis war ein
@@ -1293,6 +1358,41 @@ const OBJ_MAP={
   'Zur Verlach 37':'verlach37','Amboßstr. 10':'amboss10','Marienburger Str. 22':'marien22',
 };
 const getObj=id=>OBJEKTE.find(o=>o.id===id);
+
+/* v226 (F1): Kostengruppen für gebäudeübergreifende Ausgaben.
+   Krefeld/Kyffhäuser rechnen im Regelfall über mehrere Häuser gemeinsam ab; die
+   Feinverteilung auf Häuser/Mieter übernimmt die Nebenkostenabrechnung (eigene Schlüssel).
+   Tiefgarage = eigenes Objekt 'tgkref' (separat). Mindener 23/25 = je Haus einzeln. */
+const KOSTENGRUPPEN=[
+  {id:'kref_alle', name:'Krefeld gesamt (Wohnhäuser)',  gruppe:'krefeld',
+   objekte:['inr181','inr183','inr185','wilm7','wilm9','wilm11','wilm13']},
+  {id:'kref_inr',  name:'Krefeld · Inrather (181–185)', gruppe:'krefeld', objekte:['inr181','inr183','inr185']},
+  {id:'kref_wilm', name:'Krefeld · Wilmendyk (7–13)',   gruppe:'krefeld', objekte:['wilm7','wilm9','wilm11','wilm13']},
+  {id:'mg_alle',   name:'Kyffhäuser gesamt (28–32)',    gruppe:'mg',      objekte:['kyff28','kyff30','kyff32']},
+];
+const getKostengruppe=id=>KOSTENGRUPPEN.find(g=>g.id===id);
+
+/* Zentraler Auflöser: welche Objekte betrifft eine Buchung? Basis für NKA/Anlage V je Objekt.
+   Vorrang: kostengruppe (mehrere Häuser) > objektId (ein Haus) > leer (noch nicht zugeordnet). */
+function buchBetroffeneObjekte(b){
+  if(!b) return [];
+  if(b.kostengruppe){ const g=getKostengruppe(b.kostengruppe); if(g) return g.objekte.slice(); }
+  if(b.objektId) return [b.objektId];
+  return [];
+}
+/* Anzeigename der Kostenstelle einer Buchung (Gruppe oder Einzelobjekt). */
+function buchKostenstelleName(b){
+  if(!b) return '';
+  if(b.kostengruppe){ const g=getKostengruppe(b.kostengruppe); return g?g.name:'(unbekannte Gruppe)'; }
+  if(b.objektId){ const o=getObj(b.objektId); return o?o.name:''; }
+  return '';
+}
+/* Kompakter Wert für UI-Auswahl: 'grp:<id>' | 'obj:<id>' | '' (nicht zugeordnet). */
+function buchKostenstelleWert(b){
+  if(b && b.kostengruppe) return 'grp:'+b.kostengruppe;
+  if(b && b.objektId)     return 'obj:'+b.objektId;
+  return '';
+}
 // Pseudo-Objekt für objektübergreifende Aufgaben ("Allgemein")
 const ALLGEMEIN_ID='allgemein';
 function istAllgemein(id){ return id===ALLGEMEIN_ID; }
@@ -1716,6 +1816,24 @@ async function initApp(){
   // v196 (A3): Geraete-Sync-Profil laden - bestimmt, welche Daten dieses Geraet synchronisiert
   try{ const pr=await idbGet('settings','syncProfil'); if(pr?.value==='hm') SYNC_PROFIL='hm'; }catch(e){}
   await migriereBenutzernamenVoll().catch(e=>console.warn('Namensmigration:', e));
+  // v225 (F1): Objekt-Nachzuordnung der Bestandsbuchungen – genau einmal.
+  try{
+    const done=await idbGet('settings','objektMigrationV225');
+    if(!done || !done.value){
+      const n=await zaObjektMigration();
+      await idbPut('settings',{id:'objektMigrationV225', value:'1', geaendert:nowIso()});
+      if(n) console.log('F1 Objekt-Migration:', n, 'Buchungen zugeordnet');
+    }
+  }catch(e){ console.warn('Objekt-Migration:', e); }
+  // v235 (F2): Leistungszeitraum-Nachbefüllung – genau einmal.
+  try{
+    const done=await idbGet('settings','leistungMigrationV235');
+    if(!done || !done.value){
+      const n=await zaLeistungMigration();
+      await idbPut('settings',{id:'leistungMigrationV235', value:'1', geaendert:nowIso()});
+      if(n) console.log('F2 Leistungszeitraum-Migration:', n, 'Buchungen erkannt');
+    }
+  }catch(e){ console.warn('Leistungs-Migration:', e); }
   await renderDash();
   nav('dash','Dashboard','',false);
   updateBadge();
@@ -3285,6 +3403,12 @@ async function modalZaehlerstand(zaehlerId){
         <button class="btn" style="flex:1" onclick="document.getElementById('zsFotoIn').click()"><i class="ti ti-photo"></i> Aus Galerie</button>
       </div>
       <div id="zsFotoPreview" style="margin-top:8px"></div>
+      <!-- v222: KI-Auslesen: liest Zaehlerstand + Zaehlernummer aus dem Foto (Anthropic Vision).
+           Analog zu rechnungOcrErkennen(); Beleg bleibt lokal ausser dem KI-Aufruf. -->
+      <div id="zsKiZeile" style="display:none;margin-top:8px">
+        <button class="btn btn-sm btn-copper btn-full" id="zsKiBtn" onclick="zsKiAuslesen('${zaehlerId}')">
+          <i class="ti ti-sparkles"></i> Zählerstand aus Foto auslesen (KI)</button>
+      </div>
     </div>
     <div class="f"><label>Bemerkung (optional)</label>
       <textarea spellcheck="true" lang="de" id="zsBemerkung" style="min-height:50px" placeholder="z. B. Zähler schwer ablesbar"></textarea></div>
@@ -3301,12 +3425,66 @@ async function onZsFoto(input){
   const dataUrl = await compressFoto(file, 1400, 0.78);
   window._zsFoto = dataUrl;
   zsFotoVorschau(dataUrl);
+  // v222: KI-Auslesen-Button sichtbar machen
+  const z=document.getElementById('zsKiZeile'); if(z) z.style.display='block';
 }
 
 function zsFotoVorschau(dataUrl){
   const prev = document.getElementById('zsFotoPreview');
   if(prev) prev.innerHTML = `<img src="${dataUrl}" style="max-width:100%;border-radius:8px;border:1px solid var(--ink-10)">
-    <button class="btn btn-sm btn-danger" style="margin-top:4px" onclick="if(confirm('Foto wirklich entfernen?')){window._zsFoto=null;document.getElementById('zsFotoPreview').innerHTML=''}"><i class="ti ti-trash"></i> Foto entfernen</button>`;
+    <button class="btn btn-sm btn-danger" style="margin-top:4px" onclick="if(confirm('Foto wirklich entfernen?')){window._zsFoto=null;document.getElementById('zsFotoPreview').innerHTML='';const z=document.getElementById('zsKiZeile');if(z)z.style.display='none';}"><i class="ti ti-trash"></i> Foto entfernen</button>`;
+}
+/* v222: KI-Auslesen des Zaehlerstands aus dem Foto. Analog zu rechnungOcrErkennen():
+   sendet Base64 an /api/zaehler-ocr, erhaelt strukturierten Vorschlag zurueck,
+   traegt Wert / Zaehlernummer / Datum vor. Nutzer prueft und speichert wie gewohnt. */
+async function zsKiAuslesen(zaehlerId){
+  if(!window._zsFoto){ toast('Bitte zuerst ein Foto aufnehmen oder auswaehlen.'); return; }
+  const key=(await idbGet('settings','backendKey').catch(()=>null))?.value;
+  if(!key){ toast('Kein Backend-Schluessel hinterlegt (Einstellungen -> Backend).'); return; }
+  const btn=document.getElementById('zsKiBtn');
+  const alt=btn?btn.innerHTML:'';
+  if(btn){ btn.disabled=true; btn.innerHTML='<i class="ti ti-loader"></i> Lese aus …'; }
+  try{
+    const z=await idbGet('zaehler', zaehlerId).catch(()=>null);
+    const base64=(window._zsFoto.split(',')[1])||'';
+    const mimeType='image/jpeg';   // compressFoto liefert JPEG
+    const res=await fetchMitTimeout(BACKEND_AZURE+'/api/zaehler-ocr',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-functions-key':key},
+      body:JSON.stringify({ fileBase64:base64, mimeType,
+        zaehlerArt: z?.art||'', einheit: z?.einheit||'',
+        letzterStand: null // koennte in v223 fuer Plausi-Check mitgegeben werden
+      })
+    }, 45000);
+    if(res.status===404){ toast('KI-Endpunkt ist noch nicht eingerichtet (/api/zaehler-ocr).'); return; }
+    if(res.status===401||res.status===403){ toast('Backend-Schluessel abgelehnt (401/403).'); return; }
+    if(!res.ok){ toast('KI-Auswertung fehlgeschlagen ('+res.status+').'); return; }
+    let v=null; try{ v=await res.json(); }catch(_){}
+    if(!v || v.error){ toast('Keine auswertbare Antwort erhalten.'); return; }
+    // Vorschlag anwenden (nur leere Felder befuellen; bestehende Nutzereingaben respektieren)
+    const wertEl=document.getElementById('zsWert');
+    const nummerEl=document.getElementById('zsNummer');
+    const datumEl=document.getElementById('zsDatum');
+    let uebernommen=[];
+    if(wertEl && (!wertEl.value||wertEl.value==='') && (typeof v.wert==='number' && isFinite(v.wert))){
+      wertEl.value=String(v.wert).replace('.',',');
+      uebernommen.push('Zaehlerstand: '+v.wert);
+    }
+    if(nummerEl && !nummerEl.value.trim() && v.zaehlernummer){
+      nummerEl.value=String(v.zaehlernummer).trim();
+      uebernommen.push('Nr.: '+v.zaehlernummer);
+    }
+    if(datumEl && v.ableseDatum && /^\d{4}-\d{2}-\d{2}$/.test(v.ableseDatum)){
+      // Datum nur uebernehmen, wenn KI ein plausibles Datum im Bild erkannt hat und Feld unveraendert (heute)
+      if(datumEl.value===today()) { datumEl.value=v.ableseDatum; uebernommen.push('Datum: '+v.ableseDatum); }
+    }
+    if(!uebernommen.length){ toast('KI hat keine sicheren Werte erkannt.'); return; }
+    toast('Erkannt: '+uebernommen.join(' · '));
+  }catch(e){
+    toast((e&&e.name==='AbortError')?'Zeitueberschreitung bei der KI-Auswertung.':'Fehler bei der KI-Auswertung (Netzwerk?).');
+  }finally{
+    if(btn){ btn.disabled=false; btn.innerHTML=alt; }
+  }
 }
 
 // Zählerstand-Foto über das robuste In-App-Kamera-Overlay (kein PWA-Reload)
@@ -14180,7 +14358,12 @@ async function nkaBuchPanelToggle(objektId){
   const konto=ZA_KONTEN.find(k=>k.objekte.includes(objektId));
   if(!konto){ panel.innerHTML='<div style="font-size:12px;color:var(--ink-40)">Diesem Objekt ist kein Import-Konto zugeordnet.</div>'; return; }
   const alle=await idbGetAll('buchungen').catch(()=>[]);
-  const s=buchKatSummen(alle.filter(b=>b && b.kontoId===konto.id), von, bis);
+  const _nkaRelevant=alle.filter(b=>b && b.kontoId===konto.id && nkaBuchungBezug(b,objektId)!=='fremd');
+  const s=buchKatSummen(_nkaRelevant, von, bis, buchNkaDatum);   // v236 (F2): Leistungszeitraum statt Zahlungsdatum
+  // v228 (F1 Schritt 3): Kennzeichnung gemeinsamer / unzugeordneter Kosten im Zeitraum
+  const _imZr=_nkaRelevant.filter(b=>b.typ==='ausgang' && (!von||buchNkaDatum(b)>=von) && (!bis||buchNkaDatum(b)<=bis));
+  const _grpAnz=_imZr.filter(b=>nkaBuchungBezug(b,objektId)==='gruppe').length;
+  const _unzAnz=_imZr.filter(b=>nkaBuchungBezug(b,objektId)==='unzugeordnet').length;
   const eur=n=>(Number(n)||0).toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:2});
   let idx=0, rows='';
   for(const k of BUCH_KATEGORIEN.filter(x=>x.nka)){
@@ -14196,6 +14379,17 @@ async function nkaBuchPanelToggle(objektId){
       idx++;
     }
   }
+  const hinweisGruppe = _grpAnz
+    ? `<div style="font-size:11px;color:var(--copper,#b87333);margin-top:6px"><i class="ti ti-building-community"></i>
+       ${_grpAnz} Position(en) betreffen mehrere Gebäude gemeinsam (z. B. „Krefeld gesamt"). Sie sind hier mit
+       ihrem <strong>Gesamtbetrag</strong> enthalten – bei einer Abrechnung je Einzelhaus muss der auf diese
+       Wirtschaftseinheit entfallende Anteil noch bestimmt werden.</div>` : '';
+  const hinweisUnz = _unzAnz
+    ? `<div style="font-size:11px;color:var(--amber);margin-top:6px"><i class="ti ti-help-circle"></i>
+       ${_unzAnz} Ausgang/Ausgänge im Zeitraum sind noch keinem Gebäude zugeordnet – bitte unter
+       Einstellungen → Zahlungen → „Buchhaltung (Ausgaben)\" die Kostenstelle setzen.</div>` : '';
+  const hinweisLz = `<div style="font-size:10px;color:var(--ink-40);margin-top:4px"><i class="ti ti-calendar-stats"></i>
+    Zuordnung nach <strong>Leistungszeitraum</strong>, sofern erkannt (sonst Zahlungsdatum) – § 556 Abs. 3 BGB.</div>`;
   const hinweisOhne = s.ohneKat.anzahl
     ? `<div style="font-size:11px;color:var(--amber);margin-top:6px"><i class="ti ti-alert-triangle"></i>
        ${s.ohneKat.anzahl} Ausgang/Ausgänge (${eur(s.ohneKat.summe)} €) im Zeitraum sind noch ohne Kategorie –
@@ -14206,11 +14400,26 @@ async function nkaBuchPanelToggle(objektId){
         <div style="font-size:11px;color:var(--ink-40);margin-bottom:6px">Positionen wählen – je Kategorie und Zahlungsempfänger getrennt (Versorgerwechsel: beide Anbieter anhaken). Gewählte Positionen derselben Kategorie werden zu einer Kostenart zusammengefasst. Nicht umlagefähige Kategorien (Instandhaltung, Reparaturen, Verwaltung …) erscheinen hier nicht.</div>
         ${rows}
         ${hinweisOhne}
+        ${hinweisGruppe}
+        ${hinweisUnz}
+        ${hinweisLz}
         <button type="button" class="btn btn-sm btn-copper" style="margin-top:8px" onclick="nkaBuchUebernehmen()">
           <i class="ti ti-check"></i> Ausgewählte übernehmen</button>
       </div>`
     : `<div style="font-size:12px;color:var(--ink-40)">Im Abrechnungszeitraum sind keine kategorisierten, umlagefähigen Ausgänge vorhanden.${hinweisOhne}</div>`;
 }
+/* v228 (F1 Schritt 3): Bezug einer Ausgabe zur NKA eines Einzelobjekts.
+   'einzel'       – betrifft genau dieses Haus (voll umlagefähig auf dessen Mieter)
+   'gruppe'       – betrifft dieses Haus gemeinsam mit weiteren (Wirtschaftseinheit, anteilig)
+   'unzugeordnet' – noch keiner Kostenstelle zugewiesen (weiter anzeigen, damit zuordenbar)
+   'fremd'        – betrifft dieses Haus NICHT → aus der NKA dieses Objekts ausblenden (Kern von B1) */
+function nkaBuchungBezug(b, objektId){
+  const obj=buchBetroffeneObjekte(b);
+  if(obj.length===0) return 'unzugeordnet';
+  if(!obj.includes(objektId)) return 'fremd';
+  return obj.length>1 ? 'gruppe' : 'einzel';
+}
+
 function nkaBuchUebernehmen(){
   const gewaehlt=[...document.querySelectorAll('.nkaBuPos:checked')];
   if(!gewaehlt.length){ toast('Bitte mindestens eine Position wählen.'); return; }
@@ -15108,6 +15317,12 @@ async function modalNKALiegenschaft(lgId){
       Leerstand auf Mieter umlegen (Standard: aus)
     </label>
     ${gesamtFelder}
+    <div style="margin:8px 0">
+      <button type="button" class="btn btn-sm btn-copper" onclick="nkaLgBuchPanelToggle('${lgId}')">
+        <i class="ti ti-cash-banknote"></i> Aus Buchhaltung übernehmen
+      </button>
+      <div id="nkaLgBuchPanel" data-offen="0"></div>
+    </div>
     ${heizBlock}
     <div class="f-section-title" style="margin-top:10px"><i class="ti ti-signature"></i> Unterschrift(en)</div>
     <div style="font-size:11px;color:var(--ink-40);margin-bottom:6px">Eine oder zwei hinterlegte Unterschriften (z. B. Alexander-Roland Nadig und Anna-Alexandra Pfau).</div>
@@ -15203,6 +15418,131 @@ async function nkaLgGewaehlteSignaturen(){
 // Erstellt die liegenschaftsweite NKA: berechnet je Mieter, erzeugt ein
 // Sammeldokument (Deckblatt + Einzelbriefe) und legt es je Mieter im Archiv ab.
 // korrektur: optionales {originalId, text} für nachträgliche Korrekturen.
+/* ── v233 (F1 3b-4): Buchübernahme in die Liegenschafts-NKA ─────────────────
+   Nutzt die Kostenstellen aus v225–v227 (objektId/kostengruppe an Buchungen), um
+   die vorhandene Sammelabrechnung (modalNKALiegenschaft) automatisch aus den
+   importierten Bankbuchungen zu befüllen. Ersetzt den parallelen Gruppen-NKA-Ansatz
+   v229–v232 (zurückgerollt – Duplikat der ausgereifteren Liegenschafts-NKA). */
+
+function nkaLgKonto(lg){
+  return ZA_KONTEN.find(k=>lg && lg.objektIds.every(o=>k.objekte.includes(o))) || null;
+}
+/* Bezug einer Buchung zur Liegenschaft: 'drin' | 'unzugeordnet' | 'fremd' */
+function nkaLgBuchBezug(b, lg){
+  const obj=buchBetroffeneObjekte(b);
+  if(obj.length===0) return 'unzugeordnet';
+  return obj.every(o=>lg.objektIds.includes(o)) ? 'drin' : 'fremd';
+}
+/* Umlagekreis innerhalb der Liegenschaft: 'inrather' | 'wilmendyk' | 'alle' */
+function nkaLgKreis(b){
+  const obj=buchBetroffeneObjekte(b);
+  if(!obj.length) return 'alle';
+  const kreise=new Set(obj.map(o=>krefeldGruppeVonObjekt(o)));
+  if(kreise.size===1){ const k=[...kreise][0]; if(k) return k; }
+  return 'alle';
+}
+/* Vorschlag: Buchhaltungskategorie (+ Kreis) → Kostenart der Lg-Vorlage */
+const NKA_LG_BUCH_MAP={
+  lg_krefeld:{
+    wasser:{inrather:'wasser_inr', wilmendyk:'wasser_wilm'},
+    abwasser:{inrather:'entw_inr', wilmendyk:'entw_wilm'},
+    muell:{alle:'muell'}, allgemeinstrom:{alle:'beleuchtung'},
+    gebaeudeversicherung:{alle:'gebvrs'}, grundsteuer:{alle:'grundsteuer'},
+    strassenreinigung:{alle:'strassenreinig'}, regenwasser:{alle:'regenwasser'},
+    gartenpflege:{alle:'gartenpflege'}, reinigung:{alle:'hausreinigung'},
+  },
+  lg_mg:{
+    wasser:{alle:'wasser_abw'}, abwasser:{alle:'wasser_abw'},
+    muell:{alle:'muell'}, allgemeinstrom:{alle:'allg_strom'},
+    grundsteuer:{alle:'grundsteuer'}, gebaeudeversicherung:{alle:'gebvrs'},
+    strassenreinigung:{alle:'strassenreinig'}, regenwasser:{alle:'regenwasser'},
+    gartenpflege:{alle:'vorgarten'},
+  },
+};
+function nkaLgZielVorschlag(lgId, kat, kreis){
+  const m=(NKA_LG_BUCH_MAP[lgId]||{})[kat];
+  if(!m) return '';
+  return m[kreis] || m.alle || '';
+}
+
+/* Panel: Kategoriesummen der zuordenbaren Buchungen im Zeitraum, je Zeile Ziel-Select */
+async function nkaLgBuchPanelToggle(lgId){
+  const panel=document.getElementById('nkaLgBuchPanel'); if(!panel) return;
+  if(panel.dataset.offen==='1'){ panel.dataset.offen='0'; panel.innerHTML=''; return; }
+  panel.dataset.offen='1';
+  const lg=LIEGENSCHAFTEN.find(l=>l.id===lgId);
+  const vorlage=getNKALgVorlage(lgId);
+  const konto=nkaLgKonto(lg);
+  if(!lg||!vorlage||!konto){ panel.innerHTML='<div style="font-size:12px;color:var(--ink-40)">Kein Import-Konto für diese Liegenschaft.</div>'; return; }
+  const von=document.getElementById('nkaLgVon')?.value||'';
+  const bis=document.getElementById('nkaLgBis')?.value||'';
+  const alle=await idbGetAll('buchungen').catch(()=>[]);
+  const imZr=alle.filter(b=>b && b.kontoId===konto.id && b.typ==='ausgang' && !b.storniert
+    && (!von||buchNkaDatum(b)>=von) && (!bis||buchNkaDatum(b)<=bis));   // v236 (F2): Leistungszeitraum
+  const drin=imZr.filter(b=>nkaLgBuchBezug(b,lg)==='drin');
+  const unzAnz=imZr.filter(b=>nkaLgBuchBezug(b,lg)==='unzugeordnet').length;
+  // Gruppieren nach Kategorie × Kreis (nur kategorisierte, umlagefähig oder nicht – Verwalter entscheidet per Auswahl)
+  const gruppen={};
+  for(const b of drin){
+    const teile=buchTeile(b); if(!teile) continue;
+    const kreis=nkaLgKreis(b);
+    for(const t of teile){
+      const key=t.kat+'|'+kreis;
+      const g=(gruppen[key]=gruppen[key]||{kat:t.kat,kreis,summe:0,anzahl:0});
+      g.summe+=t.betrag; g.anzahl++;
+    }
+  }
+  const zeilen=Object.values(gruppen).sort((a,b)=>b.summe-a.summe);
+  if(!zeilen.length){
+    panel.innerHTML='<div style="font-size:12px;color:var(--ink-40)">Keine kategorisierten Ausgaben mit Kostenstelle im Zeitraum.'+(unzAnz?' <span style="color:var(--amber)">('+unzAnz+' ohne Gebäude-Zuordnung – bitte in der Buchhaltung zuordnen.)</span>':'')+'</div>';
+    return;
+  }
+  const zielOpts=vorlage.kosten.filter(k=>k.schluessel!=='einzeln');
+  const kreisLabel=k=> k==='inrather'?'nur Inrather': k==='wilmendyk'?'nur Wilmendyk':'alle Häuser';
+  const eur=n=>(Number(n)||0).toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:2});
+  panel.innerHTML=`
+    <div style="font-size:12px;font-weight:600;margin:8px 0 4px"><i class="ti ti-cash-banknote"></i> Ausgaben aus der Buchhaltung (${konto.label||konto.id}, ${von||'…'} – ${bis||'…'})</div>
+    ${unzAnz?`<div style="font-size:11px;color:var(--amber);margin-bottom:6px"><i class="ti ti-help-circle"></i> ${unzAnz} Ausgang/Ausgänge ohne Gebäude-Zuordnung sind nicht gelistet – bitte in der Buchhaltung die Kostenstelle setzen.</div>`:''}
+    ${zeilen.map((z,i)=>{
+      const vorschlag=nkaLgZielVorschlag(lgId, z.kat, z.kreis);
+      return `<div style="display:flex;gap:6px;align-items:center;padding:4px 0;border-bottom:1px solid var(--ink-05)">
+        <input type="checkbox" class="nkaLgBuPos" id="nkaLgBu_${i}" data-betrag="${z.summe}" ${vorschlag?'checked':''}>
+        <label for="nkaLgBu_${i}" style="flex:1;font-size:11px">${esc(buchKatLabel(z.kat))}
+          <span style="color:var(--ink-40)">(${z.anzahl}× · ${kreisLabel(z.kreis)})</span>
+          <strong style="float:right">${eur(z.summe)} €</strong></label>
+        <select class="nkaLgBuZiel" data-idx="${i}" style="font-size:10px;max-width:150px;padding:2px 4px;border:1px solid var(--ink-10);border-radius:6px">
+          <option value="">– Ziel wählen –</option>
+          ${zielOpts.map(k=>`<option value="${k.id}"${k.id===vorschlag?' selected':''}>${esc(k.name)}</option>`).join('')}
+        </select>
+      </div>`;}).join('')}
+    <div style="font-size:10px;color:var(--ink-40);margin-top:4px">Heiz-/Warmwasserkosten werden je Mieter einzeln erfasst und hier nicht übernommen.</div>
+    <div style="font-size:10px;color:var(--ink-40)">Zuordnung nach <strong>Leistungszeitraum</strong>, sofern erkannt (sonst Zahlungsdatum) – § 556 Abs. 3 BGB.</div>
+    <button type="button" class="btn btn-sm btn-copper" style="margin-top:6px" onclick="nkaLgBuchUebernehmen()"><i class="ti ti-arrow-down-to-arc"></i> In Kostenfelder übernehmen</button>`;
+}
+
+/* Übernahme: summiert gewählte Zeilen je Ziel-Kostenart und schreibt in nkaLg_<id> */
+function nkaLgBuchUebernehmen(){
+  const boxes=[...document.querySelectorAll('.nkaLgBuPos:checked')];
+  if(!boxes.length){ toast('Bitte mindestens eine Position wählen.'); return; }
+  const proZiel={}; let ohneZiel=0;
+  for(const cb of boxes){
+    const idx=cb.id.replace('nkaLgBu_','');
+    const sel=document.querySelector('.nkaLgBuZiel[data-idx="'+idx+'"]');
+    const ziel=sel?sel.value:'';
+    if(!ziel){ ohneZiel++; continue; }
+    proZiel[ziel]=(proZiel[ziel]||0)+(Number(cb.dataset.betrag)||0);
+  }
+  let n=0, ueberschrieben=0;
+  for(const ziel of Object.keys(proZiel)){
+    const inp=document.getElementById('nkaLg_'+ziel); if(!inp) continue;
+    if(inp.value && parseBetrag(inp.value)>0) ueberschrieben++;
+    inp.value=proZiel[ziel].toFixed(2).replace('.',','); n++;
+  }
+  const panel=document.getElementById('nkaLgBuchPanel');
+  if(panel){ panel.dataset.offen='0'; panel.innerHTML=''; }
+  toast(n+' Kostenfeld(er) befüllt'+(ueberschrieben?' ('+ueberschrieben+' Wert(e) ersetzt)':'')+(ohneZiel?' – '+ohneZiel+' Zeile(n) ohne Ziel übersprungen':''));
+}
+
 async function erstelleNKALiegenschaft(lgId, korrektur){
   if (!istVerwalter()){ toast('Nur für Admins'); return; }
   const vorlage=getNKALgVorlage(lgId);
@@ -27329,14 +27669,35 @@ async function odGetToken() {
         refresh_token: odTokens.refresh_token, scope: OD_SCOPES,
       }),
     });
-    const t = await r.json();
-    if (t.error) throw new Error(t.error_description||t.error);
+    let t=null;
+    try { t = await r.json(); } catch(_) { t=null; }
+    if (t && t.error){
+      // v220: NUR bei echtem invalid_grant Tokens verwerfen (Passwortaenderung,
+      // widerrufener Zugriff, Token-Ablauf). Bei allen anderen Fehlern
+      // (temporary_unavailable, server_error, Netzwerkzeitueberschreitung)
+      // Tokens behalten – der Nutzer musste sonst nach jedem WLAN-Aussetzer
+      // erneut sein Microsoft-Passwort eingeben (Nutzerbefund).
+      const dauerhaftFehler = ['invalid_grant','invalid_client','unauthorized_client'].includes(t.error);
+      if (dauerhaftFehler){
+        console.warn('OneDrive-Token dauerhaft ungueltig ('+t.error+'):', t.error_description||'');
+        odTokens = null; await odClearTokens();
+      } else {
+        console.warn('OneDrive-Token vorruebergehend nicht erneuerbar ('+t.error+') – Tokens bleiben erhalten.');
+      }
+      setSyncStatus('offline');
+      return null;
+    }
+    if (!t || !t.access_token){
+      // Netzwerkfehler / kein JSON – Tokens BEHALTEN, offline-Status.
+      console.warn('OneDrive-Token-Refresh ohne Antwort – Tokens bleiben erhalten.');
+      setSyncStatus('offline');
+      return null;
+    }
     await odSaveTokens(t);
     return odTokens.access_token;
   } catch(e) {
-    console.warn('Token-Refresh fehlgeschlagen:', e.message);
-    odTokens = null;
-    await odClearTokens();
+    // v220: Netzwerkausfall/Timeout -> Tokens NICHT loeschen, nur offline melden.
+    console.warn('Token-Refresh Netzwerkfehler (Tokens bleiben erhalten):', e.message);
     setSyncStatus('offline');
     return null;
   }
@@ -28582,9 +28943,37 @@ const BUCH_KATEGORIEN=[
 ];
 function buchKatLabel(id){ return (BUCH_KATEGORIEN.find(k=>k.id===id)||{}).label || id || '–'; }
 function buchKatOptionen(gewaehlt, seite){
+  // v220: Gruppierung + alphabetische Sortierung – aus dem flachen 30-Positionen-
+  // Dropdown wurde eine navigierbare Struktur (Nutzerbefund Bild 4 „übersichtlicher").
   const liste = seite ? BUCH_KATEGORIEN.filter(k=>(k.seite||'aus')===seite) : BUCH_KATEGORIEN;
-  return '<option value="">– Kategorie wählen –</option>'+liste.map(k=>
-    `<option value="${k.id}"${k.id===gewaehlt?' selected':''}>${esc(k.label)}</option>`).join('');
+  const GRUPPEN_EIN = [
+    {t:'Miete',           ids:['kaltmiete','stellplatzmiete','nk_vorauszahlung']},
+    {t:'Nachzahlung / Guthaben', ids:['nk_nachzahlung','nk_guthaben']},
+    {t:'Kaution',         ids:['kaution_erhalten']},
+    {t:'Erstattungen (steuerlich mindernd)', ids:['versorger_erstattung','versicherungserstattung','erstattung_kosten','erstattung_umtausch','gutschrift_handwerker']},
+    {t:'Bonus / Prämie',  ids:['versorger_bonus']},
+    {t:'Sonstige Einnahmen', ids:['zinsertrag','steuererstattung','foerderung','sonstige_einnahmen']},
+    {t:'Neutral (keine Einnahme)', ids:['eigentuemer_einlage','fehlbuchung_rueck']},
+  ];
+  const GRUPPEN_AUS = [
+    {t:'Betriebskosten – umlagefähig (§ 2 BetrKV)',
+     ids:['gas','strom','wasser','abwasser','regenwasser','heizkosten','allgemeinstrom','grundsteuer','gebaeudeversicherung','muell','strassenreinigung','schornsteinfeger','hausmeister','reinigung','gartenpflege','sonstige_bk']},
+    {t:'Nicht umlagefähig', ids:['instandhaltung','reparaturen','handwerker','ersatzteile','geraetekauf','verwaltung']},
+    {t:'Finanzierung / Bank', ids:['zinsen','tilgung','bankgebuehren','bankkosten']},
+    {t:'Sonstige Ausgaben', ids:['eigentuemer_auszahlung','kaution_auszahlung','fehlbuchung','sonstiges']},
+  ];
+  const kats = new Map(liste.map(k=>[k.id,k]));
+  const grList = (seite==='ein' ? GRUPPEN_EIN : (seite==='aus' ? GRUPPEN_AUS : []));
+  const opt = k => `<option value="${k.id}"${k.id===gewaehlt?' selected':''}>${esc(k.label)}</option>`;
+  let out = '<option value="">– Kategorie wählen –</option>';
+  const seen = new Set();
+  for(const g of grList){
+    const inner = g.ids.filter(id=>kats.has(id)).sort((a,b)=>kats.get(a).label.localeCompare(kats.get(b).label,'de')).map(id=>{ seen.add(id); return opt(kats.get(id)); }).join('');
+    if(inner) out += `<optgroup label="${esc(g.t)}">${inner}</optgroup>`;
+  }
+  const rest = liste.filter(k=>!seen.has(k.id)).sort((a,b)=>a.label.localeCompare(b.label,'de'));
+  if(rest.length) out += `<optgroup label="Weitere">${rest.map(opt).join('')}</optgroup>`;
+  return out;
 }
 /* §20 Umlagefähigkeit je Kategorie */
 const BUCH_UMLAGE_LABEL={voll:'umlagefähig', teil:'teilweise umlagefähig', nein:'nicht umlagefähig', eig:'Eigentümeranteil'};
@@ -28785,6 +29174,96 @@ async function buchDarlehenUebernehmen(id){
   await zaRenderVerlauf();
 }
 /* §11 Erstattung erfassen + optional mit ursprünglicher Ausgabe verknüpfen */
+/* v221: Eingang nachtraeglich zuordnen ODER die Zuordnung aendern. Zeigt vollstaendigen
+   Verwendungszweck, alle Kontoraum-Mieter (alphabetisch nach Nachname), aktuellen Split.
+   Ordnet dem Mieter zu, uebernimmt Aenderungen sofort und aktualisiert die Ansicht. */
+async function modalEingangZuordnen(id){
+  const b=await idbGet('buchungen', id).catch(()=>null);
+  if(!b){ toast('Buchung nicht gefunden.'); return; }
+  const konto=ZA_STATE.konto;
+  if(!konto){ toast('Kein Konto aktiv.'); return; }
+  const alleMieter=await idbGetAll('mieter').catch(()=>[]);
+  const objSet=new Set(konto.objekte);
+  const kandidaten=alleMieter.filter(m=>m && m.mieter && !m.geloescht && objSet.has(m.objektId));
+  const sort=(a,b)=>zaNachname(a.mieter).localeCompare(zaNachname(b.mieter),'de');
+  const aktiv=kandidaten.filter(m=>!m._vormieter && !m._tgMieter).sort(sort);
+  const tg=kandidaten.filter(m=>m._tgMieter).sort(sort);
+  const ehem=kandidaten.filter(m=>m._vormieter).sort(sort);
+  const opt=m=>`<option value="${m.id}"${m.id===b.mieterId?' selected':''}>${esc(m.mieter)} · WE ${esc(m.weNr||'?')}${m._vormieter?' (ehem.)':''}</option>`;
+  const eur=n=>(Number(n)||0).toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const zweckVoll=String(b.zweck||'').trim();
+  const mietmonatFallback = b.mietmonat || (b.datumISO?b.datumISO.slice(0,7):today().slice(0,7));
+  const zugeordnet=!!b.mieterId;
+  showModal(`
+    <div class="m-title"><i class="ti ti-user-plus"></i> Eingang ${zugeordnet?'ändern':'zuordnen'}</div>
+    <div style="background:var(--ink-05);border-radius:8px;padding:8px 10px;margin-bottom:10px;font-size:12px">
+      <div><strong>${esc(b.name||'Unbekannt')}</strong> · ${esc(b.datumISO||'')}</div>
+      <div>Betrag: <strong>+${eur(b.betrag)} €</strong>${b.iban?' · '+esc(fmtIban(b.iban)):''}</div>
+    </div>
+    <div style="margin-bottom:10px">
+      <div style="font-size:11px;color:var(--ink-40);margin-bottom:3px">Buchungstext (vollständig)</div>
+      <div style="background:#fff;border:1px solid var(--ink-10);border-radius:8px;padding:8px 10px;
+                  font-size:12px;line-height:1.5;max-height:130px;overflow-y:auto;white-space:pre-wrap;
+                  word-break:break-word;-webkit-user-select:text;user-select:text">${esc(zweckVoll||'– kein Buchungstext –')}</div>
+    </div>
+    <div class="f"><label>Mieter</label>
+      <select id="ezMieter" class="inp" style="font-size:13px">
+        <option value="">– Kein Mieter (als Erstattung/sonstige Einnahme buchen) –</option>
+        ${aktiv.length?`<optgroup label="Wohnungsmieter">${aktiv.map(opt).join('')}</optgroup>`:''}
+        ${tg.length?`<optgroup label="TG-Mieter">${tg.map(opt).join('')}</optgroup>`:''}
+        ${ehem.length?`<optgroup label="Ehemalige Mieter">${ehem.map(opt).join('')}</optgroup>`:''}
+      </select></div>
+    <div class="f-row">
+      <div class="f"><label>Für Monat</label>
+        <input type="month" id="ezMonat" class="inp" value="${esc(mietmonatFallback)}"></div>
+      <div class="f"><label>Notiz (optional)</label>
+        <input type="text" id="ezNotiz" class="inp" value="${esc(b.notiz||'')}" placeholder="z. B. NK-Nachzahlung 2024"></div>
+    </div>
+    <div style="font-size:11px;color:var(--ink-40);margin:4px 0 12px">
+      <i class="ti ti-info-circle"></i> Nach dem Zuordnen kann die Zahlung mit dem Button
+      <i class="ti ti-arrows-split-2"></i> in Kaltmiete + NK-Vorauszahlung + Stellplatz aufgeteilt werden.
+    </div>
+    <div class="f-row" style="margin-top:12px">
+      ${zugeordnet?`<button class="btn btn-danger" onclick="eingangZuordnungLoesen('${b.id}')"><i class="ti ti-x"></i> Zuordnung aufheben</button>`:''}
+      <button class="btn btn-copper btn-full" onclick="eingangZuordnenSpeichern('${b.id}')"><i class="ti ti-check"></i> Speichern</button>
+      <button class="btn" onclick="closeModal()">Abbrechen</button>
+    </div>`);
+}
+async function eingangZuordnenSpeichern(id){
+  const b=await idbGet('buchungen', id); if(!b) return;
+  const mieterId=document.getElementById('ezMieter')?.value||'';
+  const monat=document.getElementById('ezMonat')?.value||b.mietmonat;
+  const notiz=(document.getElementById('ezNotiz')?.value||'').trim();
+  if(mieterId){
+    const m=await idbGet('mieter', mieterId);
+    b.mieterId=mieterId; b.mieterName=m?.mieter||''; b.status='geprueft';
+    // Bei Neuzuordnung eventuelle Erstattungs-Kategorie entfernen (jetzt ist es Miete)
+    if(!Array.isArray(b.kategorien)||!b.kategorien.length) delete b.kategorie;
+    b.erstattungFuer=null;
+    // IBAN am Mieter hinterlegen, falls dort noch nicht vorhanden
+    if(b.iban) await zaIbanAnMieter(mieterId, b.iban, b.name);
+  } else {
+    b.mieterId=null; b.mieterName='';
+  }
+  b.mietmonat=monat; b.notiz=notiz;
+  b.updatedAt=nowIso();
+  await idbPut('buchungen', b);
+  syncSoon(); closeModal();
+  toast(mieterId?'Zuordnung gespeichert ✓':'Zuordnung entfernt');
+  await zaRenderVerlauf();
+}
+async function eingangZuordnungLoesen(id){
+  if(!confirm('Zuordnung wirklich aufheben? Die Buchung wird wieder als "nicht zugeordnet" gefuehrt.')) return;
+  const b=await idbGet('buchungen', id); if(!b) return;
+  b.mieterId=null; b.mieterName=''; b.status='offen';
+  delete b.kategorien; delete b.kategorie;
+  b.updatedAt=nowIso();
+  await idbPut('buchungen', b);
+  syncSoon(); closeModal();
+  toast('Zuordnung aufgehoben');
+  await zaRenderVerlauf();
+}
+
 async function modalErstattung(id){
   const b=await idbGet('buchungen', id).catch(()=>null); if(!b) return;
   const eur=n=>(Number(n)||0).toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:2});
@@ -28844,11 +29323,11 @@ function buchTeile(b){
 }
 /* Summen je Kategorie (und je Zahlungsempfänger) über frei wählbaren Zeitraum –
    Grundlage für Auswertung und NKA-Übernahme. */
-function buchKatSummen(buchungen, vonISO, bisISO){
+function buchKatSummen(buchungen, vonISO, bisISO, datumFn){
   const out={proKat:{}, ohneKat:{summe:0,anzahl:0}, gesamt:0};
   for(const b of buchungen){
     if(!b || b.typ!=='ausgang') continue;
-    const d=b.datumISO||'';
+    const d=(datumFn?datumFn(b):(b.datumISO||''))||'';   // v236 (F2): NKA nutzt Leistungszeitraum
     if(vonISO && d<vonISO) continue;
     if(bisISO && d>bisISO) continue;
     const betrag=Math.abs(Number(b.betrag)||0);
@@ -28914,6 +29393,10 @@ function zaParseCSV(text){
     .map(x=>x.ix);
   if(iBetrag<0||iIban<0){ return {header,buchungen:[],fehler:'Unbekanntes CSV-Format (Spalten nicht gefunden)'}; }
   const buchungen=[];
+  /* v223 (B3): Vorkommenszähler je identischer Buchung innerhalb DIESER Datei.
+     Schlüssel bewusst OHNE kontoId (eine CSV = ein Konto) und deckungsgleich mit den
+     ID-bildenden Feldern in zaBuchungId. Deterministisch über die Dateireihenfolge. */
+  const _occMap=Object.create(null);
   for(let r=1;r<lines.length;r++){
     const f=zaParseCSVLine(lines[r]);
     if(f.length<header.length-5) continue;
@@ -28931,12 +29414,32 @@ function zaParseCSV(text){
       datumISO:zaDatumISO(clean(f[iTag])), datumRaw:clean(f[iTag]),
       name:clean(f[iName]), iban:zaNormIban(clean(f[iIban])),
       zweck, zweckKey, weHint:zaWeAusZweck(zweckKey), typ:betrag>0?'eingang':'ausgang',
+      occ:0,
     });
+    // v223 (B3): occ nachtragen – Schlüssel exakt wie in zaBuchungId (zweckKey, 40 Zeichen)
+    const _lastB=buchungen[buchungen.length-1];
+    const _occKey=`${_lastB.datumISO||_lastB.datumRaw}|${_lastB.betrag}|${_lastB.iban}|${String(zweckKey).slice(0,40)}`;
+    _lastB.occ=(_occMap[_occKey]=(_occMap[_occKey]||0)); _occMap[_occKey]++;
   }
   return {header,buchungen};
 }
 function zaNurEingaenge(buchungen){
   return buchungen.filter(b=>b.typ==='eingang' && b.iban && b.iban.startsWith('DE'));
+}
+// v220: Absender-Whitelist fuer Umtausch/Rueckerstattungen (Bild 3 Nutzerbefund).
+// Erkennt Rueckerstattungen von Baumaerkten/Elektronik/Grosshandel als
+// steuerlich mindernde Position (Anlage V), nicht als Einnahme.
+const ZA_UMTAUSCH_ABSENDER = [
+  /\bbauhaus\b/i, /\bhellweg\b/i, /\bobi\b/i, /\btoom\b/i, /\bhornbach\b/i,
+  /\bpraktiker\b/i, /\bglobus\b/i, /\bmediamarkt\b/i, /\bsaturn\b/i,
+  /\bamazon\b/i, /\botto\b/i, /\bconrad\b/i, /\breichelt\b/i, /\bpearl\b/i,
+  /\bikea\b/i, /\bxxxlutz\b/i, /\bpoco\b/i, /\bhoeffner\b/i, /\bh(ö|oe)ffner\b/i,
+  /\bh(o|ö)rnbach\b/i, /\bthomann\b/i, /\bebay\b/i, /\bzalando\b/i,
+];
+function zaIstUmtauschAbsender(name, zweck){
+  const t=((name||'')+' '+(zweck||'')).toLowerCase();
+  if(/r(ü|ue)cksendung|r(ü|ue)ckerstattung|umtausch|widerruf|refund|storno|gutschrift.*(bestellung|kauf)/.test(t)) return true;
+  return ZA_UMTAUSCH_ABSENDER.some(re=>re.test(t));
 }
 function zaMatch(buchungen, mieterListe, konto, spIdx){
   const objSet=konto?new Set(konto.objekte):null;
@@ -28958,7 +29461,7 @@ function zaMatch(buchungen, mieterListe, konto, spIdx){
     const hit=ibanIdx[b.iban];
     if(hit){
       const ehem=!!hit.m._vormieter;
-      match={mieterId:hit.m.id,name:hit.m.mieter,weNr:hit.m.weNr,via:'iban',
+      match={mieterId:hit.m.id,name:hit.m.mieter,weNr:hit.m.weNr,objektId:hit.m.objektId||null,via:'iban',
              status:ehem?'ehem':hit.status,score:(ehem||hit.status==='alt')?70:100,ehem};
     }
     if(!match && b.weHint){
@@ -28973,7 +29476,7 @@ function zaMatch(buchungen, mieterListe, konto, spIdx){
       }
       if(pick){
         const ehem=!!pick._vormieter;
-        match={mieterId:pick.id,name:pick.mieter,weNr:pick.weNr,via:'we',status:ehem?'ehem':'neu',score:ehem?65:85,ehem};
+        match={mieterId:pick.id,name:pick.mieter,weNr:pick.weNr,objektId:pick.objektId||null,via:'we',status:ehem?'ehem':'neu',score:ehem?65:85,ehem};
       }
     }
     // v182 (TG): reine Stellplatz-Zahlung ohne IBAN-/WE-Treffer -> über das
@@ -28985,12 +29488,17 @@ function zaMatch(buchungen, mieterListe, konto, spIdx){
         if(sp && sp.mieterId){
           const mm=mieterListe.find(x=>x.id===sp.mieterId);
           match={mieterId:sp.mieterId, name:(mm?mm.mieter:sp.mieterName), weNr:mm?.weNr||'',
-                 via:'sp', status:'aktiv', score:90, spNr:nr};
+                 objektId:mm?.objektId||null, via:'sp', status:'aktiv', score:90, spNr:nr};
           break;
         }
       }
     }
-    results.push({buchung:b, match, spNummern:spNrn});
+    // v220: Vorschlag "Erstattung Umtausch/Rueckgabe" fuer Baumarkt/Elektronik
+    let einnahmeVorschlag = null;
+    if(!match && b.betrag>0 && zaIstUmtauschAbsender(b.name, b.zweckKey||b.zweck)){
+      einnahmeVorschlag = {kat:'erstattung_umtausch', notiz:'Vorschlag: automatisch aus Absender erkannt', _vorschlag:true};
+    }
+    results.push({buchung:b, match, spNummern:spNrn, einnahme:einnahmeVorschlag});
   }
   return results;
 }
@@ -29032,6 +29540,65 @@ function zaDateiGewaehlt(ev){
   reader.readAsText(file, 'UTF-8');
 }
 
+/* v224 (B21/B7.1): Kontrollsummen des Imports + Lückenprüfung gegen den gespeicherten
+   Stand. Rein informativ – ändert keine Daten. Der letzte gespeicherte Buchungstag wird
+   direkt aus den vorhandenen Buchungen des Kontos ermittelt (kein neuer Store nötig). */
+async function zaImportInfo(konto, buchungen){
+  const rc2=n=>Math.round((Number(n)||0)*100)/100;
+  let summeEin=0, summeAus=0, nEin=0, nAus=0, minISO='', maxISO='';
+  for(const b of (buchungen||[])){
+    const be=Number(b.betrag)||0;
+    if(be>0){ summeEin+=be; nEin++; } else { summeAus+=be; nAus++; }
+    const d=b.datumISO||'';
+    if(d){ if(!minISO||d<minISO) minISO=d; if(!maxISO||d>maxISO) maxISO=d; }
+  }
+  const info={ anzahl:(buchungen||[]).length, nEin, nAus,
+    summeEin:rc2(summeEin), summeAus:rc2(summeAus), netto:rc2(summeEin+summeAus),
+    vonISO:minISO, bisISO:maxISO, luecke:null };
+  // Lückenprüfung: letzter gespeicherter Buchungstag dieses Kontos vs. erster Import-Tag
+  try{
+    const alle=await idbGetAll('buchungen');
+    let letzterISO='';
+    for(const b of alle){
+      if(!b || b.kontoId!==konto.id || b.status==='storniert' || b.geloescht) continue;
+      const d=b.datumISO||'';
+      if(d && d>letzterISO) letzterISO=d;
+    }
+    if(letzterISO && minISO){
+      const tag=86400000;
+      const lueckeTage=Math.round((new Date(minISO)-new Date(letzterISO))/tag);
+      // >3 Tage Abstand = möglicher Export-Bruch (Wochenende/Feiertag tolerieren)
+      if(lueckeTage>3){
+        info.luecke={ tage:lueckeTage, letzterISO,
+          abISO:new Date(new Date(letzterISO).getTime()+tag).toISOString().slice(0,10),
+          bisISO:new Date(new Date(minISO).getTime()-tag).toISOString().slice(0,10) };
+      }
+    }
+  }catch(_){ /* Lückenprüfung ist optional */ }
+  return info;
+}
+
+/* Rendert die Import-Kontrollzeile (+ ggf. rote Lückenwarnung) als HTML-String. */
+function zaImportBannerHtml(info){
+  if(!info) return '';
+  const eur=n=>(Number(n)||0).toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const dz=iso=>iso?iso.split('-').reverse().join('.'):'';
+  const luecke=info.luecke
+    ? `<div style="background:#fdecea;border:1px solid #f5c2c0;color:#a12622;border-radius:8px;padding:8px 10px;margin-bottom:8px;font-size:12px">
+         <i class="ti ti-alert-triangle"></i> <b>Mögliche Lücke:</b> Letzte gespeicherte Buchung am ${dz(info.luecke.letzterISO)},
+         dieser Import beginnt erst am ${dz(info.vonISO)} – die Tage ${dz(info.luecke.abISO)}–${dz(info.luecke.bisISO)} fehlen vermutlich.
+         Bitte prüfen, ob der Kontoauszug lückenlos exportiert wurde.</div>`
+    : '';
+  return `${luecke}
+    <div style="background:var(--ink-05);border-radius:8px;padding:8px 10px;margin-bottom:8px;font-size:12px;display:flex;gap:14px;flex-wrap:wrap;align-items:baseline">
+      <span><b>${info.anzahl}</b> Buchungen</span>
+      <span style="color:var(--green)">Eingänge: <b>${info.nEin}</b> · ${eur(info.summeEin)} €</span>
+      <span style="color:var(--red,#dc2626)">Ausgänge: <b>${info.nAus}</b> · ${eur(info.summeAus)} €</span>
+      <span>Netto: <b style="font-variant-numeric:tabular-nums">${eur(info.netto)} €</b></span>
+      ${info.vonISO?`<span style="color:var(--ink-40)">${dz(info.vonISO)}–${dz(info.bisISO)}</span>`:''}
+    </div>`;
+}
+
 async function zaVerarbeiten(text){
   const kontoId = document.getElementById('zaKonto')?.value;
   const konto = ZA_KONTEN.find(k=>k.id===kontoId);
@@ -29057,6 +29624,8 @@ async function zaVerarbeiten(text){
   ZA_STATE.spIdx = await spIndexFuerGruppe(kontoGruppe);
   ZA_STATE.results = zaMatch(eingaenge, pool, konto, ZA_STATE.spIdx);
   ZA_STATE.alleBuchungen = parsed.buchungen; // für Speicherung (auch Ausgänge)
+  // v224 (B21/B7.1): Kontrollsummen + Lückenwarnung gegen den bereits gespeicherten Stand
+  ZA_STATE.importInfo = await zaImportInfo(konto, parsed.buchungen);
   zaRenderErgebnis();
 }
 
@@ -29456,6 +30025,16 @@ async function zaVerlaufInit(){
 function zaRenderMietkonto(buch, mieter, monate, konto, spIdx){
   const rows = zaSollIst(buch, mieter, monate, spIdx);
   const eur = n => (Number(n)||0).toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:2});
+  // v221: Saldo je Mieter uebers Gesamtfenster (Nutzerbefund: „bei zahlungen zu sehen
+  // wieviel jemand insgesamt im rueckstand ist. zuviel gezahlt ist meistens nebenkosten"
+  // → positive Werte werden als Guthaben ausgewiesen, negative als Rueckstand).
+  // Die Saldo-Berechnung nutzt v.diff aus zaSollIst und beruecksichtigt so bereits
+  // die §3-Aktivmonate (kein Rueckstand vor Einzug/nach Auszug).
+  for(const r of rows){
+    let saldo=0;
+    for(const mo of monate){ const v=r.monate[mo]; if(v&&v.aktiv) saldo += v.diff; }
+    r._saldo = Math.round(saldo*100)/100;
+  }
   const monHdr = monate.map(m=>`<th colspan="2" style="padding:6px;text-align:center;border-left:1px solid var(--line)">${m.slice(5)}/${m.slice(2,4)}</th>`).join('');
   const subHdr = monate.map(()=>`<th style="padding:4px;text-align:right;font-size:10px;color:var(--ink-40)">Ist</th><th style="padding:4px;text-align:right;font-size:10px;color:var(--ink-40)">Δ Soll</th>`).join('');
 
@@ -29478,11 +30057,19 @@ function zaRenderMietkonto(buch, mieter, monate, konto, spIdx){
               <td style="padding:5px;text-align:right;color:${farbe};font-weight:600;font-size:12px">${dmark}</td>`;
     }).join('');
     const bg = r.warnung ? 'background:#fff8f0' : '';
+    // v221: Saldo-Zelle
+    let saldoTxt='<span style="color:var(--ink-40)">±0</span>';
+    if(r._saldo >= 0.5){
+      saldoTxt=`<span style="color:var(--green,#059669);font-weight:600" title="Guthaben (voraussichtlich NK-Guthaben aus fruehen Ueberzahlungen)">+${eur(r._saldo)}</span><div style="font-size:9px;color:var(--ink-40)">Guthaben</div>`;
+    } else if(r._saldo <= -0.5){
+      saldoTxt=`<span style="color:var(--red,#dc2626);font-weight:600" title="Rueckstand ueber das Anzeigefenster">-${eur(-r._saldo)}</span><div style="font-size:9px;color:var(--ink-40)">Rückstand</div>`;
+    }
     return `<tr style="border-bottom:1px solid var(--line);${bg}">
       <td style="padding:6px;font-size:11px;color:var(--ink-40)">${esc(r.weNr||(r.tg?'TG':''))}</td>
       <td style="padding:6px;font-size:13px">${esc(r.mieter)}${r.ehem?' <span class="chip chip-warn" style="font-size:9px">ehem.</span>':''}</td>
       <td style="padding:6px;text-align:right;font-variant-numeric:tabular-nums;font-size:12px">
         ${eur(r.soll)}<div style="font-size:9px;color:var(--ink-40)">${r.tg?('SP '+eur(r.spSoll)):(eur(r.netto)+'+'+eur(r.nk)+(r.spSoll?'+SP '+eur(r.spSoll):''))}</div></td>
+      <td style="padding:6px;text-align:right;font-variant-numeric:tabular-nums;font-size:12px;background:var(--ink-05)">${saldoTxt}</td>
       ${cells}</tr>`;
   }).join('');
 
@@ -29494,6 +30081,7 @@ function zaRenderMietkonto(buch, mieter, monate, konto, spIdx){
           <th rowspan="2" style="padding:6px;text-align:left;font-size:11px;color:var(--ink-40)">WE</th>
           <th rowspan="2" style="padding:6px;text-align:left;font-size:11px;color:var(--ink-40)">Mieter</th>
           <th rowspan="2" style="padding:6px;text-align:right;font-size:11px;color:var(--ink-40)">Soll<br>(Netto+NK)</th>
+          <th rowspan="2" style="padding:6px;text-align:right;font-size:11px;color:var(--ink-40);background:var(--ink-05)">Saldo<br>(kumuliert)</th>
           ${monHdr}
         </tr>
         <tr style="border-bottom:1px solid var(--line)">${subHdr}</tr>
@@ -29502,7 +30090,8 @@ function zaRenderMietkonto(buch, mieter, monate, konto, spIdx){
     </table></div>
     <p style="font-size:12px;color:var(--ink-40);margin-top:8px">
       ${warnCount?`<b style="color:var(--red,#dc2626)">${warnCount} Mieter mit Abweichung/offen</b> (rosa hinterlegt). `:'Alle Zahlungen stimmen mit dem Soll überein. '}
-      „Δ Soll" = Differenz Ist minus Soll. SP = Stellplatzanteil.
+      „Δ Soll" = Differenz Ist minus Soll je Monat. <b>Saldo</b> = Summe der Abweichungen ueber das Anzeigefenster
+      (positiv = Guthaben/wahrscheinliche NK-Ueberzahlung, negativ = Rueckstand). SP = Stellplatzanteil.
     </p>`;
 }
 
@@ -29515,13 +30104,36 @@ function zaRenderAuszug(buch, monate, konto){
     const liste = eingaenge.filter(b=>b.mietmonat===mo);
     if(!liste.length) continue;
     const summe = rc(liste.reduce((s,b)=>s+b.betrag,0));
-    const rows = liste.map(b=>`
-      <tr style="border-bottom:1px solid var(--line)">
-        <td style="padding:5px;font-size:11px;white-space:nowrap">${esc((b.datumISO||'').slice(8)+'.'+(b.datumISO||'').slice(5,7))}</td>
-        <td style="padding:5px;text-align:right;font-variant-numeric:tabular-nums;font-weight:600">${eur(b.betrag)}</td>
-        <td style="padding:5px;font-size:12px">${esc(b.mieterName||b.name)}${buchKonfidenzBadge(b)}${b.bar?' <span class="chip" style="font-size:9px;background:var(--copper,#b87333);color:#fff;padding:1px 5px;border-radius:8px">bar</span>':''}${b.istStellplatz?' <span style="font-size:9px;color:var(--ink-40)">[SP]</span>':''}
-          ${b.mieterId?'':' <span style="font-size:9px;color:var(--amber)">nicht zugeordnet</span>'}${!b.mieterId?(b.kategorie?` <span style="font-size:9px;color:var(--copper,#b87333)" title="Erstattung/sonstige Einnahme">↩ ${esc(buchKatLabel(b.kategorie))}</span>`:` <button class="btn btn-sm" title="Als Erstattung/sonstige Einnahme erfassen" onclick="modalErstattung('${b.id}')" style="font-size:9px;padding:1px 5px"><i class="ti ti-arrow-back-up"></i></button>`):''}</td>
-      </tr>`).join('');
+    // v221: Nachtraegliche Bearbeitung – ALLE Zeilen werden bearbeitbar (Nutzerbefund:
+    // „Ich habe am Anfang die Einnahme nicht zugeordnet, jetzt muss ich es auch noch
+    // nachtraeglich koennen"). Zusaetzlich: Splitten in Kaltmiete/NK-VZ/Stellplatz.
+    const rows = liste.map(b=>{
+      const zugeordnet=!!b.mieterId;
+      const istSplit=Array.isArray(b.kategorien)&&b.kategorien.length;
+      const splitInfo = istSplit
+        ? `<div style="font-size:9px;color:var(--copper,#b87333);margin-top:2px">${b.kategorien.map(t=>esc(buchKatLabel(t.kat))+' '+eur(t.betrag)).join(' · ')}</div>`
+        : '';
+      const statusZelle = zugeordnet
+        ? `${esc(b.mieterName||b.name)}${buchKonfidenzBadge(b)}${b.bar?' <span class="chip" style="font-size:9px;background:var(--copper,#b87333);color:#fff;padding:1px 5px;border-radius:8px">bar</span>':''}${b.istStellplatz?' <span style="font-size:9px;color:var(--ink-40)">[SP]</span>':''}${splitInfo}`
+        : `${esc(b.name)} <span style="font-size:9px;color:var(--amber)">nicht zugeordnet</span>${b.kategorie?` <span style="font-size:9px;color:var(--copper,#b87333)" title="Erstattung/sonstige Einnahme">↩ ${esc(buchKatLabel(b.kategorie))}</span>`:''}`;
+      // Aktionen: Zuordnen (falls offen), Erstattung/Einnahme kategorisieren, Aufteilen, Bearbeiten
+      const btnZuordnen = !zugeordnet
+        ? `<button class="btn btn-sm" title="Mieter zuordnen" onclick="modalEingangZuordnen('${b.id}')" style="font-size:11px;padding:2px 6px"><i class="ti ti-user-plus"></i></button>`
+        : '';
+      const btnErstattung = !zugeordnet
+        ? `<button class="btn btn-sm" title="Als Erstattung/sonstige Einnahme erfassen" onclick="modalErstattung('${b.id}')" style="font-size:11px;padding:2px 6px"><i class="ti ti-arrow-back-up"></i></button>`
+        : '';
+      const btnSplit = `<button class="btn btn-sm" title="Aufteilen (z. B. Kaltmiete + NK-VZ + SP)" onclick="modalBuchungSplit('${b.id}')" style="font-size:11px;padding:2px 6px"><i class="ti ti-arrows-split-2"></i></button>`;
+      const btnBearbeiten = zugeordnet
+        ? `<button class="btn btn-sm" title="Zuordnung aendern" onclick="modalEingangZuordnen('${b.id}')" style="font-size:11px;padding:2px 6px"><i class="ti ti-pencil"></i></button>`
+        : '';
+      return `<tr style="border-bottom:1px solid var(--line)">
+        <td style="padding:5px;font-size:11px;white-space:nowrap;vertical-align:top">${esc((b.datumISO||'').slice(8)+'.'+(b.datumISO||'').slice(5,7))}</td>
+        <td style="padding:5px;text-align:right;font-variant-numeric:tabular-nums;font-weight:600;vertical-align:top">${eur(b.betrag)}</td>
+        <td style="padding:5px;font-size:12px;vertical-align:top">${statusZelle}</td>
+        <td style="padding:5px;text-align:right;white-space:nowrap;vertical-align:top">${btnZuordnen}${btnErstattung}${btnSplit}${btnBearbeiten}</td>
+      </tr>`;
+    }).join('');
     html += `<div style="margin-bottom:16px">
       <div style="display:flex;justify-content:space-between;align-items:baseline;background:var(--green-l);padding:6px 10px;border-radius:6px;margin-bottom:4px">
         <b>${mo.slice(5)}/${mo.slice(0,4)}</b>
@@ -29537,6 +30149,7 @@ function zaRenderAuszug(buch, monate, konto){
 /* ── v181 (Punkt 10): Sicht 3 – Buchhaltung: Ausgänge kategorisieren ── */
 function zaRenderBuchhaltung(buch, konto){
   const eur=n=>(Number(n)||0).toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const mehrObjekt = konto && Array.isArray(konto.objekte) && konto.objekte.length>1;   // v227: Kostenstelle nur bei Mehr-Objekt-Konten
   const nurOffen = window._buchFilterOffen===true;
   let ausgaben=buch.filter(b=>b.typ==='ausgang').sort((a,b)=>(b.datumISO||'').localeCompare(a.datumISO||''));
   const offenAnz=ausgaben.filter(b=>!buchTeile(b)).length;
@@ -29549,6 +30162,7 @@ function zaRenderBuchhaltung(buch, konto){
   const filterBtns=`<div style="display:flex;gap:6px;align-items:center;margin-bottom:10px">
     <button class="btn btn-sm ${!nurOffen?'btn-primary':''}" onclick="window._buchFilterOffen=false;zaRenderVerlauf()">Alle Ausgänge</button>
     <button class="btn btn-sm ${nurOffen?'btn-primary':''}" onclick="window._buchFilterOffen=true;zaRenderVerlauf()">Ohne Kategorie (${offenAnz})</button>
+    ${mehrObjekt && buchKsAlleGruppe(konto)?`<button class="btn btn-sm" title="Alle offenen Ausgänge auf die Regelfall-Gruppe setzen" onclick="buchKostenstelleMasseAlle('${konto.id}')" style="font-size:11px"><i class="ti ti-building-community"></i> Alle \u2192 ${esc(buchKsAlleGruppe(konto).name)}</button>`:''}
   </div>`;
   let html=filterBtns, monat='';
   const erstIdx={};
@@ -29578,6 +30192,13 @@ function zaRenderBuchhaltung(buch, konto){
       <div style="flex:1;min-width:0">
         <div style="font-size:12px;font-weight:500">${esc(b.name||'Unbekannt')}</div>
         <div style="font-size:10px;color:var(--ink-40);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc((b.zweck||'').slice(0,80))}</div>
+        ${b.leistungVonISO
+          ?`<div style="font-size:9px;color:var(--copper,#b87333);cursor:pointer" onclick="modalLeistungszeitraum('${b.id}')" title="Leistungszeitraum – klicken zum Korrigieren (Quelle: ${esc(b.leistungQuelle||'')})"><i class="ti ti-calendar-stats"></i> LZ ${esc(b.leistungVonISO)} – ${esc(b.leistungBisISO||'')} <i class="ti ti-pencil" style="font-size:8px"></i></div>`
+          :(b.typ==='ausgang'?`<div style="font-size:9px;color:var(--ink-30);cursor:pointer" onclick="modalLeistungszeitraum('${b.id}')" title="Leistungszeitraum setzen (NKA-Zuordnung)"><i class="ti ti-calendar-plus"></i> Leistungszeitraum…</div>`:'')}
+        ${mehrObjekt?`<div style="display:flex;gap:4px;align-items:center;margin-top:3px">
+          <select onchange="buchKostenstelleSetzen('${b.id}', this.value)" title="Kostenstelle / Gebäude" style="font-size:10px;padding:2px 4px;border:1px solid var(--ink-10);border-radius:6px;max-width:160px">${buchKostenstelleOptionen(konto, buchKostenstelleWert(b))}</select>
+          ${!buchKostenstelleWert(b)?buchKostenstelleVorschlagChip(b, konto):''}
+        </div>`:''}
       </div>
       ${katZelle}
     </div>`;
@@ -29588,6 +30209,90 @@ function zaRenderBuchhaltung(buch, konto){
     Zahlungsempfängers (gleiche IBAN) automatisch mit zu übernehmen. „Aufteilen" verteilt eine
     Sammelzahlung auf mehrere Kategorien.</p>`;
   return html;
+}
+
+/* ── v237 (F2-Abschluss): Leistungszeitraum manuell setzen/korrigieren ── */
+async function buchLeistungSetzen(id, von, bis){
+  const rec=await idbGet('buchungen', id).catch(()=>null);
+  if(!rec) return false;
+  von=(von||'').trim(); bis=(bis||'').trim();
+  if((von&&!bis)||(bis&&!von)){ toast('Bitte beide Daten angeben oder beide leeren.'); return false; }
+  if(von&&bis&&von>bis){ toast('Beginn liegt nach Ende.'); return false; }
+  const snap={...rec};
+  if(von&&bis){ rec.leistungVonISO=von; rec.leistungBisISO=bis; rec.leistungQuelle='manuell'; }
+  else { rec.leistungVonISO=null; rec.leistungBisISO=null; rec.leistungQuelle=null; }
+  rec.updatedAt=nowIso();
+  erfasseLeerungen(snap, rec);
+  await idbPut('buchungen', rec);
+  syncSoon();
+  return true;
+}
+async function modalLeistungszeitraum(id){
+  const rec=await idbGet('buchungen', id).catch(()=>null);
+  if(!rec) return;
+  showModal(`
+    <div class="m-title"><i class="ti ti-calendar-stats"></i> Leistungszeitraum</div>
+    <div style="font-size:11px;color:var(--ink-60);margin-bottom:8px">${esc(rec.name||'')} · ${esc(rec.datumISO||'')} · ${esc((rec.zweck||'').slice(0,90))}</div>
+    <div style="font-size:11px;color:var(--ink-40);margin-bottom:10px">Zeitraum, den die Rechnung wirtschaftlich betrifft (z. B. Jahresabrechnung). Die NKA ordnet die Kosten dann diesem Zeitraum zu (§ 556 Abs. 3 BGB); die Anlage V bleibt beim Zahlungsdatum (§ 11 EStG).</div>
+    <div class="f-row">
+      <div class="f"><label>Beginn</label><input type="date" id="lzVon" value="${esc(rec.leistungVonISO||'')}"></div>
+      <div class="f"><label>Ende</label><input type="date" id="lzBis" value="${esc(rec.leistungBisISO||'')}"></div>
+    </div>
+    ${rec.leistungQuelle&&rec.leistungQuelle!=='manuell'?`<div style="font-size:10px;color:var(--ink-40);margin-top:4px">Automatisch erkannt (Quelle: ${esc(rec.leistungQuelle)}) – Änderung wird als manuell gespeichert.</div>`:''}
+    <button class="btn btn-copper btn-full" style="margin-top:10px" onclick="(async()=>{ if(await buchLeistungSetzen('${id}', document.getElementById('lzVon').value, document.getElementById('lzBis').value)){ closeModal(); await zaRenderVerlauf(); toast('Leistungszeitraum gespeichert ✓'); } })()"><i class="ti ti-check"></i> Speichern</button>
+    ${rec.leistungVonISO?`<button class="btn btn-full" style="margin-top:8px" onclick="(async()=>{ if(await buchLeistungSetzen('${id}','','')){ closeModal(); await zaRenderVerlauf(); toast('Leistungszeitraum entfernt'); } })()"><i class="ti ti-eraser"></i> Entfernen (Zahlungsdatum verwenden)</button>`:''}
+    <button class="btn btn-full" style="margin-top:8px" onclick="closeModal()">Abbrechen</button>`);
+}
+
+/* ── v227 (F1 Schritt 2b): Kostenstelle (Gebäude/Gruppe) je Ausgabe zuordnen ── */
+function buchKostenstelleOptionen(konto, wert){
+  wert=wert||'';
+  let h='<option value=""'+(wert===''?' selected':'')+'>\u2014 Kostenstelle \u2014</option>';
+  const grp=KOSTENGRUPPEN.filter(g=>g.objekte.some(o=>konto.objekte.includes(o)));
+  if(grp.length){
+    h+='<optgroup label="Mehrere Gebäude">';
+    for(const g of grp){ const v='grp:'+g.id; h+=`<option value="${v}"${wert===v?' selected':''}>${esc(g.name)}</option>`; }
+    h+='</optgroup>';
+  }
+  h+='<optgroup label="Einzelnes Haus">';
+  for(const oid of konto.objekte){ const o=getObj(oid); const v='obj:'+oid; h+=`<option value="${v}"${wert===v?' selected':''}>${esc(o?o.name:oid)}</option>`; }
+  h+='</optgroup>';
+  return h;
+}
+/* Regelfall-Vorschlag: die "gesamt"-Gruppe des Kontos (nur wenn Buchung noch unzugeordnet). */
+function buchKsAlleGruppe(konto){
+  return KOSTENGRUPPEN.find(g=>/_alle$/.test(g.id) && g.objekte.every(o=>konto.objekte.includes(o))) || null;
+}
+function buchKostenstelleVorschlagChip(b, konto){
+  const alle=buchKsAlleGruppe(konto);
+  if(!alle) return '';
+  return `<button class="btn btn-sm" title="Regelfall \u2013 auf ${esc(alle.name)} setzen" onclick="buchKostenstelleSetzen('${b.id}','grp:${alle.id}')" style="font-size:10px;border:1px dashed var(--copper,#b87333);color:var(--copper,#b87333);background:transparent;padding:2px 6px;white-space:nowrap"><i class="ti ti-bulb"></i> ${esc(alle.name)}</button>`;
+}
+async function buchKostenstelleSetzen(id, wert){
+  const rec=await idbGet('buchungen', id).catch(()=>null);
+  if(!rec) return;
+  const snap={...rec};
+  if(!wert){ rec.objektId=null; rec.kostengruppe=null; }
+  else if(wert.slice(0,4)==='grp:'){ rec.kostengruppe=wert.slice(4); rec.objektId=null; }
+  else if(wert.slice(0,4)==='obj:'){ rec.objektId=wert.slice(4); rec.kostengruppe=null; }
+  else return;
+  rec.updatedAt=nowIso();
+  erfasseLeerungen(snap, rec);   // Feldleerung (Gruppe\u2194Objekt) sauber für Sync tombstonen
+  await idbPut('buchungen', rec);
+  syncSoon();
+  await zaRenderVerlauf();
+}
+/* Massenzuordnung: alle noch nicht zugeordneten Ausgänge des Kontos auf die "gesamt"-Gruppe. */
+async function buchKostenstelleMasseAlle(kontoId){
+  const konto=ZA_KONTEN.find(k=>k.id===kontoId); if(!konto) return;
+  const alle=buchKsAlleGruppe(konto); if(!alle) return;
+  const buch=await idbGetAll('buchungen').catch(()=>[]);
+  const offen=buch.filter(b=>b && b.kontoId===kontoId && b.typ==='ausgang' && !b.kostengruppe && !b.objektId);
+  if(!offen.length){ toast('Keine Ausgänge ohne Kostenstelle'); return; }
+  if(!confirm(`${offen.length} Ausgänge ohne Kostenstelle auf \u201e${alle.name}\u201c setzen?`)) return;
+  for(const b of offen){ const snap={...b}; b.kostengruppe=alle.id; b.objektId=null; b.updatedAt=nowIso(); erfasseLeerungen(snap,b); await idbPut('buchungen',b); }
+  syncSoon(); await zaRenderVerlauf();
+  toast(`${offen.length} Buchung(en) zugeordnet`);
 }
 
 async function buchKategorieSetzen(id, kat){
@@ -29635,6 +30340,16 @@ function splitVorschlaegeAusText(zweck){
   }
   return out;
 }
+/* v221: Vorschlag "Miete aufteilen" in Aufteilungs-Liste uebernehmen */
+function splitMieteUebernehmen(){
+  const v=window._buchSplitMiete||[];
+  if(!v.length) return;
+  const liste=document.getElementById('buchSplitListe');
+  if(!liste) return;
+  liste.innerHTML = v.map(window._buchSplitZeile).join('');
+  buchSplitSumme();
+  toast('Miete-Aufteilung uebernommen – bitte pruefen');
+}
 /* Vorschlaege in die Aufteilungs-Liste uebernehmen (ersetzt leere Zeilen) */
 function splitVorschlagUebernehmen(){
   const v=window._buchSplitVorschlaege||[];
@@ -29656,11 +30371,17 @@ async function modalBuchungSplit(id){
   const b=await idbGet('buchungen', id).catch(()=>null);
   if(!b) return;
   const eur=n=>(Number(n)||0).toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:2});
+  // v221: Split-Dialog fuer Einnahmen und Ausgaben. Bei Einnahmen wird die Seite
+  // 'ein' verwendet (Kaltmiete/NK-VZ/Stellplatz/Erstattungen), bei Ausgaben wie
+  // gehabt 'aus'. Zusaetzlich fuer Mieteingaenge: Vorschlag „Miete aufteilen"
+  // (Kaltmiete + NK-Vorauszahlung + Stellplatzanteil) aus dem Mieterstamm.
+  const seite = b.typ==='eingang' ? 'ein' : 'aus';
+  window._buchSplitSeite = seite;
   const zeilen=(Array.isArray(b.kategorien)&&b.kategorien.length)
     ? b.kategorien : [{kat:b.kategorie||'', betrag:Math.abs(b.betrag)}];
   window._buchSplitId=id;
   const zeileHtml=(t)=>`<div class="buchSplitRow" style="display:flex;gap:6px;margin-bottom:6px">
-    <select class="bsKat" style="flex:1;font-size:12px;padding:6px;border:1px solid var(--ink-10);border-radius:6px">${buchKatOptionen(t.kat||'','aus')}</select>
+    <select class="bsKat" style="flex:1;font-size:12px;padding:6px;border:1px solid var(--ink-10);border-radius:6px">${buchKatOptionen(t.kat||'',window._buchSplitSeite||'aus')}</select>
     <input type="text" inputmode="decimal" class="bsBetrag" value="${t.betrag?String(t.betrag).replace('.',','):''}" placeholder="0,00"
       oninput="buchSplitSumme()" style="width:100px;font-size:12px;padding:6px;border:1px solid var(--ink-10);border-radius:6px;text-align:right">
     <button class="btn btn-sm btn-danger" onclick="if(confirm('Diese Zeile wirklich entfernen?')){this.closest('.buchSplitRow').remove();buchSplitSumme();}"><i class="ti ti-x"></i></button>
@@ -29670,8 +30391,40 @@ async function modalBuchungSplit(id){
   // v215: Der VOLLSTAENDIGE Buchungstext muss sichtbar sein – bei Darlehensraten stehen
   // Zinsen und Tilgung dort (bisher nach 100 Zeichen abgeschnitten und damit unbrauchbar).
   const zweckVoll=String(b.zweck||'').trim();
+  // v221: Miete-Aufteilungs-Vorschlag aus Mieterstamm (Kaltmiete + NK-Vorauszahlung + Stellplatz)
+  let mietenVorschlag=null;
+  if(seite==='ein' && b.mieterId){
+    try{
+      const m=await idbGet('mieter', b.mieterId);
+      if(m){
+        const km=Math.round((Number(m.miete)||0)*100)/100;
+        const nk=Math.round((Number(m.nk)||0)*100)/100;
+        const spIdx=await spIndexAlle().catch(()=>({byMieter:{}}));
+        const spListe=(spIdx.byMieter||{})[m.id]||[];
+        const spSoll=Math.round(spListe.reduce((a,sp)=>a+(Number(sp.miete)||0),0)*100)/100;
+        const summeSoll=Math.round((km+nk+spSoll)*100)/100;
+        const betrag=Math.abs(Number(b.betrag)||0);
+        // Vorschlag nur, wenn Betrag +- 1 % dem Sollsummen entspricht
+        const tol=Math.max(summeSoll*0.01, 1);
+        if((km>0 || nk>0 || spSoll>0) && Math.abs(betrag-summeSoll)<=tol){
+          mietenVorschlag=[];
+          if(km>0) mietenVorschlag.push({kat:'kaltmiete', betrag:km});
+          if(nk>0) mietenVorschlag.push({kat:'nk_vorauszahlung', betrag:nk});
+          if(spSoll>0) mietenVorschlag.push({kat:'stellplatzmiete', betrag:spSoll});
+        }
+      }
+    }catch(_){}
+  }
   const vorschlaege=splitVorschlaegeAusText(zweckVoll);
   window._buchSplitVorschlaege=vorschlaege;
+  window._buchSplitMiete=mietenVorschlag;
+  const mietenBox = mietenVorschlag ? `
+    <div style="background:var(--copper-l,#fef3e2);border-radius:8px;padding:8px 10px;margin-bottom:10px;font-size:12px;border:1px solid var(--copper,#b87333)">
+      <div style="font-weight:600;color:var(--copper,#b87333);margin-bottom:4px"><i class="ti ti-home"></i> Miete aufteilen (aus Mieterakte)</div>
+      ${mietenVorschlag.map(v=>`<div>${esc(buchKatLabel(v.kat))}: <strong>${eur(v.betrag)} €</strong></div>`).join('')}
+      <button class="btn btn-sm" style="margin-top:6px" onclick="splitMieteUebernehmen()">
+        <i class="ti ti-arrow-down"></i> Aufteilung uebernehmen</button>
+    </div>` : '';
   const vorschlagBox = vorschlaege.length ? `
     <div style="background:var(--green-l);border-radius:8px;padding:8px 10px;margin-bottom:10px;font-size:12px">
       <div style="font-weight:600;color:var(--green);margin-bottom:4px"><i class="ti ti-wand"></i> Im Buchungstext gefunden</div>
@@ -29691,6 +30444,7 @@ async function modalBuchungSplit(id){
                   font-size:12px;line-height:1.5;max-height:150px;overflow-y:auto;white-space:pre-wrap;
                   word-break:break-word;-webkit-user-select:text;user-select:text">${esc(zweckVoll||'– kein Buchungstext –')}</div>
     </div>
+    ${mietenBox}
     ${vorschlagBox}
     <div id="buchSplitListe">${zeilen.map(zeileHtml).join('')}</div>
     <button class="btn btn-sm" onclick="document.getElementById('buchSplitListe').insertAdjacentHTML('beforeend', window._buchSplitZeile({kat:'',betrag:''}));buchSplitSumme()">
@@ -29717,6 +30471,27 @@ function buchSplitSumme(){
       : `<span style="color:var(--red,#dc2626)">Aufgeteilt: ${eur(sum)} € – es fehlen noch ${eur(diff)} €</span>`;
   }).catch(()=>{});
 }
+/* v224 (B9): Plausibilitätswarnung §551 Abs.1 BGB – Summe aller als „Kaution erhalten"
+   kategorisierten Beträge eines Mieters gegen 3 Nettokaltmieten. Rein warnend. */
+async function kautionPlausiPruefen(mieterId){
+  if(!mieterId) return;
+  const m=await idbGet('mieter', mieterId).catch(()=>null);
+  if(!m) return;
+  const nkm=Math.round((Number(m.miete)||0)*100)/100;   // Nettokaltmiete
+  if(nkm<=0) return;
+  const grenze=Math.round(nkm*3*100)/100;
+  const alle=await idbGetAll('buchungen').catch(()=>[]);
+  let summe=0;
+  for(const bx of alle){
+    if(!bx || bx.mieterId!==mieterId) continue;
+    for(const t of (buchTeile(bx)||[])){ if(t.kat==='kaution_erhalten') summe+=Math.abs(Number(t.betrag)||0); }
+  }
+  summe=Math.round(summe*100)/100;
+  if(summe>grenze+0.01){
+    toast('⚠ Kaution '+summe.toLocaleString('de-DE',{minimumFractionDigits:2})+' € übersteigt 3 Nettokaltmieten ('+grenze.toLocaleString('de-DE',{minimumFractionDigits:2})+' € · §551 BGB)');
+  }
+}
+
 async function buchSplitSpeichern(){
   const b=await idbGet('buchungen', window._buchSplitId).catch(()=>null);
   if(!b) return;
@@ -29735,6 +30510,9 @@ async function buchSplitSpeichern(){
   b.status='geprueft';
   b.updatedAt=nowIso();
   await idbPut('buchungen', b);
+  // v224 (B9): §551 Abs.1 BGB – Kaution darf 3 Nettokaltmieten nicht übersteigen.
+  //   Prüft nur bei Mieterbezug (Kaution als Split-Teil eines zugeordneten Mieteingangs).
+  if(b.mieterId && teile.some(t=>t.kat==='kaution_erhalten')) await kautionPlausiPruefen(b.mieterId);
   syncSoon();
   closeModal();
   toast('Aufteilung gespeichert ✓');
@@ -29841,27 +30619,45 @@ function zaRenderErgebnis(){
       statusHtml = `<span style="color:var(--green);font-weight:600"><i class="ti ti-parking"></i> ${esc(m.name)}</span>
                     <span style="font-size:11px;color:var(--ink-40)"> · via Stellplatz ${esc(String(m.spNr))}</span>`;
     } else if(r.einnahme){
-      /* v213 (F2): mieterloser Eingang mit Kategorie – v215: neutral vs. Einnahme trennen */
+      /* v213 (F2): mieterloser Eingang mit Kategorie – v215: neutral vs. Einnahme trennen
+         v220: Vorschlag-Kennzeichnung fuer automatisch aus Absender erkannte Umtausche */
       const _neutral = katIstNeutral(r.einnahme.kat, 'ein');
-      statusHtml = _neutral
+      const _vor = r.einnahme._vorschlag;
+      const prefix = _vor ? `<span style="font-size:10px;background:var(--amber-l,#fff3d6);color:var(--amber,#a86400);padding:1px 5px;border-radius:8px;margin-right:4px">Vorschlag</span>` : '';
+      statusHtml = prefix + (_neutral
         ? `<span style="color:var(--ink-70);font-weight:600"><i class="ti ti-arrows-exchange"></i> Neutral: ${esc(buchKatLabel(r.einnahme.kat))}</span>
            <span style="font-size:11px;color:var(--ink-40)"> · keine Einnahme</span>`
-        : `<span style="color:var(--green);font-weight:600"><i class="ti ti-coin-euro"></i> Einnahme: ${esc(buchKatLabel(r.einnahme.kat))}</span>`;
+        : `<span style="color:var(--green);font-weight:600"><i class="ti ti-coin-euro"></i> Einnahme: ${esc(buchKatLabel(r.einnahme.kat))}</span>`);
       if(r.einnahme.notiz) statusHtml += `<span style="font-size:11px;color:var(--ink-40)"> · ${esc(r.einnahme.notiz)}</span>`;
-      aktion = `<button class="btn btn-sm" onclick="zaModalEinnahme(${i})"><i class="ti ti-pencil"></i> Ändern</button>`;
+      aktion = _vor
+        ? `<button class="btn btn-sm btn-primary" onclick="zaVorschlagUebernehmen(${i})"><i class="ti ti-check"></i> Übernehmen</button>
+           <button class="btn btn-sm" style="margin-left:4px" onclick="zaModalEinnahme(${i})"><i class="ti ti-pencil"></i> Ändern</button>
+           ${zaMieterDropdown(i)}`
+        : `<button class="btn btn-sm" onclick="zaModalEinnahme(${i})"><i class="ti ti-pencil"></i> Ändern</button>`;
     } else {
       statusHtml = `<span style="color:var(--ink-40)">Kein Mieter – Auswahl:</span>`;
       aktion = zaMieterDropdown(i) + `<button class="btn btn-sm" style="margin-top:4px" onclick="zaModalEinnahme(${i})"><i class="ti ti-coin-euro"></i> Als Einnahme buchen</button>`;
     }
+    // v220: Bei bereits zugeordneten Zeilen einen Stift-Button anbieten
+    // (Nutzerbefund: „ich will jede possition aendern koennen")
+    const kannAendern = !!(m && (m.via==='iban'||m.via==='we'||m.via==='sp'));
+    const stiftBtn = kannAendern
+      ? `<button class="btn btn-sm" style="margin-top:4px;font-size:11px" onclick="zaZeileAendern(${i})"><i class="ti ti-pencil"></i> Ändern</button>`
+      : '';
+    // v220: Voller Verwendungszweck auf Wunsch anzeigen (Nutzerbefund „Bitte in der
+    // Ansicht auch schon alle Verwendungszwecke anzeigen, damit die Zuordnung besser passt")
+    const vollerZweck = String(b.zweck||'').trim();
+    const zweckZeile = vollerZweck ? `<div style="font-size:11px;color:var(--ink-70);margin-top:4px;line-height:1.35;white-space:pre-wrap;word-break:break-word">${esc(vollerZweck)}</div>` : '';
     return `<tr style="border-bottom:1px solid var(--line)">
-      <td style="padding:8px 6px;white-space:nowrap;font-size:12px">${esc(b.datumISO||b.datumRaw)}</td>
-      <td style="padding:8px 6px;text-align:right;font-variant-numeric:tabular-nums;font-weight:600">${zForm(b.betrag)} €</td>
-      <td style="padding:8px 6px;font-size:12px">
-        <div>${esc(b.name)}</div>
+      <td style="padding:8px 6px;white-space:nowrap;font-size:12px;vertical-align:top">${esc(b.datumISO||b.datumRaw)}</td>
+      <td style="padding:8px 6px;text-align:right;font-variant-numeric:tabular-nums;font-weight:600;vertical-align:top">${zForm(b.betrag)} €</td>
+      <td style="padding:8px 6px;font-size:12px;vertical-align:top">
+        <div><b>${esc(b.name)}</b></div>
         <div style="font-size:11px;color:var(--ink-40);font-variant-numeric:tabular-nums">${esc(fmtIban(b.iban))}</div>
         ${(r.spNummern&&r.spNummern.length)?`<div style="font-size:10px;color:var(--copper)"><i class="ti ti-parking"></i> Stellplatz ${r.spNummern.join(', ')}</div>`:''}
+        ${zweckZeile}
       </td>
-      <td style="padding:8px 6px">${statusHtml}<div style="margin-top:4px">${aktion}</div></td>
+      <td style="padding:8px 6px;vertical-align:top">${statusHtml}<div style="margin-top:4px">${aktion}${stiftBtn}</div></td>
     </tr>`;
   }).join('');
 
@@ -29873,6 +30669,7 @@ function zaRenderErgebnis(){
   const nOffen= res.filter(r=>!r.match && !r.einnahme).length;
 
   box.innerHTML = `
+    ${zaImportBannerHtml(ZA_STATE.importInfo)}
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
       <span class="badge" style="background:var(--green-l);color:var(--green)">${nIban} per IBAN erkannt</span>
       ${nSp?`<span class="badge" style="background:var(--green-l);color:var(--green)">${nSp} per Stellplatz</span>`:''}
@@ -29904,27 +30701,37 @@ function zaRenderErgebnis(){
     </div>`;
 }
 
-/* Dropdown aller Kontoraum-Mieter für manuelle Zuordnung */
+/* Dropdown aller Kontoraum-Mieter fuer manuelle Zuordnung (v220: sortiert nach Nachnamen)
+   Aenderungen v220:
+   - Alphabetisch nach Nachname innerhalb jeder Gruppe (Nutzerbefund Bild 3).
+   - Zusaetzliche Option "Als Leerstand buchen" (Nutzerbefund Schaefer, Max – Buchung
+     im leeren Zeitraum wird NKA-neutral behandelt, ohne Alt-Mieter anlegen zu muessen).
+   - Kein Doppel-Alt-Mieter: der Klick-Handler prueft vor Anlage auf Existenz. */
+function zaNachname(name){
+  const t=String(name||'').split(',')[0].split('&')[0].trim();
+  return t.toLowerCase();
+}
 function zaMieterDropdown(i){
   const konto=ZA_STATE.konto;
   const objSet=new Set(konto.objekte);
-  // Mieter werden beim Render erst gebraucht; wir holen sie synchron aus Cache
-  // Fallback: leeres Dropdown, wird über zaZuordnenManuell gefüllt
   const liste=(window._zaMieterCache||[]).filter(m=>objSet.has(m.objektId));
+  const sort=(a,b)=>zaNachname(a.mieter).localeCompare(zaNachname(b.mieter),'de');
   const aktiv=liste.filter(m=>!m._vormieter);
-  const wohner=aktiv.filter(m=>!m._tgMieter), tg=aktiv.filter(m=>m._tgMieter);
-  const ehemalige=liste.filter(m=>m._vormieter);
-  // v182 (TG): externe Stellplatzzahler direkt als TG-Mieter anlegen
+  const wohner=aktiv.filter(m=>!m._tgMieter).slice().sort(sort);
+  const tg=aktiv.filter(m=>m._tgMieter).slice().sort(sort);
+  const ehemalige=liste.filter(m=>m._vormieter).slice().sort(sort);
   const tgObj=OBJEKTE.find(o=>o.tiefgarage && objSet.has(o.id));
   const neuOpt=tgObj?`<option value="__neu_tg__">➕ Neuen TG-Mieter anlegen …</option>`:'';
-  const altMOpt=`<option value="__neu_alt__">➕ Alt-Mieter anlegen …</option>`; // v213 (F1)
+  const altMOpt=`<option value="__neu_alt__">➕ Alt-Mieter anlegen …</option>`;
+  const leerOpt=`<option value="__als_leerstand__">🏠 Als Leerstand buchen (steuerlich neutral)</option>`;
   return `<select class="inp" style="font-size:12px;padding:4px" onchange="zaZuordnenManuell(${i}, this.value)">
             <option value="">– Mieter wählen –</option>
             ${neuOpt}
             ${altMOpt}
+            ${leerOpt}
             ${tg.length?`<optgroup label="TG-Mieter">${tg.map(m=>`<option value="${m.id}">TG · ${esc(m.mieter)}</option>`).join('')}</optgroup>`:''}
-            <optgroup label="Wohnungsmieter">${wohner.map(m=>`<option value="${m.id}">WE ${esc(m.weNr||'?')} · ${esc(m.mieter)}</option>`).join('')}</optgroup>
-            ${ehemalige.length?`<optgroup label="Ehemalige Mieter">${ehemalige.map(m=>`<option value="${m.id}">WE ${esc(m.weNr||'?')} · ${esc(m.mieter)} (ehem.)</option>`).join('')}</optgroup>`:''}
+            <optgroup label="Wohnungsmieter">${wohner.map(m=>`<option value="${m.id}">${esc(m.mieter)} · WE ${esc(m.weNr||'?')}</option>`).join('')}</optgroup>
+            ${ehemalige.length?`<optgroup label="Ehemalige Mieter">${ehemalige.map(m=>`<option value="${m.id}">${esc(m.mieter)} · WE ${esc(m.weNr||'?')} (ehem.)</option>`).join('')}</optgroup>`:''}
           </select>`;
 }
 
@@ -29943,6 +30750,14 @@ async function zaZuordnenManuell(i, mieterId){
   if(!mieterId) return;
   const r = ZA_STATE.results[i];
   if(!r) return;
+  // v220: Als Leerstand buchen (steuerlich neutral) – ordnet nichts zu, markiert den
+  // Eingang aber als "Leerstand", damit er in NKA/Rueckstand nicht doppelt zaehlt.
+  if(mieterId==='__als_leerstand__'){
+    r.match=null;
+    r.einnahme={kat:'fehlbuchung_rueck', notiz:'Leerstand (Nutzer-Klassifikation, kein Ertrag)', _leerstand:true};
+    zaRenderErgebnis();
+    return;
+  }
   // v182 (TG): neuen externen TG-Mieter direkt aus der Buchung anlegen
   if(mieterId==='__neu_tg__'){
     const tgObj=OBJEKTE.find(o=>o.tiefgarage && ZA_STATE.konto.objekte.includes(o.id));
@@ -29978,7 +30793,11 @@ async function zaZuordnenManuell(i, mieterId){
   const m = await idbGet('mieter', mieterId);
   if(!m){ toast('Mieter nicht gefunden.'); return; }
   await zaIbanAnMieter(mieterId, r.buchung.iban, r.buchung.name);
-  r.match = {mieterId, name:m.mieter, weNr:m.weNr, via:m._tgMieter?'sp':'iban', status:'aktiv', score:100, manuell:true};
+  const ehem=!!m._vormieter;
+  r.match = {mieterId, name:m.mieter, weNr:m.weNr, via:m._tgMieter?'sp':'iban',
+             status:ehem?'ehem':'aktiv', ehem, score:100, manuell:true};
+  delete r.einnahme;
+  zaAutoUebernehmen(i);   // v220: alle weiteren offenen Zeilen gleicher IBAN mitziehen
   zaRenderErgebnis();
 }
 
@@ -30019,6 +30838,23 @@ async function zaAltMieterAnlegen(i){
   const weNr=document.getElementById('zaAltWe')?.value?.trim()||'';
   if(!name){ toast('Bitte den Namen angeben.'); return; }
   if(!objektId || !weNr){ toast('Bitte Objekt und WE-Nummer angeben.'); return; }
+  // v220: Doppelanlage verhindern – Alt-Mieter mit gleichem Nachnamen in derselben WE
+  // wird nicht erneut angelegt, sondern die bestehende Zuordnung uebernommen.
+  const nk=zaNachname(name);
+  const doppel=(window._zaMieterCache||[]).find(m=>
+    m.objektId===objektId && String(m.weNr||'')===String(weNr) && zaNachname(m.mieter)===nk);
+  if(doppel){
+    if(!confirm(`Ein Mieter mit dem Nachnamen "${name.split(',')[0].trim()}" existiert bereits in WE ${weNr} („${doppel.mieter}", ${doppel._vormieter?'ehem.':'aktuell'}).\n\nBestehenden Datensatz stattdessen zuordnen?`)){
+      return;
+    }
+    closeModal();
+    await zaIbanAnMieter(doppel.id, r.buchung.iban, r.buchung.name);
+    r.match={mieterId:doppel.id, name:doppel.mieter, weNr:doppel.weNr, via:'iban', status:doppel._vormieter?'ehem':'aktiv', ehem:!!doppel._vormieter, score:100, manuell:true};
+    delete r.einnahme;
+    zaAutoUebernehmen(i);
+    zaRenderErgebnis();
+    return;
+  }
   const einzugISO=document.getElementById('zaAltEinzug')?.value||'';
   const auszugISO=document.getElementById('zaAltAuszug')?.value||'';
   const obj=getObj(objektId);
@@ -30043,9 +30879,42 @@ async function zaAltMieterAnlegen(i){
   syncSoon();
   closeModal();
   toast('Alt-Mieter „'+name+'“ angelegt ✓');
+  zaAutoUebernehmen(i);   // v220: weitere offene Zeilen mit derselben IBAN gleich zuordnen
   zaRenderErgebnis();
 }
+/* v220: Bei einer manuellen Alt-Mieter-Zuordnung alle weiteren offenen Zeilen
+   mit exakt derselben IBAN gleich mitzuordnen (Nutzerbefund: „soll fuer die
+   anderen Eingaenge auch uebernommen werden"). */
+function zaAutoUebernehmen(i){
+  const src=ZA_STATE.results[i]; if(!src || !src.match) return;
+  const iban=zaNormIban(src.buchung.iban); if(!iban) return;
+  let n=0;
+  for(let j=0;j<ZA_STATE.results.length;j++){
+    if(j===i) continue;
+    const r=ZA_STATE.results[j];
+    if(r.match || r.einnahme?._vorschlag===false) continue;
+    if(zaNormIban(r.buchung.iban)!==iban) continue;
+    r.match={...src.match, manuell:true, _autoUebernommen:true};
+    delete r.einnahme;
+    n++;
+  }
+  if(n) toast(`Zuordnung fuer ${n} weitere Zeile${n>1?'n':''} uebernommen`);
+}
 
+/* v220: Baumarkt/Elektronik-Vorschlag als endgueltige Kategorie uebernehmen. */
+function zaVorschlagUebernehmen(i){
+  const r=ZA_STATE.results[i]; if(!r||!r.einnahme) return;
+  r.einnahme._vorschlag=false;
+  r.einnahme.notiz=r.einnahme.notiz?.replace('Vorschlag: automatisch aus Absender erkannt','Erkannt aus Absender')||'';
+  zaRenderErgebnis();
+}
+/* v220: Zeile wieder in den offenen Zustand versetzen (Nutzer will neu zuordnen). */
+function zaZeileAendern(i){
+  const r=ZA_STATE.results[i]; if(!r) return;
+  r.match=null;
+  r.einnahme=null;
+  zaRenderErgebnis();
+}
 /* v213 (F2): mieterlosen Eingang als sonstige Einnahme kategorisieren
    (Versicherungserstattung, Versorger-Bonus, Gutschriften usw.) */
 function zaModalEinnahme(i){
@@ -30134,7 +31003,15 @@ function zaBuchungId(kontoId, b){
      Sonst änderten sich mit dem mehrzeiligen Import sämtliche IDs und der
      Duplikatschutz beim erneuten Einlesen derselben CSV würde versagen. */
   const zk = (b.zweckKey!=null && b.zweckKey!=='') ? b.zweckKey : (b.zweck||'');
-  const raw = `${kontoId}|${b.datumISO||b.datumRaw}|${b.betrag}|${b.iban}|${zk.slice(0,40)}`;
+  /* v223 (B3): Echte Doppelbuchungen am selben Tag (gleicher Betrag/IBAN/Zweck) erhielten
+     bisher dieselbe ID und die zweite wurde still als Duplikat verworfen (unbemerkter
+     Geldfehler, z. B. doppelte Mietüberweisung). Der Vorkommenszähler b.occ (aus zaParseCSV,
+     je identischem Schlüssel innerhalb der Datei) fließt NUR ab dem 2. Vorkommen in den
+     Rohstring ein – das erste Vorkommen behält damit exakt die bisherige ID (kein Re-Import-
+     Doppel von Bestandsdaten, gleiche Stabilitätslogik wie der v216-zweckKey). */
+  const occ = Number(b.occ)||0;
+  const occSuffix = occ>0 ? ('|#'+occ) : '';
+  const raw = `${kontoId}|${b.datumISO||b.datumRaw}|${b.betrag}|${b.iban}|${zk.slice(0,40)}${occSuffix}`;
   let h=0;
   for(let i=0;i<raw.length;i++){ h=((h<<5)-h+raw.charCodeAt(i))|0; }
   return 'buch_'+kontoId+'_'+(h>>>0).toString(36);
@@ -30392,7 +31269,9 @@ async function mahnungDrucken(){
   const moTab = ctx.offeneMonate.map(o =>
     `<tr><td class="lbl">Miete ${o.monat.slice(5)}/${o.monat.slice(0,4)}</td><td class="amt">${eur(o.fehlt)} \u20ac</td></tr>`).join('');
   const titel = _opStufeLabel(stufe);
-  const anrede = 'Sehr geehrte/r Mieter/in,';
+  // v224 (B23): personalisierte Anrede aus dem Mieterstamm (nutzt vorhandene Helfer;
+  //   Fallback in getAnrede greift bei fehlenden Anrede-/Personendaten auf den Hauptmieter).
+  const anrede = anredeMitKomma(getAnrede(m));
   let einleitung, schluss;
   if (stufe === 1){
     einleitung = `bei der Durchsicht unserer Mietkonten haben wir festgestellt, dass f\u00fcr Ihre Wohnung derzeit ein offener Betrag in H\u00f6he von <strong>${eur(ctx.rueckstand)} \u20ac</strong> besteht. Sicherlich handelt es sich um ein Versehen.`;
@@ -30549,8 +31428,13 @@ async function anlageVExport(){
   const summen={};   // g -> Betrag
   const einzel=[];   // Zeilen für Blatt 2
   const objEin={};   // objektId -> Mieteingänge (E1+E2)
+  const objAus={};   // v234 (B1-Steuerteil): Kostenstelle -> Werbungskosten (W-Gruppen)
   for(const b of buch){
     const seite=b.typ==='eingang'?'ein':'aus';
+    // v234: Kostenstelle für Einzelnachweis + Kosten-je-Objekt (Eingänge: Mieter-Objekt als Fallback)
+    const ksName = buchKostenstelleName(b)
+      || (b.mieterId&&mIdx[b.mieterId]&&(getObj(mIdx[b.mieterId].objektId)||{}).name) || '';
+    const ksKey = b.kostengruppe ? 'grp:'+b.kostengruppe : (b.objektId ? 'obj:'+b.objektId : '?');
     const teile=buchTeile(b) || [{kat:null, betrag:Math.abs(Number(b.betrag)||0)}];
     for(const t of teile){
       const gr=avGruppeFuer(seite, t.kat, b);
@@ -30558,10 +31442,13 @@ async function anlageVExport(){
       einzel.push([ b.datumISO||'', seite==='ein'?'Einnahme':'Ausgabe',
         rc(seite==='aus'?-t.betrag:t.betrag),
         t.kat?buchKatLabel(t.kat):(seite==='ein'&&(b.mietmonat||b.mieterId)?'Mieteingang (brutto)':'unkategorisiert'),
-        gr.g+' '+gr.label, b.mieterName||b.name||'', b.mietmonat||'', b.zweck||'', b.bar?'bar':'' ]);
-      if(seite==='ein'&&(gr.g==='E1'||gr.g==='E2')){
-        const oid=b.mieterId&&mIdx[b.mieterId]?(mIdx[b.mieterId].objektId||'?'):'?';
+        gr.g+' '+gr.label, b.mieterName||b.name||'', b.mietmonat||'', b.zweck||'', b.bar?'bar':'', ksName ]);
+      if(seite==='ein'&&(gr.g==='E1'||gr.g==='E1b'||gr.g==='E2')){  // v234: E1b (Stellplatzmiete) fehlte
+        const oid=b.objektId || (b.mieterId&&mIdx[b.mieterId]?(mIdx[b.mieterId].objektId||'?'):'?');
         objEin[oid]=rc((objEin[oid]||0)+t.betrag);
+      }
+      if(seite==='aus'&&/^W/.test(gr.g)){
+        objAus[ksKey]=rc((objAus[ksKey]||0)+t.betrag);
       }
     }
   }
@@ -30600,9 +31487,9 @@ async function anlageVExport(){
   const ws1=XLSX.utils.aoa_to_sheet(A);
   ws1['!cols']=[{wch:8},{wch:78},{wch:14},{wch:30}];
 
-  const kopf2=['Datum','Art','Betrag (€)','Kategorie','Anlage-V-Position','Mieter/Empfänger','Monat','Verwendungszweck','Bar'];
+  const kopf2=['Datum','Art','Betrag (€)','Kategorie','Anlage-V-Position','Mieter/Empfänger','Monat','Verwendungszweck','Bar','Objekt/Kostenstelle'];
   const ws2=XLSX.utils.aoa_to_sheet([kopf2, ...einzel]);
-  ws2['!cols']=[{wch:11},{wch:9},{wch:11},{wch:24},{wch:52},{wch:26},{wch:9},{wch:40},{wch:5}];
+  ws2['!cols']=[{wch:11},{wch:9},{wch:11},{wch:24},{wch:52},{wch:26},{wch:9},{wch:40},{wch:5},{wch:30}];
 
   const zeilen3=Object.entries(objEin).map(([oid,betr])=>
     [ oid==='?'?'ohne Objektzuordnung':((getObj(oid)||{}).name||oid), betr ]);
@@ -30611,10 +31498,33 @@ async function anlageVExport(){
     ['Summe', rc(zeilen3.reduce((a,z)=>a+z[1],0))]]);
   ws3['!cols']=[{wch:40},{wch:20}];
 
+  // v234 (B1-Steuerteil): Werbungskosten je Objekt/Kostenstelle – konservativ OHNE
+  // automatische Aufteilung von Gruppenkosten (Verteilungsmaßstab mit Steuerberater klären).
+  const ksLabel=k=>{
+    if(k==='?') return 'ohne Gebäude-Zuordnung';
+    if(k.slice(0,4)==='grp:'){ const g=getKostengruppe(k.slice(4)); return 'GEMEINSAM: '+(g?g.name:k.slice(4)); }
+    return (getObj(k.slice(4))||{}).name || k.slice(4);
+  };
+  const zeilen4=Object.entries(objAus).map(([k,betr])=>[ksLabel(k), betr]);
+  zeilen4.sort((a,b)=>b[1]-a[1]);
+  const ws4=XLSX.utils.aoa_to_sheet([
+    ['Werbungskosten je Objekt/Kostenstelle – '+jahr+' (ohne AfA)'],
+    [],
+    ['Objekt / Kostenstelle','Betrag (€)'],
+    ...zeilen4,
+    ['Summe', rc(zeilen4.reduce((a,z)=>a+z[1],0))],
+    [],
+    ['Hinweise:'],
+    ['– „GEMEINSAM"-Positionen betreffen mehrere Gebäude; Verteilungsmaßstab (z. B. Wohnfläche) mit dem Steuerberater festlegen.'],
+    ['– „ohne Gebäude-Zuordnung": Kostenstelle in der Buchhaltung nachpflegen (Einstellungen → Zahlungen → Buchhaltung).'],
+  ]);
+  ws4['!cols']=[{wch:52},{wch:16}];
+
   const wb=XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws1, 'Anlage V '+jahr);
   XLSX.utils.book_append_sheet(wb, ws2, 'Einzelnachweis');
   XLSX.utils.book_append_sheet(wb, ws3, 'Miete je Objekt');
+  XLSX.utils.book_append_sheet(wb, ws4, 'Kosten je Objekt');
   const name=(konto.label||'Konto').replace(/[^\wäöüÄÖÜß-]+/g,'_');
   XLSX.writeFile(wb, `AnlageV_${jahr}_${name}.xlsx`);
   toast('Anlage-V-Auswertung '+jahr+' exportiert ✓');
@@ -30622,6 +31532,95 @@ async function anlageVExport(){
 }
 
 /* Eine importierte Buchung in Speicherform bringen */
+/* ── v235 (F2, Befund B2): Leistungszeitraum aus dem Verwendungszweck erkennen ──
+   NKA muss Kosten dem Abrechnungs-/Leistungszeitraum zuordnen (§ 556 Abs. 3 BGB),
+   nicht dem Zahlungsdatum. Konservativer Parser: nur eindeutige Muster, sonst null.
+   Rückgabe: {von:'YYYY-MM-DD', bis:'YYYY-MM-DD', quelle:'zeitraum'|'jahr'|'monat'} | null */
+function buchLeistungszeitraum(zweck){
+  const t=String(zweck||'');
+  const J=(y)=>{ y=Number(y); if(y<100) y+=2000; return (y>=2015&&y<=2040)?y:null; };
+  const iso=(y,m,d)=>`${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+  const tag=(y,m,d)=>{ y=J(y); m=Number(m); d=Number(d);
+    if(!y||m<1||m>12||d<1||d>31) return null; return iso(y,m,d); };
+  // 1) Expliziter Zeitraum dd.mm.yy(yy) [-–/bis] dd.mm.yy(yy)
+  let m=t.match(/(\d{1,2})\.(\d{1,2})\.(\d{2,4})\s*(?:-|–|—|\/|bis)\s*(\d{1,2})\.(\d{1,2})\.(\d{2,4})/i);
+  if(m){ const von=tag(m[3],m[2],m[1]), bis=tag(m[6],m[5],m[4]);
+    if(von&&bis&&von<=bis) return {von,bis,quelle:'zeitraum'}; }
+  // 1b) ISO-Zeitraum yyyy-mm-dd bis yyyy-mm-dd
+  m=t.match(/(\d{4})-(\d{2})-(\d{2})\s*(?:-|–|bis)\s*(\d{4})-(\d{2})-(\d{2})/i);
+  if(m){ const von=tag(m[1],m[2],m[3]), bis=tag(m[4],m[5],m[6]);
+    if(von&&bis&&von<=bis) return {von,bis,quelle:'zeitraum'}; }
+  // 2) Monat mit Schlüsselwort: (Zeitraum|Monat|Abschlag|Abrechnungsmonat) mm/yyyy
+  m=t.match(/(?:zeitraum|abrechnungsmonat|monat|abschlag)\s*:?\s*(\d{1,2})[./](\d{4})/i);
+  if(m){ const y=J(m[2]), mo=Number(m[1]);
+    if(y&&mo>=1&&mo<=12){ const last=new Date(y,mo,0).getDate();
+      return {von:iso(y,mo,1), bis:iso(y,mo,last), quelle:'monat'}; } }
+  // 3) Jahr mit Schlüsselwort: (Jahres-/Schluss-/Verbrauchs-)Rechnung/Abrechnung/Abgaben/
+  //    Grundsteuer/Grundbesitzabgaben/Verbrauch/Zeitraum/für + yyyy → 01.01.–31.12.
+  m=t.match(/(?:rechnung|abrechnung|abgaben|grundsteuer|grundbesitzabgaben|verbrauch|zeitraum|f\u00fcr)\D{0,12}\b(20\d{2})\b/i);
+  if(m){ const y=J(m[1]); if(y) return {von:iso(y,1,1), bis:iso(y,12,31), quelle:'jahr'}; }
+  return null;
+}
+
+/* v236 (F2 Schritt 2): Effektives NKA-Zuordnungsdatum einer Buchung.
+   Mit Leistungszeitraum → dessen Mittelpunkt (= Mehrheitsregel: das Jahr, das der
+   Zeitraum überwiegend betrifft; vermeidet Doppelzählung über Jahresgrenzen),
+   sonst Zahlungsdatum. NUR für die NKA – Anlage V bleibt bewusst beim
+   Zahlungsdatum (§ 11 EStG Zuflussprinzip). */
+function buchNkaDatum(b){
+  if(b && b.leistungVonISO && b.leistungBisISO && b.leistungVonISO<=b.leistungBisISO){
+    const von=new Date(b.leistungVonISO+'T00:00:00Z').getTime();
+    const bis=new Date(b.leistungBisISO+'T00:00:00Z').getTime();
+    return new Date((von+bis)/2).toISOString().slice(0,10);
+  }
+  return (b && b.datumISO) || '';
+}
+
+/* v235 (F2): idempotente Nachbefüllung leistungVonISO/leistungBisISO an Bestandsbuchungen
+   (nur Ausgänge, nur wenn leer und Muster eindeutig). */
+async function zaLeistungMigration(){
+  const alle=await idbGetAll('buchungen').catch(()=>[]);
+  let n=0;
+  for(const b of alle){
+    if(!b || b.typ!=='ausgang' || b.leistungVonISO) continue;
+    const lz=buchLeistungszeitraum(b.zweck);
+    if(lz){ b.leistungVonISO=lz.von; b.leistungBisISO=lz.bis; b.leistungQuelle=lz.quelle;
+      b.updatedAt=nowIso(); await idbPut('buchungen', b); n++; }
+  }
+  if(n) syncSoon();
+  return n;
+}
+
+/* v225 (F1): Gebäude-Zuordnung einer Buchung ermitteln.
+   1) Eingänge mit Mieter-Treffer erben das Objekt des Mieters (aus match.objektId).
+   2) Ein-Objekt-Konten (Ruhrtalstr., Amboßstr.) → dieses eine Objekt (trivial korrekt).
+   3) Sonst (Ausgänge auf Mehr-Objekt-Konten wie Krefeld) → null; wird in einem
+      späteren F1-Schritt manuell bzw. über Versorger-/Zählerstammdaten gesetzt. */
+function zaObjektFuerBuchung(kontoId, match){
+  if(match && match.objektId) return match.objektId;
+  const k=ZA_KONTEN.find(x=>x.id===kontoId);
+  return (k && Array.isArray(k.objekte) && k.objekte.length===1) ? k.objekte[0] : null;
+}
+
+/* v225 (F1): Einmalige, idempotente Nachzuordnung des Objekts an Bestandsbuchungen.
+   Setzt objektId NUR, wenn leer – überschreibt nie eine vorhandene Zuordnung. */
+async function zaObjektMigration(){
+  const alle=await idbGetAll('buchungen').catch(()=>[]);
+  if(!alle.length) return 0;
+  const mieter=await idbGetAll('mieter').catch(()=>[]);
+  const mObj={}; for(const m of mieter){ if(m&&m.id) mObj[m.id]=m.objektId||null; }
+  let geaendert=0;
+  for(const b of alle){
+    if(!b || b.objektId) continue;               // idempotent
+    let oid = (b.mieterId && mObj[b.mieterId]) ? mObj[b.mieterId] : null;
+    if(!oid){ const k=ZA_KONTEN.find(x=>x.id===b.kontoId);
+              if(k && Array.isArray(k.objekte) && k.objekte.length===1) oid=k.objekte[0]; }
+    if(oid){ b.objektId=oid; b.updatedAt=nowIso(); await idbPut('buchungen', b); geaendert++; }
+  }
+  if(geaendert) syncSoon();
+  return geaendert;
+}
+
 function zaBuchungRecord(kontoId, b, match, einnahme){
   return {
     id: zaBuchungId(kontoId, b),
@@ -30633,10 +31632,15 @@ function zaBuchungRecord(kontoId, b, match, einnahme){
     iban: b.iban||'',
     zweck: b.zweck||'',
     zweckKey: b.zweckKey||'',   // v216: Schlüsselzeile für ID/Mietmonat (siehe zaBuchungId)
+    occ: Number(b.occ)||0,      // v223 (B3): Vorkommens-Index innerhalb des Imports (0 = erstes)
     buchungstext: b.buchungstext||'',
     typ: b.betrag>0 ? 'eingang' : 'ausgang',
     istStellplatz: zaIstStellplatz(b.zweckKey||b.zweck),
     spNummern: b.betrag>0 ? zaSpNummern(b.zweckKey||b.zweck) : [],
+    ...(function(){ if(einnahme) return {};                      // v235 (F2): Leistungszeitraum nur für Ausgaben
+      const lz=buchLeistungszeitraum(b.zweck||'');
+      return lz?{leistungVonISO:lz.von, leistungBisISO:lz.bis, leistungQuelle:lz.quelle}:{}; })(),
+    objektId: zaObjektFuerBuchung(kontoId, match),   // v225 (F1): Gebäude-Zuordnung
     mieterId: match?.mieterId || null,
     mieterName: match?.name || null,
     zuordnungVia: match?.via || null,
@@ -30680,7 +31684,26 @@ function zaSollIst(buchungen, mieterListe, monate, spIdx){
       ist[key][b.mietmonat].stellplatz += spAnteil;
       ist[key][b.mietmonat].miete += (b.betrag - spAnteil);
     } else {
-      ist[key][b.mietmonat].miete += b.betrag;
+      // v221: Auto-Split OHNE explizite SP-Nummer im Zweck (Nutzerbefund: „In den
+      // Mietzahlungen sind manchmal auch die TG mieten bei einem Mieter drin")
+      // Vorgehen: Wenn der Mieter (mid) einen TG-Platz zugeordnet hat UND die Buchung
+      // etwa dem Summensoll (Wohnung + SP) entspricht (± 1 %), wird der SP-Anteil
+      // gemaess Register herausgerechnet. Toleranz greift Rundung / kleine Erhoehung ab.
+      const eigeneSp=(byMieterSp[key]||[]);
+      const spSollM=eigeneSp.reduce((a,sp)=>a+(Number(sp.miete)||0),0);
+      const wohnSoll=sollIdx[key]?.soll ? (sollIdx[key].soll - spSollM) : 0;
+      if(spSollM>0 && wohnSoll>0){
+        const kombi=wohnSoll+spSollM;
+        const tol=Math.max(kombi*0.01, 1);
+        if(Math.abs(b.betrag - kombi) <= tol){
+          ist[key][b.mietmonat].stellplatz += spSollM;
+          ist[key][b.mietmonat].miete += (b.betrag - spSollM);
+        } else {
+          ist[key][b.mietmonat].miete += b.betrag;
+        }
+      } else {
+        ist[key][b.mietmonat].miete += b.betrag;
+      }
     }
   }
   // Ergebnis je Mieter
