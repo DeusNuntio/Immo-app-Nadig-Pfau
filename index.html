@@ -891,7 +891,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=34;
-const APP_VERSION = '2026-07-16-v237';
+const APP_VERSION = '2026-07-18-v239';
 /* v222 (14.07.2026): KI-Auslesen Zaehlerstand aus Foto (analog rechnungOcrErkennen).
    Neuer Button "Zaehlerstand aus Foto auslesen (KI)" in modalZaehlerstand,
    sichtbar sobald ein Foto vorhanden ist. Sendet Base64+MimeType+Zaehlerart
@@ -1668,6 +1668,18 @@ async function tryLogin(){
   if(!user || !(await pinPruefen(user, pinBuf))){
     showLoginErr('Falscher PIN');pinBuf='';updatePinDisplay();return;
   }
+  // v239 (R4): PIN transparent auf PBKDF2 anheben – wenn das pinKdf-Flag fehlt
+  // ODER der gespeicherte Hash nicht dem korrekten PBKDF2-Wert entspricht
+  // (Merge-Feld-Mix, siehe pinPruefen). Nur nach ERFOLGREICHER Prüfung; schlägt
+  // das Speichern fehl, bleibt der bisherige Hash gültig (kein Login-Risiko).
+  try{
+    if(user.pinKdf!=='pbkdf2'
+       || (await pinHashPbkdf2(pinBuf, user.pinSalt))!==user.pinHash){
+      await pinSetzen(user, pinBuf);
+      user.geaendert=now();
+      await idbPut('users', user);
+    }
+  }catch(e){}
   localStorage.setItem('lastLoginUser', uid);
   // Session-Marker: erlaubt Auto-Wiederanmeldung nach OS-Reload (z. B. nach Kamera-Nutzung)
   try { sessionStorage.setItem('activeSession', uid); } catch(e) {}
@@ -3969,18 +3981,42 @@ async function pinHash(pin, saltB64){
   const h=await crypto.subtle.digest('SHA-256', data);
   return _b64(h);
 }
-// Prüft einen eingegebenen PIN gegen einen Benutzer – NUR noch gegen den Hash.
-// v204 (P16): Klartext-Fallback entfernt; Altbestände migriert pinMigrationAlleUser
-// (Start, Pull-Merge, Login-Rettungsanker), bevor hier geprüft wird.
+// v239 (R4): PBKDF2-Verfahren für PINs. Das schnelle SHA-256 oben bleibt NUR zur
+// Prüfung von Altbeständen (user ohne pinKdf-Feld); neue/aktualisierte PINs nutzen
+// PBKDF2-SHA256 mit 200.000 Iterationen (konsistent zu _deriveKey). Damit ist ein
+// 4–6-stelliger PIN aus der gesyncten immo_daten.json nicht mehr in Sekunden,
+// sondern nur noch mit erheblichem Aufwand offline brute-force-bar.
+async function pinHashPbkdf2(pin, saltB64){
+  const base=await crypto.subtle.importKey('raw', _txtEnc.encode(String(pin)), 'PBKDF2', false, ['deriveBits']);
+  const bits=await crypto.subtle.deriveBits(
+    {name:'PBKDF2', salt:_txtEnc.encode(String(saltB64)), iterations:200000, hash:'SHA-256'},
+    base, 256);
+  return _b64(bits);
+}
+// Prüft einen eingegebenen PIN gegen einen Benutzer – NUR gegen den Hash, nach dem
+// am Datensatz vermerkten Verfahren (pinKdf 'pbkdf2' = neu, sonst Alt-SHA-256).
+// Das Upgrade Alt→PBKDF2 passiert beim nächsten erfolgreichen Login (tryLogin).
 async function pinPruefen(user, pinEingabe){
   if(!user || !user.pinHash || !user.pinSalt) return false;
-  try{ return (await pinHash(pinEingabe, user.pinSalt))===user.pinHash; }catch(e){ return false; }
+  try{
+    if(user.pinKdf==='pbkdf2'){
+      if((await pinHashPbkdf2(pinEingabe, user.pinSalt))===user.pinHash) return true;
+      // Selbstheilung gegen Merge-Feld-Mix: mergeRecord kann pinKdf='pbkdf2' von
+      // Gerät A mit einem juengeren Alt-Hash von Gerät B kombinieren. Der Fallback
+      // prueft denselben gespeicherten Hash zusaetzlich mit dem Altverfahren –
+      // schwaecht nichts (es existiert nur EIN Hash), verhindert aber eine
+      // Login-Sperre; tryLogin hebt den Datensatz danach erneut auf PBKDF2 an.
+      return (await pinHash(pinEingabe, user.pinSalt))===user.pinHash;
+    }
+    return (await pinHash(pinEingabe, user.pinSalt))===user.pinHash;
+  }catch(e){ return false; }
 }
 // Setzt pinHash/pinSalt am (übergebenen) Benutzerobjekt und entfernt das Klartextfeld
 // samt Sync-Tombstone, damit das Klartextfeld auch auf anderen Geräten verschwindet.
 async function pinSetzen(userObj, pin){
   userObj.pinSalt=crypto.randomUUID();
-  userObj.pinHash=await pinHash(pin, userObj.pinSalt);
+  userObj.pinHash=await pinHashPbkdf2(pin, userObj.pinSalt);   // v239 (R4): PBKDF2
+  userObj.pinKdf='pbkdf2';
   if('pin' in userObj){
     delete userObj.pin;
     const st=nowIso();
@@ -4004,7 +4040,7 @@ async function pinMigrationAlleUser(){
     if(!u || u.pin==null) continue;
     try{
       const klar=String(u.pin);
-      if(klar==='' || (u.pinHash && u.pinSalt && (await pinHash(klar, u.pinSalt))===u.pinHash)){
+      if(klar==='' || (u.pinHash && u.pinSalt && await pinPruefen(u, klar))){
         // Leerer Alt-PIN oder Klartext passt zum vorhandenen Hash: nur Feld tilgen
         delete u.pin;
         u._geleert={...(u._geleert||{}), pin:nowIso()};
@@ -9425,13 +9461,13 @@ async function zeigeLagerArtikel(artikelId){
     ${zeile('Zustand', a.zustand)}
     ${zeile('Verantwortlich', a.verantwortlicher)}
     ${zeile('Produktlink', a.produktlink, {link:true})}
-    ${a.notiz?`<div style="margin-top:10px;font-size:13px;color:var(--ink-60)"><strong>Notiz:</strong><br>${a.notiz.replace(/\n/g,'<br>')}</div>`:''}
+    ${a.notiz?`<div style="margin-top:10px;font-size:13px;color:var(--ink-60)"><strong>Notiz:</strong><br>${esc(a.notiz).replace(/\n/g,'<br>')}</div>`:''}
     ${(a.entnahmen&&a.entnahmen.length)?`
       <div class="f-section-title" style="margin-top:14px"><i class="ti ti-history"></i> Letzte Entnahmen</div>
       <div style="max-height:160px;overflow-y:auto">
         ${a.entnahmen.slice(0,10).map(e=>`<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--ink-10);font-size:12px">
-          <span>${e.datum} · <strong>${e.menge}</strong>${e.zweck?' · '+e.zweck:''}</span>
-          <span style="color:var(--ink-40)">${e.von||''}</span>
+          <span>${esc(e.datum)} · <strong>${esc(e.menge)}</strong>${e.zweck?' · '+esc(e.zweck):''}</span>
+          <span style="color:var(--ink-40)">${esc(e.von||'')}</span>
         </div>`).join('')}
       </div>`:''}
     <div style="display:flex;gap:6px;margin-top:14px">
@@ -13925,6 +13961,69 @@ function vzHistCollect(){
     .filter(h=>h.ab && parseBetrag(h.betrag)>0)
     .map(h=>({ab:h.ab, betrag:parseBetrag(h.betrag)}))
     .sort((a,b)=>new Date(a.ab)-new Date(b.ab));
+}
+
+/* ── Mietfreie Zeit (v238) ──
+   m.mietfrei = [{von:'YYYY-MM', bis:'YYYY-MM', art:'kalt'|'voll', grund:''}]
+   'kalt' = Kaltmiete erlassen, NK-Vorauszahlung (und Stellplatz) bleiben faellig
+   'voll' = Wohnungsmiete komplett erlassen (Stellplatz aus dem TG-Register bleibt faellig,
+            da eigenstaendiges Vertragsverhaeltnis). Typischer Anwendungsfall: Ausgleich
+   fuer unrenoviert uebergebene Wohnung. Schriftliche Vereinbarung empfohlen. */
+function mietfreiImMonat(m, mietmonat){
+  if(!m || !Array.isArray(m.mietfrei) || !mietmonat || !/^\d{4}-\d{2}$/.test(mietmonat)) return null;
+  for(const e of m.mietfrei){
+    if(!e || !e.von || !/^\d{4}-\d{2}$/.test(e.von)) continue;
+    const bis = (e.bis && /^\d{4}-\d{2}$/.test(e.bis)) ? e.bis : e.von; // ohne bis = nur der von-Monat
+    if(mietmonat >= e.von && mietmonat <= bis) return e;
+  }
+  return null;
+}
+// Reduziertes Monatssoll waehrend mietfreier Zeit
+function mietfreiSollMo(art, nk, spSoll){
+  const n=Number(nk)||0, sp=Number(spSoll)||0;
+  return Math.round(((art==='voll'?0:n)+sp)*100)/100;
+}
+
+/* ── Editor Mietfreie Zeit im Mieterformular (v238, Muster vzHist) ── */
+function mfInit(m){ window._mfZeiten = (m?.mietfrei||[]).map(e=>({von:e.von||'',bis:e.bis||'',art:e.art||'kalt',grund:e.grund||''})); }
+function mfRender(){
+  const wrap=document.getElementById('mfList'); if(!wrap) return;
+  const rows=window._mfZeiten||[];
+  wrap.innerHTML = rows.length ? rows.map((e,i)=>`
+    <div style="border:1px solid var(--ink-10);border-radius:8px;padding:6px;margin-bottom:6px">
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+        <input type="month" value="${e.von||''}" onchange="mfSet(${i},'von',this.value)" title="von (einschl.)"
+          style="flex:1 1 120px;padding:6px 8px;border:1.5px solid var(--ink-10);border-radius:6px;font-size:13px">
+        <span style="color:var(--ink-40);font-size:12px">bis</span>
+        <input type="month" value="${e.bis||''}" onchange="mfSet(${i},'bis',this.value)" title="bis (einschl.)"
+          style="flex:1 1 120px;padding:6px 8px;border:1.5px solid var(--ink-10);border-radius:6px;font-size:13px">
+        <button type="button" class="btn btn-sm btn-danger" onclick="mfDel(${i})"><i class="ti ti-x"></i></button>
+      </div>
+      <div style="display:flex;gap:6px;align-items:center;margin-top:6px;flex-wrap:wrap">
+        <select onchange="mfSet(${i},'art',this.value)"
+          style="flex:0 0 auto;padding:6px 8px;border:1.5px solid var(--ink-10);border-radius:6px;font-size:13px">
+          <option value="kalt" ${e.art!=='voll'?'selected':''}>nur NK zahlen (Kaltmiete erlassen)</option>
+          <option value="voll" ${e.art==='voll'?'selected':''}>komplett mietfrei (auch NK)</option>
+        </select>
+        <input type="text" value="${esc(e.grund||'')}" placeholder="Grund, z. B. Ausgleich unrenovierte Wohnung"
+          onchange="mfSet(${i},'grund',this.value)"
+          style="flex:1 1 160px;padding:6px 8px;border:1.5px solid var(--ink-10);border-radius:6px;font-size:13px">
+      </div>
+    </div>`).join('') : '<div style="font-size:11px;color:var(--ink-40);margin-bottom:6px">Kein mietfreier Zeitraum erfasst.</div>';
+}
+function mfSet(i,feld,val){ if(window._mfZeiten && window._mfZeiten[i]) window._mfZeiten[i][feld]=val; }
+function mfDel(i){ window._mfZeiten=(window._mfZeiten||[]).filter((_,x)=>x!==i); mfRender(); }
+function mfAdd(){ (window._mfZeiten=window._mfZeiten||[]).push({von:'',bis:'',art:'kalt',grund:''}); mfRender(); }
+function mfToggle(cb){
+  const box=document.getElementById('mfBox'); if(box) box.style.display=cb.checked?'block':'none';
+  if(cb.checked && !(window._mfZeiten&&window._mfZeiten.length)) mfAdd();
+}
+function mfCollect(){
+  return (window._mfZeiten||[])
+    .filter(e=>e.von && /^\d{4}-\d{2}$/.test(e.von))
+    .map(e=>({von:e.von, bis:(e.bis&&/^\d{4}-\d{2}$/.test(e.bis)&&e.bis>=e.von)?e.bis:e.von,
+              art:e.art==='voll'?'voll':'kalt', grund:(e.grund||'').trim()}))
+    .sort((a,b)=>a.von.localeCompare(b.von));
 }
 
 const NKA_VORLAGEN = {
@@ -21972,6 +22071,17 @@ function mieterFormHTML(obj, m={}) {
         <input type="date" id="mMieteSeit" value="${m.mieteSeitISO||''}">
         <div style="font-size:10px;color:var(--ink-40);margin-top:2px">Datum, seit dem die aktuelle Gesamtmiete gezahlt wird (z. B. nach Mieterhöhung). Wird für die Mietbescheinigung übernommen. Leer = Einzugsdatum.</div></div>
     </div>
+    <div class="f" style="margin-top:2px">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px">
+        <input type="checkbox" id="mfChk" onchange="mfToggle(this)" ${(m.mietfrei&&m.mietfrei.length)?'checked':''} style="width:16px;height:16px">
+        Mietfreie Zeit vereinbart (z. B. Ausgleich für unrenovierte Wohnung)
+      </label>
+      <div id="mfBox" style="display:${(m.mietfrei&&m.mietfrei.length)?'block':'none'};margin-top:8px;padding:8px;border:1px dashed var(--ink-10);border-radius:8px">
+        <div style="font-size:11px;color:var(--ink-40);margin-bottom:6px">Monatsgenau (von/bis einschließlich). „Nur NK zahlen": Kaltmiete entfällt, NK-Vorauszahlung und TG-Stellplatz bleiben fällig. Buchhaltung und Offene Posten setzen im Zeitraum automatisch das reduzierte Soll an. Vereinbarung schriftlich festhalten (Nachtrag zum Mietvertrag).</div>
+        <div id="mfList"></div>
+        <button type="button" class="btn btn-sm" onclick="mfAdd()"><i class="ti ti-plus"></i> Zeitraum hinzufügen</button>
+      </div>
+    </div>
     ${istVerwalter()?`
     <div class="f-section-title"><i class="ti ti-building-bank"></i> Bankverbindung / Zahlung (nur Admin)</div>
     <div class="f-row">
@@ -22306,6 +22416,7 @@ async function modalEditMieter(id) {
       <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
     </div>`);
   vzHistInit(m); vzHistRender();
+  mfInit(m); mfRender();
 }
 
 async function saveEditMieter(id) {
@@ -22358,6 +22469,10 @@ async function saveEditMieter(id) {
   m.miete   = parseFloat(document.getElementById('mMiete').value)||m.miete||'';
   m.nk      = parseFloat(document.getElementById('mNk').value)||m.nk||'';
   if(document.getElementById('vzHistChk')?.checked){ const vh=vzHistCollect(); if(vh.length) m.vzHistorie=vh; else delete m.vzHistorie; } else { delete m.vzHistorie; }
+  { // v238: Mietfreie Zeit – nur schreiben, wenn der Formularblock vorhanden war
+    const _mfChk=document.getElementById('mfChk');
+    if(_mfChk){ if(_mfChk.checked){ const mf=mfCollect(); if(mf.length) m.mietfrei=mf; else delete m.mietfrei; } else { delete m.mietfrei; } }
+  }
   m.gesamt  = (parseFloat(document.getElementById('mMiete').value)||0) +
               (parseFloat(document.getElementById('mNk').value)||0) || m.gesamt||'';
   // Einzug/Auszug: sowohl Anzeige- (de-DE) als auch ISO-Feld pflegen.
@@ -30046,14 +30161,18 @@ function zaRenderMietkonto(buch, mieter, monate, konto, spIdx){
       else if(v.status==='offen'){ farbe='var(--ink-40)'; dmark='—'; }
       else if(v.status==='inaktiv'){ farbe='var(--ink-20,#ccc)'; dmark='·'; }
       else if(v.status==='fremd'){ farbe='var(--amber)'; dmark='?'; }
+      else if(v.status==='mietfrei'){ farbe='#0e7490'; dmark='frei'; }
       else if(v.status==='mehr'){ farbe='#1a56db'; dmark='+'+eur(v.diff); }
       else { farbe='var(--red,#dc2626)'; dmark=eur(v.diff); }
       const spInfo = v.stellplatz>0 ? `<div style="font-size:9px;color:var(--ink-40)">davon SP ${eur(v.stellplatz)}</div>` : '';
       // §6: Aufschluesselung der Wohnungsmiete in Kaltmiete/NK (nur wenn beide belegt)
       const kmNk = (v.aktiv && (v.miete>0) && (v.nk>0) && (v.kaltmiete>0))
         ? `<div style="font-size:9px;color:var(--ink-40)">KM ${eur(v.kaltmiete)} · NK ${eur(v.nk)}</div>` : '';
+      // v238: Kennzeichnung mietfreier Monate (reduziertes Soll)
+      const mfInfo = v.mietfrei
+        ? `<div style="font-size:9px;color:#0e7490">${v.mietfrei==='voll'?'mietfrei':'mietfrei · nur NK'}</div>` : '';
       return `<td style="padding:5px;text-align:right;border-left:1px solid var(--line);font-variant-numeric:tabular-nums">
-                ${v.ist>0?eur(v.ist):(v.status==='inaktiv'?'<span style="color:var(--ink-20,#ccc)">·</span>':'<span style="color:var(--ink-40)">—</span>')}${spInfo}${kmNk}</td>
+                ${v.ist>0?eur(v.ist):(v.status==='inaktiv'?'<span style="color:var(--ink-20,#ccc)">·</span>':'<span style="color:var(--ink-40)">—</span>')}${spInfo}${kmNk}${mfInfo}</td>
               <td style="padding:5px;text-align:right;color:${farbe};font-weight:600;font-size:12px">${dmark}</td>`;
     }).join('');
     const bg = r.warnung ? 'background:#fff8f0' : '';
@@ -31664,7 +31783,8 @@ function zaSollIst(buchungen, mieterListe, monate, spIdx){
     sollIdx[m.id]={ mieter:m.mieter, weNr:m.weNr, objektId:m.objektId,
       soll: (Number(m.gesamt)||0)+spSoll, netto:Number(m.miete)||0, nk:Number(m.nk)||0,
       spSoll, tg: !!m._tgMieter,
-      ehem: !!m._vormieter, einzugISO:_einzugISOvon(m), auszugISO:_auszugISOvon(m) };
+      ehem: !!m._vormieter, einzugISO:_einzugISOvon(m), auszugISO:_auszugISOvon(m),
+      mietfrei: Array.isArray(m.mietfrei)&&m.mietfrei.length ? m.mietfrei : null };
   }
   // Ist je Mieter+Monat
   const ist={}; // mieterId -> {monat -> {miete, stellplatz}}
@@ -31717,7 +31837,10 @@ function zaSollIst(buchungen, mieterListe, monate, spIdx){
       const istGesamt=Math.round((i.miete+i.stellplatz)*100)/100;
       // §3: Soll nur ansetzen, wenn der Mieter in diesem Monat Vertragspartei war
       const aktivMo = _mieterAktivImMonat({einzugISO:s.einzugISO, auszugISO:s.auszugISO}, mo);
-      const sollMo = aktivMo ? s.soll : 0;
+      // v238: Mietfreie Zeit – im vereinbarten Zeitraum reduziert sich das Soll auf
+      // NK-VZ (+ Stellplatz) bzw. bei 'voll' nur auf den Stellplatz-Anteil.
+      const mf = aktivMo ? mietfreiImMonat({mietfrei:s.mietfrei}, mo) : null;
+      const sollMo = !aktivMo ? 0 : (mf ? mietfreiSollMo(mf.art, s.nk, s.spSoll) : s.soll);
       const diff=Math.round((istGesamt - sollMo)*100)/100;
       // §6: reine Wohnungsmiete (ohne SP-Anteil) in NK-Vorauszahlung + Kaltmiete zerlegen –
       // NK zuerst (§ 366 Abs. 2 BGB analog), Rest Kaltmiete. Nur zur Anzeige, veraendert diff nicht.
@@ -31725,13 +31848,15 @@ function zaSollIst(buchungen, mieterListe, monate, spIdx){
       const kmAnteil = Math.round((Math.max(i.miete,0) - nkAnteil)*100)/100;
       let status;
       if(!aktivMo){ status = istGesamt>0 ? 'fremd' : 'inaktiv'; }
-      else if(istGesamt===0){ status='offen'; }
+      else if(istGesamt===0){ status = (mf && sollMo===0) ? 'mietfrei' : 'offen'; }
       else if(Math.abs(diff)<0.5){ status='ok'; }
       else { status = diff>0 ? 'mehr' : 'weniger'; }
       monatsWerte[mo]={ist:istGesamt, miete:i.miete, stellplatz:i.stellplatz,
-        kaltmiete:kmAnteil, nk:Math.round(nkAnteil*100)/100, sollMo, aktiv:aktivMo, diff, status};
-      // Warnung nur fuer aktive Mietmonate (inaktive Monate erzeugen keine Rot-Markierung)
-      if(aktivMo && (istGesamt===0 || Math.abs(diff)>=0.5)) warnung=true;
+        kaltmiete:kmAnteil, nk:Math.round(nkAnteil*100)/100, sollMo, aktiv:aktivMo, diff, status,
+        mietfrei: mf ? mf.art : null};
+      // Warnung nur fuer aktive Mietmonate (inaktive Monate erzeugen keine Rot-Markierung).
+      // v238: mietfreier Monat ohne Restsoll (sollMo=0) erzeugt keine Warnung.
+      if(aktivMo && ((istGesamt===0 && sollMo>0) || Math.abs(diff)>=0.5)) warnung=true;
     }
     rows.push({mieterId:mid, mieter:s.mieter, weNr:s.weNr, objektId:s.objektId,
       soll:s.soll, netto:s.netto, nk:s.nk, spSoll:s.spSoll||0, tg:!!s.tg, ehem:!!s.ehem,

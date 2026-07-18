@@ -1,7 +1,7 @@
 /* NadigPfau Hausverwaltung – Service Worker
    ─────────────────────────────────────────────────────────────────────────
    CACHE bei JEDER neuen index.html-Version hochzählen (PWA-Invariante).
-   Aktuell: v225.
+   Aktuell: v239.
    Mehrdatei-Deploy (5 Dateien im selben GitHub-Pages-Verzeichnis):
      index.html + manifest.json + icon-192.png + icon-512.png + sw.js
    Strategie:
@@ -16,7 +16,7 @@
    ───────────────────────────────────────────────────────────────────────── */
 'use strict';
 
-const CACHE = 'nadigpfau-v237';
+const CACHE = 'nadigpfau-v239';
 
 const CORE = [
   './',
@@ -63,8 +63,12 @@ self.addEventListener('fetch', event => {
     event.respondWith((async () => {
       try {
         const netz = await fetch(req);
-        const cache = await caches.open(CACHE);
-        cache.put('./index.html', netz.clone());
+        // Nur ERFOLGREICHE Antworten cachen: ein 404/500 des Servers darf die
+        // funktionierende Offline-Kopie der index.html nicht ueberschreiben.
+        if (netz && netz.ok) {
+          const cache = await caches.open(CACHE);
+          cache.put('./index.html', netz.clone());
+        }
         return netz;
       } catch (_) {
         const cache = await caches.open(CACHE);
