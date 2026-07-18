@@ -1,7 +1,7 @@
 /* NadigPfau Hausverwaltung – Service Worker
    ─────────────────────────────────────────────────────────────────────────
    CACHE bei JEDER neuen index.html-Version hochzählen (PWA-Invariante).
-   Aktuell: v239.
+   Aktuell: v240.
    Mehrdatei-Deploy (5 Dateien im selben GitHub-Pages-Verzeichnis):
      index.html + manifest.json + icon-192.png + icon-512.png + sw.js
    Strategie:
@@ -16,7 +16,7 @@
    ───────────────────────────────────────────────────────────────────────── */
 'use strict';
 
-const CACHE = 'nadigpfau-v239';
+const CACHE = 'nadigpfau-v240';
 
 const CORE = [
   './',

@@ -122,7 +122,7 @@ body{background:var(--surface);color:var(--ink);font-size:15px;-webkit-font-smoo
 .bb-card{background:var(--white);border:1px solid var(--ink-10);border-radius:12px;padding:12px;margin-bottom:8px;box-shadow:var(--shadow)}
 .bb-card.bb-notdienst{border-left:3px solid var(--red)}
 .bb-badge{display:inline-block;background:var(--red-l);color:var(--red);font-size:10px;font-weight:600;padding:1px 7px;border-radius:10px;margin-left:6px;vertical-align:middle}
-.settings-card{background:var(--white);border-radius:var(--radius-lg);border:1px solid var(--ink-10);padding:16px;margin-bottom:12px;box-shadow:var(--shadow)}
+.settings-card{background:var(--white);border-radius:var(--radius-lg);border:1px solid var(--ink-10);padding:16px;margin-bottom:12px;box-shadow:var(--shadow);min-width:0;max-width:100%;overflow-x:hidden;overflow-x:clip}  /* v240: Karte darf den Viewport nicht sprengen (Bild-2-Befund) */
 .settings-tabs{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:14px;position:sticky;top:0;z-index:5;background:var(--bg,#f4f5f7);padding:4px 0}
 .st-tab{flex:1 1 92px;min-width:92px;display:flex;flex-direction:column;align-items:center;gap:3px;padding:8px 4px;border:1px solid var(--ink-10);border-radius:10px;background:var(--white);color:var(--ink-40);font-size:11px;font-weight:600;cursor:pointer;transition:all .15s}
 .st-tab i{font-size:18px}
@@ -891,7 +891,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=34;
-const APP_VERSION = '2026-07-18-v239';
+const APP_VERSION = '2026-07-18-v240';
 /* v222 (14.07.2026): KI-Auslesen Zaehlerstand aus Foto (analog rechnungOcrErkennen).
    Neuer Button "Zaehlerstand aus Foto auslesen (KI)" in modalZaehlerstand,
    sichtbar sobald ein Foto vorhanden ist. Sendet Base64+MimeType+Zaehlerart
@@ -1775,6 +1775,7 @@ function nav(id,title,sub,push=true){
   if(id==='branchenbuch'){ const el=document.getElementById('branchenbuchView'); if(el) renderBranchenbuch(el); }
   if(id==='mail'){ renderMail(); }
   curPage=id;
+  try{rotationAktualisieren();}catch(_){}
 }
 
 // Android Zurück-Button abfangen
@@ -1807,6 +1808,24 @@ function goBack(){
   if(prev.id==='dash') renderDash().then(()=>nav('dash','Dashboard','',false));
   else if(prev.id==='objekt') showObjekt(currentObjId);
   else nav(prev.id,prev.title,prev.sub,true);
+}
+/* ── v240: Bildschirmdrehung – nur unter Einstellungen → Zahlungen freigegeben ──
+   Voraussetzung: manifest.json orientation:"any" (mit Manifest-"portrait" kann
+   unlock() das Querformat nicht freigeben). Auf Geräten ohne Orientation-Lock-API
+   (z. B. iOS/iPadOS) greift die Sperre nicht – dort dreht die App überall mit. */
+function zaRotationErlaubt(){
+  return curPage==='settings' && (typeof _settingsTab!=='undefined') && _settingsTab==='zahlung';
+}
+function rotationAktualisieren(){
+  try{
+    const so=screen.orientation;
+    if(!so) return;
+    if(zaRotationErlaubt()){
+      if(so.unlock) so.unlock();                 // Drehung folgt dem Gerät
+    } else if(so.lock){
+      so.lock('portrait').catch(()=>{});         // Standard: Hochformat halten
+    }
+  }catch(_){}
 }
 function refreshCurrentPage(){if(curPage==='dash')renderDash();}
 
@@ -11659,6 +11678,14 @@ async function showMieter(id){
   const maengel=(await idbGetAll('maengel')).filter(x=>x.mieterId===id&&x.status!=='behoben');
   const prots=(await idbGetAll('protokolle')).filter(p=>!p._papierkorb&&p.mieterId===id);
   const tg=m.tgNr?(await idbGet('tg',m.tgNr).catch(()=>null)):null;
+  // v240: ALLE ehemaligen Mieter derselben Wohnung (auch ohne _vormieterId-Verknüpfung,
+  // z. B. aus dem Bankimport angelegte Alt-Mieter) – sollen bei der Wohnung sichtbar sein.
+  let altListe=[];
+  try{
+    altListe=(await idbGetAll('mieter','objektId',m.objektId))
+      .filter(x=>x && x._vormieter && x.id!==m.id && String(x.weNr)===String(m.weNr))
+      .sort((a,b)=>String(b.auszugISO||b.updatedAt||'').localeCompare(String(a.auszugISO||a.updatedAt||'')));
+  }catch(_){}
   const ini=initials(m.mieter);
   const el=document.getElementById('page-mieter');
 
@@ -11705,6 +11732,14 @@ async function showMieter(id){
     </div>
   </div>
   ${personenBlockHTML(m)}
+  ${altListe.length?`<div class="card" style="margin-bottom:12px">
+    <div class="card-hdr"><i class="ti ti-history"></i> Ehemalige Mieter dieser Wohnung (${altListe.length})</div>
+    ${altListe.map(v=>`<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 0;border-bottom:1px solid var(--line);cursor:pointer" onclick="showMieter('${v.id}')">
+      <div><span class="chip chip-warn" style="font-size:9px;margin-right:6px">ehem.</span>${esc(v.mieter||'')}
+        <div style="font-size:11px;color:var(--ink-40)">${v.einzug?('Einzug '+esc(v.einzug)+' · '):''}${v.auszug?('Auszug '+esc(v.auszug)):'Auszug unbekannt'}${v._importHinweis?' · aus Bankimport':''}</div></div>
+      <i class="ti ti-chevron-right" style="color:var(--ink-40)"></i>
+    </div>`).join('')}
+  </div>`:''}
   ${m.zusatzkontakt&&m.zusatzkontakt.name?`<div class="card" style="margin-bottom:12px">
     <div class="card-hdr"><i class="ti ti-heart-handshake"></i> ${esc(m.zusatzkontakt.rolle||'Zusatzkontakt')}</div>
     <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
@@ -22573,7 +22608,9 @@ async function mieterEndgueltigLoeschen(id){
   if(!m) return;
   if(!confirm(`Mieterdatensatz „${m.mieter||''}" endgültig löschen?\n\nDie Wohnung und ihre Stammdaten bleiben erhalten. Diese Aktion betrifft nur den Mieterdatensatz. Eine lokale Sicherung wird automatisch angelegt.`)) return;
   await erstelleMieterSnapshot('vor Löschung '+(m.mieter||m.id));
-  await idbDelete('mieter', id);
+  // v240 (KRITISCH): mit Tombstone löschen – sonst stellt der OneDrive-Merge
+  // den Datensatz beim nächsten Sync wieder her (Nutzerbefund 18.07.).
+  await deleteMitTombstone('mieter', id);
   clearTimeout(window._syncTimer);
   window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
   closeModal();
@@ -25647,6 +25684,7 @@ function switchSettingsTab(tab){
     b.classList.toggle('active', b.dataset.tab===tab);
   });
   if(tab==='kontrolle') renderKontrolle();
+  try{rotationAktualisieren();}catch(_){}   // v240: Drehung nur im Zahlungen-Tab
 }
 
 /* Benutzer-Kontrolle (nur u_admin): Liste + letzte Aktivität */
@@ -30171,7 +30209,9 @@ function zaRenderMietkonto(buch, mieter, monate, konto, spIdx){
       // v238: Kennzeichnung mietfreier Monate (reduziertes Soll)
       const mfInfo = v.mietfrei
         ? `<div style="font-size:9px;color:#0e7490">${v.mietfrei==='voll'?'mietfrei':'mietfrei · nur NK'}</div>` : '';
-      return `<td style="padding:5px;text-align:right;border-left:1px solid var(--line);font-variant-numeric:tabular-nums">
+      // v240: Ist-Zelle klickbar – Zahlungen des Monats anzeigen/aufteilen
+      const klick = v.ist>0 ? ` onclick="zaModalMonatsZahlungen('${r.mieterId}','${mo}')" title="Zahlungen dieses Monats anzeigen/aufteilen"` : '';
+      return `<td${klick} style="padding:5px;text-align:right;border-left:1px solid var(--line);font-variant-numeric:tabular-nums${v.ist>0?';cursor:pointer':''}">
                 ${v.ist>0?eur(v.ist):(v.status==='inaktiv'?'<span style="color:var(--ink-20,#ccc)">·</span>':'<span style="color:var(--ink-40)">—</span>')}${spInfo}${kmNk}${mfInfo}</td>
               <td style="padding:5px;text-align:right;color:${farbe};font-weight:600;font-size:12px">${dmark}</td>`;
     }).join('');
@@ -30185,9 +30225,9 @@ function zaRenderMietkonto(buch, mieter, monate, konto, spIdx){
     }
     return `<tr style="border-bottom:1px solid var(--line);${bg}">
       <td style="padding:6px;font-size:11px;color:var(--ink-40)">${esc(r.weNr||(r.tg?'TG':''))}</td>
-      <td style="padding:6px;font-size:13px">${esc(r.mieter)}${r.ehem?' <span class="chip chip-warn" style="font-size:9px">ehem.</span>':''}</td>
+      <td style="padding:6px;font-size:13px">${esc(r.mieter)}${r.ehem?' <span class="chip chip-warn" style="font-size:9px">ehem.</span>':''}${r.ehem?` <button class="btn btn-sm btn-danger" style="padding:1px 5px;font-size:10px;vertical-align:middle" title="Ehemaligen Mieter löschen (z. B. doppelt angelegt)" onclick="zaMieterLoeschen('${r.mieterId}')"><i class="ti ti-trash"></i></button>`:''}</td>
       <td style="padding:6px;text-align:right;font-variant-numeric:tabular-nums;font-size:12px">
-        ${eur(r.soll)}<div style="font-size:9px;color:var(--ink-40)">${r.tg?('SP '+eur(r.spSoll)):(eur(r.netto)+'+'+eur(r.nk)+(r.spSoll?'+SP '+eur(r.spSoll):''))}</div></td>
+        ${eur(r.soll)}<div style="font-size:9px;color:var(--ink-40)">${r.tg?('SP '+eur(r.spSoll)):(eur(r.netto)+'+'+eur(r.nk)+(r.spSoll?'+SP '+eur(r.spSoll):''))}</div>${r.tg?'':`<button class="btn btn-sm" style="padding:1px 5px;font-size:9px;margin-top:2px" title="NK-Vorauszahlung anpassen" onclick="zaModalNkVz('${r.mieterId}')"><i class="ti ti-pencil"></i> NK-VZ</button>`}</td>
       <td style="padding:6px;text-align:right;font-variant-numeric:tabular-nums;font-size:12px;background:var(--ink-05)">${saldoTxt}</td>
       ${cells}</tr>`;
   }).join('');
@@ -30212,6 +30252,111 @@ function zaRenderMietkonto(buch, mieter, monate, konto, spIdx){
       „Δ Soll" = Differenz Ist minus Soll je Monat. <b>Saldo</b> = Summe der Abweichungen ueber das Anzeigefenster
       (positiv = Guthaben/wahrscheinliche NK-Ueberzahlung, negativ = Rueckstand). SP = Stellplatzanteil.
     </p>`;
+}
+
+/* ── v240: Aktionen direkt im Mietkonto ───────────────────────────────
+   1) zaMieterLoeschen – doppelt angelegte ehemalige Mieter aus der Sicht löschen
+      (mit Tombstone – sonst bringt der OneDrive-Merge den Datensatz zurück).
+   2) zaModalNkVz/zaNkVzSpeichern – NK-Vorauszahlung anpassen (VZ-Historie, § 560 IV BGB).
+   3) zaModalMonatsZahlungen – Zahlungen eines Mieters/Monats anzeigen und über den
+      Split-Dialog in Kaltmiete/NK-VZ/NK-Nachzahlung/Kaution aufteilen. */
+async function zaMieterLoeschen(mieterId){
+  if(!istVerwalter()){ toast('Nur für Verwalter'); return; }
+  const m=await idbGet('mieter', mieterId).catch(()=>null);
+  if(!m){ toast('Mieter nicht gefunden.'); return; }
+  const alle=await idbGetAll('buchungen').catch(()=>[]);
+  const anz=alle.filter(b=>b && b.mieterId===mieterId && !b.geloescht).length;
+  const obj=getObj(m.objektId);
+  if(!confirm(`Ehemaligen Mieter „${m.mieter||''}“ (WE ${m.weNr||'?'}${obj?.name?', '+obj.name:''}) endgültig löschen?\n\n`+
+    (anz?`${anz} zugeordnete Buchung${anz>1?'en bleiben':' bleibt'} erhalten, verliert aber den Mieterbezug im Mietkonto.`:'Keine Buchungen zugeordnet.')+
+    `\n\nVorher wird automatisch eine lokale Sicherung angelegt.`)) return;
+  try{ await erstelleMieterSnapshot('vor Löschung '+(m.mieter||m.id)); }catch(_){}
+  await deleteMitTombstone('mieter', mieterId);
+  if(window._zaMieterCache) window._zaMieterCache=window._zaMieterCache.filter(x=>x && x.id!==mieterId);
+  syncSoon();
+  toast('Mieter gelöscht ✓');
+  await zaRenderVerlauf();
+}
+async function zaModalNkVz(mieterId){
+  if(!istVerwalter()){ toast('Nur für Verwalter'); return; }
+  const m=await idbGet('mieter', mieterId).catch(()=>null);
+  if(!m){ toast('Mieter nicht gefunden.'); return; }
+  const eur=n=>(Number(n)||0).toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const j=new Date(); const moVal=j.getFullYear()+'-'+String(j.getMonth()+1).padStart(2,'0');
+  showModal(`
+    <div class="m-title"><i class="ti ti-adjustments-dollar"></i> NK-Vorauszahlung anpassen</div>
+    <div style="background:var(--ink-05);border-radius:8px;padding:8px 10px;margin-bottom:10px;font-size:12px">
+      <strong>${esc(m.mieter||'')}</strong> · WE ${esc(String(m.weNr||''))}<br>
+      Kaltmiete ${eur(m.miete)} € · NK-VZ aktuell <strong>${eur(m.nk)} €</strong> · Gesamt ${eur(m.gesamt)} €
+    </div>
+    <div class="f-row">
+      <div class="f"><label>Neue NK-VZ (€/Monat) *</label>
+        <input type="text" inputmode="decimal" id="zaNkNeu" value="${esc(String(m.nk??'').replace('.',','))}"></div>
+      <div class="f"><label>Gültig ab Monat *</label>
+        <input type="month" id="zaNkAb" value="${moVal}"></div>
+    </div>
+    <div style="font-size:11px;color:var(--ink-40);margin:2px 0 10px">Wird in der VZ-Historie gespeichert;
+      das Mietkonto rechnet ab dem gewählten Monat mit dem neuen Betrag. Hinweis: Eine einseitige Anpassung
+      ist nur nach einer Betriebskostenabrechnung zulässig (§ 560 Abs. 4 BGB) – sonst Vereinbarung mit dem
+      Mieter treffen.</div>
+    <div class="f-row">
+      <button class="btn btn-copper btn-full" onclick="zaNkVzSpeichern('${m.id}')"><i class="ti ti-check"></i> Speichern</button>
+      <button class="btn btn-full" onclick="closeModal();zaRenderVerlauf()">Abbrechen</button>
+    </div>`);
+}
+async function zaNkVzSpeichern(mieterId){
+  const m=await idbGet('mieter', mieterId).catch(()=>null);
+  if(!m){ toast('Mieter nicht gefunden.'); return; }
+  const neu=parseBetrag(document.getElementById('zaNkNeu')?.value);
+  const abMo=document.getElementById('zaNkAb')?.value||'';
+  if(!(neu>=0)){ toast('Bitte einen gültigen Betrag angeben.'); return; }
+  if(!/^\d{4}-\d{2}$/.test(abMo)){ toast('Bitte den Monat angeben.'); return; }
+  const ab=abMo+'-01';
+  m.vzHistorie=(m.vzHistorie||[]).filter(h=>h && h.ab!==ab);
+  m.vzHistorie.push({ab, betrag:neu});
+  m.vzHistorie.sort((a,b)=>new Date(a.ab)-new Date(b.ab));
+  // Gilt die Änderung bereits (ab-Monat <= aktueller Monat)? Dann die aktuellen Felder
+  // mitziehen. Gesamt wird um das NK-Delta korrigiert (nicht neu aus miete+nk gebildet),
+  // damit ein abweichend gepflegtes Gesamt-Soll (z. B. inkl. Garage/Möbel) erhalten bleibt.
+  const j=new Date(); const aktMo=j.getFullYear()+'-'+String(j.getMonth()+1).padStart(2,'0');
+  if(abMo<=aktMo){
+    const alt=Number(m.nk)||0;
+    m.nk=neu;
+    m.gesamt=Math.round(((Number(m.gesamt)||((Number(m.miete)||0)+alt))+(neu-alt))*100)/100;
+  }
+  m.geaendert=now(); m.updatedAt=nowIso();
+  await idbPut('mieter', m);
+  syncSoon();
+  closeModal();
+  toast('NK-Vorauszahlung gespeichert ✓');
+  await zaRenderVerlauf();
+}
+async function zaModalMonatsZahlungen(mieterId, monat){
+  const alle=await idbGetAll('buchungen').catch(()=>[]);
+  const liste=alle.filter(b=>b && !b.geloescht && b.typ==='eingang' && b.mieterId===mieterId && b.mietmonat===monat)
+    .sort((a,b)=>(a.datumISO||'').localeCompare(b.datumISO||''));
+  const m=await idbGet('mieter', mieterId).catch(()=>null);
+  const eur=n=>(Number(n)||0).toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const rows=liste.map(b=>{
+    const teile=Array.isArray(b.kategorien)&&b.kategorien.length
+      ? `<div style="font-size:10px;color:var(--copper,#b87333);margin-top:2px">${b.kategorien.map(t=>esc(buchKatLabel(t.kat))+' '+eur(t.betrag)).join(' · ')}</div>`
+      : (b.kategorie?`<div style="font-size:10px;color:var(--ink-40);margin-top:2px">${esc(buchKatLabel(b.kategorie))}</div>`:'');
+    return `<tr style="border-bottom:1px solid var(--line)">
+      <td style="padding:6px;font-size:12px;white-space:nowrap;vertical-align:top">${esc((b.datumISO||'').slice(8,10)+'.'+(b.datumISO||'').slice(5,7)+'.')}</td>
+      <td style="padding:6px;text-align:right;font-variant-numeric:tabular-nums;font-weight:600;vertical-align:top">${eur(b.betrag)} €${b.bar?' <span class="chip" style="font-size:9px;background:var(--copper,#b87333);color:#fff;padding:1px 5px;border-radius:8px">bar</span>':''}${teile}</td>
+      <td style="padding:6px;text-align:right;white-space:nowrap;vertical-align:top">
+        <button class="btn btn-sm" title="Aufteilen (Kaltmiete / NK-VZ / NK-Nachzahlung / Kaution)" onclick="modalBuchungSplit('${b.id}')" style="font-size:11px;padding:2px 6px"><i class="ti ti-arrows-split-2"></i></button>
+        <button class="btn btn-sm" title="Zuordnung ändern" onclick="modalEingangZuordnen('${b.id}')" style="font-size:11px;padding:2px 6px"><i class="ti ti-pencil"></i></button>
+      </td></tr>`;
+  }).join('');
+  showModal(`
+    <div class="m-title"><i class="ti ti-cash"></i> Zahlungen ${esc(String(monat).slice(5))}/${esc(String(monat).slice(0,4))}</div>
+    <div style="font-size:12px;color:var(--ink-60);margin-bottom:8px"><strong>${esc(m?.mieter||'')}</strong> · WE ${esc(String(m?.weNr||''))}</div>
+    ${liste.length?`<table style="width:100%;border-collapse:collapse;font-size:13px">${rows}</table>`
+      :'<p style="color:var(--ink-40);font-size:13px">Keine Zahlungen in diesem Monat gespeichert.</p>'}
+    <div style="font-size:11px;color:var(--ink-40);margin-top:8px">Über „Aufteilen“ lässt sich eine Zahlung in
+      Kaltmiete, NK-Vorauszahlung, NK-Nachzahlung und Kaution zerlegen.</div>
+    <button class="btn btn-full" style="margin-top:10px" onclick="closeModal();zaRenderVerlauf()">Schließen</button>`);
 }
 
 /* Sicht 2: Kontoauszug je Monat – alle Eingänge chronologisch */
@@ -30568,6 +30713,9 @@ async function modalBuchungSplit(id){
     <div id="buchSplitListe">${zeilen.map(zeileHtml).join('')}</div>
     <button class="btn btn-sm" onclick="document.getElementById('buchSplitListe').insertAdjacentHTML('beforeend', window._buchSplitZeile({kat:'',betrag:''}));buchSplitSumme()">
       <i class="ti ti-plus"></i> Weitere Kategorie</button>
+    ${seite==='ein'?`<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">
+      ${[['kaltmiete','Kaltmiete'],['nk_vorauszahlung','NK-VZ'],['nk_nachzahlung','NK-Nachzahlung'],['kaution_erhalten','Kaution']].map(q=>`<button class="btn btn-sm" style="font-size:10px;padding:2px 8px" onclick="document.getElementById('buchSplitListe').insertAdjacentHTML('beforeend', window._buchSplitZeile({kat:'${q[0]}',betrag:''}));buchSplitSumme()">+ ${q[1]}</button>`).join('')}
+    </div>`:''}
     <div id="buchSplitSumme" style="font-size:12px;margin-top:8px"></div>
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="buchSplitSpeichern()"><i class="ti ti-check"></i> Speichern</button>
@@ -31783,6 +31931,7 @@ function zaSollIst(buchungen, mieterListe, monate, spIdx){
     sollIdx[m.id]={ mieter:m.mieter, weNr:m.weNr, objektId:m.objektId,
       soll: (Number(m.gesamt)||0)+spSoll, netto:Number(m.miete)||0, nk:Number(m.nk)||0,
       spSoll, tg: !!m._tgMieter,
+      vzHist: (Array.isArray(m.vzHistorie)&&m.vzHistorie.length)?m.vzHistorie:null,   // v240
       ehem: !!m._vormieter, einzugISO:_einzugISOvon(m), auszugISO:_auszugISOvon(m),
       mietfrei: Array.isArray(m.mietfrei)&&m.mietfrei.length ? m.mietfrei : null };
   }
@@ -31840,11 +31989,17 @@ function zaSollIst(buchungen, mieterListe, monate, spIdx){
       // v238: Mietfreie Zeit – im vereinbarten Zeitraum reduziert sich das Soll auf
       // NK-VZ (+ Stellplatz) bzw. bei 'voll' nur auf den Stellplatz-Anteil.
       const mf = aktivMo ? mietfreiImMonat({mietfrei:s.mietfrei}, mo) : null;
-      const sollMo = !aktivMo ? 0 : (mf ? mietfreiSollMo(mf.art, s.nk, s.spSoll) : s.soll);
+      // v240: NK-VZ monatsgenau aus der VZ-Historie (P7). Ohne Historie ist
+      // nkMo === s.nk und das Verhalten bit-identisch zu v239. Das Soll wird um das
+      // NK-Delta korrigiert (nicht neu aus netto+nk gebildet), damit ein abweichend
+      // gepflegtes Gesamt-Soll (z. B. inkl. Garage/Möbel) erhalten bleibt.
+      const nkMo = s.vzHist ? vzZuStichtag({nk:s.nk, vzHistorie:s.vzHist}, mo+'-01') : s.nk;
+      const sollMo = !aktivMo ? 0 : (mf ? mietfreiSollMo(mf.art, nkMo, s.spSoll)
+                                       : Math.round((s.soll + (nkMo - s.nk))*100)/100);
       const diff=Math.round((istGesamt - sollMo)*100)/100;
       // §6: reine Wohnungsmiete (ohne SP-Anteil) in NK-Vorauszahlung + Kaltmiete zerlegen –
       // NK zuerst (§ 366 Abs. 2 BGB analog), Rest Kaltmiete. Nur zur Anzeige, veraendert diff nicht.
-      const nkAnteil = Math.min(Math.max(i.miete,0), s.nk);
+      const nkAnteil = Math.min(Math.max(i.miete,0), nkMo);   // v240: monatsgenaue NK-VZ
       const kmAnteil = Math.round((Math.max(i.miete,0) - nkAnteil)*100)/100;
       let status;
       if(!aktivMo){ status = istGesamt>0 ? 'fremd' : 'inaktiv'; }
