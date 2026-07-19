@@ -892,7 +892,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=35;   // v242: +buch_journal (F4 GoBD)
-const APP_VERSION = '2026-07-20-v251';
+const APP_VERSION = '2026-07-20-v252';
 /* v222 (14.07.2026): KI-Auslesen Zaehlerstand aus Foto (analog rechnungOcrErkennen).
    Neuer Button "Zaehlerstand aus Foto auslesen (KI)" in modalZaehlerstand,
    sichtbar sobald ein Foto vorhanden ist. Sendet Base64+MimeType+Zaehlerart
@@ -1585,9 +1585,15 @@ async function setupConnectOneDrive(){
 async function setupLadeBenutzerNachSync(){
   const st=document.getElementById('setupStatus');
   if(st){ st.textContent='Daten werden aus OneDrive geladen …'; st.style.color='var(--ink-40)'; }
+  /* v252 KRITISCH: Früher wurde der Rückgabewert ignoriert und aus einer leeren
+     LOKALEN Benutzertabelle geschlossen, OneDrive sei leer. Ein fehlgeschlagener
+     Download sah damit exakt aus wie eine echte Ersteinrichtung – und der
+     anschließend angelegte Admin konnte den echten Bestand überschreiben. */
+  let erg = null;
   try {
-    if(typeof syncFromOneDrive==='function') await syncFromOneDrive();
-  } catch(e){ console.warn('Setup-Sync:', e); }
+    if(typeof syncFromOneDrive==='function') erg = await syncFromOneDrive();
+  } catch(e){ console.warn('Setup-Sync:', e); erg = {ok:false, grund:String(e && e.message || e)}; }
+
   const users=(await idbGetAll('users').catch(()=>[])).filter(u=>u.aktiv!==false);
   if(users.length){
     // Benutzer vorhanden → zur normalen Anmeldung
@@ -1595,8 +1601,46 @@ async function setupLadeBenutzerNachSync(){
     await loadLoginUsers();
     return;
   }
-  // OneDrive ist leer (allererste Einrichtung überhaupt) → ersten Admin anlegen
+  if(erg && erg.ok === false){
+    setupZeigeLadefehler(erg.grund||'unbekannt');
+    return;
+  }
+  // Erst jetzt belegt: Abruf gelang, es sind wirklich keine Benutzer hinterlegt.
   setupZeigeErstAdmin();
+}
+
+/* v252: Abruf fehlgeschlagen – KEIN Admin-Formular anbieten. Ein hier angelegter
+   Benutzer würde einen fast leeren Stand erzeugen; das Anlegen bleibt gesperrt,
+   bis der Bestand nachweislich gelesen werden konnte. */
+function setupZeigeLadefehler(grund){
+  const st=document.getElementById('setupStatus');
+  if(st){
+    st.textContent='Daten konnten nicht aus OneDrive geladen werden.';
+    st.style.color='var(--red,#dc2626)';
+  }
+  const box=document.getElementById('setupFirstAdmin');
+  if(!box) return;
+  box.style.display='block';
+  box.innerHTML=`
+    <div style="border-top:1px solid var(--ink-10);padding-top:14px">
+      <div style="background:var(--red-l,#fdeaea);border-radius:8px;padding:12px;font-size:13px;line-height:1.6">
+        <div style="font-weight:600;color:var(--red,#dc2626);margin-bottom:6px">
+          <i class="ti ti-alert-triangle"></i> Bestand nicht gelesen
+        </div>
+        <div style="color:var(--ink-60);word-break:break-word">Grund: ${esc(grund)}</div>
+        <div style="color:var(--ink-60);margin-top:8px">
+          Ob in OneDrive Daten liegen, ist derzeit <b>nicht feststellbar</b>. Das Anlegen eines
+          Benutzers ist deshalb gesperrt – andernfalls könnte der vorhandene Bestand
+          überschrieben werden.
+        </div>
+      </div>
+      <button class="btn btn-copper btn-full" style="margin-top:12px" onclick="setupLadeBenutzerNachSync()">
+        <i class="ti ti-refresh"></i> Erneut versuchen
+      </button>
+      <button class="btn btn-full" style="margin-top:8px" onclick="setupConnectOneDrive()">
+        <i class="ti ti-brand-windows"></i> Neu bei Microsoft anmelden
+      </button>
+    </div>`;
 }
 
 // Formular zum Anlegen des allerersten Admins (nur wenn OneDrive leer ist)
@@ -1626,6 +1670,32 @@ async function setupErstAdminAnlegen(){
   const pin=(document.getElementById('setupAdminPin')?.value||'').trim();
   if(!name){ toast('Bitte Name eingeben'); return; }
   if(!/^\d{4}$/.test(pin)){ toast('PIN muss aus 4 Ziffern bestehen'); return; }
+  /* v252: Unmittelbar vor dem Schreiben erneut pruefen. Zwischen Anzeige des
+     Formulars und dem Klick kann die Verbindung zurueckgekehrt sein – dann darf
+     hier KEIN Erst-Admin entstehen, der einen vorhandenen Bestand verdraengt. */
+  if(typeof odGetToken==='function'){
+    const tk = await odGetToken().catch(()=>null);
+    if(tk){
+      try{
+        const pr = await fetchMitTimeout(OD_FILE_URL, {headers:{'Authorization':'Bearer '+tk}}, OD_SYNC_TIMEOUT);
+        if(pr.ok){
+          const rb = await pr.json();
+          const vorhanden = Array.isArray(rb && rb.users) ? rb.users.filter(u=>u && u.aktiv!==false).length : 0;
+          if(vorhanden){
+            toast('In OneDrive sind bereits '+vorhanden+' Benutzer hinterlegt – bitte neu laden');
+            setupLadeBenutzerNachSync();
+            return;
+          }
+        } else if(pr.status !== 404){
+          toast('Bestand auf OneDrive nicht prüfbar (HTTP '+pr.status+') – Anlegen abgebrochen');
+          return;
+        }
+      }catch(e){
+        toast('Bestand auf OneDrive nicht prüfbar – Anlegen abgebrochen');
+        return;
+      }
+    }
+  }
   const user={ id:uid(), name, pin, role:'admin', objekte:[], aktiv:true, eintritt:today() };
   await idbPut('users', user);
   if(typeof syncToOneDrive==='function'){ try { await syncToOneDrive(); } catch(e){ console.warn(e); } }
@@ -28020,9 +28090,17 @@ async function syncToOneDrive() {
     // Sync, erst dessen Daten herunterladen und mergen, bevor wir unseren Stand hochladen.
     // Sonst könnte ein Gerät mit veralteten Daten fremde neuere Änderungen (z. B. neu
     // erfasste Telefonnummern) plattmachen.
+    /* v252: Ergebnis der Vorpruefung festhalten. Nur wenn der Remote-Stand
+       nachweislich bekannt ist (gelesen ODER echtes 404 = Datei existiert nicht),
+       darf hochgeladen werden. Vorher wurde jeder Fehler verschluckt und der
+       Upload lief trotzdem – ein Geraet mit duennem Datenstand konnte so den
+       vollstaendigen Bestand auf OneDrive ueberschreiben. */
+    let vorpruefung = 'unbekannt';
+    let vorpruefungGrund = '';
     try {
       const head = await fetchMitTimeout(OD_FILE_URL, {headers:{'Authorization':'Bearer '+token}}, OD_SYNC_TIMEOUT);
       if (head.ok) {
+        vorpruefung = 'gelesen';
         const remote = await head.json();
         const ls = await idbGet('settings','lastSync').catch(()=>null);
         const localSync = ls?.value||'';
@@ -28031,8 +28109,21 @@ async function syncToOneDrive() {
           await syncFromOneDrive();          // remote → lokal mergen (datensatzweise)
           syncInProgress = true;
         }
+      } else if (head.status === 404) {
+        vorpruefung = 'dateiFehlt';          // echte Ersteinrichtung: Upload erlaubt
+      } else {
+        vorpruefungGrund = 'HTTP '+head.status;
       }
-    } catch(e){ /* offline o. 404: normaler Upload-Weg unten */ }
+    } catch(e){ vorpruefungGrund = String(e && e.message || e); }
+
+    if (vorpruefung === 'unbekannt') {
+      // Kein Upload ins Blinde: lieber kein Sync als Datenverlust.
+      console.warn('Upload abgebrochen – Remote-Stand nicht prüfbar:', vorpruefungGrund);
+      setSyncStatus('offline', {richtung:'hochgeladen',
+        fehler:'Abgebrochen: Stand auf OneDrive nicht prüfbar ('+vorpruefungGrund+') – kein Überschreiben'});
+      syncInProgress = false;
+      return;
+    }
 
     // v196 (A3): HM-Aenderungen VOR dem Aufbau des Voll-Backups zurueckholen,
     // damit sie sofort in immo_daten.json landen.
@@ -28098,7 +28189,7 @@ async function syncFromOneDrive() {
   // Token-Objekt existiert (gar nicht angemeldet) – sonst blieb der Abbruch stumm.
   if (!token) {
     if (!odTokens) setSyncStatus('offline', {richtung:'geladen', fehler:'Nicht mit OneDrive angemeldet'});
-    return;
+    return {ok:false, grund:'Keine gültige OneDrive-Anmeldung'};   // v252
   }
   setSyncStatus('pending');
   /* v251: Phase mitführen, damit ein Fehlschlag zuordenbar wird – ein Fehler
@@ -28107,7 +28198,8 @@ async function syncFromOneDrive() {
   try {
     const r = await fetchMitTimeout(OD_FILE_URL,
       {headers:{'Authorization':'Bearer '+token}}, OD_SYNC_TIMEOUT);
-    if (r.status === 404) { await syncToOneDrive(); return; }
+    // v252: 404 = Datei existiert nachweislich NICHT (echte Ersteinrichtung).
+    if (r.status === 404) { await syncToOneDrive(); return {ok:true, dateiFehlt:true}; }
     if (!r.ok) throw new Error('HTTP '+r.status+(r.status===401?' (Zugriff abgelehnt – Anmeldung prüfen)':''));
     phase = 'Daten lesen';
     const backup = await r.json();
@@ -28221,9 +28313,12 @@ async function syncFromOneDrive() {
       toast('✓ Synchronisiert (' + (backup.updatedBy||'') + ')');
     }
     setSyncStatus('ok', {richtung:'geladen'});
+    return {ok:true};   // v252
   } catch(e) {
     console.warn('Sync Download (' + phase + '):', e);
-    setSyncStatus('offline', {richtung:'geladen', fehler: phase + ': ' + String(e && e.message || e)});
+    const grund = phase + ': ' + String(e && e.message || e);
+    setSyncStatus('offline', {richtung:'geladen', fehler: grund});
+    return {ok:false, grund};   // v252
   }
 };
 
