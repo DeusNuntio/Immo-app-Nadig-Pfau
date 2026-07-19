@@ -892,7 +892,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=35;   // v242: +buch_journal (F4 GoBD)
-const APP_VERSION = '2026-07-20-v252';
+const APP_VERSION = '2026-07-20-v253';
 /* v222 (14.07.2026): KI-Auslesen Zaehlerstand aus Foto (analog rechnungOcrErkennen).
    Neuer Button "Zaehlerstand aus Foto auslesen (KI)" in modalZaehlerstand,
    sichtbar sobald ein Foto vorhanden ist. Sendet Base64+MimeType+Zaehlerart
@@ -28116,6 +28116,13 @@ async function syncToOneDrive() {
       }
     } catch(e){ vorpruefungGrund = String(e && e.message || e); }
 
+    /* v253: Ist die Serverdatei nachweislich unlesbar, ist genau EIN Upload die
+       richtige Reparatur – aber nur nach ausdrücklicher Bestätigung durch den
+       Nutzer (syncReparaturHochladen). Der Schutz bleibt sonst unverändert. */
+    if (vorpruefung === 'unbekannt' && window._syncReparaturForce === true) {
+      console.warn('Reparatur-Upload: Serverstand wird bewusst überschrieben.');
+      vorpruefung = 'reparatur';
+    }
     if (vorpruefung === 'unbekannt') {
       // Kein Upload ins Blinde: lieber kein Sync als Datenverlust.
       console.warn('Upload abgebrochen – Remote-Stand nicht prüfbar:', vorpruefungGrund);
@@ -28156,8 +28163,24 @@ async function syncToOneDrive() {
       body: json,
     }, OD_SYNC_TIMEOUT);
     if (!r.ok) throw new Error('HTTP '+r.status);
+    /* v253: Hochgeladene Größe gegenprüfen. Ein abgebrochener PUT konnte bisher
+       eine leere/abgeschnittene Datei hinterlassen, ohne dass es auffiel – der
+       Fehler zeigte sich erst Tage später beim Lesen auf einem anderen Gerät.
+       Hinweis: json.length zählt UTF-16-Einheiten, Graph meldet BYTES. */
+    const sollBytes = new TextEncoder().encode(json).length;
+    try {
+      const item = await r.json();
+      const istBytes = (item && typeof item.size === 'number') ? item.size : null;
+      if (istBytes !== null && istBytes !== sollBytes) {
+        throw new Error('Upload unvollständig: ' + istBytes + ' von ' + sollBytes
+          + ' Bytes auf OneDrive – Serverdatei ist beschädigt');
+      }
+    } catch(ve) {
+      if (ve && /Upload unvollst/.test(ve.message||'')) throw ve;
+      console.warn('Upload-Verifikation nicht möglich:', ve);   // Antwort ohne JSON: nur protokollieren
+    }
     lastSyncHash = hash;
-    window._syncBytes = json.length;   // v248: Datenmenge fuer die Anzeige
+    window._syncBytes = sollBytes;   // v248/v253: echte Bytegröße
     try { await idbPut('settings', { id:'lastSync', value: new Date().toISOString() }); } catch(e){}
     // v196 (A3): frischen gefilterten Stand fuer HM-Geraete bereitstellen
     await hmDateiSchreiben(token);
@@ -28202,7 +28225,26 @@ async function syncFromOneDrive() {
     if (r.status === 404) { await syncToOneDrive(); return {ok:true, dateiFehlt:true}; }
     if (!r.ok) throw new Error('HTTP '+r.status+(r.status===401?' (Zugriff abgelehnt – Anmeldung prüfen)':''));
     phase = 'Daten lesen';
-    const backup = await r.json();
+    /* v253: Erst Text lesen, dann parsen. So ist unterscheidbar, ob die Datei
+       LEER ist (abgebrochener Upload) oder ob gültiger Inhalt nur unvollstaendig
+       ankam – und die empfangene Größe lässt sich benennen. */
+    const rohText = await r.text();
+    const rohBytes = new TextEncoder().encode(rohText).length;
+    if (!rohText.trim()) {
+      const e0 = new Error('Datei auf OneDrive ist leer (0 Bytes) – vermutlich abgebrochener Upload');
+      e0._korrupt = true;
+      throw e0;
+    }
+    let backup;
+    try {
+      backup = JSON.parse(rohText);
+    } catch(pe) {
+      const e1 = new Error('Datei auf OneDrive unvollständig/beschädigt ('
+        + (Math.round(rohBytes/1048576*100)/100).toString().replace('.',',')
+        + ' MB empfangen) – vermutlich abgebrochener Upload');
+      e1._korrupt = true;
+      throw e1;
+    }
     phase = 'Zusammenführen';
     const remoteTime = backup.updatedAt||'';
     const ls = await idbGet('settings','lastSync').catch(()=>null);
@@ -28317,8 +28359,8 @@ async function syncFromOneDrive() {
   } catch(e) {
     console.warn('Sync Download (' + phase + '):', e);
     const grund = phase + ': ' + String(e && e.message || e);
-    setSyncStatus('offline', {richtung:'geladen', fehler: grund});
-    return {ok:false, grund};   // v252
+    setSyncStatus('offline', {richtung:'geladen', fehler: grund, korrupt: !!(e && e._korrupt)});   // v253
+    return {ok:false, grund, korrupt: !!(e && e._korrupt)};   // v252/v253
   }
 };
 
@@ -28933,6 +28975,7 @@ function syncInfoMerken(status, detail){
       hinweis:  (detail && detail.hinweis)  || '',
       fehler:   (detail && detail.fehler)   || '',
       bytes:    (detail && detail.bytes)    || 0,
+      korrupt:  !!(detail && detail.korrupt),   // v253: Serverdatei unlesbar/leer
       // Zeitpunkt des letzten ERFOLGREICHEN Vorgangs getrennt festhalten
       okZeit: status==='ok' ? new Date().toISOString() : (alt && alt.okZeit) || '',
       okRichtung: status==='ok' ? ((detail && detail.richtung) || '') : (alt && alt.okRichtung) || '',
@@ -29004,6 +29047,26 @@ async function syncButtonModalKlick(btn){
   try { await syncFromOneDrive(); }
   finally { showSyncInfo(); }
 }
+/* v253: Bewusster Reparatur-Upload. Nur anzubieten, wenn der Serverstand
+   nachweislich unlesbar ist – dann ist der lokale Stand die bessere Quelle.
+   Zwei Bestätigungen, weil hier absichtlich überschrieben wird. */
+async function syncReparaturHochladen(){
+  const anzahl = await (async()=>{ try{ return (await idbGetAll('mieter')).length; }catch(e){ return '?'; } })();
+  if(!confirm('Die Datei auf OneDrive ist unlesbar.\n\nDer Stand DIESES Geräts ('
+    + anzahl + ' Mieter-Datensätze) wird dorthin geschrieben und ersetzt die beschädigte Datei.\n\n'
+    + 'Nur fortfahren, wenn dieses Gerät den vollständigen Bestand hat – sonst zuerst '
+    + 'in OneDrive eine Sicherung aus NadigPfau/backup wiederherstellen.')) return;
+  if(!confirm('Wirklich überschreiben? Diese Aktion lässt sich nicht rückgängig machen.')) return;
+  window._syncReparaturForce = true;
+  try {
+    lastSyncHash = null;              // Upload nicht wegen Hash-Gleichheit überspringen
+    await syncToOneDrive();
+  } finally {
+    window._syncReparaturForce = false;
+  }
+  showSyncInfo();
+}
+
 function showSyncInfo(){
   const connected = !!odTokens;
   const name = odTokens?.user_name||'';
@@ -29016,6 +29079,16 @@ function showSyncInfo(){
           <div style="font-size:12px;color:var(--ink-40)">${name}</div></div>
       </div>
       ${syncInfoHtml()}
+      ${(syncInfoLesen()||{}).korrupt ? `
+      <div style="background:var(--red-l,#fdeaea);border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:12px;line-height:1.6">
+        <div style="font-weight:600;color:var(--red,#dc2626);margin-bottom:4px">
+          <i class="ti ti-alert-triangle"></i> Serverdatei beschädigt</div>
+        <div style="color:var(--ink-60)">Empfohlen: in OneDrive unter <b>NadigPfau/backup</b> die
+          neueste Wochensicherung nach <b>immo_daten.json</b> kopieren. Alternativ den Stand
+          dieses Geräts hochschreiben – nur wenn er vollständig ist.</div>
+        <button class="btn btn-danger btn-sm" style="margin-top:8px" onclick="syncReparaturHochladen()">
+          <i class="ti ti-cloud-upload"></i> Serverdatei mit diesem Gerät überschreiben</button>
+      </div>` : ''}
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn btn-copper" onclick="syncButtonModalKlick(this)"><i class="ti ti-refresh"></i> Synchronisieren</button>
         <button class="btn btn-sm" onclick="msalLogin()"><i class="ti ti-brand-windows"></i> Neu anmelden</button>
