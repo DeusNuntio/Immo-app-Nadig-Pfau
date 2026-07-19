@@ -892,7 +892,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=35;   // v242: +buch_journal (F4 GoBD)
-const APP_VERSION = '2026-07-19-v246';
+const APP_VERSION = '2026-07-19-v249';
 /* v222 (14.07.2026): KI-Auslesen Zaehlerstand aus Foto (analog rechnungOcrErkennen).
    Neuer Button "Zaehlerstand aus Foto auslesen (KI)" in modalZaehlerstand,
    sichtbar sobald ein Foto vorhanden ist. Sendet Base64+MimeType+Zaehlerart
@@ -28054,7 +28054,7 @@ async function syncToOneDrive() {
       try { toast('Hinweis: Datenmenge ' + Math.round(json.length/1048576) + ' MB (Fotos). Sync kann länger dauern.'); } catch(_){}
     }
     const hash = json.length+'_'+json.slice(-30);
-    if (hash === lastSyncHash) { setSyncStatus('ok'); syncInProgress=false; return; }
+    if (hash === lastSyncHash) { setSyncStatus('ok', {richtung:'hochgeladen', hinweis:'keine Änderungen', bytes:json.length}); syncInProgress=false; return; }   // v248
     const r = await fetchMitTimeout(OD_FILE_URL, {
       method:'PUT',
       headers:{'Authorization':'Bearer '+token,'Content-Type':'application/json'},
@@ -28062,15 +28062,16 @@ async function syncToOneDrive() {
     }, OD_SYNC_TIMEOUT);
     if (!r.ok) throw new Error('HTTP '+r.status);
     lastSyncHash = hash;
+    window._syncBytes = json.length;   // v248: Datenmenge fuer die Anzeige
     try { await idbPut('settings', { id:'lastSync', value: new Date().toISOString() }); } catch(e){}
     // v196 (A3): frischen gefilterten Stand fuer HM-Geraete bereitstellen
     await hmDateiSchreiben(token);
     // v199 (B5): wöchentliche Backup-Generation ablegen (fehlertolerant, blockiert nie)
     await genBackupSichern(token, json);
-    setSyncStatus('ok');
+    setSyncStatus('ok', {richtung:'hochgeladen', bytes:json.length});   // v248
   } catch(e) {
     console.warn('Sync Upload:', e);
-    setSyncStatus('offline');
+    setSyncStatus('offline', {richtung:'hochgeladen', fehler:String(e && e.message || e)});   // v248
   }
   syncInProgress = false;
 };
@@ -28812,23 +28813,89 @@ async function odBrowserUpload(input){
 
 
 
-function setSyncStatus(status){
+/* v248: letzten Sync-Vorgang geraetelokal protokollieren (Zeit, Richtung, Ergebnis). */
+function syncInfoMerken(status, detail){
+  try{
+    const alt = syncInfoLesen();
+    const rec = {
+      zeit: new Date().toISOString(),
+      status,                                   // 'ok' | 'offline' | 'pending'
+      richtung: (detail && detail.richtung) || (alt && alt.richtung) || '',
+      hinweis:  (detail && detail.hinweis)  || '',
+      fehler:   (detail && detail.fehler)   || '',
+      bytes:    (detail && detail.bytes)    || 0,
+      // Zeitpunkt des letzten ERFOLGREICHEN Vorgangs getrennt festhalten
+      okZeit: status==='ok' ? new Date().toISOString() : (alt && alt.okZeit) || '',
+      okRichtung: status==='ok' ? ((detail && detail.richtung) || '') : (alt && alt.okRichtung) || '',
+    };
+    localStorage.setItem('syncInfo', JSON.stringify(rec));
+  }catch(e){ console.warn('Sync-Info merken:', e); }
+}
+function syncInfoLesen(){
+  try{ const r=localStorage.getItem('syncInfo'); return r ? JSON.parse(r) : null; }
+  catch(e){ console.warn('Sync-Info lesen:', e); return null; }
+}
+/* Zeitstempel als "19.07.2026, 22:41 Uhr (vor 3 Min.)" */
+function syncZeitText(iso){
+  if(!iso) return '';
+  const d=new Date(iso);
+  if(isNaN(d.getTime())) return '';
+  const abs=d.toLocaleDateString('de-DE')+', '+d.toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'})+' Uhr';
+  const min=Math.floor((Date.now()-d.getTime())/60000);
+  let rel;
+  if(min<1) rel='gerade eben';
+  else if(min<60) rel='vor '+min+' Min.';
+  else if(min<1440) rel='vor '+Math.floor(min/60)+' Std.';
+  else rel='vor '+Math.floor(min/1440)+' Tg.';
+  return abs+' ('+rel+')';
+}
+function setSyncStatus(status, detail){
+  syncInfoMerken(status, detail);   // v248
   const dot=document.getElementById('syncDot');
   if(!dot) return;
   dot.className='sync-dot '+status;
 };
 
+/* v248: Kachel mit Zeitpunkt und Ergebnis des letzten Sync-Vorgangs. */
+function syncInfoHtml(){
+  const i = syncInfoLesen();
+  if(!i) return `<div style="background:var(--ink-05);border-radius:8px;padding:10px 12px;margin-bottom:14px;font-size:12px;color:var(--ink-40)">
+      <i class="ti ti-clock-off"></i> Seit dem Start dieses Geräts wurde noch kein Sync ausgeführt.</div>`;
+  const mb = i.bytes ? (Math.round(i.bytes/1048576*10)/10).toString().replace('.',',')+' MB' : '';
+  const okTxt = syncZeitText(i.okZeit);
+  if(i.status==='ok'){
+    return `<div style="background:var(--green-l);border-radius:8px;padding:10px 12px;margin-bottom:14px;font-size:12px">
+      <div style="font-weight:600;color:var(--green)"><i class="ti ti-cloud-check"></i> Letzter Sync erfolgreich</div>
+      <div style="color:var(--ink-60);margin-top:3px">${esc(syncZeitText(i.zeit))}</div>
+      <div style="color:var(--ink-40);margin-top:2px">${esc(i.richtung||'')}${i.hinweis?' \u00b7 '+esc(i.hinweis):''}${mb?' \u00b7 '+esc(mb):''}</div>
+    </div>`;
+  }
+  if(i.status==='pending'){
+    return `<div style="background:var(--ink-05);border-radius:8px;padding:10px 12px;margin-bottom:14px;font-size:12px">
+      <div style="font-weight:600;color:var(--ink-60)"><i class="ti ti-cloud-upload"></i> Sync läuft \u2026</div>
+      <div style="color:var(--ink-40);margin-top:3px">Begonnen ${esc(syncZeitText(i.zeit))}</div>
+      ${okTxt?`<div style="color:var(--ink-40);margin-top:2px">Zuletzt erfolgreich: ${esc(okTxt)}</div>`:''}
+    </div>`;
+  }
+  return `<div style="background:var(--red-l,#fdeaea);border-radius:8px;padding:10px 12px;margin-bottom:14px;font-size:12px">
+    <div style="font-weight:600;color:var(--red,#dc2626)"><i class="ti ti-cloud-x"></i> Letzter Sync fehlgeschlagen</div>
+    <div style="color:var(--ink-60);margin-top:3px">${esc(syncZeitText(i.zeit))}${i.richtung?' \u00b7 '+esc(i.richtung):''}</div>
+    ${i.fehler?`<div style="color:var(--ink-40);margin-top:2px;word-break:break-word">Grund: ${esc(i.fehler)}</div>`:''}
+    <div style="color:var(--ink-40);margin-top:4px">Zuletzt erfolgreich: ${esc(okTxt||'\u2013')}</div>
+  </div>`;
+}
 function showSyncInfo(){
   const connected = !!odTokens;
   const name = odTokens?.user_name||'';
   showModal(`
     <div class="m-title"><i class="ti ti-cloud"></i> OneDrive-Sync</div>
     ${connected ? `
-      <div style="display:flex;align-items:center;gap:10px;background:var(--green-l);border-radius:8px;padding:12px;margin-bottom:14px">
+      <div style="display:flex;align-items:center;gap:10px;background:var(--green-l);border-radius:8px;padding:12px;margin-bottom:10px">
         <i class="ti ti-circle-check" style="color:var(--green);font-size:20px"></i>
         <div><div style="font-weight:600;font-size:13px;color:var(--green)">Verbunden</div>
           <div style="font-size:12px;color:var(--ink-40)">${name}</div></div>
       </div>
+      ${syncInfoHtml()}
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn btn-copper" onclick="syncFromOneDrive();closeModal()"><i class="ti ti-refresh"></i> Synchronisieren</button>
         <button class="btn btn-danger btn-sm" onclick="msalLogout();closeModal()"><i class="ti ti-logout"></i> Abmelden</button>
@@ -30400,8 +30467,9 @@ function zaRenderMietkonto(buch, mieter, monate, konto, spIdx){
     const fixBg = r.warnung ? '#fff8f0' : 'var(--card,#fff)';
     return `<tr style="border-bottom:1px solid var(--line);${bg}">
       <td class="mk-fix mk-fix1" style="padding:6px;font-size:11px;color:var(--ink-40);background:${fixBg}">${esc(r.weNr||(r.tg?'TG':''))}</td>
-      <td class="mk-fix mk-fix2" style="padding:6px;font-size:13px;background:${fixBg}">${esc(r.mieter)}${r.ehem?' <span class="chip chip-warn" style="font-size:9px">ehem.</span>':''}${r.autoEnde?` <span class="chip" style="font-size:9px;background:var(--ink-05);color:var(--ink-60)" title="Kein Auszugsdatum in der Mieterakte. Das Soll endet automatisch mit dem Einzug des Nachmieters (${esc(r.auszugISO||'')}) \u2013 bitte in der Mieterakte nachtragen.">Soll endet ${esc((r.auszugISO||'').split('-').reverse().join('.'))}</span>`:''}${r.ehem?` <button class="btn btn-sm btn-danger" style="padding:1px 5px;font-size:10px;vertical-align:middle" title="Ehemaligen Mieter löschen (z. B. doppelt angelegt)" onclick="zaMieterLoeschen('${r.mieterId}')"><i class="ti ti-trash"></i></button>`:''}
-        <button class="btn btn-sm" style="padding:1px 5px;font-size:10px;vertical-align:middle" title="Zahlungen auf einen anderen Mieter umhängen (z. B. an den Vormieter)" onclick="zaModalUmhaengen('${r.mieterId}')"><i class="ti ti-transfer"></i></button></td>
+      <td class="mk-fix mk-fix2" style="padding:6px;font-size:13px;background:${fixBg}">
+        <div class="mk-name" title="${escAttr(r.mieter||'')}">${esc(r.mieter)}${r.ehem?' <span class="chip chip-warn" style="font-size:9px">ehem.</span>':''}${r.autoEnde?` <span class="chip" style="font-size:9px;background:var(--ink-05);color:var(--ink-60)" title="Kein Auszugsdatum in der Mieterakte. Das Soll endet automatisch mit dem Einzug des Nachmieters (${esc(r.auszugISO||'')}) \u2013 bitte in der Mieterakte nachtragen.">Soll endet ${esc((r.auszugISO||'').split('-').reverse().join('.'))}</span>`:''}</div>
+        <div class="mk-akt">${r.ehem?`<button class="btn btn-sm btn-danger" style="padding:1px 5px;font-size:10px" title="Ehemaligen Mieter löschen (z. B. doppelt angelegt)" onclick="zaMieterLoeschen('${r.mieterId}')"><i class="ti ti-trash"></i></button>`:''}<button class="btn btn-sm" style="padding:1px 5px;font-size:10px" title="Zahlungen auf einen anderen Mieter umhängen (z. B. an den Vormieter)" onclick="zaModalUmhaengen('${r.mieterId}')"><i class="ti ti-transfer"></i></button></div></td>
       <td style="padding:6px;text-align:right;font-variant-numeric:tabular-nums;font-size:12px">
         ${eur(r.soll)}<div style="font-size:9px;color:var(--ink-40)">${r.tg?('SP '+eur(r.spSoll)):(eur(r.netto)+'+'+eur(r.nk)+(r.spSoll?'+SP '+eur(r.spSoll):''))}</div>${r.tg?'':`<button class="btn btn-sm" style="padding:1px 5px;font-size:9px;margin-top:2px" title="NK-Vorauszahlung anpassen" onclick="zaModalNkVz('${r.mieterId}')"><i class="ti ti-pencil"></i> NK-VZ</button>`}</td>
       <td style="padding:6px;text-align:right;font-variant-numeric:tabular-nums;font-size:12px;background:var(--ink-05)">${saldoTxt}</td>
@@ -30420,9 +30488,18 @@ function zaRenderMietkonto(buch, mieter, monate, konto, spIdx){
     .mk-wrap thead tr:nth-child(2) th{top:34px;z-index:3}
     .mk-wrap .mk-fix{position:sticky;z-index:2}
     .mk-wrap .mk-fix1{left:0;min-width:38px}
-    .mk-wrap .mk-fix2{left:38px;min-width:150px;box-shadow:inset -1px 0 0 var(--line)}
+    .mk-wrap .mk-fix2{left:38px;min-width:150px;max-width:230px;box-shadow:inset -1px 0 0 var(--line)}
     .mk-wrap thead .mk-fix{z-index:5}
-  </style>
+    .mk-name{overflow-wrap:anywhere;line-height:1.25}
+    .mk-akt{display:inline-flex;gap:3px;margin-top:2px}
+    /* v247: Hochformat/Telefon – Namensspalte deutlich schmaler halten,
+       damit rechts noch Monatsspalten sichtbar bleiben. */
+    @media (max-width:560px){
+      .mk-wrap .mk-fix1{min-width:26px;padding:4px 2px !important;font-size:10px !important}
+      .mk-wrap .mk-fix2{left:26px;min-width:96px;max-width:112px;padding:4px !important;font-size:11px !important}
+      .mk-wrap .mk-fix2 .chip{font-size:8px !important;padding:0 3px !important}
+      .mk-wrap .mk-akt .btn{padding:0 4px !important;font-size:9px !important}
+    }</style>
   <div class="mk-wrap">
     <table style="width:100%;border-collapse:separate;border-spacing:0;font-size:13px;min-width:${300+monate.length*120}px">
       <thead>
@@ -34585,6 +34662,43 @@ let _bfLaeuft = false, _bfAbbruch = false;
 function bfIstInline(v){
   return typeof v === 'string' && v.startsWith('data:') && !v.startsWith('data:text/html');
 }
+/* ── v249: lokale Verkleinerung sensibler Belege ──────────────────────────
+   Gilt NUR fuer DOK_INLINE_TYPEN (Ausweis/Lastschrift). Diese Dokumente
+   werden bewusst nicht nach OneDrive ausgelagert; sie duerfen aber verkleinert
+   werden, solange sie lesbar bleiben. Rein lokale Operation, kein Netzverkehr. */
+const DOK_KOMP_MIN_BYTES = 400 * 1024;   // erst ab ~400 KB lohnt sich der Eingriff
+const DOK_KOMP_KANTE     = 1600;         // lange Kante in px – Ausweis bleibt lesbar
+const DOK_KOMP_QUALITAET = 0.82;
+
+/* Kandidat? Nur Bilder (kein PDF – dort wuerde Canvas nichts ausrichten). */
+function dokIstKomprimierbar(rec){
+  return !!(rec && DOK_INLINE_TYPEN.includes(rec.typ)
+    && typeof rec.data === 'string' && rec.data.startsWith('data:image/')
+    && rec.data.length > DOK_KOMP_MIN_BYTES);
+}
+/* Verkleinert eine Bild-dataURL. Liefert die neue dataURL oder null, wenn das
+   Ergebnis nicht kleiner waere (dann bleibt das Original unangetastet). */
+function dokBildVerkleinern(dataUrl, kante, q){
+  return new Promise(res=>{
+    try{
+      const img = new Image();
+      img.onload = () => {
+        try{
+          const max = kante || DOK_KOMP_KANTE;
+          const s = Math.min(max/img.width, max/img.height, 1);
+          const c = document.createElement('canvas');
+          c.width  = Math.max(1, Math.round(img.width  * s));
+          c.height = Math.max(1, Math.round(img.height * s));
+          c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+          const neu = c.toDataURL('image/jpeg', q || DOK_KOMP_QUALITAET);
+          res((neu && neu.length < dataUrl.length) ? neu : null);
+        }catch(e){ console.warn('dokBildVerkleinern (canvas):', e); res(null); }
+      };
+      img.onerror = () => res(null);
+      img.src = dataUrl;
+    }catch(e){ console.warn('dokBildVerkleinern:', e); res(null); }
+  });
+}
 /* Dedupe-Schlüssel ohne Hashing: Länge + Kopf + Fuß der dataURL. */
 function bfKey(d){ return d.length + '|' + d.slice(0,64) + '|' + d.slice(-64); }
 /* Endung aus dem dataURL-MIME (Rechnungsbelege können PDFs sein). */
@@ -34609,7 +34723,7 @@ function bfWalkLesen(node, cb, tiefe){
 }
 /* Analyse: zählt Inline-Bestände je Store. Liest nur, schreibt nichts. */
 async function backfillAnalyse(){
-  const res = { stores:{}, anzahl:0, bytes:0 };
+  const res = { stores:{}, anzahl:0, bytes:0, kompAnzahl:0, kompBytes:0 };   // v249
   for(const st of BF_STORES){
     let recs = [];
     try{ recs = await idbGetAll(st); }catch(_){ continue; }
@@ -34618,6 +34732,8 @@ async function backfillAnalyse(){
       if(!r) continue;
       if(st === 'dokumente'){
         if(bfIstInline(r.data) && !DOK_INLINE_TYPEN.includes(r.typ)){ n++; b += r.data.length; }
+        // v249: sensible Belege werden nicht ausgelagert, aber lokal verkleinert
+        else if(dokIstKomprimierbar(r)){ res.kompAnzahl++; res.kompBytes += r.data.length; }
         continue;
       }
       bfWalkLesen(r, v => { n++; b += v.length; });
@@ -34678,7 +34794,7 @@ async function backfillLauf(){
   const btnReset = () => { const b=document.getElementById('bfStartBtn'); if(b) b.disabled=false; };
   const melde = txt => { const el = document.getElementById('bfStatus'); if(el) el.innerHTML = txt; };
   if(_bfLaeuft){ btnReset(); return; }
-  const stat = { geaendert:0, fehler:0, bytes:0, records:0 };
+  const stat = { geaendert:0, fehler:0, bytes:0, records:0, komprimiert:0, kompBytes:0 };   // v249
   try{
     if(!(await odGetToken())){
       melde('<span style="color:var(--red)">Bitte zuerst mit OneDrive verbinden. Sync-Verbindung fehlt.</span>');
@@ -34698,11 +34814,24 @@ async function backfillLauf(){
         const vorher = { g: stat.geaendert, f: stat.fehler };
 
         if(st === 'dokumente'){
-          // Feldwechsel data -> ref (Lesepfad dokQuelle ist dual-format, v177)
-          if(!bfIstInline(rec.data) || DOK_INLINE_TYPEN.includes(rec.typ)) continue;
-          const ref = await dokAuslagernRef(rec, rec.data);
-          if(ref){ stat.bytes += rec.data.length; rec.ref = ref; delete rec.data; stat.geaendert++; }
-          else { stat.fehler++; continue; }
+          // v249: Ausweis/Lastschrift NICHT hochladen (DSGVO-Entscheidung v177),
+          // stattdessen lokal verkleinern – spart Sync-Volumen ohne Datenabfluss.
+          if(DOK_INLINE_TYPEN.includes(rec.typ)){
+            if(!dokIstKomprimierbar(rec)) continue;
+            const vorherLen = rec.data.length;
+            const klein = await dokBildVerkleinern(rec.data);
+            if(!klein){ continue; }              // kein Gewinn -> Original behalten
+            rec.data = klein;
+            if(rec.size) rec.size = Math.round(klein.length * 0.75);   // Byte-Schaetzung aus Base64
+            stat.komprimiert++;
+            stat.kompBytes += (vorherLen - klein.length);
+          } else {
+            // Feldwechsel data -> ref (Lesepfad dokQuelle ist dual-format, v177)
+            if(!bfIstInline(rec.data)) continue;
+            const ref = await dokAuslagernRef(rec, rec.data);
+            if(ref){ stat.bytes += rec.data.length; rec.ref = ref; delete rec.data; stat.geaendert++; }
+            else { stat.fehler++; continue; }
+          }
 
         } else if(st === 'fotos'){
           // Feldwechsel data -> ref (restoreFotosForPD liest data ODER ref, v175)
@@ -34753,8 +34882,11 @@ async function backfillLauf(){
     _bfLaeuft = false;
     btnReset();
   }
-  if(stat.geaendert){ try{ syncSoon(); }catch(_){} }
-  melde(`${_bfAbbruch?'Abgebrochen':'Fertig'}: <b>${stat.geaendert}</b> Dateien ausgelagert, <b>${(stat.bytes/1048576).toFixed(1)} MB</b> aus der Sync-Datei entfernt, ${stat.records} Datensätze aktualisiert${stat.fehler?`, <b>${stat.fehler}</b> übersprungen (bleiben unverändert inline)`:''}. ${stat.geaendert?'Der nächste Sync überträgt den schlankeren Stand.':''}`);
+  if(stat.geaendert || stat.komprimiert){ try{ syncSoon(); }catch(_){} }   // v249
+  const kompTxt = stat.komprimiert
+    ? ` Zusätzlich <b>${stat.komprimiert}</b> sensible Belege (Ausweis/Lastschrift) lokal verkleinert – <b>${(stat.kompBytes/1048576).toFixed(1)} MB</b> gespart, ohne sie hochzuladen.`
+    : '';
+  melde(`${_bfAbbruch?'Abgebrochen':'Fertig'}: <b>${stat.geaendert}</b> Dateien ausgelagert, <b>${(stat.bytes/1048576).toFixed(1)} MB</b> aus der Sync-Datei entfernt, ${stat.records} Datensätze aktualisiert${stat.fehler?`, <b>${stat.fehler}</b> übersprungen (bleiben unverändert inline)`:''}.${kompTxt} ${(stat.geaendert||stat.komprimiert)?'Der nächste Sync überträgt den schlankeren Stand.':''}`);
   return stat;
 }
 function backfillAbbrechen(){ _bfAbbruch = true; toast('Wird nach dem laufenden Foto beendet…'); }
@@ -34770,7 +34902,7 @@ async function modalBackfill(){
     `<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:12px">
        <span>${esc(st)}</span><b>${a.stores[st].n} · ${(a.stores[st].b/1048576).toFixed(1)} MB</b></div>`).join('');
   showModal(`<div class="m-title"><i class="ti ti-cloud-upload"></i> Alt-Fotos auslagern</div>
-    ${a.anzahl ? `
+    ${(a.anzahl || a.kompAnzahl) ? `
     <p style="font-size:13px;color:var(--ink-60);line-height:1.55;margin-bottom:10px">
       Im Gerätespeicher liegen noch <b>${a.anzahl} Bilder/Belege</b> (<b>${mb} MB</b>) als Base64 in den
       Datensätzen. Sie werden bei <i>jedem</i> Sync mitübertragen. Der Vorgang lädt sie nach OneDrive
@@ -34778,6 +34910,10 @@ async function modalBackfill(){
       funktionieren unverändert weiter.
     </p>
     <div style="background:var(--ink-05);border-radius:8px;padding:9px 11px;margin-bottom:10px">${zeilen}</div>
+    ${a.kompAnzahl?`<p style="font-size:11.5px;color:var(--ink-60);line-height:1.5;background:var(--green-l);border-radius:8px;padding:9px 11px;margin-bottom:10px">
+      <i class="ti ti-photo-scan"></i> Zusätzlich liegen <b>${a.kompAnzahl} sensible Belege</b> (Ausweis/Lastschrift,
+      <b>${(a.kompBytes/1048576).toFixed(1)} MB</b>) vor. Diese werden bewusst <b>nicht</b> nach OneDrive geladen,
+      sondern nur <b>lokal verkleinert</b> (1600 px, lesbar) – die Daten verlassen das Gerät nicht.</p>`:''}
     <p style="font-size:11.5px;color:var(--amber);line-height:1.5;margin-bottom:10px">
       <i class="ti ti-alert-triangle"></i> Bitte vorher ein <b>Backup exportieren</b>. Der Vorgang kann
       jederzeit abgebrochen werden; bereits übertragene Bilder bleiben gültig. Nur nachweislich
