@@ -16,7 +16,7 @@
    ───────────────────────────────────────────────────────────────────────── */
 'use strict';
 
-const CACHE = 'nadigpfau-v249';
+const CACHE = 'nadigpfau-v250';
 
 const CORE = [
   './',
