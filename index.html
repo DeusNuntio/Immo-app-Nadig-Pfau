@@ -892,7 +892,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=35;   // v242: +buch_journal (F4 GoBD)
-const APP_VERSION = '2026-07-19-v250';
+const APP_VERSION = '2026-07-20-v251';
 /* v222 (14.07.2026): KI-Auslesen Zaehlerstand aus Foto (analog rechnungOcrErkennen).
    Neuer Button "Zaehlerstand aus Foto auslesen (KI)" in modalZaehlerstand,
    sichtbar sobald ein Foto vorhanden ist. Sendet Base64+MimeType+Zaehlerart
@@ -27861,16 +27861,17 @@ async function odGetToken() {
       if (dauerhaftFehler){
         console.warn('OneDrive-Token dauerhaft ungueltig ('+t.error+'):', t.error_description||'');
         odTokens = null; await odClearTokens();
-      } else {
-        console.warn('OneDrive-Token vorruebergehend nicht erneuerbar ('+t.error+') – Tokens bleiben erhalten.');
+        setSyncStatus('offline', {richtung:'Anmeldung', fehler:'Microsoft-Anmeldung abgelaufen ('+t.error+') – bitte neu anmelden'});
+        return null;
       }
-      setSyncStatus('offline');
+      console.warn('OneDrive-Token vorruebergehend nicht erneuerbar ('+t.error+') – Tokens bleiben erhalten.');
+      setSyncStatus('offline', {richtung:'Anmeldung', fehler:'Zugriffstoken nicht erneuerbar ('+t.error+') – Anmeldung bleibt erhalten, später erneut versuchen'});
       return null;
     }
     if (!t || !t.access_token){
       // Netzwerkfehler / kein JSON – Tokens BEHALTEN, offline-Status.
       console.warn('OneDrive-Token-Refresh ohne Antwort – Tokens bleiben erhalten.');
-      setSyncStatus('offline');
+      setSyncStatus('offline', {richtung:'Anmeldung', fehler:'Token-Erneuerung ohne gültige Antwort (Netzwerk/Microsoft nicht erreichbar)'});
       return null;
     }
     await odSaveTokens(t);
@@ -27878,7 +27879,7 @@ async function odGetToken() {
   } catch(e) {
     // v220: Netzwerkausfall/Timeout -> Tokens NICHT loeschen, nur offline melden.
     console.warn('Token-Refresh Netzwerkfehler (Tokens bleiben erhalten):', e.message);
-    setSyncStatus('offline');
+    setSyncStatus('offline', {richtung:'Anmeldung', fehler:'Token-Erneuerung fehlgeschlagen: '+String(e && e.message || e)});
     return null;
   }
 };
@@ -28008,7 +28009,10 @@ async function syncToOneDrive() {
   if (istHmSyncGeraet()) return syncToOneDriveHM();   // v196 (A3)
   if (syncInProgress) return;
   const token = await odGetToken();
-  if (!token) return;
+  if (!token) {   // v251: Grund kommt aus odGetToken; Fallback nur wenn gar nicht angemeldet
+    if (!odTokens) setSyncStatus('offline', {richtung:'hochgeladen', fehler:'Nicht mit OneDrive angemeldet'});
+    return;
+  }
   syncInProgress = true;
   setSyncStatus('pending');
   try {
@@ -28090,14 +28094,24 @@ async function syncFromOneDriveForce(){
 async function syncFromOneDrive() {
   if (istHmSyncGeraet()) return syncFromOneDriveHM();   // v196 (A3)
   const token = await odGetToken();
-  if (!token) return;
+  // v251: odGetToken hat den Grund bereits gemeldet. Fallback nur, falls kein
+  // Token-Objekt existiert (gar nicht angemeldet) – sonst blieb der Abbruch stumm.
+  if (!token) {
+    if (!odTokens) setSyncStatus('offline', {richtung:'geladen', fehler:'Nicht mit OneDrive angemeldet'});
+    return;
+  }
   setSyncStatus('pending');
+  /* v251: Phase mitführen, damit ein Fehlschlag zuordenbar wird – ein Fehler
+     beim Zusammenführen sah bisher aus wie ein fehlgeschlagener Download. */
+  let phase = 'Download';
   try {
     const r = await fetchMitTimeout(OD_FILE_URL,
       {headers:{'Authorization':'Bearer '+token}}, OD_SYNC_TIMEOUT);
     if (r.status === 404) { await syncToOneDrive(); return; }
-    if (!r.ok) throw new Error('HTTP '+r.status);
+    if (!r.ok) throw new Error('HTTP '+r.status+(r.status===401?' (Zugriff abgelehnt – Anmeldung prüfen)':''));
+    phase = 'Daten lesen';
     const backup = await r.json();
+    phase = 'Zusammenführen';
     const remoteTime = backup.updatedAt||'';
     const ls = await idbGet('settings','lastSync').catch(()=>null);
     const localTime  = ls?.value||'';
@@ -28206,10 +28220,10 @@ async function syncFromOneDrive() {
       await renderDash(); await updateBadge();
       toast('✓ Synchronisiert (' + (backup.updatedBy||'') + ')');
     }
-    setSyncStatus('ok');
+    setSyncStatus('ok', {richtung:'geladen'});
   } catch(e) {
-    console.warn('Sync Download:', e);
-    setSyncStatus('offline');
+    console.warn('Sync Download (' + phase + '):', e);
+    setSyncStatus('offline', {richtung:'geladen', fehler: phase + ': ' + String(e && e.message || e)});
   }
 };
 
@@ -28909,6 +28923,7 @@ function showSyncInfo(){
       ${syncInfoHtml()}
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn btn-copper" onclick="syncButtonModalKlick(this)"><i class="ti ti-refresh"></i> Synchronisieren</button>
+        <button class="btn btn-sm" onclick="msalLogin()"><i class="ti ti-brand-windows"></i> Neu anmelden</button>
         <button class="btn btn-danger btn-sm" onclick="msalLogout();closeModal()"><i class="ti ti-logout"></i> Abmelden</button>
       </div>` : `
       <p style="font-size:13px;color:var(--ink-40);margin-bottom:14px;line-height:1.6">
