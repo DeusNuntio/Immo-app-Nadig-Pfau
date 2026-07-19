@@ -884,14 +884,15 @@ const STORE_DEFS = {
   od_auth:             { sync:false },
   buch_regeln:         { sync:true, merge:true, index:['schluessel','kontoId'] },
   buchungs_batches:    { sync:true, merge:true, index:['kontoId'] },
+  buch_journal:        { sync:true, merge:true, index:['buchungId','kontoId'] },   // v242 (F4, GoBD)
 };
 /* Abgeleitete Listen – NIE separat pflegen. */
 const STORES_ALLE  = Object.keys(STORE_DEFS);                                     // DB-Anlage
 const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);                 // Backup + Sync + Snapshot
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
-const DB_NAME='immo_v2', DB_VER=34;
-const APP_VERSION = '2026-07-18-v240';
+const DB_NAME='immo_v2', DB_VER=35;   // v242: +buch_journal (F4 GoBD)
+const APP_VERSION = '2026-07-19-v246';
 /* v222 (14.07.2026): KI-Auslesen Zaehlerstand aus Foto (analog rechnungOcrErkennen).
    Neuer Button "Zaehlerstand aus Foto auslesen (KI)" in modalZaehlerstand,
    sichtbar sobald ein Foto vorhanden ist. Sendet Base64+MimeType+Zaehlerart
@@ -1639,7 +1640,7 @@ async function loadLoginUsers(){
   const lastUser=localStorage.getItem('lastLoginUser')||'';
   const sel=document.getElementById('loginUserSel');
   sel.innerHTML='<option value="">– Benutzer wählen –</option>'+
-    active.map(u=>`<option value="${u.id}" ${u.id===lastUser?'selected':''}>${u.name} · ${rollenLabel(u.role)}</option>`).join('');
+    active.map(u=>`<option value="${escAttr(u.id)}" ${u.id===lastUser?'selected':''}>${esc(u.name)} · ${esc(rollenLabel(u.role))}</option>`).join('');   // v243 (R27)
 }
 
 function pinPress(d){
@@ -1679,7 +1680,7 @@ async function tryLogin(){
       user.geaendert=now();
       await idbPut('users', user);
     }
-  }catch(e){}
+  }catch(e){ console.warn('PIN-Migration für Benutzer:', e); }   // v244 (R26)
   localStorage.setItem('lastLoginUser', uid);
   // Session-Marker: erlaubt Auto-Wiederanmeldung nach OS-Reload (z. B. nach Kamera-Nutzung)
   try { sessionStorage.setItem('activeSession', uid); } catch(e) {}
@@ -5797,7 +5798,12 @@ async function saAlsInteressentImportieren(id){
       anzeigeName:e.anzeigeName||rec.name, zeitstempel:e.zeitstempel||nowIso(),
       daten:obj, status:'importiert', geaendert:nowIso()
     });
-  }catch(_){}
+  }catch(err){
+    // v244 (R26): schlug dies fehl, fehlte die Selbstauskunft dauerhaft in der Akte,
+    // obwohl der Import als erfolgreich gemeldet wurde.
+    console.warn('Selbstauskunft speichern:', err);
+    toast('Selbstauskunft konnte nicht gespeichert werden – bitte erneut importieren.', 5000);
+  }
   // Serverseitig als verarbeitet markieren
   const key=(await idbGet('settings','backendKey').catch(()=>null))?.value;
   if(key){
@@ -5806,7 +5812,12 @@ async function saAlsInteressentImportieren(id){
         method:'POST', headers:{'Content-Type':'application/json','x-functions-key':key},
         body:JSON.stringify({ id:e.id })
       });
-    }catch(_){}
+    }catch(err){
+      // v244 (R26): bisher still verschluckt – die Selbstauskunft blieb serverseitig
+      // ungelesen, obwohl die Oberfläche „erledigt“ anzeigte.
+      console.warn('Selbstauskunft als gelesen markieren:', err);
+      toast('Als gelesen markieren am Server fehlgeschlagen – beim nächsten Aufruf erscheint der Eintrag wieder.', 5000);
+    }
   }
   toast('Als Interessent übernommen ✓');
   // aus der Liste entfernen
@@ -5939,7 +5950,10 @@ async function mailNachrichtErledigt(id, btn){
         method:'POST', headers:{'Content-Type':'application/json','x-functions-key':key},
         body:JSON.stringify({ id })
       });
-    }catch(_){}
+    }catch(err){
+      console.warn('Nachricht als erledigt markieren:', err);   // v244 (R26)
+      toast('„Erledigt“ konnte am Server nicht gespeichert werden – bitte später erneut versuchen.', 5000);
+    }
   }
   toast('Als erledigt markiert ✓');
   _mailBadgeLetzter = 0;            // Badge sofort neu zählen lassen
@@ -6144,7 +6158,7 @@ async function mailRenderPapierkorb(body){
   try{
     const res=await fetchMitTimeout(BACKEND_AZURE+'/api/inbox-trash',{ headers:{'x-functions-key':key||''} });
     if(res.ok) liste=await res.json().catch(()=>[]);
-  }catch(e){}
+  }catch(e){ console.warn('Papierkorb laden:', e); }   // v244 (R26)
   if(!Array.isArray(liste)) liste=[];
   if(!liste.length){
     body.innerHTML=`<div class="empty"><i class="ti ti-trash"></i><p>Papierkorb ist leer.</p>
@@ -6173,7 +6187,10 @@ async function mailPapierkorbAktion(id, aktion, btn){
       method:'POST', headers:{'Content-Type':'application/json','x-functions-key':key||''},
       body:JSON.stringify({ id, aktion })
     });
-  }catch(e){}
+  }catch(e){
+    console.warn('Papierkorb-Aktion:', e);   // v244 (R26)
+    toast('Aktion am Server fehlgeschlagen – der Eintrag bleibt unverändert.', 5000);
+  }
   toast(aktion==='restore'?'Wiederhergestellt ✓':'Endgültig gelöscht ✓');
   _mailBadgeLetzter=0; updateMailBadge();
 }
@@ -7030,7 +7047,7 @@ async function tsLadeMaengel(){
   const list=await idbGetAll('maengel','objektId',objId).catch(()=>[]);
   const offen=(list||[]).filter(m=>m.status!=='behoben'&&m.status!=='erledigt');
   sel.innerHTML='<option value="">– kein / neuer Mangel –</option>'+
-    offen.map(m=>`<option value="${m.id}" ${window._tsNeuerMangelId===m.id?'selected':''}>${m.nummer?m.nummer+' · ':''}${m.titel}</option>`).join('');
+    offen.map(m=>`<option value="${escAttr(m.id)}" ${window._tsNeuerMangelId===m.id?'selected':''}>${m.nummer?esc(m.nummer)+' · ':''}${esc(m.titel)}</option>`).join('');   // v243 (R27)
 }
 
 // Neuen Mangel direkt aus dem Tätigkeitsdialog anlegen (Minimal), dann auswählen
@@ -11169,8 +11186,8 @@ async function renderObjMieter(el){
       <div class="m-avatar">${ini}</div>
       <div class="m-body">
         <div class="m-name">${m.leerstand?'<span class="chip chip-warn" style="font-size:10px;margin-right:4px"><i class="ti ti-home-off" style="font-size:9px"></i> Leerstand</span>':''}${alleVerstorben?'<span class="chip" style="font-size:10px;margin-right:4px;background:var(--ink-10);color:var(--ink-40)"><i class="ti ti-grave" style="font-size:9px"></i> verstorben</span>':''} ${esc(anzeigeName)}</div>
-        <div class="m-sub">${m.etage||''} · Einzug: ${m.einzug||'–'}${m.leerstand?'':` · <i class="ti ti-users" style="font-size:11px"></i> ${pers} ${pers===1?'Person':'Personen'}`}</div>
-        ${istAdmin && !m.leerstand && mieteProQm(m)!==null?`<div class="m-sub" style="margin-top:2px"><i class="ti ti-square-rounded-percentage" style="font-size:11px"></i> ${mieteProQmHTML(m, stamm&&stamm.mietspiegel)}${m.flaeche?` <span style="color:var(--ink-40);font-size:11px">· ${String(m.flaeche).replace('.',',')} m²</span>`:''}${stamm&&stamm.mietspiegel?` <span style="color:var(--ink-40);font-size:11px">(Mietspiegel ${String(stamm.mietspiegel).replace('.',',')} €/m²)</span>`:''}</div>`:''}
+        <div class="m-sub">${esc(m.etage||'')} · Einzug: ${esc(m.einzug||'–')}${m.leerstand?'':` · <i class="ti ti-users" style="font-size:11px"></i> ${pers} ${pers===1?'Person':'Personen'}`}</div>
+        ${istAdmin && !m.leerstand && mieteProQm(m)!==null?`<div class="m-sub" style="margin-top:2px"><i class="ti ti-square-rounded-percentage" style="font-size:11px"></i> ${mieteProQmHTML(m, stamm&&stamm.mietspiegel)}${m.flaeche?` <span style="color:var(--ink-40);font-size:11px">· ${esc(String(m.flaeche).replace('.',','))} m²</span>`:''}${stamm&&stamm.mietspiegel?` <span style="color:var(--ink-40);font-size:11px">(Mietspiegel ${String(stamm.mietspiegel).replace('.',',')} €/m²)</span>`:''}</div>`:''}
         <div class="m-sub" style="display:flex;gap:8px;flex-wrap:wrap">
           ${m.telefon?`<span><i class="ti ti-phone" style="font-size:11px"></i> ${esc(m.telefon)}</span>`:''}
           ${m.email?`<span><i class="ti ti-mail" style="font-size:11px"></i> ${esc(m.email)}</span>`:''}
@@ -11232,7 +11249,7 @@ async function renderObjMieter(el){
         <div class="m-avatar" style="background:var(--amber)">${ini}</div>
         <div class="m-body">
           <div class="m-name"><span class="chip chip-warn" style="font-size:10px;margin-right:4px"><i class="ti ti-clock" style="font-size:9px"></i> ab ${esc(m.einzug)}</span> ${esc(m.mieter)}</div>
-          <div class="m-sub">${m.etage||''} · WE ${m.weNr}</div>
+          <div class="m-sub">${esc(m.etage||'')} · WE ${esc(m.weNr)}</div>
         </div>
         <div class="m-we">WE ${m.weNr}</div>
       </div>`;
@@ -11640,7 +11657,7 @@ async function mangelAnHandwerker(id, store){
       const res=await fetch(_src);
       const blob=await res.blob();
       files.push(new File([blob], 'Foto_'+(i+1)+'.jpg', {type:blob.type||'image/jpeg'}));
-    }catch(_){}
+    }catch(err){ console.warn('Foto für Teilen laden (Index '+i+'):', err); }   // v244 (R26)
   }
 
   // Bevorzugt: Fotos + Text in einem Share
@@ -11693,7 +11710,7 @@ async function showMieter(id){
     <div class="det-av-row">
       <div class="det-av">${ini}</div>
       <div><div class="det-name">${esc(hauptmieterNameVoll(m)||m.mieter)}</div>
-        <div class="det-we">${obj?.name||''} · WE ${m.weNr} · ${m.etage||''}${m.leerstand?' · \u26A0 LEERSTAND':''}</div>
+        <div class="det-we">${esc(obj?.name||'')} · WE ${esc(m.weNr)} · ${esc(m.etage||'')}${m.leerstand?' · \u26A0 LEERSTAND':''}</div>
       </div>
     </div>
     ${m._zukuenftig?`<div style="background:var(--amber-l);border-radius:8px;padding:8px 12px;margin-top:8px;font-size:12px;color:var(--amber)">
@@ -11706,7 +11723,7 @@ async function showMieter(id){
       ${istVerwalter()?`<div class="det-field"><label>Miete</label><span>${fmtEur(m.miete)}</span></div>
       <div class="det-field"><label>NK-Vorauszahlung</label><span>${fmtEur(m.nk)}</span></div>
       <div class="det-field"><label>Gesamtmiete</label><span>${fmtEur(m.gesamt)}</span></div>`:''}
-      <div class="det-field"><label>Wohnfläche</label><span>${m.flaeche?m.flaeche+' m²':'–'}</span></div>
+      <div class="det-field"><label>Wohnfläche</label><span>${m.flaeche?esc(m.flaeche)+' m²':'–'}</span></div>
       ${istVerwalter()&&mieteProQm(m)!==null?`<div class="det-field"><label>Kaltmiete je m²</label><span>${mieteProQmHTML(m,_stamm.mietspiegel)}${_stamm.mietspiegel?(()=>{const a=mietspiegelAmpel(mieteProQm(m),_stamm.mietspiegel);return a?` <span class="det-zusatz" style="color:${ampelAufDunkel(a.farbe)}">· ${a.label} (MS ${String(_stamm.mietspiegel).replace('.',',')} €/m²)</span>`:'';})():' <span class="det-zusatz" style="color:var(--ink-10)">· kein Mietspiegel hinterlegt</span>'}</span></div>`:''}
       <div class="det-field"><label>Einzug</label><span>${m.einzug||'–'}</span></div>
       ${istVerwalter()?(()=>{ const _kd=kautionDetailVon(m); const _si=kautionStatusInfo(_kd.status); const _ai=kautionArtInfo(_kd.art); return `<div class="det-field"><label>Kaution</label><span>${fmtEur(kautionSaldo(_kd))} <span class="det-zusatz" style="color:${ampelAufDunkel(_si.farbe)}">· ${_ai.label.split(' (')[0]} · ${_si.label}</span></span></div>`; })():''}
@@ -12464,11 +12481,11 @@ async function updateMailBadge(){
   try{
     const r1=await fetchMitTimeout(BACKEND_AZURE+'/api/inbox-sa',{ headers:{'x-functions-key':key} });
     if(r1.ok){ const l=await r1.json().catch(()=>[]); sa=Array.isArray(l)?l.length:0; }
-  }catch(e){}
+  }catch(e){ console.warn('Zähler Selbstauskünfte:', e); }   // v244 (R26)
   try{
     const r2=await fetchMitTimeout(BACKEND_AZURE+'/api/inbox',{ headers:{'x-functions-key':key} });
     if(r2.ok){ const l=await r2.json().catch(()=>[]); msg=Array.isArray(l)?l.length:0; }
-  }catch(e){}
+  }catch(e){ console.warn('Zähler Nachrichten:', e); }   // v244 (R26)
   const n = sa + msg;
   badge.style.display = n?'flex':'none';
   badge.textContent = n>99?'99+':n;
@@ -12604,7 +12621,7 @@ function reparaturHTML(r){
       ${done?'<i class="ti ti-check" style="font-size:12px"></i>':''}
     </div>
     <div class="t-body">
-      <div class="t-title ${done?'done':''}">${r.titel}</div>
+      <div class="t-title ${done?'done':''}">${esc(r.titel)}</div>
       <div class="t-meta">
         <span>${obj?.name||''}</span>
         ${r.weNr?`<span>WE ${r.weNr}</span>`:''}
@@ -15067,7 +15084,7 @@ async function erstelleNKA(objektId, korrektur) {
       </div>
       <div class="bk-trennlinie"></div>
 
-      <h2 style="margin:14px 0 2px">${obj?.name||''} · WE ${m.weNr}${m.etage?' · '+m.etage:''}</h2>
+      <h2 style="margin:14px 0 2px">${esc(obj?.name||'')} · WE ${esc(m.weNr)}${m.etage?' · '+esc(m.etage):''}</h2>
       ${korrektur?`<div style="background:#FDECEA;border:1px solid #C0392B;color:#C0392B;padding:6px 10px;border-radius:4px;font-size:10px;margin-bottom:8px"><strong>Korrektur:</strong> ${esc(korrektur.text||'Diese Abrechnung ersetzt eine zuvor erstellte Fassung.')}</div>`:''}
       <h1 style="margin-bottom:8px">Mietnebenkosten – Einzelabrechnung${korrektur?' (Korrektur)':''}</h1>
       <p style="font-size:11px;margin-bottom:6px">${getAnredeVertrag(m)},</p>
@@ -16564,8 +16581,8 @@ async function saveBriefkopfOverride(key, ziel){
 function getBriefkopfHTML(objektId) {
   const b = getBriefkopf(objektId);
   return `<div style="font-size:10px;color:#555;margin-bottom:8px;padding-bottom:6px;border-bottom:2px solid #1F4E79">
-    <strong style="font-size:11px;color:#1F4E79">${b.name}</strong>${b.zusatz?`<br>${b.zusatz}`:''}
-    <br>${b.strasse} · ${b.ort}
+    <strong style="font-size:11px;color:#1F4E79">${esc(b.name)}</strong>${b.zusatz?`<br>${esc(b.zusatz)}`:''}
+    <br>${esc(b.strasse)} · ${esc(b.ort)}
     <br>Tel: ${b.tel}${b.email?` · ${b.email}`:''}
   </div>`;
 }
@@ -17878,9 +17895,9 @@ async function mvErzeugen(){
     try{
       const alle = await idbGetAll('dokumente');
       for(const dok of alle.filter(x=>x.mieterId===mieterId && x.typ==='vertrag')){
-        await idbDelete('dokumente', dok.id).catch(()=>{});
+        await idbDelete('dokumente', dok.id).catch(err=>console.warn('Alt-Vertrag löschen:', err));   // v244 (R26)
       }
-    }catch(_){}
+    }catch(err){ console.warn('Alt-Verträge des Mieters aufräumen:', err); }   // v244 (R26)
     dokId = await archiviereMieterDokument({
       mieterId, objektId: D.objektId, typ:'vertrag',
       name:'Wohnraum-Mietvertrag (Entwurf zur Prüfung)', html, mimeType:'text/html',
@@ -17914,7 +17931,7 @@ async function mvErzeugen(){
     try{
       const m = await idbGet('mieter', mieterId);
       if(m){ m.mvAusgleichIntern = D.ausgleichIntern.trim(); m.updatedAt=new Date().toISOString(); await idbPut('mieter', m); }
-    }catch(_){}
+    }catch(err){ console.warn('Interne Ausgleichsnotiz am Mieter speichern:', err); }   // v244 (R26)
   }
 
   // 4) Kandidat auf 'uebernommen' setzen
@@ -17922,7 +17939,7 @@ async function mvErzeugen(){
     try{
       const k = await idbGet('interessenten', D.quelleInteressentId);
       if(k){ k.status='uebernommen'; k.geaendert=nowIso(); await idbPut('interessenten', k); }
-    }catch(_){}
+    }catch(err){ console.warn('Interessent als übernommen markieren:', err); }   // v244 (R26)
   }
 
   closeModal();
@@ -19222,7 +19239,7 @@ table tr{page-break-inside:avoid}
 <div class="zeile"><label>Postleitzahl, Ort, Straße, Hausnummer:</label>
   <div class="val">${obj?.ort||''}, ${obj?.name||''}</div></div>
 <div class="zeile"><label>Stockwerk / Wohnung / Lagebeschreibung:</label>
-  <div class="val">${m.etage||''} · WE ${m.weNr||''}</div></div>
+  <div class="val">${esc(m.etage||'')} · WE ${esc(m.weNr||'')}</div></div>
 <div class="zeile"><label>am (Einzugsdatum):</label>
   <div class="val">${m.einzug||''}</div></div>
 
@@ -20514,7 +20531,7 @@ async function showReparaturDetail(id) {
   });
 
   showModal(`
-    <div class="m-title"><i class="ti ti-tools"></i> ${r.titel}</div>
+    <div class="m-title"><i class="ti ti-tools"></i> ${esc(r.titel)}</div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
       <span class="chip chip-${done?'ok':'warn'}">${done?'Erledigt':'Ausstehend'}</span>
       <span class="chip chip-${r.extern==='extern'?'warn':'gray'}">${r.extern==='extern'?'Extern':'Intern'}</span>
@@ -20533,7 +20550,7 @@ async function showReparaturDetail(id) {
     ${r.rechnung?`<div class="card-hdr" style="margin-top:10px;margin-bottom:6px"><i class="ti ti-file-invoice"></i> Rechnung</div>
       ${istFotoRef(r.rechnung)
         ? `<img src="${fotoThumbQuelle(r.rechnung)}" style="width:100%;border-radius:8px;cursor:pointer;margin-bottom:8px" onclick="openFoto('${r.rechnung.odId}','odref')" onerror="this.style.display='none'">`
-        : `<img src="${r.rechnung}" style="width:100%;border-radius:8px;cursor:pointer;margin-bottom:8px" onclick="openFoto('${r.rechnung}','Rechnung ${r.titel}')" onerror="this.style.display='none'">`}`:''}
+        : `<img src="${r.rechnung}" style="width:100%;border-radius:8px;cursor:pointer;margin-bottom:8px" onclick="openFoto('${escAttr(r.rechnung)}','Rechnung ${escAttr(r.titel)}')" onerror="this.style.display='none'">`}`:''}
     <div style="display:flex;gap:7px;flex-wrap:wrap;margin-top:10px">
       <button class="btn ${done?'':'btn-success'}" onclick="toggleReparatur('${id}');closeModal()">
         <i class="ti ti-${done?'rotate-ccw':'check'}"></i> ${done?'Wieder öffnen':'Erledigen'}
@@ -21127,8 +21144,8 @@ p{font-size:11px;line-height:1.8;margin-bottom:6px}
     <div class="bk-absender">${bk.name} · ${bk.strasse} · ${bk.ort}</div>
     <div style="font-size:10px;line-height:1.7">
       <strong>${esc(m.mieter)}</strong><br>
-      ${obj?.name||''} · WE ${m.weNr}${m.etage?' · '+m.etage:''}<br>
-      ${obj?.ort||''}
+      ${esc(obj?.name||'')} · WE ${esc(m.weNr)}${m.etage?' · '+esc(m.etage):''}<br>
+      ${esc(obj?.ort||'')}
     </div>
     <div style="margin-top:8mm;font-size:10px;color:#555">${heute}</div>
   </div>
@@ -21733,7 +21750,7 @@ async function modalAddTermin(prefillDate) {
       <div class="f"><label>Zugewiesen an</label>
         <select id="tZugewiesen">
           <option value="">– Niemanden –</option>
-          ${(await idbGetAll('users')).filter(u=>u.aktiv!==false).map(u=>`<option value="${u.id}">${u.name}</option>`).join('')}
+          ${(await idbGetAll('users')).filter(u=>u.aktiv!==false).map(u=>`<option value="${escAttr(u.id)}">${esc(u.name)}</option>`).join('')}
         </select>
       </div>
     </div>
@@ -21934,7 +21951,7 @@ async function modalAddAufgabe(mieterId,objektId){
     <div class="f"><label>Beschreibung</label><textarea spellcheck="true" lang="de" id="aBeschr" placeholder="Details zur Aufgabe..."></textarea></div>
     ${istVerwalter()?`<div class="f"><label>Zugewiesen an</label><select id="aZugewiesen">
       <option value="">– nur für mich (Admin-intern) –</option>
-      ${(await idbGetAll('users')).filter(u=>u.aktiv!==false&&u.id!==CU.id).map(u=>`<option value="${u.id}">${u.name}</option>`).join('')}
+      ${(await idbGetAll('users')).filter(u=>u.aktiv!==false&&u.id!==CU.id).map(u=>`<option value="${escAttr(u.id)}">${esc(u.name)}</option>`).join('')}
     </select>
     <div style="font-size:11px;color:var(--ink-40);margin-top:2px">Ohne Zuweisung sehen Hausmeister diese Aufgabe nicht.</div></div>`:''}
     <div class="f-row">
@@ -22029,7 +22046,7 @@ function mieterFormHTML(obj, m={}) {
     </div>
     <div class="f">
       <label>Etage / Lage</label>
-      <input type="text" id="mEtage" value="${m.etage||''}" placeholder="z. B. 1.OG rechts">
+      <input type="text" id="mEtage" value="${escAttr(m.etage||'')}" placeholder="z. B. 1.OG rechts">
     </div>
     <div class="f-section-title"><i class="ti ti-users"></i> Bewohner / Vertragspartner</div>
     <div style="font-size:11px;color:var(--ink-40);margin-bottom:8px;line-height:1.5">Jede Zeile = eine Person. <strong>Vertragspartner</strong> markiert, wer im Mietvertrag genannt ist – NKA und Mieterhöhung müssen an alle Vertragspartner gemeinsam gerichtet werden. In Übersicht und Listen erscheint automatisch der/die Nachname(n) der Vertragspartner.</div>
@@ -22054,7 +22071,7 @@ function mieterFormHTML(obj, m={}) {
     </div>
     <div class="f-row">
       <div class="f"><label>Wohnfläche (m²)</label>
-        <input type="number" inputmode="decimal" id="mFlaeche" value="${m.flaeche||''}" step="0.01"></div>
+        <input type="number" inputmode="decimal" id="mFlaeche" value="${escAttr(m.flaeche||'')}" step="0.01"></div>
       <div class="f"><label>Personen (Anzahl)${istPersonenObjekt(obj?.id)?' <span class="chip chip-warn" style="font-size:9px;padding:0 5px">NK-relevant</span>':''}</label>
         <input type="number" inputmode="decimal" id="mPersonen" value="${m.personen||personen.filter(p=>!p.verstorben).length||1}" min="1" max="20" oninput="mPersonenManuell(this)"${(parseInt(m.personen)||0) > personen.filter(p=>!p.verstorben).length ? ' data-manuell="1"' : ''}>
         <div style="font-size:10px;color:var(--ink-40);margin-top:2px">${istPersonenObjekt(obj?.id)?'Dieses Objekt rechnet Nebenkosten nach Personen ab. ':''}Wird beim Speichern aus der Zahl lebender Personen abgeleitet, sofern hier nicht abweichend gesetzt.</div></div>
@@ -22312,14 +22329,15 @@ function onAddMieterWeChange() {
   // Hinweis je nachdem, ob die Wohnung aktuell belegt ist
   if (cur.mieter && !cur.leerstand) {
     info.style.display = 'block';
-    info.innerHTML = `<i class="ti ti-info-circle"></i> Diese Wohnung ist derzeit an <strong>${cur.mieter}</strong> vermietet
-      (Fläche ${cur.flaeche?cur.flaeche+' m²':'–'}, ${cur.etage||'–'}).<br>
+    // v243 (R27): Mieterdaten stammen aus Freitextfeldern – vor innerHTML escapen.
+    info.innerHTML = `<i class="ti ti-info-circle"></i> Diese Wohnung ist derzeit an <strong>${esc(cur.mieter)}</strong> vermietet
+      (Fläche ${cur.flaeche?esc(cur.flaeche)+' m²':'–'}, ${esc(cur.etage||'–')}).<br>
       Der neue Mieter wird als <strong>zukünftiger Mieter</strong> erfasst. Sobald der Mietbeginn erreicht ist,
-      rückt er automatisch in die Übersicht auf und ${cur.mieter} wird als Vormieter hinterlegt.`;
+      rückt er automatisch in die Übersicht auf und ${esc(cur.mieter)} wird als Vormieter hinterlegt.`;
   } else {
     info.style.display = 'block';
-    info.innerHTML = `<i class="ti ti-info-circle"></i> Wohnung WE ${val} ist als Leerstand / frei erfasst
-      (Fläche ${cur.flaeche?cur.flaeche+' m²':'–'}, ${cur.etage||'–'}). Die Wohnungsdaten werden übernommen.`;
+    info.innerHTML = `<i class="ti ti-info-circle"></i> Wohnung WE ${esc(val)} ist als Leerstand / frei erfasst
+      (Fläche ${cur.flaeche?esc(cur.flaeche)+' m²':'–'}, ${esc(cur.etage||'–')}). Die Wohnungsdaten werden übernommen.`;   // v243 (R27)
   }
 }
 
@@ -22408,7 +22426,7 @@ async function saveNewMieter(objektId) {
     try{
       const k=await idbGet('interessenten', window._uebernahmeInteressentId).catch(()=>null);
       if(k){ k.status='uebernommen'; k.mieterId=neuerMieter.id; k.geaendert=nowIso(); await idbPut('interessenten',k); }
-    }catch(_){}
+    }catch(err){ console.warn('Interessent mit neuem Mieter verknüpfen:', err); }   // v244 (R26)
     window._uebernahmeInteressentId=null;
   }
   closeModal();
@@ -25460,7 +25478,7 @@ ${(d.uebernommeneMaengel&&d.uebernommeneMaengel.length)?`<h2>Aus der Abnahme üb
   <th style="text-align:left;padding:3px 8px;background:#e8f0fe;border:1px solid #ccd;font-size:10px;width:30%">Mangel</th>
   <th style="text-align:left;padding:3px 8px;background:#e8f0fe;border:1px solid #ccd;font-size:10px">Beschreibung</th>
   <th style="text-align:left;padding:3px 8px;background:#e8f0fe;border:1px solid #ccd;font-size:10px;width:12%">Nr.</th>
-</tr></thead><tbody>${d.uebernommeneMaengel.map(m=>`<tr><td style="padding:3px 8px;border:1px solid #dde;font-size:10px;font-weight:600">${m.titel||'–'}</td><td style="padding:3px 8px;border:1px solid #dde;font-size:10px">${m.beschreibung||'–'}</td><td style="padding:3px 8px;border:1px solid #dde;font-size:10px">${m.nummer||'–'}</td></tr>`).join('')}</tbody></table>`:''}
+</tr></thead><tbody>${d.uebernommeneMaengel.map(m=>`<tr><td style="padding:3px 8px;border:1px solid #dde;font-size:10px;font-weight:600">${esc(m.titel||'–')}</td><td style="padding:3px 8px;border:1px solid #dde;font-size:10px">${esc(m.beschreibung||'–')}</td><td style="padding:3px 8px;border:1px solid #dde;font-size:10px">${esc(m.nummer||'–')}</td></tr>`).join('')}</tbody></table>`:''}
 <h2>Gesamtbeurteilung & Vereinbarungen</h2><div class="meta" style="grid-template-columns:1fr 1fr">
   <div class="mi"><strong>Gesamtzustand</strong>${d.gesamtzustand||'–'}</div>
   <div class="mi"><strong>Schönheitsreparaturen</strong>${d.schoenheit||'–'}</div>
@@ -27239,13 +27257,13 @@ async function syncKonfliktUebernehmen(logId, wahl){
 async function logSyncKonflikt(eintrag){
   try{
     await idbPut('sync_log',{id:uid(), erstellt:nowIso(), geaendert:nowIso(), ...eintrag});
-  }catch(e){}
+  }catch(e){ console.warn('Sync-Protokoll schreiben:', e); }   // v244 (R26)
 }
 async function pruneSyncLog(){
   try{
     const alle=(await idbGetAll('sync_log')).sort((a,b)=>(b.erstellt||'').localeCompare(a.erstellt||''));
-    for(const e of alle.slice(300)) await idbDelete('sync_log',e.id).catch(()=>{});
-  }catch(e){}
+    for(const e of alle.slice(300)) await idbDelete('sync_log',e.id).catch(err=>console.warn('Sync-Protokoll kürzen:', err));
+  }catch(e){ console.warn('Sync-Protokoll aufräumen:', e); }   // v244 (R26)
 }
 
 // Objekte, die Nebenkosten (auch) nach Personen umlegen
@@ -27338,10 +27356,19 @@ function erfasseLeerungen(altSnapshot, obj){
 async function importBackup(input){
   if(!istSystemAdmin()){ toast('Nur für Admins'); return; }
   const file=input.files[0]; if(!file) return;
-  const reader=new FileReader();
-  reader.onload=function(e){
+  /* v246: byte-sicheres Lesen statt reader.readAsText(file). Ein rohes
+     ArrayBuffer + fester TextDecoder('utf-8') decodiert Mehrbyte-Zeichen
+     (ü/ö/ä/ß) unabhaengig von einer WebView-internen Kodierungs-Heuristik
+     korrekt – dieselbe Absicherung wie beim OneDrive-Sync. */
+  let buf;
+  try{ buf = await file.arrayBuffer(); }
+  catch(err){ toast('Fehler beim Lesen: '+err.message); input.value=''; return; }
+  let text;
+  try{ text = new TextDecoder('utf-8',{fatal:false}).decode(buf); }
+  catch(err){ toast('Fehler beim Lesen: '+err.message); input.value=''; return; }
+  (function(){
     try{
-      const backup=JSON.parse(e.target.result);
+      const backup=JSON.parse(text);
       // Datei zwischenspeichern, Modus per Dialog wählen (drei klare Optionen).
       window._pendingBackup = backup;
       const datInfo = backup.exportedAt ? ('vom '+backup.exportedAt) : '';
@@ -27365,8 +27392,7 @@ async function importBackup(input){
         <div style="font-size:11px;color:var(--ink-40);margin:-4px 0 12px 2px">Lokale Daten werden komplett durch die Sicherung überschrieben. Nur verwenden, wenn der lokale Stand sicher verworfen werden soll.</div>
         <button class="btn btn-full" onclick="window._pendingBackup=null;closeModal()">Abbrechen</button>`);
     }catch(err){ toast('Fehler beim Lesen: '+err.message); }
-  };
-  reader.readAsText(file);
+  })();
   input.value=''; // erlaubt erneuten Import derselben Datei
 }
 
@@ -27691,7 +27717,7 @@ async function genBackupSichern(token, json){
         await fetchMitTimeout('https://graph.microsoft.com/v1.0/me/drive/root:/NadigPfau:/children',{
           method:'POST', headers:{'Authorization':'Bearer '+token,'Content-Type':'application/json'},
           body:JSON.stringify({name:'backup', folder:{}, '@microsoft.graph.conflictBehavior':'fail'})},OD_SYNC_TIMEOUT);
-      }catch(_){}
+      }catch(err){ console.warn('Backup-Ordner anlegen:', err); }   // v244 (R26)
       r=await put();
     }
     if(!r.ok){ console.warn('Generationen-Backup: HTTP '+r.status); return; }
@@ -27706,10 +27732,11 @@ async function genBackupSichern(token, json){
           .sort((a,b)=>b.name.localeCompare(a.name));
         for(const alte of gens.slice(4)){
           await fetchMitTimeout('https://graph.microsoft.com/v1.0/me/drive/items/'+alte.id,
-            {method:'DELETE',headers:{'Authorization':'Bearer '+token}},OD_SYNC_TIMEOUT).catch(()=>{});
+            {method:'DELETE',headers:{'Authorization':'Bearer '+token}},OD_SYNC_TIMEOUT)
+            .catch(err=>console.warn('Alte Backup-Generation löschen:', err));   // v244 (R26)
         }
       }
-    }catch(_){}
+    }catch(err){ console.warn('Backup-Generationen aufräumen:', err); }   // v244 (R26)
   }catch(e){ console.warn('Generationen-Backup:', e); }
 }
 
@@ -27733,7 +27760,7 @@ async function syncProfilUmstellen(){
     try {
       const ms = await idbGetAll('mieter');
       for (const m of ms){ await idbPut('mieter', mieterFuerHM(m), {keepStamp:true}); }
-    } catch(e){}
+    } catch(e){ console.warn('HM-Profil: Mieterdaten reduzieren:', e); }   // v244 (R26)
     // Verwalter-Benutzer lokal entfernen (deren PIN-Hashes gehoeren nicht auf das Geraet)
     try {
       const us = await idbGetAll('users');
@@ -28993,6 +29020,87 @@ async function deleteBranchenbuch(id){
 }
 
 function uid(){return 'id_'+Date.now()+'_'+Math.random().toString(36).slice(2,7);}
+
+/* ── v242 (F4): GoBD-Buchungsjournal ────────────────────────────────────
+   Jede MANUELLE Änderung/Löschung an Buchungen wird unveränderlich protokolliert
+   (wer, wann, was: Feld alt → neu). Append-only: es gibt bewusst keine Bearbeiten-/
+   Löschen-UI für Journaleinträge. Automatische Migrationen (zaObjektMigration,
+   zaLeistungMigration) und der CSV-Import selbst werden NICHT journalisiert – die
+   Erfassung dokumentiert bereits der Import-Batch (buchungs_batches).
+   Das Journal darf eine Buchung nie blockieren → alles in try/catch. */
+const BUCH_JOURNAL_FELDER=['mieterId','mieterName','mietmonat','kategorie','kategorien',
+  'status','notiz','objektId','kostengruppe','leistungVonISO','leistungBisISO',
+  'leistungQuelle','erstattungFuer','konfidenz','zuordnungVia','_leerstand'];
+function _bjNorm(v){
+  if(v===undefined||v===null||v==='') return '';
+  if(Array.isArray(v)||typeof v==='object'){ try{ return JSON.stringify(v); }catch(_){ return String(v); } }
+  return String(v);
+}
+async function buchJournal(aktion, alt, neu, hinweis){
+  try{
+    const b=neu||alt||{};
+    let felder=[];
+    if(aktion==='aenderung'){
+      const a=alt||{}, n=neu||{};
+      for(const f of BUCH_JOURNAL_FELDER){
+        const va=_bjNorm(a[f]), vn=_bjNorm(n[f]);
+        if(va!==vn) felder.push({f, alt:va.slice(0,300), neu:vn.slice(0,300)});
+      }
+      if(!felder.length) return;   // keine protokollpflichtige Änderung
+    }
+    await idbPut('buch_journal',{
+      id:'bj_'+uid(),
+      buchungId:b.id||'', kontoId:b.kontoId||'',
+      aktion, felder,
+      betrag:(b.betrag!==undefined?b.betrag:null), datumISO:b.datumISO||'',
+      name:b.name||'', zweck:String(b.zweck||'').slice(0,120),
+      hinweis:hinweis||'',
+      von:(typeof CU!=='undefined'&&CU)?(CU.name||''):'',
+      vonId:(typeof CU!=='undefined'&&CU)?(CU.id||''):'',
+      am:nowIso(), geaendert:nowIso(),
+    });
+  }catch(_){ /* Journal blockiert nie */ }
+}
+const BJ_AKTION_LABEL={aenderung:'Änderung', loeschung:'Löschung', anlage_manuell:'Manuelle Erfassung'};
+
+/* Journal-Ansicht (nur lesen). Zeigt die jüngsten Einträge des aktuellen Kontos. */
+async function modalBuchJournal(){
+  if(!istVerwalter()){ toast('Nur für Verwalter'); return; }
+  const konto=ZA_STATE.konto;
+  let eintraege=await idbGetAll('buch_journal').catch(()=>[]);
+  if(konto) eintraege=eintraege.filter(e=>e && (!e.kontoId || e.kontoId===konto.id));
+  eintraege.sort((a,b)=>String(b.am||'').localeCompare(String(a.am||'')));
+  const max=200;
+  const gezeigt=eintraege.slice(0,max);
+  const eur=n=>(Number(n)||0).toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const feldLabel={mieterId:'Mieter-ID',mieterName:'Mieter',mietmonat:'Mietmonat',kategorie:'Kategorie',
+    kategorien:'Aufteilung',status:'Status',notiz:'Notiz',objektId:'Kostenstelle (Objekt)',
+    kostengruppe:'Kostenstelle (Gruppe)',leistungVonISO:'Leistungszeitraum von',
+    leistungBisISO:'Leistungszeitraum bis',leistungQuelle:'LZ-Quelle',erstattungFuer:'Erstattung für',
+    konfidenz:'Konfidenz',zuordnungVia:'Zuordnung via',_leerstand:'Leerstand-Kennzeichen'};
+  const rows=gezeigt.map(e=>{
+    const dt=e.am?new Date(e.am):null;
+    const wann=dt&&!isNaN(dt)?dt.toLocaleDateString('de-DE')+' '+dt.toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'}):esc(String(e.am||''));
+    const kopf=`${esc(e.name||'')}${e.datumISO?' · '+esc(e.datumISO):''}${e.betrag!==null&&e.betrag!==undefined?' · '+eur(e.betrag)+' €':''}`;
+    const diffs=(e.felder||[]).map(d=>`<div style="font-size:10.5px;color:var(--ink-60)">${esc(feldLabel[d.f]||d.f)}: <span style="color:var(--ink-40)">${esc(d.alt||'– leer –')}</span> → <b>${esc(d.neu||'– leer –')}</b></div>`).join('');
+    return `<div style="border-bottom:1px solid var(--line);padding:7px 0">
+      <div style="display:flex;justify-content:space-between;gap:8px;font-size:11px;color:var(--ink-40)">
+        <span><b style="color:${e.aktion==='loeschung'?'var(--red,#dc2626)':'var(--ink-70)'}">${esc(BJ_AKTION_LABEL[e.aktion]||e.aktion||'')}</b>${e.hinweis?' · '+esc(e.hinweis):''}</span>
+        <span>${wann} · ${esc(e.von||'?')}</span>
+      </div>
+      <div style="font-size:12px">${kopf}</div>
+      ${e.zweck?`<div style="font-size:10px;color:var(--ink-40)">${esc(e.zweck)}</div>`:''}
+      ${diffs}
+    </div>`;
+  }).join('');
+  showModal(`
+    <div class="m-title"><i class="ti ti-book"></i> Buchungsjournal${konto?` – ${esc(konto.label)}`:''}</div>
+    <div style="font-size:11px;color:var(--ink-40);margin-bottom:8px">Unveränderliches Protokoll aller manuellen
+      Änderungen und Löschungen an Buchungen (GoBD-Grundsatz der Nachvollziehbarkeit). Einträge können nicht
+      bearbeitet oder gelöscht werden. ${eintraege.length>max?`Angezeigt: die letzten ${max} von ${eintraege.length}.`:`${eintraege.length} Einträge.`}</div>
+    <div style="max-height:56vh;overflow:auto">${rows||'<p style="color:var(--ink-40);font-size:13px">Noch keine Journaleinträge – sie entstehen ab jetzt bei jeder manuellen Buchungsänderung.</p>'}</div>
+    <button class="btn btn-full" style="margin-top:10px" onclick="closeModal()">Schließen</button>`);
+}
 function esc(v){
   if(v===null||v===undefined) return '';
   return String(v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -29318,11 +29426,14 @@ function buchDarlehenSplit(b){
 }
 async function buchDarlehenUebernehmen(id){
   const b=await idbGet('buchungen', id).catch(()=>null); if(!b) return;
+  const _bjAlt={...b};   // v242 (F4)
   const sp=buchDarlehenSplit(b);
   if(!sp){ toast('Keine passenden Zins-/Tilgungsbeträge im Buchungstext – bitte „Aufteilen“ nutzen.'); return; }
   b.kategorien=[{kat:'zinsen',betrag:sp.zinsen},{kat:'tilgung',betrag:sp.tilgung}];
   b.kategorie=null; b.status='geprueft'; b.updatedAt=nowIso();
-  await idbPut('buchungen', b); syncSoon();
+  await idbPut('buchungen', b);
+  await buchJournal('aenderung', _bjAlt, b, 'Darlehens-Split');   // v242
+  syncSoon();
   toast(`Darlehen aufgeteilt: Zinsen ${sp.zinsen.toFixed(2).replace('.',',')} € / Tilgung ${sp.tilgung.toFixed(2).replace('.',',')} €`);
   await zaRenderVerlauf();
 }
@@ -29384,6 +29495,7 @@ async function modalEingangZuordnen(id){
 }
 async function eingangZuordnenSpeichern(id){
   const b=await idbGet('buchungen', id); if(!b) return;
+  const _bjAlt={...b};   // v242 (F4)
   const mieterId=document.getElementById('ezMieter')?.value||'';
   const monat=document.getElementById('ezMonat')?.value||b.mietmonat;
   const notiz=(document.getElementById('ezNotiz')?.value||'').trim();
@@ -29401,6 +29513,7 @@ async function eingangZuordnenSpeichern(id){
   b.mietmonat=monat; b.notiz=notiz;
   b.updatedAt=nowIso();
   await idbPut('buchungen', b);
+  await buchJournal('aenderung', _bjAlt, b, mieterId?'Zuordnung':'Zuordnung entfernt');   // v242
   syncSoon(); closeModal();
   toast(mieterId?'Zuordnung gespeichert ✓':'Zuordnung entfernt');
   await zaRenderVerlauf();
@@ -29408,10 +29521,12 @@ async function eingangZuordnenSpeichern(id){
 async function eingangZuordnungLoesen(id){
   if(!confirm('Zuordnung wirklich aufheben? Die Buchung wird wieder als "nicht zugeordnet" gefuehrt.')) return;
   const b=await idbGet('buchungen', id); if(!b) return;
+  const _bjAlt={...b};   // v242 (F4)
   b.mieterId=null; b.mieterName=''; b.status='offen';
   delete b.kategorien; delete b.kategorie;
   b.updatedAt=nowIso();
   await idbPut('buchungen', b);
+  await buchJournal('aenderung', _bjAlt, b, 'Zuordnung aufgehoben');   // v242
   syncSoon(); closeModal();
   toast('Zuordnung aufgehoben');
   await zaRenderVerlauf();
@@ -29456,13 +29571,16 @@ async function modalErstattung(id){
 }
 async function saveErstattung(){
   const b=await idbGet('buchungen', window._erstattungId).catch(()=>null); if(!b) return;
+  const _bjAlt={...b};   // v242 (F4)
   const kat=document.getElementById('erstKat')?.value||'';
   const fuer=document.getElementById('erstFuer')?.value||'';
   if(!kat){ toast('Bitte die Art wählen.'); return; }
   b.kategorie=kat; delete b.kategorien;
   b.erstattungFuer=fuer||null;
   b.status='geprueft'; b.updatedAt=nowIso();
-  await idbPut('buchungen', b); syncSoon(); closeModal();
+  await idbPut('buchungen', b);
+  await buchJournal('aenderung', _bjAlt, b, 'Erstattung erfasst');   // v242
+  syncSoon(); closeModal();
   toast('Erstattung erfasst'+(fuer?' und verknüpft':'')+' ✓');
   await zaRenderVerlauf();
 }
@@ -29620,7 +29738,14 @@ function zaMatch(buchungen, mieterListe, konto, spIdx){
     if(!match && b.weHint){
       const cand=weIdx[String(b.weHint).replace(/^0+/,'')]||[];
       let pick=null;
-      if(cand.length===1){ pick=cand[0]; }
+      // v241 (Root Cause „Wienandts → Kindsmüller“): Auch bei nur EINEM Kandidaten
+      // muss der Mietzeitraum passen. Fehlt der frühere Mieter (geloescht/nie angelegt),
+      // wurde die Zahlung sonst dem heutigen Mieter der WE untergeschoben – mit
+      // falschem Rückstand/Guthaben auf beiden Mietkonten.
+      if(cand.length===1){
+        const mo1=zaMietmonat(b);
+        pick = _mieterAktivImMonat(cand[0], mo1) ? cand[0] : null;
+      }
       else if(cand.length>1){
         // §3: mehrere Mieter derselben WE (aktuell + ehemalige) -> nach Mietzeitraum
         const mo=zaMietmonat(b);
@@ -29783,10 +29908,27 @@ async function zaVerarbeiten(text){
 }
 
 /* F2: Importierte Buchungen dauerhaft speichern (mit Dedup) */
+/* v241: Zwei Buchungen mit gleicher berechneter ID sind nur dann dieselbe Buchung,
+   wenn auch der VOLLE Verwendungszweck und der Buchungstext übereinstimmen. Die ID
+   nutzt aus Stabilitätsgründen nur 40 Zeichen der ersten Zweckzeile (siehe zaBuchungId). */
+function zaIstAndereBuchung(alt, neu){
+  if(!alt || !neu) return false;
+  const norm=v=>String(v||'').replace(/\s+/g,' ').trim();
+  return norm(alt.zweck)!==norm(neu.zweck) || norm(alt.buchungstext)!==norm(neu.buchungstext);
+}
+async function zaFreierKollisionsIndex(basisId){
+  for(let n=2;n<50;n++){
+    const kandidat=basisId+'_k'+n;
+    let vorhanden=null;
+    try{ vorhanden=await idbGet('buchungen', kandidat); }catch(_){}
+    if(!vorhanden) return n;
+  }
+  return Date.now().toString(36);
+}
 async function zaSpeichern(){
   const konto = ZA_STATE.konto;
   if(!konto || !ZA_STATE.results.length){ toast('Nichts zu speichern.'); return; }
-  let neu=0, dup=0, akt=0;
+  let neu=0, dup=0, akt=0, kol=0;   // v241: kol = getrennt angelegte ID-Kollisionen
   const batchId='batch_'+uid(); const batchIds=[];
   for(const r of ZA_STATE.results){
     const rec = zaBuchungRecord(konto.id, r.buchung, r.match, r.einnahme);
@@ -29797,6 +29939,7 @@ async function zaSpeichern(){
       // Import ungeprüft blieb und jetzt zugeordnet/kategorisiert wurde – sonst
       // ginge die eben getätigte Arbeit beim Re-Import derselben Datei still verloren.
       if(vorhanden.status==='ungeprueft' && (rec.mieterId || rec.kategorie)){
+        const _bjAlt={...vorhanden};   // v242 (F4)
         vorhanden.mieterId=rec.mieterId; vorhanden.mieterName=rec.mieterName;
         vorhanden.zuordnungVia=rec.zuordnungVia; vorhanden.konfidenz=rec.konfidenz;
         vorhanden.status=rec.status;
@@ -29804,7 +29947,17 @@ async function zaSpeichern(){
         if(rec.notiz) vorhanden.notiz=rec.notiz;
         vorhanden.updatedAt=nowIso();
         await idbPut('buchungen', vorhanden);
+        await buchJournal('aenderung', _bjAlt, vorhanden, 'Re-Import: Zuordnung nachgetragen');   // v242
         akt++;
+      } else if(zaIstAndereBuchung(vorhanden, rec)){
+        // v241: gleiche ID, aber inhaltlich andere Buchung (Datum/Betrag/IBAN und die
+        // ersten 40 Zeichen des Zwecks stimmen überein, der volle Text nicht) – bisher
+        // wurde diese Zeile still als Duplikat verworfen. Jetzt mit Kollisions-Suffix
+        // zusätzlich anlegen, damit keine Buchung verloren geht.
+        rec.id = rec.id + '_k' + (await zaFreierKollisionsIndex(rec.id));
+        rec.batchId=batchId; batchIds.push(rec.id);
+        await idbPut('buchungen', rec);
+        neu++; kol++;
       } else { dup++; }
       continue;
     }
@@ -29818,9 +29971,13 @@ async function zaSpeichern(){
   for(const b of (ZA_STATE.alleBuchungen||[])){
     if(b.typ!=='ausgang') continue;
     const rec = zaBuchungRecord(konto.id, b, null);
-    let exists=false;
-    try { const e=await idbGet('buchungen', rec.id); exists=!!e; } catch(_){}
-    if(exists) continue;
+    let vorhandenA=null;
+    try { vorhandenA=await idbGet('buchungen', rec.id); } catch(_){}
+    if(vorhandenA){
+      if(!zaIstAndereBuchung(vorhandenA, rec)) continue;   // echtes Duplikat
+      rec.id = rec.id + '_k' + (await zaFreierKollisionsIndex(rec.id));   // v241
+      kol++;
+    }
     rec.batchId=batchId; batchIds.push(rec.id);
     await idbPut('buchungen', rec);
     neuAus++;
@@ -29828,9 +29985,15 @@ async function zaSpeichern(){
   if(batchIds.length){
     try{ await idbPut('buchungs_batches', { id:batchId, kontoId:konto.id, kontoLabel:konto.label||'', quelle:'csv',
       erstelltAm:nowIso(), erstelltVon:(typeof CU!=='undefined'&&CU)?CU.name:'',
-      anzahlEingang:neu, anzahlAusgang:neuAus, anzahlDuplikate:dup, buchungIds:batchIds, status:'aktiv' }); }catch(_){ }
+      anzahlEingang:neu, anzahlAusgang:neuAus, anzahlDuplikate:dup, buchungIds:batchIds, status:'aktiv' }); }
+    catch(err){
+      // v244 (R26): ohne Batch-Record ist der Import nicht mehr rückgängig zu machen –
+      // das darf der Nutzer nicht erst beim Aufräumen bemerken.
+      console.warn('Import-Batch speichern:', err);
+      toast('Import gespeichert, aber der Import-Verlauf konnte nicht angelegt werden – „Rückgängig“ steht für diesen Lauf nicht zur Verfügung.', 6000);
+    }
   }
-  toast(`${neu} Eingänge${neuAus?` und ${neuAus} Ausgänge`:''} gespeichert${akt?`, ${akt} nachträglich zugeordnet`:''}${dup?`, ${dup} bereits vorhanden`:''}.`);
+  toast(`${neu} Eingänge${neuAus?` und ${neuAus} Ausgänge`:''} gespeichert${akt?`, ${akt} nachträglich zugeordnet`:''}${dup?`, ${dup} bereits vorhanden`:''}${kol?`, ${kol} Namensgleichheit getrennt erfasst`:''}.`);
   clearTimeout(window._syncTimer);
   window._syncTimer=setTimeout(()=>{ if(typeof syncToOneDrive==='function') syncToOneDrive(); }, 3000);
   zaRenderVerlauf();
@@ -29904,6 +30067,7 @@ async function zaRenderVerlauf(){
       <button class="btn btn-sm" title="Alle Buchungen dieses Kontos als Excel exportieren" onclick="zaExportBuchungen()"><i class="ti ti-file-spreadsheet"></i> Excel</button>
       <button class="btn btn-sm" title="Import-Verlauf ansehen / Import rückgängig machen" onclick="modalImportVerlauf()"><i class="ti ti-file-import"></i> Importe</button>
       <button class="btn btn-sm" title="Gelernte Kategorie-Regeln ansehen und löschen" onclick="modalRegeln()"><i class="ti ti-bulb"></i> Regeln</button>
+      <button class="btn btn-sm" title="GoBD-Journal: alle manuellen Buchungsänderungen" onclick="modalBuchJournal()"><i class="ti ti-book"></i> Journal</button>
       <button class="btn btn-sm" title="Mietrückstände und Mahnwesen" onclick="modalOffenePosten()"><i class="ti ti-alert-circle"></i> Offene Posten</button>
       <button class="btn btn-sm" title="Steuer-Jahresauswertung nach Anlage-V-Gliederung (Excel)" onclick="modalAnlageV()"><i class="ti ti-receipt-tax"></i> Anlage V</button>
     </div>`;
@@ -29916,7 +30080,7 @@ async function zaRenderVerlauf(){
   } else if(ZA_VERLAUF.sicht==='auswertung'){
     inhalt = zaRenderAuswertung(buch, konto);
   } else {
-    inhalt = zaRenderAuszug(buch, monate, konto);
+    inhalt = zaRenderAuszug(buch, monate, konto, mieter, spIdx);   // v245 (Bild 5): Soll-Abgleich je Monat
   }
   box.innerHTML = `<h3 style="margin:0 0 4px">${esc(konto.label)} – Zahlungsverlauf</h3>
     <p style="font-size:12px;color:var(--ink-40);margin:0 0 10px">${buch.length} gespeicherte Buchungen · ${monate.length} Monate</p>
@@ -29969,6 +30133,7 @@ async function barzahlungSpeichern(){
   // v202: Fehler beim Speichern klar melden; Modal bleibt offen, Eingaben gehen nicht verloren
   try{
     await idbPut('buchungen', rec);
+    await buchJournal('anlage_manuell', null, rec, 'Barzahlung');   // v242 (F4)
   }catch(e){
     console.warn('Barzahlung speichern:', e);
     // Quota-Fehler toastet idbPut (v195/A2) bereits selbst – kein Doppel-Toast
@@ -30044,7 +30209,11 @@ async function zaBatchRueckgaengig(batchId){
   if(!confirm(`Diesen Import wirklich rückgängig machen?\n\n${anz} Buchung(en) werden gelöscht. Bereits vorgenommene Kategorisierungen gehen dabei verloren.\nDieser Schritt kann nicht rückgängig gemacht werden.`)) return;
   let del=0;
   for(const id of (batch.buchungIds||[])){
-    try{ await deleteMitTombstone('buchungen', id); del++; }catch(_){ }
+    try{
+      const _bjRec=await idbGet('buchungen', id).catch(()=>null);   // v242 (F4)
+      await deleteMitTombstone('buchungen', id); del++;
+      if(_bjRec) await buchJournal('loeschung', _bjRec, null, 'Import rückgängig');
+    }catch(err){ console.warn('Buchung löschen (Import rückgängig), ID '+id+':', err); }   // v244 (R26)
   }
   batch.status='storniert'; batch.storniertAm=nowIso(); batch.storniertVon=(typeof CU!=='undefined'&&CU)?CU.name:'';
   try{ await idbPut('buchungs_batches', batch); }catch(_){ }
@@ -30108,7 +30277,7 @@ async function zaBatchRueckgaengigSelektiv(batchId){
   if(!zuLoeschen.length){ toast('Keine unveränderten Buchungen zum Entfernen.'); return; }
   if(!confirm(`${zuLoeschen.length} noch nicht bearbeitete Buchung(en) entfernen?\n\nBereits kategorisierte Buchungen dieses Imports bleiben erhalten.`)) return;
   let del=0;
-  for(const id of zuLoeschen){ try{ await deleteMitTombstone('buchungen', id); del++; }catch(_){ } }
+  for(const id of zuLoeschen){ try{ const _bjRec=await idbGet('buchungen', id).catch(()=>null); await deleteMitTombstone('buchungen', id); del++; if(_bjRec) await buchJournal('loeschung', _bjRec, null, 'Import rückgängig (nur unveränderte)'); }catch(_){ } }   // v242
   batch.buchungIds=verbleibend;
   if(!verbleibend.length){ batch.status='storniert'; batch.storniertAm=nowIso(); batch.storniertVon=(typeof CU!=='undefined'&&CU)?CU.name:''; }
   else { batch.teilRueckgaengigAm=nowIso(); }
@@ -30203,6 +30372,9 @@ function zaRenderMietkonto(buch, mieter, monate, konto, spIdx){
       else if(v.status==='mehr'){ farbe='#1a56db'; dmark='+'+eur(v.diff); }
       else { farbe='var(--red,#dc2626)'; dmark=eur(v.diff); }
       const spInfo = v.stellplatz>0 ? `<div style="font-size:9px;color:var(--ink-40)">davon SP ${eur(v.stellplatz)}</div>` : '';
+      // v241: separat gezahlte Kaution/NK-Nachzahlung sichtbar machen (zählt NICHT aufs Monatssoll)
+      const sonstInfo = (v.sonst>0)
+        ? `<div style="font-size:9px;color:var(--copper,#b87333)">+ ${Object.keys(v.sonstKats||{}).map(k=>esc(buchKatLabel(k))+' '+eur(v.sonstKats[k])).join(' · ')}</div>` : '';
       // §6: Aufschluesselung der Wohnungsmiete in Kaltmiete/NK (nur wenn beide belegt)
       const kmNk = (v.aktiv && (v.miete>0) && (v.nk>0) && (v.kaltmiete>0))
         ? `<div style="font-size:9px;color:var(--ink-40)">KM ${eur(v.kaltmiete)} · NK ${eur(v.nk)}</div>` : '';
@@ -30210,9 +30382,9 @@ function zaRenderMietkonto(buch, mieter, monate, konto, spIdx){
       const mfInfo = v.mietfrei
         ? `<div style="font-size:9px;color:#0e7490">${v.mietfrei==='voll'?'mietfrei':'mietfrei · nur NK'}</div>` : '';
       // v240: Ist-Zelle klickbar – Zahlungen des Monats anzeigen/aufteilen
-      const klick = v.ist>0 ? ` onclick="zaModalMonatsZahlungen('${r.mieterId}','${mo}')" title="Zahlungen dieses Monats anzeigen/aufteilen"` : '';
-      return `<td${klick} style="padding:5px;text-align:right;border-left:1px solid var(--line);font-variant-numeric:tabular-nums${v.ist>0?';cursor:pointer':''}">
-                ${v.ist>0?eur(v.ist):(v.status==='inaktiv'?'<span style="color:var(--ink-20,#ccc)">·</span>':'<span style="color:var(--ink-40)">—</span>')}${spInfo}${kmNk}${mfInfo}</td>
+      const klick = (v.ist>0||v.sonst>0) ? ` onclick="zaModalMonatsZahlungen('${r.mieterId}','${mo}')" title="Zahlungen dieses Monats anzeigen/aufteilen"` : '';
+      return `<td${klick} style="padding:5px;text-align:right;border-left:1px solid var(--line);font-variant-numeric:tabular-nums${(v.ist>0||v.sonst>0)?';cursor:pointer':''}">
+                ${(v.ist>0||v.sonst>0)?eur(v.ist):(v.status==='inaktiv'?'<span style="color:var(--ink-20,#ccc)">·</span>':'<span style="color:var(--ink-40)">—</span>')}${spInfo}${sonstInfo}${kmNk}${mfInfo}</td>
               <td style="padding:5px;text-align:right;color:${farbe};font-weight:600;font-size:12px">${dmark}</td>`;
     }).join('');
     const bg = r.warnung ? 'background:#fff8f0' : '';
@@ -30223,9 +30395,13 @@ function zaRenderMietkonto(buch, mieter, monate, konto, spIdx){
     } else if(r._saldo <= -0.5){
       saldoTxt=`<span style="color:var(--red,#dc2626);font-weight:600" title="Rueckstand ueber das Anzeigefenster">-${eur(-r._saldo)}</span><div style="font-size:9px;color:var(--ink-40)">Rückstand</div>`;
     }
+    // v245 (Bild 4): fixierte Spalten brauchen eine eigene Hintergrundfarbe,
+    // sonst scrollen die Monatszellen sichtbar darunter durch.
+    const fixBg = r.warnung ? '#fff8f0' : 'var(--card,#fff)';
     return `<tr style="border-bottom:1px solid var(--line);${bg}">
-      <td style="padding:6px;font-size:11px;color:var(--ink-40)">${esc(r.weNr||(r.tg?'TG':''))}</td>
-      <td style="padding:6px;font-size:13px">${esc(r.mieter)}${r.ehem?' <span class="chip chip-warn" style="font-size:9px">ehem.</span>':''}${r.ehem?` <button class="btn btn-sm btn-danger" style="padding:1px 5px;font-size:10px;vertical-align:middle" title="Ehemaligen Mieter löschen (z. B. doppelt angelegt)" onclick="zaMieterLoeschen('${r.mieterId}')"><i class="ti ti-trash"></i></button>`:''}</td>
+      <td class="mk-fix mk-fix1" style="padding:6px;font-size:11px;color:var(--ink-40);background:${fixBg}">${esc(r.weNr||(r.tg?'TG':''))}</td>
+      <td class="mk-fix mk-fix2" style="padding:6px;font-size:13px;background:${fixBg}">${esc(r.mieter)}${r.ehem?' <span class="chip chip-warn" style="font-size:9px">ehem.</span>':''}${r.autoEnde?` <span class="chip" style="font-size:9px;background:var(--ink-05);color:var(--ink-60)" title="Kein Auszugsdatum in der Mieterakte. Das Soll endet automatisch mit dem Einzug des Nachmieters (${esc(r.auszugISO||'')}) \u2013 bitte in der Mieterakte nachtragen.">Soll endet ${esc((r.auszugISO||'').split('-').reverse().join('.'))}</span>`:''}${r.ehem?` <button class="btn btn-sm btn-danger" style="padding:1px 5px;font-size:10px;vertical-align:middle" title="Ehemaligen Mieter löschen (z. B. doppelt angelegt)" onclick="zaMieterLoeschen('${r.mieterId}')"><i class="ti ti-trash"></i></button>`:''}
+        <button class="btn btn-sm" style="padding:1px 5px;font-size:10px;vertical-align:middle" title="Zahlungen auf einen anderen Mieter umhängen (z. B. an den Vormieter)" onclick="zaModalUmhaengen('${r.mieterId}')"><i class="ti ti-transfer"></i></button></td>
       <td style="padding:6px;text-align:right;font-variant-numeric:tabular-nums;font-size:12px">
         ${eur(r.soll)}<div style="font-size:9px;color:var(--ink-40)">${r.tg?('SP '+eur(r.spSoll)):(eur(r.netto)+'+'+eur(r.nk)+(r.spSoll?'+SP '+eur(r.spSoll):''))}</div>${r.tg?'':`<button class="btn btn-sm" style="padding:1px 5px;font-size:9px;margin-top:2px" title="NK-Vorauszahlung anpassen" onclick="zaModalNkVz('${r.mieterId}')"><i class="ti ti-pencil"></i> NK-VZ</button>`}</td>
       <td style="padding:6px;text-align:right;font-variant-numeric:tabular-nums;font-size:12px;background:var(--ink-05)">${saldoTxt}</td>
@@ -30233,12 +30409,26 @@ function zaRenderMietkonto(buch, mieter, monate, konto, spIdx){
   }).join('');
 
   const warnCount = rows.filter(r=>r.warnung).length;
-  return `<div style="overflow-x:auto">
-    <table style="width:100%;border-collapse:collapse;font-size:13px;min-width:${300+monate.length*120}px">
+  /* v245 (Bild 4): Der Monatsblock ist breiter als der Bildschirm. Damit die Zuordnung
+     Zeile/Spalte beim Scrollen erhalten bleibt, kleben die beiden Kopfzeilen oben und
+     die Spalten WE/Mieter links. Voraussetzung ist ein Scroll-Container mit fester
+     Maximalhoehe – ohne ihn wuerde `position:sticky` vertikal wirkungslos bleiben. */
+  return `<style>
+    .mk-wrap{overflow:auto;max-height:72vh;position:relative;-webkit-overflow-scrolling:touch}
+    .mk-wrap table{border-collapse:separate;border-spacing:0}
+    .mk-wrap thead th{position:sticky;top:0;z-index:3;background:var(--card,#fff);box-shadow:inset 0 -1px 0 var(--line)}
+    .mk-wrap thead tr:nth-child(2) th{top:34px;z-index:3}
+    .mk-wrap .mk-fix{position:sticky;z-index:2}
+    .mk-wrap .mk-fix1{left:0;min-width:38px}
+    .mk-wrap .mk-fix2{left:38px;min-width:150px;box-shadow:inset -1px 0 0 var(--line)}
+    .mk-wrap thead .mk-fix{z-index:5}
+  </style>
+  <div class="mk-wrap">
+    <table style="width:100%;border-collapse:separate;border-spacing:0;font-size:13px;min-width:${300+monate.length*120}px">
       <thead>
         <tr style="border-bottom:2px solid var(--line)">
-          <th rowspan="2" style="padding:6px;text-align:left;font-size:11px;color:var(--ink-40)">WE</th>
-          <th rowspan="2" style="padding:6px;text-align:left;font-size:11px;color:var(--ink-40)">Mieter</th>
+          <th rowspan="2" class="mk-fix mk-fix1" style="padding:6px;text-align:left;font-size:11px;color:var(--ink-40)">WE</th>
+          <th rowspan="2" class="mk-fix mk-fix2" style="padding:6px;text-align:left;font-size:11px;color:var(--ink-40)">Mieter</th>
           <th rowspan="2" style="padding:6px;text-align:right;font-size:11px;color:var(--ink-40)">Soll<br>(Netto+NK)</th>
           <th rowspan="2" style="padding:6px;text-align:right;font-size:11px;color:var(--ink-40);background:var(--ink-05)">Saldo<br>(kumuliert)</th>
           ${monHdr}
@@ -30331,6 +30521,72 @@ async function zaNkVzSpeichern(mieterId){
   toast('NK-Vorauszahlung gespeichert ✓');
   await zaRenderVerlauf();
 }
+/* v241: Falsch zugeordnete Zahlungen im Block umhängen (typischer Fall: der frühere
+   Mieter fehlte beim Import, alle Eingänge landeten beim heutigen Mieter der WE). */
+async function zaModalUmhaengen(mieterId){
+  if(!istVerwalter()){ toast('Nur für Verwalter'); return; }
+  const m=await idbGet('mieter', mieterId).catch(()=>null);
+  if(!m){ toast('Mieter nicht gefunden.'); return; }
+  const konto=ZA_STATE.konto; if(!konto){ toast('Kein Konto gewählt.'); return; }
+  const alle=await idbGetAll('buchungen').catch(()=>[]);
+  const eig=alle.filter(b=>b && !b.geloescht && b.typ==='eingang' && b.mieterId===mieterId && b.kontoId===konto.id);
+  if(!eig.length){ toast('Diesem Mieter sind keine Eingänge zugeordnet.'); return; }
+  const monate=[...new Set(eig.map(b=>b.mietmonat).filter(Boolean))].sort();
+  const objSet=new Set(konto.objekte);
+  const kandidaten=(await idbGetAll('mieter')).filter(x=>x && x.mieter && objSet.has(x.objektId) && x.id!==mieterId)
+    .sort((a,b)=>zaNachname(a.mieter).localeCompare(zaNachname(b.mieter),'de'));
+  const opt=x=>`<option value="${x.id}">${esc(x.mieter)} · WE ${esc(x.weNr||'?')}${x._vormieter?' (ehem.)':''}</option>`;
+  showModal(`
+    <div class="m-title"><i class="ti ti-transfer"></i> Zahlungen umhängen</div>
+    <div style="background:var(--ink-05);border-radius:8px;padding:8px 10px;margin-bottom:10px;font-size:12px">
+      Von <strong>${esc(m.mieter||'')}</strong> · WE ${esc(String(m.weNr||''))} · ${eig.length} Eingänge
+      (${esc(monate[0]||'')} bis ${esc(monate[monate.length-1]||'')})
+    </div>
+    <div class="f"><label>Ziel-Mieter *</label><select id="zaUhZiel"><option value="">– wählen –</option>${kandidaten.map(opt).join('')}</select></div>
+    <div class="f-row">
+      <div class="f"><label>Von Monat</label><input type="month" id="zaUhVon" value="${esc((monate[0]||'').slice(0,7))}"></div>
+      <div class="f"><label>Bis Monat</label><input type="month" id="zaUhBis" value="${esc((monate[monate.length-1]||'').slice(0,7))}"></div>
+    </div>
+    <label style="display:flex;align-items:center;gap:8px;font-size:12px;margin:6px 0 10px">
+      <input type="checkbox" id="zaUhIban" checked> IBAN der Zahlungen beim Ziel-Mieter hinterlegen (künftige Importe ordnen automatisch zu)
+    </label>
+    <div class="f-row">
+      <button class="btn btn-copper btn-full" onclick="zaUmhaengenAusfuehren('${mieterId}')"><i class="ti ti-check"></i> Umhängen</button>
+      <button class="btn btn-full" onclick="closeModal();zaRenderVerlauf()">Abbrechen</button>
+    </div>`);
+}
+async function zaUmhaengenAusfuehren(vonId){
+  const zielId=document.getElementById('zaUhZiel')?.value||'';
+  const von=document.getElementById('zaUhVon')?.value||'';
+  const bis=document.getElementById('zaUhBis')?.value||'';
+  const ibanUeb=!!document.getElementById('zaUhIban')?.checked;
+  if(!zielId){ toast('Bitte den Ziel-Mieter wählen.'); return; }
+  const ziel=await idbGet('mieter', zielId).catch(()=>null);
+  if(!ziel){ toast('Ziel-Mieter nicht gefunden.'); return; }
+  const konto=ZA_STATE.konto;
+  const alle=await idbGetAll('buchungen').catch(()=>[]);
+  const treffer=alle.filter(b=>b && !b.geloescht && b.typ==='eingang' && b.mieterId===vonId
+    && (!konto || b.kontoId===konto.id)
+    && (!von || String(b.mietmonat||'')>=von) && (!bis || String(b.mietmonat||'')<=bis));
+  if(!treffer.length){ toast('Keine Zahlungen im gewählten Zeitraum.'); return; }
+  if(!confirm(`${treffer.length} Zahlung${treffer.length>1?'en':''} auf „${ziel.mieter||''}“ umhängen?`)) return;
+  const ibans=new Set();
+  for(const b of treffer){
+    const _bjAlt={...b};   // v242 (F4)
+    b.mieterId=zielId; b.mieterName=ziel.mieter||'';
+    b.zuordnungVia='manuell'; b.konfidenz='sicher'; b.status='geprueft';
+    b.objektId=ziel.objektId||b.objektId||null;
+    b.updatedAt=nowIso();
+    await idbPut('buchungen', b);
+    await buchJournal('aenderung', _bjAlt, b, 'Umgehängt');   // v242
+    if(b.iban) ibans.add(b.iban);
+  }
+  if(ibanUeb){ for(const ib of ibans){ try{ await zaIbanAnMieter(zielId, ib, ziel.mieter||''); }catch(_){} } }
+  syncSoon();
+  closeModal();
+  toast(`${treffer.length} Zahlung${treffer.length>1?'en':''} umgehängt ✓`);
+  await zaRenderVerlauf();
+}
 async function zaModalMonatsZahlungen(mieterId, monat){
   const alle=await idbGetAll('buchungen').catch(()=>[]);
   const liste=alle.filter(b=>b && !b.geloescht && b.typ==='eingang' && b.mieterId===mieterId && b.mietmonat===monat)
@@ -30360,9 +30616,26 @@ async function zaModalMonatsZahlungen(mieterId, monat){
 }
 
 /* Sicht 2: Kontoauszug je Monat – alle Eingänge chronologisch */
-function zaRenderAuszug(buch, monate, konto){
+function zaRenderAuszug(buch, monate, konto, mieter, spIdx){
   const eur = n => (Number(n)||0).toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:2});
   const eingaenge = buch.filter(b=>b.typ==='eingang').sort((a,b)=>(b.datumISO||'').localeCompare(a.datumISO||''));
+  /* v245 (Bild 5): Soll-Ist-Abgleich je Monat. Grundlage ist dieselbe Aggregation wie
+     im Mietkonto (zaSollIst), damit beide Sichten nie auseinanderlaufen. Ergebnis:
+     Monatssumme und einzelne Mieter werden bei Abweichung rot mit Differenz gezeigt. */
+  const sollRows = (mieter && mieter.length) ? zaSollIst(buch, mieter, monate, spIdx) : [];
+  const sollJeMonat={};          // monat -> {soll, ist, offen:[{name, fehlt}]}
+  const diffJeMieter={};         // mieterId|monat -> diff
+  for(const mo of monate) sollJeMonat[mo]={soll:0, ist:0, offen:[]};
+  for(const r of sollRows){
+    for(const mo of monate){
+      const v=r.monate[mo];
+      if(!v || !v.aktiv) continue;
+      sollJeMonat[mo].soll += v.sollMo;
+      sollJeMonat[mo].ist  += v.ist;
+      diffJeMieter[r.mieterId+'|'+mo] = v.diff;
+      if(v.ist===0 && v.sollMo>0) sollJeMonat[mo].offen.push({name:r.mieter, weNr:r.weNr, fehlt:v.sollMo});
+    }
+  }
   let html='';
   for(const mo of [...monate].reverse()){
     const liste = eingaenge.filter(b=>b.mietmonat===mo);
@@ -30377,8 +30650,13 @@ function zaRenderAuszug(buch, monate, konto){
       const splitInfo = istSplit
         ? `<div style="font-size:9px;color:var(--copper,#b87333);margin-top:2px">${b.kategorien.map(t=>esc(buchKatLabel(t.kat))+' '+eur(t.betrag)).join(' · ')}</div>`
         : '';
+      /* v245 (Bild 5): Abweichung des Mieters in diesem Monat direkt an der Zeile */
+      const _d = (zugeordnet && diffJeMieter[b.mieterId+'|'+mo]!==undefined) ? diffJeMieter[b.mieterId+'|'+mo] : null;
+      const abwZelle = (_d!==null && Math.abs(_d)>=0.5)
+        ? ` <span style="font-size:10px;font-weight:600;color:${_d<0?'var(--red,#dc2626)':'#1a56db'}" title="Abweichung vom Monatssoll">${_d>0?'+':''}${eur(_d)} \u20ac</span>`
+        : '';
       const statusZelle = zugeordnet
-        ? `${esc(b.mieterName||b.name)}${buchKonfidenzBadge(b)}${b.bar?' <span class="chip" style="font-size:9px;background:var(--copper,#b87333);color:#fff;padding:1px 5px;border-radius:8px">bar</span>':''}${b.istStellplatz?' <span style="font-size:9px;color:var(--ink-40)">[SP]</span>':''}${splitInfo}`
+        ? `${esc(b.mieterName||b.name)}${abwZelle}${buchKonfidenzBadge(b)}${b.bar?' <span class="chip" style="font-size:9px;background:var(--copper,#b87333);color:#fff;padding:1px 5px;border-radius:8px">bar</span>':''}${b.istStellplatz?' <span style="font-size:9px;color:var(--ink-40)">[SP]</span>':''}${splitInfo}`
         : `${esc(b.name)} <span style="font-size:9px;color:var(--amber)">nicht zugeordnet</span>${b.kategorie?` <span style="font-size:9px;color:var(--copper,#b87333)" title="Erstattung/sonstige Einnahme">↩ ${esc(buchKatLabel(b.kategorie))}</span>`:''}`;
       // Aktionen: Zuordnen (falls offen), Erstattung/Einnahme kategorisieren, Aufteilen, Bearbeiten
       const btnZuordnen = !zugeordnet
@@ -30398,13 +30676,31 @@ function zaRenderAuszug(buch, monate, konto){
         <td style="padding:5px;text-align:right;white-space:nowrap;vertical-align:top">${btnZuordnen}${btnErstattung}${btnSplit}${btnBearbeiten}</td>
       </tr>`;
     }).join('');
-    html += `<div style="margin-bottom:16px">
-      <div style="display:flex;justify-content:space-between;align-items:baseline;background:var(--green-l);padding:6px 10px;border-radius:6px;margin-bottom:4px">
+    /* v245 (Bild 5): Monatsblock standardmaessig zugeklappt; die Kopfzeile traegt
+       bereits die Aussage "stimmt / weicht ab", damit man ohne Aufklappen sieht,
+       wo etwas fehlt. */
+    const agg = sollJeMonat[mo] || {soll:0, ist:0, offen:[]};
+    const diffMo = rc(agg.ist - agg.soll);
+    const abweichend = agg.soll>0 && Math.abs(diffMo)>=0.5;
+    const kopfBg = abweichend ? 'var(--red-l,#fdeaea)' : 'var(--green-l)';
+    const summeFarbe = abweichend ? 'var(--red,#dc2626)' : 'inherit';
+    const sollTxt = agg.soll>0
+      ? `<div style="font-size:10px;color:${abweichend?'var(--red,#dc2626)':'var(--ink-40)'};font-weight:${abweichend?'600':'400'}">Soll ${eur(agg.soll)} \u20ac${abweichend?` \u00b7 ${diffMo>0?'+':''}${eur(diffMo)} \u20ac`:' \u00b7 vollst\u00e4ndig'}</div>`
+      : '';
+    const offenTxt = agg.offen.length
+      ? `<div style="font-size:11px;color:var(--red,#dc2626);padding:4px 10px 0"><i class="ti ti-alert-circle"></i> ohne Zahlungseingang: ${agg.offen.map(o=>esc(o.name)+(o.weNr?' (WE '+esc(o.weNr)+')':'')+' \u2013 '+eur(o.fehlt)+' \u20ac').join(' \u00b7 ')}</div>`
+      : '';
+    html += `<details style="margin-bottom:10px">
+      <summary style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;background:${kopfBg};padding:8px 10px;border-radius:6px;cursor:pointer;list-style:none">
         <b>${mo.slice(5)}/${mo.slice(0,4)}</b>
-        <span style="font-variant-numeric:tabular-nums">${liste.length} Eingänge · ${eur(summe)} €</span>
-      </div>
-      <table style="width:100%;border-collapse:collapse;font-size:13px">${rows}</table>
-    </div>`;
+        <span style="text-align:right">
+          <span style="font-variant-numeric:tabular-nums;color:${summeFarbe};font-weight:${abweichend?'700':'400'}">${liste.length} Eingänge · ${eur(summe)} €</span>
+          ${sollTxt}
+        </span>
+      </summary>
+      ${offenTxt}
+      <table style="width:100%;border-collapse:collapse;font-size:13px;margin-top:4px">${rows}</table>
+    </details>`;
   }
   return html || '<p style="color:var(--ink-40)">Keine Eingänge.</p>';
 }
@@ -30426,6 +30722,7 @@ function zaRenderBuchhaltung(buch, konto){
   const filterBtns=`<div style="display:flex;gap:6px;align-items:center;margin-bottom:10px">
     <button class="btn btn-sm ${!nurOffen?'btn-primary':''}" onclick="window._buchFilterOffen=false;zaRenderVerlauf()">Alle Ausgänge</button>
     <button class="btn btn-sm ${nurOffen?'btn-primary':''}" onclick="window._buchFilterOffen=true;zaRenderVerlauf()">Ohne Kategorie (${offenAnz})</button>
+    ${mehrObjekt?`<button class="btn btn-sm" title="Ausgänge zuordnen, deren Buchungs-/Bemerkungstext eine Hausnummer eindeutig nennt" onclick="buchKostenstelleMasseHausnummer('${konto.id}')" style="font-size:11px"><i class="ti ti-map-pin"></i> Hausnummern zuordnen</button>`:''}
     ${mehrObjekt && buchKsAlleGruppe(konto)?`<button class="btn btn-sm" title="Alle offenen Ausgänge auf die Regelfall-Gruppe setzen" onclick="buchKostenstelleMasseAlle('${konto.id}')" style="font-size:11px"><i class="ti ti-building-community"></i> Alle \u2192 ${esc(buchKsAlleGruppe(konto).name)}</button>`:''}
   </div>`;
   let html=filterBtns, monat='';
@@ -30488,6 +30785,7 @@ async function buchLeistungSetzen(id, von, bis){
   rec.updatedAt=nowIso();
   erfasseLeerungen(snap, rec);
   await idbPut('buchungen', rec);
+  await buchJournal('aenderung', snap, rec, 'Leistungszeitraum');   // v242
   syncSoon();
   return true;
 }
@@ -30528,9 +30826,42 @@ function buchKsAlleGruppe(konto){
   return KOSTENGRUPPEN.find(g=>/_alle$/.test(g.id) && g.objekte.every(o=>konto.objekte.includes(o))) || null;
 }
 function buchKostenstelleVorschlagChip(b, konto){
+  let h='';
+  /* v245 (Bild 6): Nennt der Buchungs-/Bemerkungstext eine Hausnummer eindeutig,
+     wird das Haus vorrangig vorgeschlagen (praeziser als die Regelfall-Gruppe). */
+  const hausId=buchObjektAusText(buchVolltext(b), konto && konto.objekte);
+  if(hausId){
+    const ho=getObj(hausId);
+    h+=`<button class="btn btn-sm" title="Hausnummer im Buchungstext erkannt \u2013 auf ${esc(ho?ho.name:hausId)} setzen" onclick="buchKostenstelleSetzen('${b.id}','obj:${hausId}')" style="font-size:10px;border:1px solid var(--copper,#b87333);color:#fff;background:var(--copper,#b87333);padding:2px 6px;white-space:nowrap"><i class="ti ti-map-pin"></i> ${esc(ho?ho.name:hausId)}</button>`;
+  }
   const alle=buchKsAlleGruppe(konto);
-  if(!alle) return '';
-  return `<button class="btn btn-sm" title="Regelfall \u2013 auf ${esc(alle.name)} setzen" onclick="buchKostenstelleSetzen('${b.id}','grp:${alle.id}')" style="font-size:10px;border:1px dashed var(--copper,#b87333);color:var(--copper,#b87333);background:transparent;padding:2px 6px;white-space:nowrap"><i class="ti ti-bulb"></i> ${esc(alle.name)}</button>`;
+  if(alle){
+    h+=`<button class="btn btn-sm" title="Regelfall \u2013 auf ${esc(alle.name)} setzen" onclick="buchKostenstelleSetzen('${b.id}','grp:${alle.id}')" style="font-size:10px;border:1px dashed var(--copper,#b87333);color:var(--copper,#b87333);background:transparent;padding:2px 6px;white-space:nowrap"><i class="ti ti-bulb"></i> ${esc(alle.name)}</button>`;
+  }
+  return h;
+}
+/* v245 (Bild 6): Massenzuordnung aller Ausgaenge, deren Text eine Hausnummer eindeutig nennt. */
+async function buchKostenstelleMasseHausnummer(kontoId){
+  const konto=ZA_KONTEN.find(k=>k.id===kontoId); if(!konto) return;
+  const buch=await idbGetAll('buchungen').catch(()=>[]);
+  const kand=[];
+  for(const b of buch){
+    if(!b || b.geloescht || b.kontoId!==kontoId || b.typ!=='ausgang') continue;
+    if(b.kostengruppe || b.objektId) continue;
+    const oid=buchObjektAusText(buchVolltext(b), konto.objekte);
+    if(oid) kand.push({b, oid});
+  }
+  if(!kand.length){ toast('Keine Ausg\u00e4nge mit eindeutiger Hausnummer gefunden'); return; }
+  if(!confirm(`${kand.length} Ausg\u00e4nge anhand der Hausnummer im Buchungstext zuordnen?`)) return;
+  for(const {b, oid} of kand){
+    const snap={...b};
+    b.objektId=oid; b.kostengruppe=null; b.updatedAt=nowIso();
+    erfasseLeerungen(snap,b);
+    await idbPut('buchungen',b);
+    await buchJournal('aenderung', snap, b, 'Kostenstelle (Hausnummer)');
+  }
+  syncSoon(); await zaRenderVerlauf();
+  toast(`${kand.length} Buchung(en) zugeordnet`);
 }
 async function buchKostenstelleSetzen(id, wert){
   const rec=await idbGet('buchungen', id).catch(()=>null);
@@ -30543,6 +30874,7 @@ async function buchKostenstelleSetzen(id, wert){
   rec.updatedAt=nowIso();
   erfasseLeerungen(snap, rec);   // Feldleerung (Gruppe\u2194Objekt) sauber für Sync tombstonen
   await idbPut('buchungen', rec);
+  await buchJournal('aenderung', snap, rec, 'Kostenstelle');   // v242
   syncSoon();
   await zaRenderVerlauf();
 }
@@ -30554,7 +30886,7 @@ async function buchKostenstelleMasseAlle(kontoId){
   const offen=buch.filter(b=>b && b.kontoId===kontoId && b.typ==='ausgang' && !b.kostengruppe && !b.objektId);
   if(!offen.length){ toast('Keine Ausgänge ohne Kostenstelle'); return; }
   if(!confirm(`${offen.length} Ausgänge ohne Kostenstelle auf \u201e${alle.name}\u201c setzen?`)) return;
-  for(const b of offen){ const snap={...b}; b.kostengruppe=alle.id; b.objektId=null; b.updatedAt=nowIso(); erfasseLeerungen(snap,b); await idbPut('buchungen',b); }
+  for(const b of offen){ const snap={...b}; b.kostengruppe=alle.id; b.objektId=null; b.updatedAt=nowIso(); erfasseLeerungen(snap,b); await idbPut('buchungen',b); await buchJournal('aenderung', snap, b, 'Kostenstelle (Masse)'); }   // v242
   syncSoon(); await zaRenderVerlauf();
   toast(`${offen.length} Buchung(en) zugeordnet`);
 }
@@ -30562,11 +30894,13 @@ async function buchKostenstelleMasseAlle(kontoId){
 async function buchKategorieSetzen(id, kat){
   const rec=await idbGet('buchungen', id).catch(()=>null);
   if(!rec) return;
+  const _bjAlt={...rec};   // v242 (F4)
   rec.kategorie = kat||null;
   delete rec.kategorien;
   rec.status='geprueft';
   rec.updatedAt = nowIso();
   await idbPut('buchungen', rec);
+  await buchJournal('aenderung', _bjAlt, rec, 'Kategorie');   // v242
   if(kat){
     // §14 (v189): Regel lernen, damit derselbe Empfänger künftig automatisch vorgeschlagen wird
     await buchRegelLernen(rec, kat);
@@ -30577,7 +30911,7 @@ async function buchKategorieSetzen(id, kat){
       && !buchTeile(b)
       && (iban ? zaNormIban(b.iban)===iban : (b.name||'')===(rec.name||'')));
     if(kandidaten.length && confirm(`Kategorie „${buchKatLabel(kat)}" auch für ${kandidaten.length} weitere Buchung(en) von „${rec.name||'diesem Empfänger'}" übernehmen?`)){
-      for(const b of kandidaten){ b.kategorie=kat; delete b.kategorien; b.updatedAt=nowIso(); await idbPut('buchungen', b); }
+      for(const b of kandidaten){ const _bjA={...b}; b.kategorie=kat; delete b.kategorien; b.updatedAt=nowIso(); await idbPut('buchungen', b); await buchJournal('aenderung', _bjA, b, 'Kategorie (Masse)'); }   // v242
     }
   }
   syncSoon();
@@ -30762,6 +31096,7 @@ async function kautionPlausiPruefen(mieterId){
 async function buchSplitSpeichern(){
   const b=await idbGet('buchungen', window._buchSplitId).catch(()=>null);
   if(!b) return;
+  const _bjAlt={...b};   // v242 (F4)
   const teile=[];
   document.querySelectorAll('#buchSplitListe .buchSplitRow').forEach(row=>{
     const kat=row.querySelector('.bsKat')?.value;
@@ -30777,6 +31112,7 @@ async function buchSplitSpeichern(){
   b.status='geprueft';
   b.updatedAt=nowIso();
   await idbPut('buchungen', b);
+  await buchJournal('aenderung', _bjAlt, b, 'Aufteilung');   // v242
   // v224 (B9): §551 Abs.1 BGB – Kaution darf 3 Nettokaltmieten nicht übersteigen.
   //   Prüft nur bei Mieterbezug (Kaution als Split-Teil eines zugeordneten Mieteingangs).
   if(b.mieterId && teile.some(t=>t.kat==='kaution_erhalten')) await kautionPlausiPruefen(b.mieterId);
@@ -30870,6 +31206,10 @@ function zaRenderErgebnis(){
       /* v213 (F4): IBAN-Treffer ehemaliger Mieter wurde bisher als "Kein Mieter" angezeigt */
       statusHtml = `<span style="color:var(--ink-70);font-weight:600"><i class="ti ti-check"></i> ${esc(m.name)}</span>
                     <span style="font-size:11px;color:var(--ink-40)"> · via IBAN (ehem. Mieter)</span>`;
+    } else if(m && m.via==='manuell'){
+      /* v245 (Bild 3): zugeordnet ohne IBAN-Speicherung */
+      statusHtml = `<span style="color:var(--green);font-weight:600"><i class="ti ti-check"></i> ${esc(m.name)}</span>
+                    <span style="font-size:11px;color:var(--ink-40)"> · nur diese Buchung (IBAN nicht gespeichert)</span>`;
     } else if(m && m.via==='we'){
       /* v215: Der WE-Vorschlag stammt nur aus dem Verwendungszweck und kann falsch sein
          (z. B. zahlt ein ehemaliger Mieter auf die WE eines Nachmieters). Deshalb neben
@@ -30879,6 +31219,8 @@ function zaRenderErgebnis(){
                     <span style="font-size:11px;color:var(--ink-40)"> · nur aus dem Verwendungszweck – bitte prüfen</span>`;
       aktion = `<button class="btn btn-sm btn-primary" onclick="zaZuordnen(${i})">
                   <i class="ti ti-link"></i> IBAN übernehmen</button>
+                <button class="btn btn-sm" style="margin-left:4px" title="Diese Zahlung dem Vorschlag zuordnen, die IBAN aber NICHT dauerhaft beim Mieter speichern" onclick="zaZuordnenOhneIban(${i})">
+                  <i class="ti ti-check"></i> Nur zuordnen</button>
                 <div style="font-size:10px;color:var(--ink-40);margin:5px 0 2px">Vorschlag passt nicht?</div>
                 ${zaMieterDropdown(i)}
                 <button class="btn btn-sm" style="margin-top:4px" onclick="zaModalEinnahme(${i})"><i class="ti ti-coin-euro"></i> Als Einnahme/neutral buchen</button>`;
@@ -30907,7 +31249,7 @@ function zaRenderErgebnis(){
     }
     // v220: Bei bereits zugeordneten Zeilen einen Stift-Button anbieten
     // (Nutzerbefund: „ich will jede possition aendern koennen")
-    const kannAendern = !!(m && (m.via==='iban'||m.via==='we'||m.via==='sp'));
+    const kannAendern = !!(m && (m.via==='iban'||m.via==='we'||m.via==='sp'||m.via==='manuell'));   // v245
     const stiftBtn = kannAendern
       ? `<button class="btn btn-sm" style="margin-top:4px;font-size:11px" onclick="zaZeileAendern(${i})"><i class="ti ti-pencil"></i> Ändern</button>`
       : '';
@@ -31002,6 +31344,22 @@ function zaMieterDropdown(i){
           </select>`;
 }
 
+/* v245 (Bild 3): Vorschlag uebernehmen, OHNE die IBAN dauerhaft zu hinterlegen.
+   Anwendungsfall: einmalige Zahlung von einem fremden Konto (Angehoerige, Jobcenter,
+   Buergschaft) – die Buchung soll dem Mieter zugerechnet werden, kuenftige Zahlungen
+   dieser IBAN duerfen aber nicht automatisch ihm zugeordnet werden. */
+function zaZuordnenOhneIban(i){
+  const r = ZA_STATE.results[i];
+  if(!r || !r.match) return;
+  r.match.via='manuell';
+  r.match.status = r.match.ehem ? 'ehem' : 'aktiv';
+  r.match.manuell = true;
+  r.match.ohneIban = true;
+  delete r.einnahme;
+  toast('Zugeordnet – IBAN wurde nicht gespeichert.');
+  zaRenderErgebnis();
+}
+
 /* IBAN aus Vorschlag (WE-Match) am Mieter speichern */
 async function zaZuordnen(i){
   const r = ZA_STATE.results[i];
@@ -31070,12 +31428,60 @@ async function zaZuordnenManuell(i, mieterId){
 
 /* v213 (F1): Ehemaligen Mieter direkt aus einer Bankbuchung anlegen
    (Nachzahlungen/Erstattungen alter Mietverhältnisse zuordenbar machen) */
-function zaModalAltMieter(i){
+/* v245 (Bild 1): Wohneinheiten eines Objekts mit Etage/Lage und aktueller Belegung.
+   Quelle: vorhandene Mieterakten (inkl. Vormieter und Leerstand -> deckt leere WE ab)
+   erweitert um objekt_stamm.wohneinheiten (1..N) via alleWeVonObjekt(). */
+async function zaWeAuswahlOptionen(objektId, vorbelegung){
+  const alle=(window._zaMieterCache&&window._zaMieterCache.length)
+    ? window._zaMieterCache
+    : await idbGetAll('mieter').catch(()=>[]);
+  const desObjekts=alle.filter(m=>m && String(m.objektId||'')===String(objektId));
+  const weListe=await alleWeVonObjekt(objektId, desObjekts).catch(()=>[]);
+  const info={};
+  for(const m of desObjekts){
+    const we=String(m.weNr||'').trim();
+    if(!we) continue;
+    const e=info[we]=info[we]||{etage:'', lage:'', belegt:''};
+    if(!e.etage && m.etage) e.etage=String(m.etage);
+    if(!e.lage && m.lage) e.lage=String(m.lage);
+    if(!e.belegt && !m._vormieter && !m.leerstand && m.mieter) e.belegt=String(m.mieter);
+  }
+  const vor=String(vorbelegung||'').trim();
+  let opts='<option value="">\u2013 WE w\u00e4hlen \u2013</option>';
+  for(const we of weListe){
+    const e=info[we]||{};
+    const zusatz=[e.etage, e.lage].filter(Boolean).join(' \u00b7 ');
+    const bel=e.belegt ? ' \u00b7 derzeit: '+e.belegt : ' \u00b7 frei';
+    opts+=`<option value="${esc(we)}"${we===vor?' selected':''}>WE ${esc(we)}${zusatz?' \u00b7 '+esc(zusatz):''}${esc(bel)}</option>`;
+  }
+  if(vor && !weListe.includes(vor)) opts+=`<option value="${esc(vor)}" selected>WE ${esc(vor)} (nicht im Stamm)</option>`;
+  opts+='<option value="__frei__">\u270e Andere WE-Nr. eingeben \u2026</option>';
+  return opts;
+}
+/* Objektwechsel im Alt-Mieter-Dialog: WE-Liste des neuen Objekts nachladen. */
+async function zaAltObjWechsel(){
+  const sel=document.getElementById('zaAltObj');
+  const box=document.getElementById('zaAltWeBox');
+  if(!sel || !box) return;
+  box.innerHTML='<select id="zaAltWe" onchange="zaAltWeWechsel()"><option>\u2026</option></select>';
+  const opts=await zaWeAuswahlOptionen(sel.value, '');
+  box.innerHTML=`<select id="zaAltWe" onchange="zaAltWeWechsel()">${opts}</select>`;
+}
+/* Umschalten auf freie Eingabe, wenn die WE nicht in der Liste steht. */
+function zaAltWeWechsel(){
+  const sel=document.getElementById('zaAltWe');
+  const box=document.getElementById('zaAltWeBox');
+  if(!sel || !box || sel.value!=='__frei__') return;
+  box.innerHTML='<input type="text" id="zaAltWe" inputmode="numeric" placeholder="z. B. 7" autofocus>';
+  const inp=document.getElementById('zaAltWe'); if(inp) inp.focus();
+}
+async function zaModalAltMieter(i){
   const r=ZA_STATE.results[i]; if(!r) return;
   const konto=ZA_STATE.konto; if(!konto) return;
   const objekte=konto.objekte.map(oid=>getObj(oid)).filter(Boolean);
   if(!objekte.length){ toast('Kein Objekt für dieses Konto gefunden.'); return; }
   const objOpts=objekte.map((o,ix)=>`<option value="${o.id}"${ix===0?' selected':''}>${esc(o.name)}</option>`).join('');
+  const weOpts=await zaWeAuswahlOptionen(objekte[0].id, r.buchung.weHint||'');
   showModal(`
     <div class="m-title"><i class="ti ti-history"></i> Alt-Mieter anlegen</div>
     <div style="background:var(--ink-05);border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:12px;color:var(--ink-60)">
@@ -31086,8 +31492,13 @@ function zaModalAltMieter(i){
     <div class="f"><label>Name (Nachname, Vorname) *</label>
       <input type="text" id="zaAltName" spellcheck="true" lang="de" value="${esc(r.buchung.name||'')}"></div>
     <div class="f-row">
-      <div class="f"><label>Objekt *</label><select id="zaAltObj">${objOpts}</select></div>
-      <div class="f"><label>WE-Nr. *</label><input type="text" id="zaAltWe" inputmode="numeric" value="${esc(String(r.buchung.weHint||''))}" placeholder="z. B. 7"></div>
+      <div class="f"><label>Kaltmiete (€/Mon.)</label><input type="text" inputmode="decimal" id="zaAltMiete" placeholder="z. B. 735,00"></div>
+      <div class="f"><label>NK-Vorauszahlung (€/Mon.)</label><input type="text" inputmode="decimal" id="zaAltNk" placeholder="z. B. 120,00"></div>
+    </div>
+    <div style="font-size:11px;color:var(--ink-40);margin:-4px 0 8px">Ohne Beträge beträgt das Soll dieses Mieters 0,00 € – seine Zahlungen erschienen dann sämtlich als „Guthaben“. Später in der Mieterakte änderbar.</div>
+    <div class="f-row">
+      <div class="f"><label>Objekt *</label><select id="zaAltObj" onchange="zaAltObjWechsel()">${objOpts}</select></div>
+      <div class="f"><label>WE-Nr. *</label><div id="zaAltWeBox"><select id="zaAltWe" onchange="zaAltWeWechsel()">${weOpts}</select></div></div>
     </div>
     <div class="f-row">
       <div class="f"><label>Einzug (optional)</label><input type="date" id="zaAltEinzug"></div>
@@ -31102,7 +31513,8 @@ async function zaAltMieterAnlegen(i){
   const r=ZA_STATE.results[i]; if(!r) return;
   const name=document.getElementById('zaAltName')?.value?.trim()||'';
   const objektId=document.getElementById('zaAltObj')?.value||'';
-  const weNr=document.getElementById('zaAltWe')?.value?.trim()||'';
+  let weNr=document.getElementById('zaAltWe')?.value?.trim()||'';
+  if(weNr==='__frei__') weNr='';   // v245: Platzhalter der Auswahlliste
   if(!name){ toast('Bitte den Namen angeben.'); return; }
   if(!objektId || !weNr){ toast('Bitte Objekt und WE-Nummer angeben.'); return; }
   // v220: Doppelanlage verhindern – Alt-Mieter mit gleichem Nachnamen in derselben WE
@@ -31122,6 +31534,8 @@ async function zaAltMieterAnlegen(i){
     zaRenderErgebnis();
     return;
   }
+  const _altMiete=parseBetrag(document.getElementById('zaAltMiete')?.value)||0;   // v241
+  const _altNk=parseBetrag(document.getElementById('zaAltNk')?.value)||0;
   const einzugISO=document.getElementById('zaAltEinzug')?.value||'';
   const auszugISO=document.getElementById('zaAltAuszug')?.value||'';
   const obj=getObj(objektId);
@@ -31136,6 +31550,7 @@ async function zaAltMieterAnlegen(i){
     einzug:einzugISO?new Date(einzugISO).toLocaleDateString('de-DE'):'', einzugISO,
     auszug:auszugISO?new Date(auszugISO).toLocaleDateString('de-DE'):'', auszugISO,
     iban:iban||'', ibans: iban?[{iban, inhaber:name, bic:'', status:'aktiv', seit:nowIso(), bis:''}]:[],
+    miete: _altMiete||'', nk: _altNk||'', gesamt: (_altMiete||_altNk) ? Math.round((_altMiete+_altNk)*100)/100 : '',
     leerstand:false, _vormieter:true,
     _importHinweis:'Aus Bankimport angelegt – Daten prüfen',
   };
@@ -31228,6 +31643,49 @@ function zaEinnahmeSetzen(i){
 }
 
 /* Kernoperation: IBAN als aktiv am Mieter eintragen (Liste + Spiegel) */
+/* v245 (Bild 2): Vergleichsdialog bei abweichender IBAN.
+   Zeigt zuerst die hinterlegte, dann die aus dem Buchungssatz gelesene Bankverbindung
+   und bietet drei Wege an. Liefert 'haupt' | 'alt' | 'zweit' | null (Abbruch).
+   Der Waechter loest auch dann auf, wenn das Modal ueber das X geschlossen wird. */
+function zaIbanKonfliktFrage(m, neueIban, inhaber){
+  return new Promise(resolve=>{
+    let erledigt=false;
+    const fertig=(w)=>{ if(erledigt) return; erledigt=true; window._zaIbanWahl=null; resolve(w||null); };
+    window._zaIbanWahl=(w)=>{ closeModal(); fertig(w); };
+    const aktive=(m.ibans||[]).filter(e=>e.status==='aktiv');
+    const bisher=aktive.map(e=>`<div style="font-variant-numeric:tabular-nums;font-weight:600">${esc(fmtIban(e.iban))}</div>
+        ${e.inhaber?`<div style="font-size:11px;color:var(--ink-40)">${esc(e.inhaber)}</div>`:''}`).join('');
+    const opt=(wert,icon,titel,text)=>`
+      <button class="btn btn-full" style="text-align:left;display:block;padding:10px 12px;margin-bottom:8px;height:auto;white-space:normal"
+        onclick="window._zaIbanWahl&&window._zaIbanWahl('${wert}')">
+        <div style="font-weight:600;font-size:13px"><i class="ti ti-${icon}"></i> ${titel}</div>
+        <div style="font-size:11px;color:var(--ink-60);margin-top:2px;line-height:1.4">${text}</div>
+      </button>`;
+    showModal(`
+      <div class="m-title"><i class="ti ti-alert-triangle"></i> Abweichende Bankverbindung</div>
+      <div style="font-size:13px;margin-bottom:10px"><b>${esc(m.mieter)}</b> zahlt von einer anderen IBAN als hinterlegt.</div>
+      <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:14px">
+        <div style="background:var(--ink-05);border-radius:8px;padding:8px 10px">
+          <div style="font-size:10px;color:var(--ink-40);text-transform:uppercase;letter-spacing:.5px;margin-bottom:2px">Bisher hinterlegt</div>
+          ${bisher||'<div style="color:var(--ink-40)">\u2013</div>'}
+        </div>
+        <div style="text-align:center;color:var(--ink-40);font-size:14px;line-height:1"><i class="ti ti-arrow-down"></i></div>
+        <div style="background:var(--green-l);border-radius:8px;padding:8px 10px">
+          <div style="font-size:10px;color:var(--green);text-transform:uppercase;letter-spacing:.5px;margin-bottom:2px">Aus dem Buchungssatz</div>
+          <div style="font-variant-numeric:tabular-nums;font-weight:600">${esc(fmtIban(neueIban))}</div>
+          ${inhaber?`<div style="font-size:11px;color:var(--ink-60)">${esc(inhaber)}</div>`:''}
+        </div>
+      </div>
+      ${opt('haupt','refresh','Kontowechsel \u2013 neue IBAN als Hauptkonto','Die neue Bankverbindung wird aktiv, die bisherige als \u201everaltet\u201c archiviert. Regelfall bei einem Bankwechsel.')}
+      ${opt('alt','archive','Nachtrag \u2013 neue IBAN als fr\u00fchere Verbindung ablegen','Die bisherige IBAN bleibt aktiv. Die Zahlung stammt von einem alten Konto (z. B. Nachzahlung).')}
+      ${opt('zweit','wallet','Zweitkonto \u2013 beide Verbindungen aktiv f\u00fchren','Der Mieter zahlt dauerhaft von zwei Konten (z. B. Partnerkonto). Beide IBANs werden k\u00fcnftig erkannt.')}
+      <button class="btn btn-full" style="margin-top:4px" onclick="window._zaIbanWahl&&window._zaIbanWahl('')">Abbrechen \u2013 nichts speichern</button>`);
+    const waechter=setInterval(()=>{
+      const bg=document.getElementById('modalBg');
+      if(!bg || !bg.classList.contains('open')){ clearInterval(waechter); fertig(null); }
+    }, 400);
+  });
+}
 async function zaIbanAnMieter(mieterId, iban, inhaber){
   const m = await idbGet('mieter', mieterId);
   if(!m){ toast('Mieter nicht gefunden.'); return; }
@@ -31237,15 +31695,24 @@ async function zaIbanAnMieter(mieterId, iban, inhaber){
   if(vorhanden){
     vorhanden.status='aktiv';
   } else {
-    // Bestehende aktive IBAN(s) auf "alt" setzen (Mieter hat neues Konto)
+    // v245 (Bild 2): Statt eines Browser-confirm ein gestalteter Vergleichsdialog.
+    // Drei fachlich unterschiedliche Faelle: Kontowechsel, Nachtrag einer alten
+    // Bankverbindung (z. B. Altbuchung) und dauerhaftes Zweitkonto.
     const hatteAktive = m.ibans.some(e=>e.status==='aktiv');
     if(hatteAktive){
-      if(!confirm(`${m.mieter} zahlt von einer anderen IBAN als bisher hinterlegt.\n\nNeue IBAN als aktiv übernehmen und die alte als „veraltet" markieren?`)){
-        return;
+      const wahl = await zaIbanKonfliktFrage(m, norm, inhaber);
+      if(!wahl) return;
+      if(wahl==='haupt'){
+        m.ibans.forEach(e=>{ if(e.status==='aktiv'){ e.status='alt'; e.bis=nowIso(); } });
+        m.ibans.push({iban:norm, inhaber:inhaber||'', bic:'', status:'aktiv', seit:nowIso(), bis:''});
+      } else if(wahl==='alt'){
+        m.ibans.push({iban:norm, inhaber:inhaber||'', bic:'', status:'alt', seit:'', bis:nowIso()});
+      } else {
+        m.ibans.push({iban:norm, inhaber:inhaber||'', bic:'', status:'aktiv', zweitkonto:true, seit:nowIso(), bis:''});
       }
-      m.ibans.forEach(e=>{ if(e.status==='aktiv'){ e.status='alt'; e.bis=nowIso(); } });
+    } else {
+      m.ibans.push({iban:norm, inhaber:inhaber||'', bic:'', status:'aktiv', seit:nowIso(), bis:''});
     }
-    m.ibans.push({iban:norm, inhaber:inhaber||'', bic:'', status:'aktiv', seit:nowIso(), bis:''});
   }
   zaSyncIbanSpiegel(m);
   await idbPut('mieter', m);
@@ -31394,7 +31861,12 @@ async function opRueckstaende(fensterMonate){
     }
   }
   const alleMieter = await idbGetAll('mieter');
-  const mieter = alleMieter.filter(m => m && m.mieter && !m.geloescht && !m._zukuenftig && m.aktiv !== false);
+  /* v245 (Bild 7): Leerstandseintraege erzeugen keinen Mietrueckstand – es gibt keinen
+     Vertragspartner, der in Verzug geraten koennte (§ 286 BGB). Sie werden weder
+     gewertet noch angezeigt und koennen folglich nicht gemahnt werden. Erkannt wird
+     der Leerstand am Flag `leerstand` ODER am Platzhalternamen (Bestandsdaten). */
+  const mieter = alleMieter.filter(m => m && m.mieter && !m.geloescht && !m._zukuenftig && m.aktiv !== false
+      && !m.leerstand && !/leerstand/i.test(String(m.mieter)));
   const spIdx = await spIndexAlle();
   const rows = zaSollIst(buch, mieter, monate, spIdx);
   const erg = [];
@@ -31863,10 +32335,65 @@ async function zaLeistungMigration(){
    2) Ein-Objekt-Konten (Ruhrtalstr., Amboßstr.) → dieses eine Objekt (trivial korrekt).
    3) Sonst (Ausgänge auf Mehr-Objekt-Konten wie Krefeld) → null; wird in einem
       späteren F1-Schritt manuell bzw. über Versorger-/Zählerstammdaten gesetzt. */
-function zaObjektFuerBuchung(kontoId, match){
+/* v245 (Bild 6): Erkennung des Gebaeudes anhand der Hausnummer im Buchungstext.
+   Normalisierung: Umlaute/ss, "Strasse|Str." entfaellt -> "Kyffhaeuserstrasse 28"
+   und "Kyffhaeuser 28" ergeben denselben Schluessel. Ein Treffer wird nur dann
+   zurueckgegeben, wenn er EINDEUTIG ist (mehrere Haeuser derselben Strasse im
+   Text, z. B. "28-32", bleiben bewusst unzugeordnet -> Kostenstelle "gesamt"). */
+function buchTextNorm(s){
+  return String(s||'').toLowerCase()
+    .replace(/\u00e4/g,'ae').replace(/\u00f6/g,'oe').replace(/\u00fc/g,'ue').replace(/\u00df/g,'ss')
+    .replace(/stra(?:ss|s)e\b/g,' ').replace(/\bstr\.?/g,' ')
+    .replace(/[^a-z0-9]+/g,' ').trim();
+}
+function buchObjektSchluessel(o){
+  const t=buchTextNorm(o && o.name);
+  const m=t.match(/^(.*?)\s*(\d+)$/);
+  if(!m || !m[1].trim()) return null;
+  return {kern:m[1].trim(), nr:m[2]};
+}
+function buchObjektAusText(text, kontoObjekte){
+  const tok = buchTextNorm(text).split(' ').filter(Boolean);
+  if(tok.length < 2) return null;
+  const treffer = [];
+  for(const oid of (kontoObjekte||[])){
+    const o = getObj(oid);
+    if(!o || o.tiefgarage) continue;
+    const k = buchObjektSchluessel(o);
+    if(!k) continue;
+    const kt = k.kern.split(' ').filter(Boolean);
+    for(let i=0; i+kt.length < tok.length; i++){
+      let passt = true;
+      for(let j=0; j<kt.length; j++){
+        const w = tok[i+j];
+        // Erstes Wort darf angehaengt sein ("144122186kyffhaeuser")
+        if(w !== kt[j] && !(j===0 && w.length>kt[j].length && w.endsWith(kt[j]))){ passt=false; break; }
+      }
+      if(!passt) continue;
+      if(tok[i+kt.length] !== k.nr) continue;
+      // Bereichs-/Aufzaehlungsangabe ("28 32", "28 bis 32", "28 und 30") ist mehrdeutig
+      const w2 = tok[i+kt.length+1];
+      if(w2 && (/^[0-9]+$/.test(w2) || w2==='bis' || w2==='und')) return null;
+      treffer.push(oid);
+      break;
+    }
+  }
+  return treffer.length===1 ? treffer[0] : null;
+}
+/* Volltext einer Buchung fuer die Hausnummernerkennung (Zweck + Name + Notiz). */
+function buchVolltext(b){
+  return [b && b.zweck, b && b.name, b && b.buchungstext, b && b.notiz].filter(Boolean).join(' ');
+}
+function zaObjektFuerBuchung(kontoId, match, b){
   if(match && match.objektId) return match.objektId;
   const k=ZA_KONTEN.find(x=>x.id===kontoId);
-  return (k && Array.isArray(k.objekte) && k.objekte.length===1) ? k.objekte[0] : null;
+  if(k && Array.isArray(k.objekte) && k.objekte.length===1) return k.objekte[0];
+  // v245 (Bild 6): Hausnummer im Verwendungszweck/Bemerkungstext auswerten
+  if(b && k && Array.isArray(k.objekte)){
+    const oid=buchObjektAusText(buchVolltext(b), k.objekte);
+    if(oid) return oid;
+  }
+  return null;
 }
 
 /* v225 (F1): Einmalige, idempotente Nachzuordnung des Objekts an Bestandsbuchungen.
@@ -31907,7 +32434,7 @@ function zaBuchungRecord(kontoId, b, match, einnahme){
     ...(function(){ if(einnahme) return {};                      // v235 (F2): Leistungszeitraum nur für Ausgaben
       const lz=buchLeistungszeitraum(b.zweck||'');
       return lz?{leistungVonISO:lz.von, leistungBisISO:lz.bis, leistungQuelle:lz.quelle}:{}; })(),
-    objektId: zaObjektFuerBuchung(kontoId, match),   // v225 (F1): Gebäude-Zuordnung
+    objektId: zaObjektFuerBuchung(kontoId, match, b),   // v225 (F1): Gebäude-Zuordnung; v245: + Hausnummer aus Text
     mieterId: match?.mieterId || null,
     mieterName: match?.name || null,
     zuordnungVia: match?.via || null,
@@ -31935,6 +32462,39 @@ function zaSollIst(buchungen, mieterListe, monate, spIdx){
       ehem: !!m._vormieter, einzugISO:_einzugISOvon(m), auszugISO:_auszugISOvon(m),
       mietfrei: Array.isArray(m.mietfrei)&&m.mietfrei.length ? m.mietfrei : null };
   }
+  /* v245 (Bild 8): Ist eine Wohnung nachweislich durch einen Nachmieter belegt, endet
+     das Soll des ehemaligen Mieters spaetestens mit dessen Einzug – auch wenn in der
+     Mieterakte kein Auszugsdatum gepflegt ist. Ohne diese Korrektur laeuft das Soll
+     eines Vormieters unbegrenzt weiter (Nutzerbefund Dimke, WE 2: -16.340 EUR
+     Scheinrueckstand, obwohl Gerretz die WE seit Langem bewohnt).
+     Bewusst konservativ: greift NUR bei ehemaligen Mietern (_vormieter) ohne
+     Auszugsdatum und nur, wenn der Nachmieter ein Einzugsdatum hat. */
+  const _weBelegung={};
+  for(const m of mieterListe){
+    const e=_einzugISOvon(m);
+    if(!e) continue;
+    const k=(m.objektId||'')+'|'+String(m.weNr==null?'':m.weNr);
+    (_weBelegung[k]=_weBelegung[k]||[]).push({id:m.id, einzugISO:e});
+  }
+  for(const mid in sollIdx){
+    const s0=sollIdx[mid];
+    if(!s0.ehem || s0.auszugISO || s0.tg) continue;
+    const k=(s0.objektId||'')+'|'+String(s0.weNr==null?'':s0.weNr);
+    let naechster=null;
+    for(const o of (_weBelegung[k]||[])){
+      if(o.id===mid) continue;
+      if(s0.einzugISO && o.einzugISO<=s0.einzugISO) continue;
+      if(!naechster || o.einzugISO<naechster) naechster=o.einzugISO;
+    }
+    if(naechster){
+      const d=new Date(naechster+'T12:00:00');
+      if(!isNaN(d.getTime())){
+        d.setDate(d.getDate()-1);
+        s0.auszugISO=d.toISOString().slice(0,10);
+        s0.autoEnde=true;   // Kennzeichnung fuer die Anzeige
+      }
+    }
+  }
   // Ist je Mieter+Monat
   const ist={}; // mieterId -> {monat -> {miete, stellplatz}}
   for(const b of buchungen){
@@ -31942,7 +32502,25 @@ function zaSollIst(buchungen, mieterListe, monate, spIdx){
     if(monate && !monate.includes(b.mietmonat)) continue;
     const key=b.mieterId;
     (ist[key]=ist[key]||{});
-    (ist[key][b.mietmonat]=ist[key][b.mietmonat]||{miete:0,stellplatz:0});
+    (ist[key][b.mietmonat]=ist[key][b.mietmonat]||{miete:0,stellplatz:0,sonst:0,sonstKats:{}});
+    // v241: Ist eine Zahlung kategorisiert/aufgeteilt, zählen nur die Teile als Erfüllung
+    // des laufenden Monatssolls, die dafür bestimmt sind (Kaltmiete, NK-Vorauszahlung,
+    // Stellplatzmiete). Kaution (§ 551 BGB, durchlaufender Posten), NK-Nachzahlung aus
+    // einer Abrechnung und sonstige Einnahmen werden getrennt ausgewiesen – sie dürfen
+    // kein Guthaben im Mietkonto erzeugen (Nutzerbefund Schäfer 18.07.).
+    const _teile = (typeof buchTeile==='function') ? buchTeile(b) : null;
+    if(_teile && _teile.length){
+      for(const t of _teile){
+        const bt=Math.abs(Number(t.betrag)||0);
+        if(t.kat==='stellplatzmiete') ist[key][b.mietmonat].stellplatz += bt;
+        else if(t.kat==='kaltmiete' || t.kat==='nk_vorauszahlung') ist[key][b.mietmonat].miete += bt;
+        else {
+          ist[key][b.mietmonat].sonst += bt;
+          ist[key][b.mietmonat].sonstKats[t.kat]=(ist[key][b.mietmonat].sonstKats[t.kat]||0)+bt;
+        }
+      }
+      continue;
+    }
     const spNrn=b.spNummern||[];
     if(b.istStellplatz){
       ist[key][b.mietmonat].stellplatz += b.betrag;
@@ -31982,7 +32560,7 @@ function zaSollIst(buchungen, mieterListe, monate, spIdx){
     const monatsWerte={};
     let warnung=false;
     for(const mo of (monate||[])){
-      const i=ist[mid]?.[mo] || {miete:0,stellplatz:0};
+      const i=ist[mid]?.[mo] || {miete:0,stellplatz:0,sonst:0,sonstKats:{}};
       const istGesamt=Math.round((i.miete+i.stellplatz)*100)/100;
       // §3: Soll nur ansetzen, wenn der Mieter in diesem Monat Vertragspartei war
       const aktivMo = _mieterAktivImMonat({einzugISO:s.einzugISO, auszugISO:s.auszugISO}, mo);
@@ -32007,6 +32585,7 @@ function zaSollIst(buchungen, mieterListe, monate, spIdx){
       else if(Math.abs(diff)<0.5){ status='ok'; }
       else { status = diff>0 ? 'mehr' : 'weniger'; }
       monatsWerte[mo]={ist:istGesamt, miete:i.miete, stellplatz:i.stellplatz,
+        sonst:Math.round((i.sonst||0)*100)/100, sonstKats:i.sonstKats||{},   // v241
         kaltmiete:kmAnteil, nk:Math.round(nkAnteil*100)/100, sollMo, aktiv:aktivMo, diff, status,
         mietfrei: mf ? mf.art : null};
       // Warnung nur fuer aktive Mietmonate (inaktive Monate erzeugen keine Rot-Markierung).
@@ -32015,7 +32594,8 @@ function zaSollIst(buchungen, mieterListe, monate, spIdx){
     }
     rows.push({mieterId:mid, mieter:s.mieter, weNr:s.weNr, objektId:s.objektId,
       soll:s.soll, netto:s.netto, nk:s.nk, spSoll:s.spSoll||0, tg:!!s.tg, ehem:!!s.ehem,
-      einzugISO:s.einzugISO||null, monate:monatsWerte, warnung});
+      einzugISO:s.einzugISO||null, auszugISO:s.auszugISO||null, autoEnde:!!s.autoEnde,   // v245
+      monate:monatsWerte, warnung});
   }
   const gefiltert=rows.filter(r=>!(r.tg && r.soll<=0 && !Object.values(r.monate).some(v=>v.ist>0)));
   gefiltert.sort((a,b)=>{
@@ -33485,7 +34065,7 @@ async function showMangelDetail(id, store='maengel') {
     if(verwendet.length||offeneAnf.length){
       materialHTML=`<div class="card-hdr" style="margin-bottom:8px"><i class="ti ti-package"></i> Material</div><div style="margin-bottom:12px">`;
       verwendet.forEach(v=>{ materialHTML+=`<div style="font-size:13px;padding:5px 0;border-bottom:1px solid var(--ink-10)">
-        <i class="ti ti-package-export" style="font-size:12px;color:var(--copper)"></i> ${v.menge}× ${v.name}
+        <i class="ti ti-package-export" style="font-size:12px;color:var(--copper)"></i> ${esc(v.menge)}× ${esc(v.name)}
         <span style="color:var(--ink-40);font-size:11px"> · ${v.datum}${v.von?' · '+v.von:''}</span></div>`; });
       offeneAnf.forEach(x=>{ materialHTML+=`<div style="font-size:13px;padding:5px 0;border-bottom:1px solid var(--ink-10);color:#0E7C7B">
         <i class="ti ti-truck-delivery" style="font-size:12px"></i> angefordert: ${x.menge?x.menge+'× ':''}${x.artikelName} <span style="font-size:11px">(${x.standortLabel})</span></div>`; });
@@ -33549,7 +34129,7 @@ async function showMangelDetail(id, store='maengel') {
     <div class="foto-gallery">
       ${m.fotos.map((f,i)=> istFotoRef(f)
         ? `<div class="foto-item" onclick="openFoto('${f.odId}','odref')"><img src="${fotoThumbQuelle(f)}" loading="lazy"></div>`
-        : `<div class="foto-item" onclick="openFoto('${f}','Foto ${i+1} – ${m.titel}')"><img src="${f}" loading="lazy"></div>`).join('')}
+        : `<div class="foto-item" onclick="openFoto('${escAttr(f)}','Foto ${i+1} – ${escAttr(m.titel)}')"><img src="${escAttr(f)}" loading="lazy"></div>`).join('')}   // v243 (R27)
     </div>` : ''}
 
     ${m.erledigtFoto ? `
