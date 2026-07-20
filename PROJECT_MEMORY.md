@@ -100,6 +100,235 @@
 
 ---
 
+## ⚡ Letzte Sitzung / Schnellüberblick (Stand 20.07.2026, 23. Sitzung Teil 10)
+
+**★ v254 – Fortsetzbare Übertragung (Range-Download + Graph-Upload-Session) und Audit-Runde.**
+
+**Anlass:** Nach manuellem Ersetzen der Datei vom Tablet aus lag `immo_daten.json` mit **16,65 MB**
+in OneDrive (Export schreibt eingerückt via `JSON.stringify(...,null,2)`, der Sync kompakt).
+Das Handy meldete `Daten lesen: Failed to fetch` – der Abriss passierte **während** `r.text()`,
+also mitten im Herunterladen. Eine einzelne Anfrage über 16 MB ist auf Mobilfunk nicht
+zuverlässig; das war mit Diagnose allein (v251–v253) nicht zu lösen.
+
+**Neuer Baustein (6 Funktionen, ~180 Zeilen):**
+- `odFetchWiederholt()` – Wiederholung mit Backoff bei Netzfehler/429/5xx; **404/401/403 werden
+  bewusst NICHT wiederholt** (kein Zeitverlust, klare Diagnose bleibt erhalten). `Retry-After`
+  wird beachtet.
+- `odDateiLaden()` – lädt über Metadaten (`$select=size,@microsoft.graph.downloadUrl`) und dann
+  in **4-MB-Stücken per `Range`**, jedes Stück einzeln wiederholbar. Nutzt die vorauthentifizierte
+  `downloadUrl` **ohne** Authorization-Kopf (vermeidet Auth-bei-Redirect-Probleme), mit Rückfall
+  auf die Content-URL. Erkennt Server ohne Range-Unterstützung (200 statt 206) und behandelt das
+  korrekt. **Bytesicher:** alle Stücke als `ArrayBuffer` sammeln, zusammensetzen, **einmal** mit
+  `TextDecoder('utf-8')` dekodieren (Projektregel – Stringverkettung würde Mehrbyte-Zeichen an
+  den Nahtstellen zerreißen).
+- `odDateiSchreiben()` – bis 4 MB einfacher PUT, darüber **Graph-Upload-Session**
+  (`createUploadSession`, `conflictBehavior:replace`) in **5-MB-Segmenten = 16 × 320 KiB**
+  (Graph-Vorgabe). Je Segment bis zu 4 Versuche; scheitert eines endgültig, wird die Sitzung
+  per DELETE verworfen, damit kein Halbstand zurückbleibt. **Bytesicher:** einmal `TextEncoder`
+  über den ganzen String, dann `Uint8Array.subarray()` – niemals auf String-Ebene schneiden.
+- `odGroessePruefen()` – Gegenprüfung der gespeicherten Größe (aus v253 herausgelöst, jetzt
+  zentral für alle Schreibwege).
+- `odItemUrl()`, `odWarte()` – Hilfsfunktionen.
+
+**Umgestellte Aufrufer:** Haupt-Download, Haupt-Upload, `hmDateiSchreiben()`,
+`genBackupSichern()`, HM-Download.
+
+**Audit-Befunde (mitbehoben):**
+1. **`json.length` als Bytezahl** an drei Stellen (Größenwarnschwelle 18 MB, `bytes` im
+   Hash-Kurzschluss, `bytes` in der Erfolgsmeldung). Zählt UTF-16-Einheiten, nicht Bytes →
+   auf echte UTF-8-Größe umgestellt. *(v253 hatte nur `window._syncBytes` korrigiert.)*
+2. **`hmDateiSchreiben()`** schrieb per ungeprüftem PUT und meldete Fehler nur still
+   (`if (r.ok)` ohne else) – eine abgeschnittene HM-Datei hätte alle Hausmeister-Geräte
+   lahmgelegt. Jetzt geprüfter Schreibweg.
+3. **`genBackupSichern()`** schrieb die Wochengeneration ungeprüft **und** setzte `lastGenBackup`
+   auch dann, wenn die Datei defekt sein konnte → diese Woche kein weiterer Versuch. Besonders
+   kritisch, weil die Generation der Rettungsanker ist. Jetzt geprüft; bei Fehlschlag wird
+   `lastGenBackup` **nicht** gesetzt.
+4. **HM-Download-Pfad** hatte die Diagnose aus v251/v253 nie erhalten – Fehler landeten weiterhin
+   ohne Begründung auf `offline`, `r.json()` blind. **Eigener Restbefund aus v251.** Nachgezogen
+   inkl. Leer-/Korrupt-Erkennung und Rückgabewert.
+5. **Meldungstexte in ASCII** („unvollstaendig", „pruefen", „uebertragen") im neuen Block –
+   nutzersichtbar, daher auf korrekte Umlaute gebracht.
+
+**QA:** `node --check` beide Blöcke OK · Funktions-Diff v253→v254 **+6 / 0 verloren** (1367) ·
+**Gesamtregression 92 Tests grün:** 25 (v251) + 21 (v252) + 20 (v253, Anker an neue Struktur
+angepasst) + 26 (v254 neu). Kernprüfungen v254: F2 mehrteiliges Laden mit Umlauten – Inhalt
+**byte-identisch**, kein U+FFFD an Nahtstellen; G2 Segmente lückenlos und Vielfaches von 320 KiB;
+G4 Abbruch verwirft Sitzung; H2/H3 404/401 werden nicht wiederholt.
+`APP_VERSION='2026-07-20-v254'`, CACHE `nadigpfau-v254`. DB_VER unverändert.
+
+**➜ Erwartete Wirkung:** Der Download der 16,65-MB-Datei sollte jetzt auch bei instabiler
+Verbindung durchlaufen (Stück für Stück, mit Wiederholung). Nach dem ersten erfolgreichen
+App-Sync schreibt die App die Datei wieder **kompakt** (~5–6 MB) zurück – das Größenproblem
+löst sich damit von selbst.
+
+**Offen:** Gerätetest v254. Danach Wiederaufnahme des regulären Fahrplans (Deploy v153–v254 als
+Gesamtpaket, `rechnungOcr.js`-Backend, `mDatenschutz`-Modal).
+
+---
+
+## ⚡ Letzte Sitzung / Schnellüberblick (Stand 20.07.2026, 23. Sitzung Teil 9)
+
+**★ URSACHE GEFUNDEN: `immo_daten.json` auf OneDrive ist beschädigt. v253 = Diagnose,
+Verifikation, Reparaturweg.**
+
+**Die v251-Instrumentierung hat geliefert.** Fehlermeldung auf dem Gerät:
+`Daten lesen: Failed to execute 'json' on 'Response': Unexpected end of JSON input`
+
+**Auswertung:** HTTP 200, Abruf also erfolgreich – aber der **Rumpf war leer oder abgeschnitten**.
+Kein Netzwerk-, kein Anmelde-, kein Merge-Problem: **die Serverdatei selbst ist defekt.** Das
+erklärt, warum jeder Versuch identisch scheiterte, während die Kopfzeile „Verbunden" zeigte.
+
+**Wie es dazu kam (belegte Mechanik):** `fetchMitTimeout` bricht per `AbortController` nach
+`OD_SYNC_TIMEOUT` (90 s) ab. Der Timer wird erst geräumt, wenn `fetch` auflöst – beim **PUT**
+also nach vollständigem Senden. Bei ~5,8 MB über Mobilfunk kann der Abbruch **mitten im Upload**
+greifen und eine leere/abgeschnittene Datei hinterlassen. Der Fehler blieb unbemerkt, weil die
+Antwort nie gegengeprüft wurde; er zeigte sich erst beim nächsten **Lesen**.
+
+**v253-Änderungen:**
+1. **Byte-genaue Diagnose beim Lesen:** statt blindem `r.json()` erst `r.text()`, dann
+   `JSON.parse`. Unterscheidet jetzt „Datei ist leer (0 Bytes)" von „unvollständig/beschädigt
+   (x,xx MB empfangen)" und markiert beides mit `korrupt:true` (durchgereicht bis in `syncInfo`).
+2. **Upload-Verifikation (verhindert Wiederholung):** Nach dem PUT wird die von Graph gemeldete
+   `size` gegen die tatsächliche **UTF-8-Bytezahl** geprüft (`TextEncoder`, **nicht** `json.length`
+   – das zählt UTF-16-Einheiten und ergäbe bei Umlauten Fehlalarm). Abweichung ⇒ Fehler
+   „Upload unvollständig: n von m Bytes". Der Defekt wird damit im Moment des Entstehens sichtbar.
+3. **Bewusster Reparaturweg:** v252 sperrt den Upload bei unprüfbarem Serverstand – korrekt, aber
+   dadurch könnte die App die defekte Datei nie heilen. Neu: `syncReparaturHochladen()` mit
+   **zwei Bestätigungen** (nennt die Zahl der lokalen Mieter-Datensätze) setzt
+   `window._syncReparaturForce` und hebt die Sperre für genau diesen einen Upload auf.
+   Der Button erscheint **nur** bei nachgewiesener Korruption (`syncInfo.korrupt`), zusammen mit
+   dem Hinweis, zuerst die Wochensicherung zu verwenden.
+
+**QA:** `node --check` OK · Funktions-Diff v252→v253 **+1 / 0 verloren** (1361, nur
+`syncReparaturHochladen`) · **20/20 neue Smoke-Tests** (C1–C5 Leseerkennung, D1–D6b
+Upload-Verifikation inkl. UTF-8-Falle) · **Regression grün: 25/25 (v251) + 21/21 (v252,
+um B6–B8 Reparatur-Flag erweitert)**. DB_VER unverändert. `APP_VERSION='2026-07-20-v253'`,
+CACHE `nadigpfau-v253`.
+
+**➜ WIEDERHERSTELLUNG (Reihenfolge einhalten):**
+1. **Zuerst sichern:** Auf dem Hauptgerät (installierte PWA, hat den vollständigen lokalen Stand)
+   Einstellungen → **Backup exportieren** in eine Datei. Unabhängig von OneDrive.
+2. **Quelle prüfen:** OneDrive → `NadigPfau/immo_daten.json` – Größe ansehen (0 Bytes bzw. deutlich
+   unter ~5,8 MB = bestätigt). OneDrive-**Versionsverlauf** bietet ggf. die vorige, intakte Fassung.
+3. **Beste Quelle:** OneDrive → `NadigPfau/backup/immo_daten_JJJJ-KWnn.json` (Wochengenerationen,
+   4 neueste; `genBackupSichern`, v199/B5). Neueste Generation nach `immo_daten.json` kopieren.
+4. Danach in der App **„Vom Server laden (erzwingen)"**.
+5. Nur falls 2–4 nichts hergeben: im Sync-Fenster **„Serverdatei mit diesem Gerät überschreiben"** –
+   ausschließlich vom Gerät mit vollständigem Bestand.
+
+**⚠️ Weiterhin offen (§11 neu):** Der 90-s-Abbruch beim Upload großer Dateien ist nur **erkannt**,
+nicht **verhindert**. Nachhaltige Lösung: Microsoft Graph **Upload-Session**
+(`createUploadSession`, segmentiert/fortsetzbar) statt einfachem PUT auf `/content` für Dateien
+über ~4 MB. Damit entfiele die Abbruchgefahr strukturell. Als nächster Arbeitspunkt vormerken.
+
+---
+
+## ⚡ Letzte Sitzung / Schnellüberblick (Stand 20.07.2026, 23. Sitzung Teil 8)
+
+**★ v252 – DATENVERLUST-RISIKO geschlossen: „Ersteinrichtung" nach fehlgeschlagenem Sync.**
+Nutzerbefund: Gerät zeigte den Ersteinrichtungs-Bildschirm mit „In OneDrive sind noch keine
+Benutzer hinterlegt" – **obwohl** die Verbindung erfolgreich war („✓ Mit OneDrive verbunden:
+Alexander Nadig"). Angeboten wurde „Ersten Admin anlegen".
+
+**Befund (Kern): Die App konnte „Laden fehlgeschlagen" nicht von „OneDrive ist leer"
+unterscheiden.** `setupLadeBenutzerNachSync()` ignorierte den Ausgang von `syncFromOneDrive()`
+(die Funktion lieferte ohnehin immer `undefined`) und schloss allein aus einer leeren **lokalen**
+Benutzertabelle: „OneDrive ist leer (allererste Einrichtung überhaupt)" → Erst-Admin-Formular.
+Dieselbe Sync-Störung aus v250/v251 löste also die Ersteinrichtung aus.
+
+**Die gefährliche Folgekette:** `setupErstAdminAnlegen()` ruft nach dem Anlegen `syncToOneDrive()`.
+Dessen Überschreibschutz (Remote-Stand vorab holen und mergen) lag in einem `catch`, das **jeden**
+Fehler verschluckte und anschließend **trotzdem hochlud**. Derselbe fehlschlagende Abruf hätte den
+Schutz deaktiviert und `immo_daten.json` mit einem Ein-Benutzer-Stand überschrieben – zusätzlich
+hätte `genBackupSichern` diesen Stand als Wochen-Generation abgelegt.
+*(Teilentschärfung vorher: `mergeRecord` löscht remote fehlende Datensätze nicht, andere Geräte
+hätten ihren Bestand behalten – der Master-Stand auf OneDrive wäre aber ausgedünnt gewesen.)*
+
+**v252-Änderungen:**
+1. **`syncFromOneDrive()` liefert ein Ergebnis** (`{ok:true}` / `{ok:false, grund}` /
+   `{ok:true, dateiFehlt:true}` bei echtem 404). Rein additiv – alle bisherigen Aufrufer
+   ignorieren den Rückgabewert.
+2. **Ersteinrichtung:** Das Erst-Admin-Formular erscheint nur noch, wenn der Abruf **nachweislich
+   gelang**. Bei Fehlschlag neue Ansicht `setupZeigeLadefehler(grund)` – rote Box mit Klartext-
+   Grund, ausdrücklichem Hinweis „Bestand nicht feststellbar, Anlegen gesperrt", Buttons „Erneut
+   versuchen" und „Neu bei Microsoft anmelden".
+3. **Überschreibschutz gehärtet:** `syncToOneDrive()` lädt nur noch hoch, wenn der Remote-Stand
+   nachweislich geprüft wurde (gelesen **oder** echtes 404). Bei HTTP-Fehler/Netzfehler
+   **Abbruch statt Upload** mit Meldung „Abgebrochen: Stand auf OneDrive nicht prüfbar – kein
+   Überschreiben". *Bewusste Abwägung: lieber kein Sync als Datenverlust.*
+4. **Zweite Sicherung in `setupErstAdminAnlegen()`:** unmittelbar vor dem Schreiben erneuter
+   Remote-Check; sind dort Benutzer hinterlegt → kein Anlegen, zurück zum Laden. Ist der Stand
+   nicht prüfbar → Abbruch.
+
+**QA:** `node --check` OK · Funktions-Diff v251→v252 **+1 / 0 verloren** (1360, nur
+`setupZeigeLadefehler`) · **18/18 Node-Smoke-Tests** gegen extrahierten Originalcode:
+A1 Download-Fehler → kein Formular (Kernrisiko) · A2/A3 Erfolg bzw. 404 → Formular erlaubt ·
+A4 vorhandene Benutzer → Login · A5/A6 kein Token/Wurf → gesperrt · B1/B2 Upload erlaubt ·
+B3/B4/B5 401/500/Netzfehler → **Upload gesperrt** mit Grund. DB_VER unverändert.
+`APP_VERSION='2026-07-20-v252'`, `sw.js`-CACHE `nadigpfau-v252`.
+
+**⚠️ Kontext des Screenshots:** Die App lief in einem In-App-Browser (`deusnuntio.github.io` mit
+✕/⋮-Leiste), nicht in der installierten PWA. Das ist ein **eigener Speicherkontext** – leere
+IndexedDB und damit „Ersteinrichtung" sind dort erwartbar; der Fehler war die falsche
+Schlussfolgerung daraus, nicht der leere lokale Stand.
+
+**➜ Offen / nächster Schritt:** Die **Ursache** des Sync-Fehlschlags ist weiterhin unbekannt.
+v251 macht sie sichtbar, v252 verhindert den Schaden daraus. Weiterhin nötig: v252 in der
+**installierten PWA** aufspielen, Sync auslösen, Grund-Zeile melden. Zusätzlich prüfen, ob
+`NadigPfau/immo_daten.json` in OneDrive unverändert vorliegt (Größe ~5,8 MB, Änderungsdatum).
+
+---
+
+## ⚡ Letzte Sitzung / Schnellüberblick (Stand 20.07.2026, 23. Sitzung Teil 7)
+
+**★ v251 – OneDrive-Sync scheitert dauerhaft: vier stumme Fehlerpfade instrumentiert.**
+Nutzerbefund nach v250: Modal bleibt jetzt offen (v250-Fix wirkt), aber „Letzter Sync
+fehlgeschlagen" **ohne Grund-Zeile** – zweimal in Folge, während „Verbunden · Alexander Nadig"
+weiter grün angezeigt wurde.
+
+**Befund (das Fehlen der „Grund"-Zeile war selbst die Spur):** `syncInfoHtml()` rendert
+`Grund: …` nur, wenn `i.fehler` gefüllt ist. Vier Pfade schalteten auf `offline`, **ohne**
+ein `detail`-Objekt zu übergeben:
+1.–3. `odGetToken()` — alle drei Fehlerausgänge (dauerhaft ungültig / Antwort ohne Token /
+   Netzwerkfehler) meldeten nur `setSyncStatus('offline')` und gaben `null` zurück.
+4. `syncFromOneDrive()`-`catch` — `setSyncStatus('offline')` ohne Fehlermeldung.
+
+**Die wahrscheinliche Ursachenkette:** Schlägt die Token-Erneuerung fehl, gibt `odGetToken()`
+`null` zurück; `syncFromOneDrive()` steigt bei `if (!token) return;` **sofort aus** – es wird nie
+ein Sync-Versuch unternommen. Gleichzeitig behält v220 die Tokens bewusst (Schutz vor
+WLAN-Aussetzern), weshalb die Kopfzeile weiter „Verbunden" zeigt. Ergebnis: **dauerhaft
+scheiternder Sync, der sich als verbunden ausgibt und keinen Grund nennt** – der Nutzer kann
+nicht erkennen, dass eine Neuanmeldung nötig wäre.
+
+**v251-Änderungen (rein diagnostisch + eine Handlungsoption, keine Logikänderung):**
+- Alle vier Pfade übergeben jetzt `{richtung, fehler}` mit klartextlicher Ursache; bei dauerhaft
+  ungültigem Token lautet der Text ausdrücklich „bitte neu anmelden".
+- `syncFromOneDrive()` führt eine **Phasen-Variable** (`Download` / `Daten lesen` /
+  `Zusammenführen`) mit – ein Fehler beim Merge sah bisher aus wie ein Download-Fehler.
+  HTTP 401 wird zusätzlich als „Zugriff abgelehnt – Anmeldung prüfen" ausgewiesen.
+- `syncToOneDrive()`/`syncFromOneDrive()`: stiller Abbruch ohne Token meldet jetzt
+  „Nicht mit OneDrive angemeldet" (nur wenn gar kein Token-Objekt existiert – sonst hat
+  `odGetToken` den genaueren Grund bereits gesetzt, kein Überschreiben).
+- Modal `showSyncInfo()`: neuer Button **„Neu anmelden"** (`msalLogin()`) neben „Abmelden" –
+  bisher war die einzige Option das vollständige Abmelden.
+
+**⚠️ v220-Verhalten ausdrücklich unangetastet:** Tokens werden weiterhin **nur** bei
+`invalid_grant`/`invalid_client`/`unauthorized_client` verworfen, nicht bei temporären Fehlern.
+Die if/else-Kette in `odGetToken` wurde dafür umgebaut (early return im dauerhaft-Zweig) und
+**gezielt gegen den extrahierten Originalcode getestet: 25/25 Node-Smoke-Tests grün**
+(T2/T5 Verwerfen, T3/T4/T6/T7 Behalten, T8 Erfolgsfall, T1/T9 Kurzschlüsse).
+
+**QA:** `node --check` beide Inline-Blöcke OK · Funktions-Diff v250→v251 **0 neu / 0 verloren**
+(1359) · DB_VER unverändert. `APP_VERSION='2026-07-20-v251'`, `sw.js`-CACHE `nadigpfau-v251`.
+
+**➜ Nächster Schritt (Diagnose, nicht Abschluss):** v251 aufspielen, Sync auslösen und die nun
+sichtbare **Grund-Zeile** melden. Erst diese Meldung sagt, ob die Ursache Anmeldung (→ „Neu
+anmelden"), Netzwerk/Timeout (90 s bei ~5,8 MB) oder der Merge-Schritt ist. **v251 behebt den
+Sync-Fehler nicht, es macht ihn benennbar.**
+
+---
+
 ## ⚡ Letzte Sitzung / Schnellüberblick (Stand 19.07.2026, 23. Sitzung Teil 6)
 
 **★ v250 – Bugfix: OneDrive-Sync-Button schloss das Modal sofort, ohne Ergebnis abzuwarten.**

@@ -892,7 +892,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=35;   // v242: +buch_journal (F4 GoBD)
-const APP_VERSION = '2026-07-20-v253';
+const APP_VERSION = '2026-07-20-v254';
 /* v222 (14.07.2026): KI-Auslesen Zaehlerstand aus Foto (analog rechnungOcrErkennen).
    Neuer Button "Zaehlerstand aus Foto auslesen (KI)" in modalZaehlerstand,
    sichtbar sobald ein Foto vorhanden ist. Sendet Base64+MimeType+Zaehlerart
@@ -27637,20 +27637,215 @@ async function mergeFremdBackup(backup, stores){
   }
 }
 
+/* ═══════════════════════════════════════════════════════════
+   v254: FORTSETZBARE UEBERTRAGUNG (Graph)
+   Anlass: Ein einzelner PUT/GET ueber ~16 MB brach auf Mobilfunk mitten in der
+   Uebertragung ab. Beim Schreiben blieb eine abgeschnittene Datei zurueck, beim
+   Lesen kam "Failed to fetch". Beides ist mit einer Anfrage pro Datei nicht
+   zuverlaessig zu loesen – die Uebertragung wird deshalb in Stuecke zerlegt,
+   jedes Stueck einzeln wiederholbar.
+
+   Bytesicherheit: Es wird IMMER auf Byte-Ebene geschnitten (TextEncoder einmal
+   ueber den ganzen String, dann Uint8Array slicen). Ein Schnitt auf String-Ebene
+   wuerde Mehrbyte-Zeichen (Umlaute) zerreissen. Beim Lesen umgekehrt: alle
+   Stuecke als ArrayBuffer sammeln und EINMAL am Ende dekodieren.
+═══════════════════════════════════════════════════════════ */
+const OD_TEIL_LADEN   = 4 * 1024 * 1024;          // 4 MB je Lesestueck
+const OD_TEIL_SENDEN  = 5 * 1024 * 1024;          // 5 MB = 16 x 320 KiB (Graph-Vorgabe)
+const OD_EINFACH_MAX  = 4 * 1024 * 1024;          // darunter lohnt die Sitzung nicht
+const OD_TEIL_TIMEOUT = 60000;                    // je Stueck, nicht je Datei
+const OD_VERSUCHE     = 4;
+
+// Content-URL -> Item-URL ('.../datei.json:/content' -> '.../datei.json')
+function odItemUrl(contentUrl){ return contentUrl.replace(/:\/content$/, ''); }
+
+function odWarte(ms){ return new Promise(r => setTimeout(r, ms)); }
+
+/* Wiederholt eine Anfrage bei Netzfehlern und vorruebergehenden Serverfehlern.
+   Dauerhafte Fehler (401/403/404) werden NICHT wiederholt – das waere nur
+   Zeitverlust und wuerde eine klare Diagnose verschleiern. */
+async function odFetchWiederholt(url, opts, timeout, versuche){
+  versuche = versuche || OD_VERSUCHE;
+  let letzter = null;
+  for (let i = 1; i <= versuche; i++){
+    try {
+      const r = await fetchMitTimeout(url, opts, timeout);
+      if (r.ok || r.status === 404 || r.status === 401 || r.status === 403) return r;
+      if (r.status === 429 || r.status >= 500){
+        letzter = new Error('HTTP ' + r.status);
+        const warte = Number(r.headers && r.headers.get && r.headers.get('Retry-After')) || 0;
+        if (i < versuche) { await odWarte(warte ? warte * 1000 : 800 * i); continue; }
+        return r;
+      }
+      return r;                                   // uebrige 4xx: unveraendert melden
+    } catch(e){
+      letzter = e;
+      if (i < versuche) { await odWarte(800 * i); continue; }
+      throw letzter;
+    }
+  }
+  throw letzter || new Error('Übertragung fehlgeschlagen');
+}
+
+/* Datei stueckweise lesen. Rueckgabe {status, text, bytes} bzw. {status:404}. */
+async function odDateiLaden(token, contentUrl){
+  const kopf = {'Authorization':'Bearer ' + token};
+  // 1) Groesse und (vorauthentifizierte) Download-Adresse holen
+  const m = await odFetchWiederholt(
+    odItemUrl(contentUrl) + '?$select=size,@microsoft.graph.downloadUrl',
+    {headers:kopf}, OD_TEIL_TIMEOUT);
+  if (m.status === 404) return {status:404};
+  if (!m.ok) throw new Error('HTTP ' + m.status + (m.status===401 ? ' (Zugriff abgelehnt – Anmeldung prüfen)' : ''));
+  const meta = await m.json();
+  const gesamt = Number(meta && meta.size) || 0;
+  const dlUrl = (meta && meta['@microsoft.graph.downloadUrl']) || null;
+
+  if (gesamt === 0) return {status:200, text:'', bytes:0};
+
+  // Die downloadUrl ist bereits autorisiert; ein Authorization-Kopf wuerde dort
+  // stoeren. Ohne downloadUrl faellt es auf die Content-URL mit Token zurueck.
+  const ladeUrl  = dlUrl || contentUrl;
+  const ladeKopf = dlUrl ? {} : kopf;
+
+  const teile = [];
+  let geladen = 0;
+  for (let start = 0; start < gesamt; start += OD_TEIL_LADEN){
+    const ende = Math.min(start + OD_TEIL_LADEN - 1, gesamt - 1);
+    const r = await odFetchWiederholt(ladeUrl,
+      {headers: Object.assign({}, ladeKopf, {'Range':'bytes=' + start + '-' + ende})},
+      OD_TEIL_TIMEOUT);
+    if (!r.ok) throw new Error('HTTP ' + r.status + ' beim Laden ab Byte ' + start);
+    const buf = await r.arrayBuffer();
+    // Server ohne Range-Unterstuetzung liefert 200 + Gesamtdatei: dann sind wir fertig.
+    if (r.status === 200 && start === 0 && buf.byteLength >= gesamt){
+      return {status:200, text:new TextDecoder('utf-8',{fatal:false}).decode(buf), bytes:buf.byteLength};
+    }
+    teile.push(new Uint8Array(buf));
+    geladen += buf.byteLength;
+  }
+  if (geladen !== gesamt){
+    throw new Error('Unvollständig empfangen: ' + geladen + ' von ' + gesamt + ' Bytes');
+  }
+  // Erst zusammensetzen, dann EINMAL dekodieren (sonst UTF-8-Korruption an den Nahtstellen)
+  const alles = new Uint8Array(geladen);
+  let off = 0;
+  for (const t of teile){ alles.set(t, off); off += t.length; }
+  return {status:200, text:new TextDecoder('utf-8',{fatal:false}).decode(alles), bytes:geladen};
+}
+
+/* Datei schreiben. Kleine Dateien per einfachem PUT, groessere ueber eine
+   Graph-Upload-Sitzung (segmentiert, je Segment wiederholbar).
+   Prueft in beiden Faellen die tatsaechlich gespeicherte Groesse. */
+async function odDateiSchreiben(token, contentUrl, json){
+  const bytes = new TextEncoder().encode(json);     // einmal kodieren, dann Bytes schneiden
+  const gesamt = bytes.length;
+  const kopf = {'Authorization':'Bearer ' + token};
+
+  if (gesamt <= OD_EINFACH_MAX){
+    const r = await odFetchWiederholt(contentUrl, {
+      method:'PUT',
+      headers: Object.assign({}, kopf, {'Content-Type':'application/json'}),
+      body: bytes,
+    }, OD_SYNC_TIMEOUT);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return await odGroessePruefen(r, gesamt);
+  }
+
+  // 1) Sitzung eroeffnen
+  const sr = await odFetchWiederholt(odItemUrl(contentUrl) + ':/createUploadSession', {
+    method:'POST',
+    headers: Object.assign({}, kopf, {'Content-Type':'application/json'}),
+    body: JSON.stringify({item:{'@microsoft.graph.conflictBehavior':'replace'}}),
+  }, OD_TEIL_TIMEOUT);
+  if (!sr.ok) throw new Error('Upload-Sitzung: HTTP ' + sr.status);
+  const sitzung = await sr.json();
+  const ziel = sitzung && sitzung.uploadUrl;
+  if (!ziel) throw new Error('Upload-Sitzung ohne Adresse');
+
+  // 2) Segmente senden. Die uploadUrl ist selbst autorisiert (kein Token-Kopf).
+  let ergebnis = null;
+  for (let start = 0; start < gesamt; start += OD_TEIL_SENDEN){
+    const ende = Math.min(start + OD_TEIL_SENDEN, gesamt);      // exklusiv
+    const stueck = bytes.subarray(start, ende);
+    let gesendet = false, letzter = null;
+    for (let versuch = 1; versuch <= OD_VERSUCHE && !gesendet; versuch++){
+      try {
+        const r = await fetchMitTimeout(ziel, {
+          method:'PUT',
+          headers:{'Content-Range':'bytes ' + start + '-' + (ende-1) + '/' + gesamt},
+          body: stueck,
+        }, OD_TEIL_TIMEOUT);
+        if (r.status === 202){ gesendet = true; break; }          // Zwischenstueck angenommen
+        if (r.status === 200 || r.status === 201){                // letztes Stueck
+          ergebnis = r; gesendet = true; break;
+        }
+        if (r.status === 409 || r.status === 416){                // bereits vorhanden
+          gesendet = true; break;
+        }
+        letzter = new Error('HTTP ' + r.status);
+        if (versuch < OD_VERSUCHE) await odWarte(800 * versuch);
+      } catch(e){
+        letzter = e;
+        if (versuch < OD_VERSUCHE) await odWarte(800 * versuch);
+      }
+    }
+    if (!gesendet){
+      // Sitzung verwerfen, damit kein halbfertiger Stand stehen bleibt
+      try { await fetchMitTimeout(ziel, {method:'DELETE'}, 15000); } catch(_){}
+      throw new Error('Segment ab Byte ' + start + ' nicht übertragen: '
+        + String(letzter && letzter.message || letzter));
+    }
+  }
+  if (!ergebnis) throw new Error('Upload ohne Abschlussbestätigung');
+  return await odGroessePruefen(ergebnis, gesamt);
+}
+
+/* Gegenpruefung: Was liegt tatsaechlich auf dem Server? */
+async function odGroessePruefen(antwort, sollBytes){
+  try {
+    const item = await antwort.json();
+    const ist = (item && typeof item.size === 'number') ? item.size : null;
+    if (ist !== null && ist !== sollBytes){
+      throw new Error('Upload unvollständig: ' + ist + ' von ' + sollBytes
+        + ' Bytes auf OneDrive – Serverdatei ist beschädigt');
+    }
+    return {ok:true, bytes:sollBytes, item};
+  } catch(e){
+    if (e && /Upload unvollst/.test(e.message||'')) throw e;
+    return {ok:true, bytes:sollBytes, item:null};   // Antwort ohne JSON: tolerieren
+  }
+}
+
 // ── HM-Geraet: Download (immo_daten_hm.json -> lokal) ──────
 async function syncFromOneDriveHM(){
   const token = await odGetToken();
-  if (!token) return;
+  /* v254: Der HM-Pfad hatte die Diagnose-Verbesserungen aus v251/v253 noch nicht –
+     Fehler landeten hier weiterhin ohne Begruendung auf 'offline'. Nachgezogen. */
+  if (!token) {
+    if (!odTokens) setSyncStatus('offline', {richtung:'geladen', fehler:'Nicht mit OneDrive angemeldet'});
+    return {ok:false, grund:'Keine gültige OneDrive-Anmeldung'};
+  }
   setSyncStatus('pending');
   try {
-    const r = await fetchMitTimeout(OD_FILE_URL_HM, {headers:{'Authorization':'Bearer '+token}}, OD_SYNC_TIMEOUT);
-    if (r.status === 404){
-      setSyncStatus('offline');
+    const geladenHM = await odDateiLaden(token, OD_FILE_URL_HM);
+    if (geladenHM.status === 404){
+      setSyncStatus('offline', {richtung:'geladen',
+        fehler:'Hausmeister-Datei noch nicht bereitgestellt'});
       toast('Hausmeister-Daten noch nicht bereitgestellt – bitte einmal am Verwalter-Gerät synchronisieren.');
-      return;
+      return {ok:false, grund:'Hausmeister-Datei fehlt'};
     }
-    if (!r.ok) throw new Error('HTTP '+r.status);
-    const backup = await r.json();
+    if (!geladenHM.text.trim()){
+      const eLeer = new Error('Hausmeister-Datei ist leer (0 Bytes) – vermutlich abgebrochener Upload');
+      eLeer._korrupt = true; throw eLeer;
+    }
+    let backup;
+    try { backup = JSON.parse(geladenHM.text); }
+    catch(pe){
+      const eK = new Error('Hausmeister-Datei unvollständig/beschädigt ('
+        + (Math.round(geladenHM.bytes/1048576*100)/100).toString().replace('.',',')
+        + ' MB empfangen)');
+      eK._korrupt = true; throw eK;
+    }
     const ls = await idbGet('settings','lastSync').catch(()=>null);
     if (window._forceSyncDownload || (backup.updatedAt||'') > (ls?.value||'')){
       await mergeFremdBackup(backup, HM_SYNC.stores);
@@ -27658,10 +27853,13 @@ async function syncFromOneDriveHM(){
       await renderDash(); await updateBadge();
       toast('✓ Synchronisiert (' + (backup.updatedBy||'') + ')');
     }
-    setSyncStatus('ok');
+    setSyncStatus('ok', {richtung:'geladen'});
+    return {ok:true};
   } catch(e){
     console.warn('HM-Sync Download:', e);
-    setSyncStatus('offline');
+    const grund = String(e && e.message || e);
+    setSyncStatus('offline', {richtung:'geladen', fehler:grund, korrupt: !!(e && e._korrupt)});
+    return {ok:false, grund, korrupt: !!(e && e._korrupt)};
   }
 }
 
@@ -27742,12 +27940,10 @@ async function hmRueckwegMergen(token){
 async function hmDateiSchreiben(token){
   try {
     const b = await hmBackupErzeugen();
-    const r = await fetchMitTimeout(OD_FILE_URL_HM, {
-      method:'PUT',
-      headers:{'Authorization':'Bearer '+token,'Content-Type':'application/json'},
-      body: JSON.stringify(b),
-    }, OD_SYNC_TIMEOUT);
-    if (r.ok) await idbPut('settings', {id:'lastSyncHM', value: b.updatedAt});
+    // v254: ueber den gepruefften Schreibweg – eine abgeschnittene HM-Datei blieb
+    // bisher unbemerkt und haette Hausmeister-Geraete lahmgelegt.
+    await odDateiSchreiben(token, OD_FILE_URL_HM, JSON.stringify(b));
+    await idbPut('settings', {id:'lastSyncHM', value: b.updatedAt});
   } catch(e){ console.warn('HM-Datei schreiben:', e); }
 }
 
@@ -27777,20 +27973,22 @@ async function genBackupSichern(token, json){
     const st=await idbGet('settings','lastGenBackup').catch(()=>null);
     if(st?.value===kw) return;   // diese Woche bereits gesichert
     const url=OD_GENBACKUP_DIR+'/immo_daten_'+kw+'.json:/content';
-    const put=()=>fetchMitTimeout(url,{method:'PUT',
-      headers:{'Authorization':'Bearer '+token,'Content-Type':'application/json'},
-      body:json},OD_SYNC_TIMEOUT);
-    let r=await put();
-    if(!r.ok){
+    /* v254: Die Wochengeneration ist der Rettungsanker – sie MUSS vollstaendig
+       sein. Daher gepruefter, segmentierter Schreibweg. Schlaegt er fehl, wird
+       lastGenBackup NICHT gesetzt, damit es diese Woche erneut versucht wird. */
+    try{
+      await odDateiSchreiben(token, url, json);
+    }catch(err1){
       // backup-Ordner ggf. anlegen (409 = existiert bereits, ok) und einmal wiederholen
       try{
         await fetchMitTimeout('https://graph.microsoft.com/v1.0/me/drive/root:/NadigPfau:/children',{
           method:'POST', headers:{'Authorization':'Bearer '+token,'Content-Type':'application/json'},
           body:JSON.stringify({name:'backup', folder:{}, '@microsoft.graph.conflictBehavior':'fail'})},OD_SYNC_TIMEOUT);
       }catch(err){ console.warn('Backup-Ordner anlegen:', err); }   // v244 (R26)
-      r=await put();
+      try{
+        await odDateiSchreiben(token, url, json);
+      }catch(err2){ console.warn('Generationen-Backup:', err2); return; }
     }
-    if(!r.ok){ console.warn('Generationen-Backup: HTTP '+r.status); return; }
     await idbPut('settings',{id:'lastGenBackup', value:kw});
     // Aufräumen: nur die 4 neuesten Generationen behalten ('JJJJ-KWnn' sortiert lexikografisch = chronologisch)
     try{
@@ -28149,36 +28347,19 @@ async function syncToOneDrive() {
     // Tombstones (geräteübergreifend gelöschte Datensätze) mitführen, damit sie nicht zurückgemergt werden
     try { const tomb=await idbGet('settings','tombstones'); backup.tombstones = tomb?.value || {}; } catch(e){ backup.tombstones={}; }
     const json = JSON.stringify(backup);
-    // A4: Größenwarnung – Protokollfotos werden mitsynchronisiert. Bei sehr
-    // großem Datenstand (viele Fotos) kann der Upload langsam/instabil werden.
-    if (json.length > 18 * 1024 * 1024) {
-      console.warn('Sync-Datenmenge groß:', Math.round(json.length/1048576) + ' MB');
-      try { toast('Hinweis: Datenmenge ' + Math.round(json.length/1048576) + ' MB (Fotos). Sync kann länger dauern.'); } catch(_){}
+    /* A4: Groessenwarnung. v254: json.length zaehlt UTF-16-Einheiten, nicht Bytes –
+       fuer Schwelle und Anzeige wird jetzt die echte UTF-8-Groesse verwendet. */
+    const jsonBytes = new TextEncoder().encode(json).length;
+    if (jsonBytes > 18 * 1024 * 1024) {
+      console.warn('Sync-Datenmenge groß:', Math.round(jsonBytes/1048576) + ' MB');
+      try { toast('Hinweis: Datenmenge ' + Math.round(jsonBytes/1048576) + ' MB (Fotos). Sync kann länger dauern.'); } catch(_){}
     }
     const hash = json.length+'_'+json.slice(-30);
-    if (hash === lastSyncHash) { setSyncStatus('ok', {richtung:'hochgeladen', hinweis:'keine Änderungen', bytes:json.length}); syncInProgress=false; return; }   // v248
-    const r = await fetchMitTimeout(OD_FILE_URL, {
-      method:'PUT',
-      headers:{'Authorization':'Bearer '+token,'Content-Type':'application/json'},
-      body: json,
-    }, OD_SYNC_TIMEOUT);
-    if (!r.ok) throw new Error('HTTP '+r.status);
-    /* v253: Hochgeladene Größe gegenprüfen. Ein abgebrochener PUT konnte bisher
-       eine leere/abgeschnittene Datei hinterlassen, ohne dass es auffiel – der
-       Fehler zeigte sich erst Tage später beim Lesen auf einem anderen Gerät.
-       Hinweis: json.length zählt UTF-16-Einheiten, Graph meldet BYTES. */
-    const sollBytes = new TextEncoder().encode(json).length;
-    try {
-      const item = await r.json();
-      const istBytes = (item && typeof item.size === 'number') ? item.size : null;
-      if (istBytes !== null && istBytes !== sollBytes) {
-        throw new Error('Upload unvollständig: ' + istBytes + ' von ' + sollBytes
-          + ' Bytes auf OneDrive – Serverdatei ist beschädigt');
-      }
-    } catch(ve) {
-      if (ve && /Upload unvollst/.test(ve.message||'')) throw ve;
-      console.warn('Upload-Verifikation nicht möglich:', ve);   // Antwort ohne JSON: nur protokollieren
-    }
+    if (hash === lastSyncHash) { setSyncStatus('ok', {richtung:'hochgeladen', hinweis:'keine Änderungen', bytes:jsonBytes}); syncInProgress=false; return; }   // v248/v254
+    /* v254: segmentierter Upload mit Groessenpruefung (ersetzt den einzelnen PUT,
+       der bei ~16 MB mitten in der Uebertragung abbrechen konnte). */
+    const schreib = await odDateiSchreiben(token, OD_FILE_URL, json);
+    const sollBytes = schreib.bytes;
     lastSyncHash = hash;
     window._syncBytes = sollBytes;   // v248/v253: echte Bytegröße
     try { await idbPut('settings', { id:'lastSync', value: new Date().toISOString() }); } catch(e){}
@@ -28186,7 +28367,7 @@ async function syncToOneDrive() {
     await hmDateiSchreiben(token);
     // v199 (B5): wöchentliche Backup-Generation ablegen (fehlertolerant, blockiert nie)
     await genBackupSichern(token, json);
-    setSyncStatus('ok', {richtung:'hochgeladen', bytes:json.length});   // v248
+    setSyncStatus('ok', {richtung:'hochgeladen', bytes:sollBytes});   // v248/v254
   } catch(e) {
     console.warn('Sync Upload:', e);
     setSyncStatus('offline', {richtung:'hochgeladen', fehler:String(e && e.message || e)});   // v248
@@ -28219,17 +28400,17 @@ async function syncFromOneDrive() {
      beim Zusammenführen sah bisher aus wie ein fehlgeschlagener Download. */
   let phase = 'Download';
   try {
-    const r = await fetchMitTimeout(OD_FILE_URL,
-      {headers:{'Authorization':'Bearer '+token}}, OD_SYNC_TIMEOUT);
+    /* v254: stueckweise laden statt einer einzigen grossen Anfrage. Jedes
+       Teilstueck wird bei Netzfehlern eigenstaendig wiederholt. */
+    const geladen = await odDateiLaden(token, OD_FILE_URL);
     // v252: 404 = Datei existiert nachweislich NICHT (echte Ersteinrichtung).
-    if (r.status === 404) { await syncToOneDrive(); return {ok:true, dateiFehlt:true}; }
-    if (!r.ok) throw new Error('HTTP '+r.status+(r.status===401?' (Zugriff abgelehnt – Anmeldung prüfen)':''));
+    if (geladen.status === 404) { await syncToOneDrive(); return {ok:true, dateiFehlt:true}; }
     phase = 'Daten lesen';
     /* v253: Erst Text lesen, dann parsen. So ist unterscheidbar, ob die Datei
        LEER ist (abgebrochener Upload) oder ob gültiger Inhalt nur unvollstaendig
        ankam – und die empfangene Größe lässt sich benennen. */
-    const rohText = await r.text();
-    const rohBytes = new TextEncoder().encode(rohText).length;
+    const rohText = geladen.text;
+    const rohBytes = geladen.bytes;
     if (!rohText.trim()) {
       const e0 = new Error('Datei auf OneDrive ist leer (0 Bytes) – vermutlich abgebrochener Upload');
       e0._korrupt = true;
