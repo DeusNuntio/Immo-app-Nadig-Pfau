@@ -892,7 +892,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=35;   // v242: +buch_journal (F4 GoBD)
-const APP_VERSION = '2026-07-20-v254';
+const APP_VERSION = '2026-07-21-v256';
 /* v222 (14.07.2026): KI-Auslesen Zaehlerstand aus Foto (analog rechnungOcrErkennen).
    Neuer Button "Zaehlerstand aus Foto auslesen (KI)" in modalZaehlerstand,
    sichtbar sobald ein Foto vorhanden ist. Sendet Base64+MimeType+Zaehlerart
@@ -1634,13 +1634,23 @@ function setupZeigeLadefehler(grund){
           überschrieben werden.
         </div>
       </div>
-      <button class="btn btn-copper btn-full" style="margin-top:12px" onclick="setupLadeBenutzerNachSync()">
+      <button class="btn btn-copper btn-full" style="margin-top:12px" onclick="setupErneutVersuchenKlick(this)">
         <i class="ti ti-refresh"></i> Erneut versuchen
       </button>
       <button class="btn btn-full" style="margin-top:8px" onclick="setupConnectOneDrive()">
         <i class="ti ti-brand-windows"></i> Neu bei Microsoft anmelden
       </button>
     </div>`;
+}
+
+/* v255: "Erneut versuchen" gab keinerlei sichtbares Feedback – bei schneller
+   Fehlermeldung (z. B. sofortiges "Failed to fetch") war für den Nutzer nicht
+   erkennbar, ob der Tap etwas ausgeloest hat. Button waehrend des Versuchs
+   sperren und beschriften; setupLadeBenutzerNachSync() ersetzt das Element bei
+   Erfolg ODER Fehlschlag ohnehin komplett, ein manuelles Zuruecksetzen entfaellt. */
+async function setupErneutVersuchenKlick(btn){
+  if(btn){ btn.disabled = true; btn.innerHTML = '<i class="ti ti-loader"></i> Wird erneut versucht \u2026'; }
+  await setupLadeBenutzerNachSync();
 }
 
 // Formular zum Anlegen des allerersten Admins (nur wenn OneDrive leer ist)
@@ -28166,6 +28176,7 @@ async function pkceGen() {
 // ── Anmeldung ─────────────────────────────────────────────
 async function msalLogin() {
   try {
+    odAnmeldungEmpfangen();                 // v256: Rueckgabe entgegennehmen (einmalig je Anmeldung)
     const {verifier, challenge} = await pkceGen();
     const state = crypto.getRandomValues(new Uint8Array(8))
       .reduce((s,b)=>s+b.toString(16).padStart(2,'0'),'');
@@ -28190,6 +28201,74 @@ async function msalLogin() {
     console.error('msalLogin:', e);
   }
 };
+
+/* ── v256: Anmeldung im Zusatzfenster sauber zurueckgeben ──
+   Hintergrund: msalLogin() oeffnet die Microsoft-Anmeldung per window.open.
+   Da redirect_uri auf die App-URL zeigt, landet die Rueckleitung IN diesem
+   Fenster und startete bisher eine zweite App-Instanz, die offen blieb. */
+
+// Sind wir das per window.open geoeffnete Anmeldefenster (gleicher Origin)?
+function odIstAnmeldefenster(){
+  try {
+    if (!window.opener || window.opener === window) return false;
+    if (window.opener.closed) return false;
+    return true;
+  } catch(e) { return false; }   // Zugriff blockiert -> wie eigenstaendiges Fenster behandeln
+}
+
+/* Fenster schliessen. Verweigert der Browser das (kommt vor), bleibt eine
+   verstaendliche Meldung stehen statt einer scheinbar funktionslosen Seite. */
+function odFensterSchliessen(){
+  try { window.close(); } catch(e) {}
+  setTimeout(() => {
+    if (!window.closed) {
+      try {
+        document.body.innerHTML =
+          '<div style="font-family:system-ui,sans-serif;padding:32px;text-align:center;color:#1e3a5f">'
+          + '<div style="font-size:44px;margin-bottom:10px">✓</div>'
+          + '<div style="font-size:19px;font-weight:600;margin-bottom:8px">Anmeldung abgeschlossen</div>'
+          + '<div style="font-size:15px;line-height:1.6;color:#5b6b7f">Dieses Fenster kann geschlossen werden.<br>'
+          + 'Die App läuft im ursprünglichen Fenster weiter.</div></div>';
+      } catch(e) {}
+    }
+  }, 400);
+}
+
+/* Empfaenger im Hauptfenster. Nimmt die Tokens entgegen, speichert sie und
+   fuehrt genau die Schritte aus, die sonst im Anmeldefenster gelaufen waeren. */
+function odAnmeldungEmpfangen(){
+  window.addEventListener('message', async (ev) => {
+    if (ev.origin !== window.location.origin) return;          // Pflichtpruefung
+    const d = ev.data;
+    if (!d || d.typ !== 'od_anmeldung' || !d.tokens) return;
+    try {
+      await odSaveTokens(d.tokens);
+      try {
+        const me = await fetchMitTimeout('https://graph.microsoft.com/v1.0/me',
+          {headers:{'Authorization':'Bearer '+odTokens.access_token}});
+        const meData = await me.json();
+        if (odTokens) {
+          odTokens.user_name = meData.displayName || meData.userPrincipalName || '';
+          try { await odPersistTokens(); } catch(e) {}
+        }
+      } catch(e) { console.warn('Benutzername laden:', e); }   // nicht kritisch
+      setSyncStatus('ok');
+      toast('✓ Mit OneDrive verbunden: ' + ((odTokens&&odTokens.user_name)||''));
+      const setupAktiv = document.getElementById('setupScreen')?.classList.contains('active')
+        || (typeof CU==='undefined' || !CU);
+      if (setupAktiv && typeof setupLadeBenutzerNachSync==='function') {
+        await setupLadeBenutzerNachSync();
+      } else {
+        await syncFromOneDrive();
+        if (typeof renderSettings==='function') renderSettings();
+      }
+    } catch(e) {
+      console.error('Anmeldung uebernehmen:', e);
+      setSyncStatus('offline', {richtung:'Anmeldung', fehler:String(e && e.message || e)});
+      toast('Anmeldung konnte nicht übernommen werden: ' + (e && e.message || e));
+    }
+  });
+}
 
 // ── OAuth-Code verarbeiten ────────────────────────────────
 async function handleOAuthRedirect() {
@@ -28238,6 +28317,20 @@ async function handleOAuthRedirect() {
     const t = await r.json();
     if (t.error) throw new Error(t.error_description||t.error);
     await odSaveTokens(t);
+
+    /* v256: Laeuft dieser Code im per window.open geoeffneten Anmeldefenster,
+       gehoert das Ergebnis ins URSPRUNGSFENSTER – sonst bleibt eine zweite
+       App-Instanz im Custom Tab stehen (X/Punkte-Leiste) und der Nutzer
+       arbeitet dort ggf. auf einem leeren Datenbestand weiter.
+       Origin-Pruefung ist Pflicht: hier werden Zugangstokens uebergeben. */
+    if (odIstAnmeldefenster()) {
+      try {
+        window.opener.postMessage({typ:'od_anmeldung', tokens:t}, window.location.origin);
+      } catch(pe) { console.warn('Rueckgabe an Hauptfenster:', pe); }
+      odFensterSchliessen();
+      return;
+    }
+
     // Benutzernamen laden
     const me = await fetchMitTimeout('https://graph.microsoft.com/v1.0/me',
       {headers:{'Authorization':'Bearer '+odTokens.access_token}});
