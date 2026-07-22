@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdn.sheetjs.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net; font-src 'self' data: https://cdn.jsdelivr.net https://fonts.gstatic.com; img-src 'self' data: blob: https:; connect-src 'self' https://cdn.jsdelivr.net https://func-nadigpfau-g7fghseafmftemeq.westeurope-01.azurewebsites.net https://api.nadigpfau.de https://graph.microsoft.com https://login.microsoftonline.com https://*.microsoftpersonalcontent.com https://*.sharepoint.com https://*.up.1drv.com; frame-src 'self' blob:; base-uri 'self'; form-action 'self';">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdn.sheetjs.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net; font-src 'self' data: https://cdn.jsdelivr.net https://fonts.gstatic.com; img-src 'self' data: blob: https:; connect-src 'self' https://cdn.jsdelivr.net https://func-nadigpfau-g7fghseafmftemeq.westeurope-01.azurewebsites.net https://api.nadigpfau.de https://graph.microsoft.com https://login.microsoftonline.com https://*.microsoftpersonalcontent.com https://*.sharepoint.com https://*.up.1drv.com; frame-src 'self' blob:; worker-src 'self' blob:; base-uri 'self'; form-action 'self';">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#185FA5">
@@ -892,7 +892,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=35;   // v242: +buch_journal (F4 GoBD)
-const APP_VERSION = '2026-07-21-v256';
+const APP_VERSION = '2026-07-22-v259';
 /* v222 (14.07.2026): KI-Auslesen Zaehlerstand aus Foto (analog rechnungOcrErkennen).
    Neuer Button "Zaehlerstand aus Foto auslesen (KI)" in modalZaehlerstand,
    sichtbar sobald ein Foto vorhanden ist. Sendet Base64+MimeType+Zaehlerart
@@ -22203,6 +22203,11 @@ function mieterFormHTML(obj, m={}) {
         <input type="date" id="mMieteSeit" value="${m.mieteSeitISO||''}">
         <div style="font-size:10px;color:var(--ink-40);margin-top:2px">Datum, seit dem die aktuelle Gesamtmiete gezahlt wird (z. B. nach Mieterhöhung). Wird für die Mietbescheinigung übernommen. Leer = Einzugsdatum.</div></div>
     </div>
+    <div class="f-row">
+      <div class="f"><label>Übergabezustand (Freitext)</label>
+        <input type="text" id="mUebergabe" value="${esc(m.uebergabe||'')}" placeholder="z. B. renoviert übergeben">
+        <div style="font-size:10px;color:var(--ink-40);margin-top:2px">Erscheint in der Mieterakte unter „Übergabe“. Freitext (meist aus der Bestandsübernahme) – hier änder- oder löschbar. Nicht identisch mit dem Übergabezustand (§ 7) des Mietvertrags.</div></div>
+    </div>
     <div class="f" style="margin-top:2px">
       <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px">
         <input type="checkbox" id="mfChk" onchange="mfToggle(this)" ${(m.mietfrei&&m.mietfrei.length)?'checked':''} style="width:16px;height:16px">
@@ -22619,6 +22624,7 @@ async function saveEditMieter(id) {
   m.tgNr    = document.getElementById('mTgNr').value;
   m.mieteSeitISO = document.getElementById('mMieteSeit')?.value || '';
   m.vertragsmodell = document.getElementById('mVertragsmodell')?.value || '';
+  m.uebergabe = document.getElementById('mUebergabe')?.value?.trim() || '';   // v258 (Bild 3): Freitext-Übergabezustand editier-/löschbar
   // Bankverbindung / Zahlung (nur Admin sieht die Felder; HM-Formular enthält sie nicht)
   if(document.getElementById('mIban')){
     m.zahlweise    = document.getElementById('mZahlweise')?.value || m.zahlweise || '';
@@ -22912,9 +22918,17 @@ async function modalAushangErstellen(objektId, weNr, vormieterId){
   if(!istVerwalter()){ toast('Nur für Admins'); return; }
   const obj   = getObj(objektId);
   const stamm = await getWohnungStamm(objektId, weNr);
+  // v258: Der Energieausweis (§ 80/§ 87 GEG) gilt fuer das gesamte Gebaeude und liegt
+  // im Gebaeude-Stamm objekt_stamm[objektId].energieausweis – nicht im WE-Stamm.
+  const gebStamm = (await idbGet('objekt_stamm', objektId).catch(()=>null)) || {};
   const vm    = vormieterId ? await idbGet('mieter', vormieterId).catch(()=>null) : null;
   const fotos = Array.isArray(stamm.fotos) ? stamm.fotos : [];
   const grundriss = stamm.grundriss || '';
+  // v259: zusätzlich WE-Grundriss aus den Objekt-Dokumenten (Bild oder PDF)
+  const wgrDok = await idbGet('dokumente', wohnungGrundrissId(objektId, weNr, 'a')).catch(()=>null);
+  const wgrVorhanden = !!(wgrDok && (wgrDok.data || wgrDok.ref));
+  const wgrPdf = wgrVorhanden && (wgrDok.mimeType||'').includes('pdf');
+  const grVorhanden = !!grundriss || wgrVorhanden;
   // Ist diese Wohnung bereits auf der Homepage veröffentlicht? (Schalter vorbelegen)
   const _kennungVorab = wohnungsKennung(objektId, weNr);
   let homepageVorgemerkt = false;
@@ -22955,8 +22969,8 @@ async function modalAushangErstellen(objektId, weNr, vormieterId){
   } else {
     fotoWahl = '<div style="font-size:12px;color:var(--amber);margin:4px 0"><i class="ti ti-alert-triangle"></i> Keine Wohnungsfotos hinterlegt. Du kannst sie über „Wohnungsinfos“ ergänzen – der Aushang funktioniert auch ohne.</div>';
   }
-  const grWahl = grundriss
-    ? `<label style="display:flex;align-items:center;gap:8px;font-size:12px;margin-top:4px"><input type="checkbox" id="ausGrundriss" checked style="width:16px;height:16px"> Grundriss mit aufnehmen</label>`
+  const grWahl = grVorhanden
+    ? `<label style="display:flex;align-items:center;gap:8px;font-size:12px;margin-top:4px"><input type="checkbox" id="ausGrundriss" checked style="width:16px;height:16px"> Grundriss mit aufnehmen${wgrPdf?' <span style="color:var(--ink-40)">(PDF – erste Seite wird als Bild eingefügt)</span>':''}</label>`
     : '';
 
   showModal(`
@@ -22977,7 +22991,7 @@ async function modalAushangErstellen(objektId, weNr, vormieterId){
       <div class="f"><label>Keller / Abteil</label><input type="text" id="ausKeller" value="${esc(keller)}" placeholder="z. B. Kellerabteil Nr. 4"></div>
     </div>
     <div class="f"><label>Energieausweis-Angabe (Pflicht für Homepage, § 87 GEG)</label>
-      <input type="text" id="ausEnergie" value="${esc(stamm.energie || energieausweisText(stamm.energieausweis) || '')}" placeholder="z. B. Verbrauchsausweis · 118 kWh/(m²·a) · Gas · Bj. 1971 · Klasse D"></div>
+      <input type="text" id="ausEnergie" value="${esc(stamm.energie || energieausweisText(gebStamm.energieausweis) || energieausweisText(stamm.energieausweis) || '')}" placeholder="z. B. Verbrauchsausweis · 118 kWh/(m²·a) · Gas · Bj. 1971 · Klasse D"></div>
 
     <div class="f-section-title" style="margin-top:10px"><i class="ti ti-photo"></i> Bilder für den Aushang</div>
     ${fotoWahl}
@@ -23035,6 +23049,83 @@ async function leerstandLoeschen(kennung){
   }catch(e){ return false; }
 }
 
+/* ── v259 (Variante A): Grundriss-PDF für den Aushang rendern ──────────────
+   Grundrisse werden als PDF hochgeladen (Objekt-Dokument, deterministische ID
+   wohnungGrundrissId(objektId,weNr,'a')). Der Aushang bettet Bilder ein, daher
+   wird die erste PDF-Seite bei Bedarf zu einem JPEG gerastert. pdf.js wird nur
+   dann und nur einmal von jsDelivr nachgeladen (CSP erlaubt jsDelivr für
+   script-src/connect-src; der Worker läuft als Blob über worker-src blob:).
+   Ohne Internet schlägt das Laden fehl → Aushang wird ohne Grundriss erzeugt. */
+let _pdfjsLadeP=null;
+function pdfJsLaden(){
+  if(window.pdfjsLib && window._pdfjsWorkerReady) return Promise.resolve(window.pdfjsLib);
+  if(_pdfjsLadeP) return _pdfjsLadeP;
+  _pdfjsLadeP=(async()=>{
+    const BASE='https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/';
+    if(!window.pdfjsLib){
+      await new Promise((res,rej)=>{ const sc=document.createElement('script'); sc.src=BASE+'pdf.min.js';
+        sc.onload=res; sc.onerror=()=>rej(new Error('pdf.js konnte nicht geladen werden')); document.head.appendChild(sc); });
+    }
+    if(!window.pdfjsLib) throw new Error('pdf.js nicht verfügbar');
+    // Worker als Blob laden (deterministisch, CSP-konform über worker-src blob:)
+    const wResp=await fetch(BASE+'pdf.worker.min.js');
+    if(!wResp || !wResp.ok) throw new Error('pdf.js-Worker konnte nicht geladen werden');
+    const wCode=await wResp.text();
+    const wUrl=URL.createObjectURL(new Blob([wCode],{type:'text/javascript'}));
+    window.pdfjsLib.GlobalWorkerOptions.workerSrc=wUrl;
+    window._pdfjsWorkerReady=true;
+    return window.pdfjsLib;
+  })();
+  return _pdfjsLadeP;
+}
+async function pdfErsteSeiteAlsBild(quelle, maxBreite){
+  const pdfjsLib=await pdfJsLaden();
+  let daten;
+  if(/^data:/.test(quelle)){
+    const b64=(quelle.split(',')[1])||''; const bin=atob(b64);
+    daten=new Uint8Array(bin.length);
+    for(let i=0;i<bin.length;i++) daten[i]=bin.charCodeAt(i);
+  } else {
+    const resp=await fetch(quelle);
+    if(!resp || !resp.ok) throw new Error('Grundriss-PDF konnte nicht geladen werden');
+    daten=new Uint8Array(await resp.arrayBuffer());
+  }
+  const pdf=await pdfjsLib.getDocument({data:daten}).promise;
+  const page=await pdf.getPage(1);
+  const vp1=page.getViewport({scale:1});
+  const scale=Math.min(2, (maxBreite||1400)/vp1.width);
+  const vp=page.getViewport({scale});
+  const canvas=document.createElement('canvas');
+  canvas.width=Math.round(vp.width); canvas.height=Math.round(vp.height);
+  const ctx=canvas.getContext('2d');
+  ctx.fillStyle='#fff'; ctx.fillRect(0,0,canvas.width,canvas.height);
+  await page.render({canvasContext:ctx, viewport:vp}).promise;
+  const bild=canvas.toDataURL('image/jpeg',0.85);
+  try{ pdf.destroy&&pdf.destroy(); }catch(_){}
+  return bild;
+}
+/* Liefert eine druckfertige Grundriss-dataURL für die WE:
+   1) WE-Dokument (wohnungGrundrissId slot 'a') – PDF → gerastert, Bild → direkt;
+   2) Fallback: altes Wohnungs-Stamm-Bild (stamm.grundriss). Bei Fehlern '' . */
+async function aushangGrundrissBild(objektId, weNr, stammGrundriss){
+  const wgr=await idbGet('dokumente', wohnungGrundrissId(objektId, weNr, 'a')).catch(()=>null);
+  if(wgr && (wgr.data || wgr.ref)){
+    try{
+      if((wgr.mimeType||'').includes('pdf')){
+        if(typeof toast==='function') toast('Grundriss-PDF wird eingelesen…');
+        const quelle=await dokQuelle(wgr);
+        return quelle ? await pdfErsteSeiteAlsBild(quelle, 1400) : '';
+      }
+      return await fotoDruckQuelle(wgr.data || wgr.ref);
+    }catch(e){
+      console.warn('aushangGrundrissBild (WE-Dokument):', e);
+      if(typeof toast==='function') toast('Grundriss konnte nicht eingefügt werden (evtl. offline). Aushang wird ohne Grundriss erzeugt.');
+      return '';
+    }
+  }
+  try{ return stammGrundriss ? (await fotoDruckQuelle(stammGrundriss)) : ''; }
+  catch(_){ return ''; }
+}
 async function aushangErzeugen(objektId, weNr){
   const obj   = getObj(objektId);
   const stamm = await getWohnungStamm(objektId, weNr);
@@ -23055,14 +23146,14 @@ async function aushangErzeugen(objektId, weNr){
   const gewaehltRoh = [];
   document.querySelectorAll('.ausFotoChk').forEach(chk=>{ if(chk.checked) gewaehltRoh.push(fotos[parseInt(chk.dataset.i)]); });
   const grChk = document.getElementById('ausGrundriss');
-  const grundrissRoh = (grChk && grChk.checked && stamm.grundriss) ? stamm.grundriss : '';
   // 23a (v174): ausgelagerte Referenzen zu echten dataURLs rehydrieren – der
   // Aushang-Druck bettet die Bilder synchron ins HTML ein und /api/leerstand
   // erwartet Base64 (lädt selbst nach Azure Blob hoch). Alt-Strings unverändert;
   // Fallback bei Netzfehler ist das Inline-Thumbnail (fotoDruckQuelle).
   const gewaehlt = [];
   for(const f of gewaehltRoh){ const d = await fotoDruckQuelle(f); if(d) gewaehlt.push(d); }
-  const grundriss = grundrissRoh ? (await fotoDruckQuelle(grundrissRoh)) : '';
+  // v259: Grundriss (Bild ODER PDF) druckfertig auflösen
+  const grundriss = (grChk && grChk.checked) ? await aushangGrundrissBild(objektId, weNr, stamm.grundriss) : '';
 
   // abgeleitete Werte
   const kaltN = parseFloat(String(kalt).replace(',','.'));
@@ -30603,6 +30694,7 @@ async function zaRenderVerlauf(){
       <button class="btn btn-sm" title="Import-Verlauf ansehen / Import rückgängig machen" onclick="modalImportVerlauf()"><i class="ti ti-file-import"></i> Importe</button>
       <button class="btn btn-sm" title="Gelernte Kategorie-Regeln ansehen und löschen" onclick="modalRegeln()"><i class="ti ti-bulb"></i> Regeln</button>
       <button class="btn btn-sm" title="GoBD-Journal: alle manuellen Buchungsänderungen" onclick="modalBuchJournal()"><i class="ti ti-book"></i> Journal</button>
+      <button class="btn btn-sm" title="Doppelte Buchungen (z. B. aus einem erneuten Import) finden und bereinigen" onclick="zaModalDuplikate()"><i class="ti ti-copy"></i> Duplikate</button>
       <button class="btn btn-sm" title="Mietrückstände und Mahnwesen" onclick="modalOffenePosten()"><i class="ti ti-alert-circle"></i> Offene Posten</button>
       <button class="btn btn-sm" title="Steuer-Jahresauswertung nach Anlage-V-Gliederung (Excel)" onclick="modalAnlageV()"><i class="ti ti-receipt-tax"></i> Anlage V</button>
     </div>`;
@@ -30623,6 +30715,83 @@ async function zaRenderVerlauf(){
 }
 
 function zaSetSicht(s){ ZA_VERLAUF.sicht=s; zaRenderVerlauf(); }
+
+/* ── v257 (Screenshot Bild 1): Doppelte Buchungen finden und bereinigen ──
+   Ein erneuter CSV-Import desselben Kontoauszugs kann dieselbe Zahlung ein zweites
+   Mal anlegen (oft an einem aelteren/knapperen Verwendungszweck erkennbar). Der Finder
+   gruppiert Buchungen nach Datum + Betrag + Richtung + Gegen-IBAN (ersatzweise Name)
+   und schlaegt je Gruppe die textreichste Buchung zum Behalten vor. Loeschung erfolgt
+   GoBD-konform mit Journal-Eintrag und Tombstone (merge-fest gegen OneDrive-Rueckkehr). */
+async function zaBuchungLoeschen(id, ohneNachfrage){
+  const rec=await idbGet('buchungen', id).catch(()=>null);
+  if(!rec){ toast('Buchung nicht gefunden.'); return false; }
+  if(!ohneNachfrage){
+    const eur=(Number(rec.betrag)||0).toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:2});
+    if(!confirm('Diese Buchung wirklich loeschen?\n\n'+(rec.datumISO||'')+' \u00b7 '+eur+' EUR\n'+(rec.name||'')+'\n\nDer Vorgang wird im Journal protokolliert und kann nicht rueckgaengig gemacht werden.')) return false;
+  }
+  await deleteMitTombstone('buchungen', id);
+  await buchJournal('loeschung', rec, null, 'Doppelte Buchung entfernt');   // v257
+  syncSoon();
+  return true;
+}
+
+async function zaModalDuplikate(){
+  const konto=(typeof ZA_STATE!=='undefined' && ZA_STATE) ? ZA_STATE.konto : null;
+  if(!konto){ toast('Bitte zuerst ein Konto waehlen.'); return; }
+  const eur=n=>(Number(n)||0).toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const alle=await idbGetAll('buchungen').catch(()=>[]);
+  const buch=alle.filter(b=>b && !b.geloescht && b.kontoId===konto.id);
+  const grp={};
+  for(const b of buch){
+    const iban=zaNormIban(b.iban);
+    const gegen=iban ? ('IB:'+iban) : ('NM:'+String(b.name||'').trim().toLowerCase());
+    const key=[b.datumISO||'', Math.round(Math.abs(Number(b.betrag)||0)*100), b.typ||'', gegen].join('|');
+    (grp[key]=grp[key]||[]).push(b);
+  }
+  const dubs=Object.values(grp).filter(a=>a.length>1)
+    .sort((a,b)=>String((b[0].datumISO)||'').localeCompare(String((a[0].datumISO)||'')));
+  if(!dubs.length){
+    showModal('<div class="m-title"><i class="ti ti-copy"></i> Doppelte Buchungen</div>'
+      +'<p style="font-size:13px;color:var(--ink-60);margin:8px 0 14px">F\u00fcr '+esc(konto.label||'')
+      +' wurden keine doppelten Buchungen gefunden (gleiches Datum, gleicher Betrag, gleiche Richtung und gleicher Zahlungspartner).</p>'
+      +'<button class="btn btn-full" onclick="closeModal()">Schlie\u00dfen</button>');
+    return;
+  }
+  const gesDub=dubs.reduce((a,g)=>a+(g.length-1),0);
+  let html='<div class="m-title"><i class="ti ti-copy"></i> Doppelte Buchungen</div>'
+    +'<p style="font-size:12px;color:var(--ink-60);margin:6px 0 4px">'+esc(konto.label||'')+'</p>'
+    +'<p style="font-size:12px;color:var(--ink-40);margin:0 0 12px">'+dubs.length+' Gruppe(n) mit insgesamt '+gesDub+' \u00fcberz\u00e4hligen Buchung(en). '
+    +'Je Gruppe ist die textreichste Buchung als <b>behalten</b> markiert \u2013 pr\u00fcfen Sie das und entfernen Sie die \u00fcberfl\u00fcssige(n).</p>';
+  for(const g of dubs){
+    const sortiert=g.slice().sort((a,b)=>String(b.zweck||'').length-String(a.zweck||'').length);
+    const behalten=sortiert[0];
+    const vorz=(behalten.typ==='ausgang')?'\u2212':'+';
+    html+='<div style="border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin-bottom:10px">'
+      +'<div style="font-size:12px;font-weight:600;margin-bottom:6px">'
+      +esc((behalten.datumISO||'').split('-').reverse().join('.'))+' \u00b7 '+vorz+eur(Math.abs(behalten.betrag))+' \u20ac \u00b7 '+esc(behalten.name||'Unbekannt')
+      +' <span style="font-weight:400;color:var(--ink-40)">('+(behalten.typ==='ausgang'?'Ausgang':'Eingang')+')</span></div>';
+    for(const b of sortiert){
+      const keep=(b.id===behalten.id);
+      html+='<div style="display:flex;gap:8px;align-items:flex-start;padding:5px 0;border-top:1px solid var(--ink-05)">'
+        +'<div style="flex:1;min-width:0">'
+        +(keep?'<span class="chip" style="font-size:9px;background:var(--green-l);color:var(--green)">behalten</span> ':'')
+        +'<span style="font-size:11px;color:var(--ink-60)">'+esc((b.zweck||'(kein Verwendungszweck)').slice(0,160))+'</span></div>';
+      if(keep){
+        html+='</div>';
+      }else{
+        html+='<button class="btn btn-sm btn-danger" style="white-space:nowrap;font-size:11px" '
+          +'onclick="(async()=>{ if(await zaBuchungLoeschen(\''+b.id+'\')){ await zaRenderVerlauf(); zaModalDuplikate(); } })()">'
+          +'<i class="ti ti-trash"></i> L\u00f6schen</button></div>';
+      }
+    }
+    html+='</div>';
+  }
+  html+='<div style="font-size:11px;color:var(--ink-40);margin:4px 0 12px"><i class="ti ti-info-circle"></i> '
+    +'Jede L\u00f6schung wird im GoBD-Journal protokolliert und geger\u00e4te\u00fcbergreifend synchronisiert. '
+    +'Zwei echte, gleich hohe Zahlungen am selben Tag k\u00f6nnen hier ebenfalls erscheinen \u2013 bitte vor dem L\u00f6schen den Verwendungszweck pr\u00fcfen.</div>'
+    +'<button class="btn btn-full" onclick="closeModal()">Schlie\u00dfen</button>';
+  showModal(html);
+}
 
 // §4 (v190): Barzahlung eines Mieters erfassen. Wird als regulaere Einnahme gespeichert
 // (typ 'eingang', bar:true) – steuerlich sichtbar, schliesst das Soll im Mietkonto,
@@ -30936,7 +31105,7 @@ function zaRenderMietkonto(buch, mieter, monate, konto, spIdx){
     return `<tr style="border-bottom:1px solid var(--line);${bg}">
       <td class="mk-fix mk-fix1" style="padding:6px;font-size:11px;color:var(--ink-40);background:${fixBg}">${esc(r.weNr||(r.tg?'TG':''))}</td>
       <td class="mk-fix mk-fix2" style="padding:6px;font-size:13px;background:${fixBg}">
-        <div class="mk-name" title="${escAttr(r.mieter||'')}">${esc(r.mieter)}${r.ehem?' <span class="chip chip-warn" style="font-size:9px">ehem.</span>':''}${r.autoEnde?` <span class="chip" style="font-size:9px;background:var(--ink-05);color:var(--ink-60)" title="Kein Auszugsdatum in der Mieterakte. Das Soll endet automatisch mit dem Einzug des Nachmieters (${esc(r.auszugISO||'')}) \u2013 bitte in der Mieterakte nachtragen.">Soll endet ${esc((r.auszugISO||'').split('-').reverse().join('.'))}</span>`:''}</div>
+        <div class="mk-name" title="${escAttr(r.mieter||'')}"><span class="mk-name-link" onclick="showMieter('${r.mieterId}')" title="Zur Mieterakte springen">${esc(r.mieter)}</span>${r.ehem?' <span class="chip chip-warn" style="font-size:9px">ehem.</span>':''}${r.autoEnde?` <span class="chip" style="font-size:9px;background:var(--ink-05);color:var(--ink-60)" title="Kein Auszugsdatum in der Mieterakte. Das Soll endet automatisch mit dem Einzug des Nachmieters (${esc(r.auszugISO||'')}) \u2013 bitte in der Mieterakte nachtragen.">Soll endet ${esc((r.auszugISO||'').split('-').reverse().join('.'))}</span>`:''}</div>
         <div class="mk-akt">${r.ehem?`<button class="btn btn-sm btn-danger" style="padding:1px 5px;font-size:10px" title="Ehemaligen Mieter löschen (z. B. doppelt angelegt)" onclick="zaMieterLoeschen('${r.mieterId}')"><i class="ti ti-trash"></i></button>`:''}<button class="btn btn-sm" style="padding:1px 5px;font-size:10px" title="Zahlungen auf einen anderen Mieter umhängen (z. B. an den Vormieter)" onclick="zaModalUmhaengen('${r.mieterId}')"><i class="ti ti-transfer"></i></button></div></td>
       <td style="padding:6px;text-align:right;font-variant-numeric:tabular-nums;font-size:12px">
         ${eur(r.soll)}<div style="font-size:9px;color:var(--ink-40)">${r.tg?('SP '+eur(r.spSoll)):(eur(r.netto)+'+'+eur(r.nk)+(r.spSoll?'+SP '+eur(r.spSoll):''))}</div>${r.tg?'':`<button class="btn btn-sm" style="padding:1px 5px;font-size:9px;margin-top:2px" title="NK-Vorauszahlung anpassen" onclick="zaModalNkVz('${r.mieterId}')"><i class="ti ti-pencil"></i> NK-VZ</button>`}</td>
@@ -30959,6 +31128,8 @@ function zaRenderMietkonto(buch, mieter, monate, konto, spIdx){
     .mk-wrap .mk-fix2{left:38px;min-width:150px;max-width:230px;box-shadow:inset -1px 0 0 var(--line)}
     .mk-wrap thead .mk-fix{z-index:5}
     .mk-name{overflow-wrap:anywhere;line-height:1.25}
+    .mk-name-link{cursor:pointer;color:var(--copper,#b87333);text-decoration:underline;text-decoration-style:dotted;text-underline-offset:2px}
+    .mk-name-link:hover{text-decoration-style:solid}
     .mk-akt{display:inline-flex;gap:3px;margin-top:2px}
     /* v247: Hochformat/Telefon – Namensspalte deutlich schmaler halten,
        damit rechts noch Monatsspalten sichtbar bleiben. */
