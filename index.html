@@ -892,7 +892,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=35;   // v242: +buch_journal (F4 GoBD)
-const APP_VERSION = '2026-07-23-v263';
+const APP_VERSION = '2026-07-23-v266';
 /* v222 (14.07.2026): KI-Auslesen Zaehlerstand aus Foto (analog rechnungOcrErkennen).
    Neuer Button "Zaehlerstand aus Foto auslesen (KI)" in modalZaehlerstand,
    sichtbar sobald ein Foto vorhanden ist. Sendet Base64+MimeType+Zaehlerart
@@ -26725,7 +26725,7 @@ async function renderSettings(){
       <div class="f">
         <label>Konto auswählen</label>
         <select id="zaKonto" class="inp" onchange="zaKontoGewechselt()">
-          ${ZA_KONTEN.filter(k=>k.objekte.some(oid=>darfObjekt(oid))).map(k=>`<option value="${k.id}">${esc(k.label)}</option>`).join('')}
+          ${ZA_KONTEN.filter(k=>k.objekte.some(oid=>darfObjekt(oid))).map(k=>`<option value="${k.id}"${k.id===ZA_LETZTES_KONTO?' selected':''}>${esc(k.label)}</option>`).join('')}
         </select>
       </div>
       <div style="margin-top:12px">
@@ -26779,7 +26779,12 @@ async function renderSettings(){
 
   if(isAdmin) await renderUserList_();
   if(isAdmin){ const pcb=document.getElementById('pausePauschalCb'); if(pcb) pcb.checked=await ladePausePauschal(); }
-  if(isAdmin){ try{ await zaVerlaufInit(); }catch(e){ console.warn('Zahlungsverlauf:', e); } }
+  if(isAdmin){ try{
+      await zaLetztesKontoLaden();
+      const _sel=document.getElementById('zaKonto');
+      if(_sel && ZA_LETZTES_KONTO && [..._sel.options].some(o=>o.value===ZA_LETZTES_KONTO)) _sel.value=ZA_LETZTES_KONTO;
+      await zaVerlaufInit();
+    }catch(e){ console.warn('Zahlungsverlauf:', e); } }
   if(isAdmin){ const bkEl=document.getElementById('briefkopfConfigEl'); if(bkEl){ await ladeBriefkopfCache(); bkEl.innerHTML=renderBriefkopfConfig(); } }
   if(isAdmin){ const ivEl=document.getElementById('intervallConfigEl'); if(ivEl) ivEl.innerHTML=await renderIntervallConfig(); }
   if(isAdmin){ const pfEl=document.getElementById('portalFreigabeEl'); if(pfEl) pfEl.innerHTML=await renderPortalFreigabe(); }
@@ -29888,6 +29893,10 @@ function buchKonfidenzBadge(b){
   const k=b.konfidenz;
   if(k==='sicher') return ' <span title="sicher erkannt" style="font-size:9px;color:var(--green)">●</span>';
   if(k==='wahrscheinlich') return ' <span title="wahrscheinlich – bitte prüfen" style="font-size:9px;color:var(--amber)">●</span>';
+  /* v264: Zuordnung allein über den Namen (keine IBAN, keine WE-Nummer im Zweck).
+     Namensgleichheit ist schwächer als eine IBAN – deshalb deutlich als
+     prüfbedürftig markieren statt stillschweigend zu übernehmen. */
+  if(k==='unsicher') return ' <span title="nur über den Namen zugeordnet – bitte prüfen" style="font-size:11px;color:var(--red,#dc2626)">&#9888;</span>';
   if(k) return ' <span title="Prüfung notwendig" style="font-size:9px;color:var(--red,#dc2626)">●</span>';
   return '';
 }
@@ -30082,7 +30091,24 @@ async function modalEingangZuordnen(id){
   const aktiv=kandidaten.filter(m=>!m._vormieter && !m._tgMieter).sort(sort);
   const tg=kandidaten.filter(m=>m._tgMieter).sort(sort);
   const ehem=kandidaten.filter(m=>m._vormieter).sort(sort);
-  const opt=m=>`<option value="${m.id}"${m.id===b.mieterId?' selected':''}>${esc(m.mieter)} · WE ${esc(m.weNr||'?')}${m._vormieter?' (ehem.)':''}</option>`;
+  /* v265: TG-Mieter haben keine Wohnung – „WE ?" war dort nichtssagend.
+     Stattdessen werden die Stellplatz-Nummern gezeigt (ein Mieter kann mehrere
+     haben, z. B. „SP 58, 59"). Wohnungsmieter mit Stellplatz sehen beides. */
+  const _spJeMieter={};
+  try{
+    for(const sp of await idbGetAll('stellplaetze')){
+      if(sp && sp.mieterId && !sp.geloescht)
+        (_spJeMieter[sp.mieterId]=_spJeMieter[sp.mieterId]||[]).push(String(sp.nummer||'').trim());
+    }
+  }catch(_){ }
+  const _ortLabel=m=>{
+    const sp=(_spJeMieter[m.id]||[]).filter(Boolean)
+      .sort((a,b)=>String(a).localeCompare(String(b),'de',{numeric:true}));
+    if(m.weNr) return `WE ${esc(String(m.weNr))}${sp.length?` · SP ${esc(sp.join(', '))}`:''}`;
+    if(sp.length) return `SP ${esc(sp.join(', '))}`;
+    return m._tgMieter ? 'Stellplatz' : 'WE ?';
+  };
+  const opt=m=>`<option value="${m.id}"${m.id===b.mieterId?' selected':''}>${esc(m.mieter)} · ${_ortLabel(m)}${m._vormieter?' (ehem.)':''}</option>`;
   const eur=n=>(Number(n)||0).toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:2});
   const zweckVoll=String(b.zweck||'').trim();
   const mietmonatFallback = b.mietmonat || (b.datumISO?b.datumISO.slice(0,7):today().slice(0,7));
@@ -30568,6 +30594,24 @@ function zaMatch(buchungen, mieterListe, konto, spIdx){
     const k=String(m.weNr||'').replace(/^0+/,'');
     if(k)(weIdx[k]=weIdx[k]||[]).push(m);
   }
+  /* ── v264: Namens-Zuordnung ───────────────────────────────────────────
+     Mieter schreiben meist KEINE WE-Nummer in den Verwendungszweck, und der
+     Absender steht je nach Bank mal „Nachname, Vorname", mal „Vorname
+     Nachname". Deshalb wird nach IBAN und WE-Nummer zusätzlich über den
+     Namen zugeordnet: beide Seiten werden in Wortbausteine zerlegt, die
+     Reihenfolge spielt dann keine Rolle mehr. Zugeordnet wird nur bei GENAU
+     EINEM Kandidaten, dessen Mietzeitraum zum Monat passt – sonst bleibt die
+     Buchung offen. Solche Treffer gelten als unsicher und werden mit ⚠
+     gekennzeichnet, weil Namensgleichheit weniger beweiskräftig ist als IBAN. */
+  const NAME_STOPP=new Set(['und','u','herr','frau','fam','familie','gmbh','ag','kg','ohg','mbh','co','eg','ev',
+    'gbr','ug','dr','prof','von','van','de','der','die','das','den','dem','sowie','sen','jun']);
+  const _nameTokens=(v)=>{
+    const t=String(v||'').toLowerCase()
+      .replace(/ä/g,'ae').replace(/ö/g,'oe').replace(/ü/g,'ue').replace(/ß/g,'ss')
+      .replace(/[^a-z0-9]+/g,' ').trim().split(/\s+/);
+    return new Set(t.filter(w=>w.length>=3 && !NAME_STOPP.has(w)));
+  };
+  const nameIdx=pool.map(m=>({m, tok:_nameTokens(m.mieter)}));
   const results=[];
   for(const b of buchungen){
     let match=null;
@@ -30613,6 +30657,30 @@ function zaMatch(buchungen, mieterListe, konto, spIdx){
         }
       }
     }
+    // v264: Namens-Zuordnung als letzte Stufe (nur Eingänge, nur bei Eindeutigkeit)
+    if(!match && b.betrag>0){
+      const bt=_nameTokens(b.name);
+      if(bt.size){
+        const moN=zaMietmonat(b);
+        const treffer=[];
+        for(const e of nameIdx){
+          if(!e.tok.size) continue;
+          let gem=0; for(const w of e.tok) if(bt.has(w)) gem++;
+          if(gem>0) treffer.push({m:e.m, gem});
+        }
+        // Nur Mieter, die im Zahlungsmonat aktiv waren (analog v241, WE-Pfad)
+        let kand=treffer.filter(t=>_mieterAktivImMonat(t.m, moN));
+        if(!kand.length) kand=treffer;
+        // stärksten Treffer bevorzugen; bei Gleichstand bleibt es mehrdeutig
+        const maxG=kand.reduce((a,t)=>Math.max(a,t.gem),0);
+        const beste=kand.filter(t=>t.gem===maxG);
+        if(beste.length===1){
+          const pk=beste[0].m, ehem=!!pk._vormieter;
+          match={mieterId:pk.id, name:pk.mieter, weNr:pk.weNr, objektId:pk.objektId||null,
+                 via:'name', status:ehem?'ehem':'aktiv', score:ehem?55:75, ehem, unsicher:true};
+        }
+      }
+    }
     // v220: Vorschlag "Erstattung Umtausch/Rueckgabe" fuer Baumarkt/Elektronik
     let einnahmeVorschlag = null;
     if(!match && b.betrag>0 && zaIstUmtauschAbsender(b.name, b.zweckKey||b.zweck)){
@@ -30644,6 +30712,12 @@ function zaSyncIbanSpiegel(m){
 ═══════════════════════════════════════════════════════════ */
 
 let ZA_STATE = { konto:null, results:[], dateiName:'' };
+/* v266: Zuletzt gewähltes Konto (aus settings geladen, s. zaLetztesKontoLaden). */
+let ZA_LETZTES_KONTO = '';
+async function zaLetztesKontoLaden(){
+  try{ const r=await idbGet('settings','zaLetztesKonto'); ZA_LETZTES_KONTO = r?.value || ''; }
+  catch(_){ ZA_LETZTES_KONTO=''; }
+}
 
 function zaDateiGewaehlt(ev){
   const file = ev.target.files && ev.target.files[0];
@@ -30909,6 +30983,7 @@ async function zaRenderVerlauf(){
         <i class="ti ti-chart-pie"></i> Auswertung</button>
       <span style="flex:1"></span>
       <button class="btn btn-sm" title="Barzahlung eines Mieters erfassen (bar erhaltene Miete/Kaution)" onclick="modalBarzahlung()"><i class="ti ti-coin"></i> Barzahlung</button>
+      <button class="btn btn-sm" title="Liste für die Anlage einer SEPA-Sammellastschrift (Excel)" onclick="zaExportSammellastschrift()"><i class="ti ti-building-bank"></i> Sammellastschrift</button>
       <button class="btn btn-sm" title="Alle Buchungen dieses Kontos als Excel exportieren" onclick="zaExportBuchungen()"><i class="ti ti-file-spreadsheet"></i> Excel</button>
       <button class="btn btn-sm" title="Import-Verlauf ansehen / Import rückgängig machen" onclick="modalImportVerlauf()"><i class="ti ti-file-import"></i> Importe</button>
       <button class="btn btn-sm" title="Gelernte Kategorie-Regeln ansehen und löschen" onclick="modalRegeln()"><i class="ti ti-bulb"></i> Regeln</button>
@@ -31071,6 +31146,79 @@ async function barzahlungSpeichern(){
 }
 // §4/§24 (v190): alle Buchungen des aktuellen Kontos als Excel exportieren.
 // Barzahlungen werden in der Spalte „Bar" mit „Ja" gekennzeichnet.
+/* ══════════════════════════════════════════════════════════════════
+   v266: Liste für die Anlage einer SEPA-Sammellastschrift bei der Bank.
+   Sortiert nach WE-Nummer, danach die reinen Stellplatz-Mieter nach ihrer
+   kleinsten Stellplatz-Nummer. Der Buchungstext ist bewusst OHNE Monat
+   aufgebaut, weil er bei einer Sammellastschrift dauerhaft hinterlegt wird
+   und sonst monatlich geändert werden müsste – die App erkennt den Einzug
+   am Buchungstext der Bank und nimmt dann den Buchungsmonat.
+   Der Text wird auf den SEPA-Zeichensatz reduziert (keine Umlaute, kein €);
+   Banken ersetzen oder verweigern solche Zeichen sonst. */
+function sepaText(v){
+  return String(v||'')
+    .replace(/ä/g,'ae').replace(/ö/g,'oe').replace(/ü/g,'ue')
+    .replace(/Ä/g,'Ae').replace(/Ö/g,'Oe').replace(/Ü/g,'Ue').replace(/ß/g,'ss')
+    .replace(/€/g,'EUR')
+    .replace(/[^A-Za-z0-9\/\-?:().,'+ ]/g,' ')
+    .replace(/\s{2,}/g,' ').trim();
+}
+async function zaExportSammellastschrift(){
+  const konto = ZA_STATE.konto;
+  if(!konto){ toast('Bitte zuerst ein Konto wählen.'); return; }
+  if(typeof XLSX==='undefined'){ toast('Excel-Bibliothek nicht geladen.'); return; }
+  let alleM=[], alleSp=[];
+  try{ alleM=await idbGetAll('mieter'); }catch(_){ }
+  try{ alleSp=await idbGetAll('stellplaetze'); }catch(_){ }
+  const objSet=new Set(konto.objekte||[]);
+  const mieter=alleM.filter(m=>m && !m.geloescht && !m._vormieter && !m._zukuenftig
+                               && !m.leerstand && objSet.has(m.objektId));
+  if(!mieter.length){ toast('Keine aktiven Mieter für dieses Konto.'); return; }
+  // Stellplätze je Mieter (nur zugeordnete)
+  const spJe={};
+  for(const sp of alleSp){
+    if(sp && sp.mieterId && !sp.geloescht)
+      (spJe[sp.mieterId]=spJe[sp.mieterId]||[]).push(sp);
+  }
+  const n2=n=>(Number(n)||0).toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const num=n=>Math.round((Number(n)||0)*100)/100;
+  const spNr=sp=>parseInt(String(sp.nummer||'').replace(/\D/g,''),10)||9999;
+  const zeilen=mieter.map(m=>{
+    const sps=(spJe[m.id]||[]).slice().sort((a,b)=>spNr(a)-spNr(b));
+    const km=num(m.miete), nk=num(m.nk);
+    const spSumme=num(sps.reduce((a,sp)=>a+(Number(sp.miete)||0),0));
+    const gesamt=num(km+nk+spSumme);
+    const spTxt=sps.map(sp=>`TG ${String(sp.nummer||'').trim()} - ${n2(sp.miete)} EUR`).join(' + ');
+    let text;
+    if(m.weNr) text = `WE ${m.weNr} - Miete ${n2(km)} EUR + NKV ${n2(nk)} EUR`
+                      + (spTxt?` / ${spTxt}`:'');
+    else       text = spTxt || `Miete ${n2(km)} EUR`;
+    const ibanAkt=(Array.isArray(m.ibans)?m.ibans:[]).find(e=>e && e.status==='aktiv');
+    const iban=(ibanAkt?ibanAkt.iban:m.iban)||'';
+    const inhaber=(ibanAkt?ibanAkt.inhaber:'')||m.kontoinhaber||'';
+    const teile=String(m.mieter||'').split(',');
+    return {
+      sortA: m.weNr ? 0 : 1,
+      sortB: m.weNr ? (parseInt(String(m.weNr).replace(/\D/g,''),10)||9999)
+                    : (sps.length?spNr(sps[0]):9999),
+      row:[ m.weNr?`WE ${m.weNr}`:(sps.length?`TG ${String(sps[0].nummer||'').trim()}`:''),
+            (teile[0]||'').trim(), (teile.slice(1).join(',')||'').trim(),
+            inhaber, iban, m.sepaMandat||'',
+            m.zahlweise==='sepa'?'SEPA-Lastschrift':(m.zahlweise||''),
+            num(km), num(nk), num(spSumme), num(gesamt), sepaText(text) ]
+    };
+  }).sort((a,b)=>a.sortA-b.sortA || a.sortB-b.sortB);
+  const kopf=['WE / TG','Nachname (App)','Vorname (App)','Kontoinhaber (Bank)','IBAN',
+              'SEPA-Mandat','Zahlweise','Miete','NK-Voraus.','Stellplatz','Buchungssumme','Buchungstext'];
+  const ws=XLSX.utils.aoa_to_sheet([kopf, ...zeilen.map(z=>z.row)]);
+  ws['!cols']=[{wch:9},{wch:20},{wch:16},{wch:26},{wch:24},{wch:18},{wch:16},
+               {wch:10},{wch:11},{wch:11},{wch:14},{wch:72}];
+  const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Sammellastschrift');
+  const name=(konto.label||'Konto').replace(/[^\w]+/g,'_');
+  XLSX.writeFile(wb, `Sammellastschrift_${name}_${today()}.xlsx`);
+  toast(`${zeilen.length} Positionen exportiert ✓`);
+}
 async function zaExportBuchungen(){
   const konto = ZA_STATE.konto;
   if(!konto){ toast('Bitte zuerst ein Konto wählen.'); return; }
@@ -31250,6 +31398,8 @@ async function buchRegelLoeschen(i){
 async function zaKontoGewechselt(){
   const kid=document.getElementById('zaKonto')?.value;
   ZA_STATE.konto = ZA_KONTEN.find(k=>k.id===kid) || null;
+  // v266: Zuletzt geöffnetes Konto merken, damit es beim nächsten Aufruf wieder steht.
+  try{ if(kid) await idbPut('settings', {id:'zaLetztesKonto', value:kid}); }catch(_){ }
   ZA_STATE.results=[]; ZA_STATE.alleBuchungen=[];
   await zaVerlaufInit();
 }
@@ -31556,6 +31706,16 @@ async function zaModalMonatsZahlungen(mieterId, monat){
 }
 
 /* Sicht 2: Kontoauszug je Monat – alle Eingänge chronologisch */
+/* v265: Welche Monatsblöcke im Kontoauszug aufgeklappt sind. Nach einer Zuordnung
+   wird die Liste neu aufgebaut; ohne dieses Gedächtnis klappte der Monat jedes Mal
+   wieder zu und man musste sich erneut durchsuchen. */
+const ZA_MO_OFFEN = new Set();
+function zaMonatMerken(el){
+  if(!el) return;
+  const mo = el.getAttribute('data-mo') || '';
+  if(!mo) return;
+  if(el.open) ZA_MO_OFFEN.add(mo); else ZA_MO_OFFEN.delete(mo);
+}
 function zaRenderAuszug(buch, monate, konto, mieter, spIdx){
   const eur = n => (Number(n)||0).toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:2});
   const eingaenge = buch.filter(b=>b.typ==='eingang').sort((a,b)=>(b.datumISO||'').localeCompare(a.datumISO||''));
@@ -31592,6 +31752,12 @@ function zaRenderAuszug(buch, monate, konto, mieter, spIdx){
         : '';
       /* v245 (Bild 5): Abweichung des Mieters in diesem Monat direkt an der Zeile */
       const _d = (zugeordnet && diffJeMieter[b.mieterId+'|'+mo]!==undefined) ? diffJeMieter[b.mieterId+'|'+mo] : null;
+      /* v265: Verwendungszweck/Buchungstext direkt in der Zeile – ohne ihn ist nicht
+         erkennbar, wofür gezahlt wurde (Monat, Stellplatz, NK-Nachzahlung). */
+      const _zw = String(b.zweck||b.buchungstext||'').replace(/\s*\n\s*/g,' · ').trim();
+      const zweckZeile = _zw
+        ? `<div style="font-size:10px;color:var(--ink-40);line-height:1.3;margin-top:2px;overflow-wrap:anywhere" title="${escAttr(_zw)}">${esc(_zw.length>160?_zw.slice(0,160)+'\u2026':_zw)}</div>`
+        : '';
       const abwZelle = (_d!==null && Math.abs(_d)>=0.5)
         ? ` <span style="font-size:10px;font-weight:600;color:${_d<0?'var(--red,#dc2626)':'#1a56db'}" title="Abweichung vom Monatssoll">${_d>0?'+':''}${eur(_d)} \u20ac</span>`
         : '';
@@ -31612,7 +31778,7 @@ function zaRenderAuszug(buch, monate, konto, mieter, spIdx){
       return `<tr style="border-bottom:1px solid var(--line)">
         <td style="padding:5px;font-size:11px;white-space:nowrap;vertical-align:top">${esc((b.datumISO||'').slice(8)+'.'+(b.datumISO||'').slice(5,7))}</td>
         <td style="padding:5px;text-align:right;font-variant-numeric:tabular-nums;font-weight:600;vertical-align:top">${eur(b.betrag)}</td>
-        <td style="padding:5px;font-size:12px;vertical-align:top">${statusZelle}</td>
+        <td style="padding:5px;font-size:12px;vertical-align:top">${statusZelle}${zweckZeile}</td>
         <td style="padding:5px;text-align:right;white-space:nowrap;vertical-align:top">${btnZuordnen}${btnErstattung}${btnSplit}${btnBearbeiten}</td>
       </tr>`;
     }).join('');
@@ -31630,7 +31796,7 @@ function zaRenderAuszug(buch, monate, konto, mieter, spIdx){
     const offenTxt = agg.offen.length
       ? `<div style="font-size:11px;color:var(--red,#dc2626);padding:4px 10px 0"><i class="ti ti-alert-circle"></i> ohne Zahlungseingang: ${agg.offen.map(o=>esc(o.name)+(o.weNr?' (WE '+esc(o.weNr)+')':'')+' \u2013 '+eur(o.fehlt)+' \u20ac').join(' \u00b7 ')}</div>`
       : '';
-    html += `<details style="margin-bottom:10px">
+    html += `<details style="margin-bottom:10px"${ZA_MO_OFFEN.has(mo)?' open':''} data-mo="${escAttr(mo)}" ontoggle="zaMonatMerken(this)">
       <summary style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;background:${kopfBg};padding:8px 10px;border-radius:6px;cursor:pointer;list-style:none">
         <b>${mo.slice(5)}/${mo.slice(0,4)}</b>
         <span style="text-align:right">
@@ -32698,19 +32864,36 @@ function zaMietmonat(b){
   const m=iso.match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if(!m) return iso.slice(0,7);
   const [_,y,mo,tag]=m.map(Number);
-  const istLastschrift = (b.buchungstext||'')==='EINZELLASTSCHRIFTEINZUG';
+  /* v266: Bisher wurde nur der exakte Text „EINZELLASTSCHRIFTEINZUG" erkannt. Banken
+     schreiben je nach Verfahren auch „SAMMELLASTSCHRIFTEINZUG", „BASISLASTSCHRIFT" usw.
+     Für einen Einzug gilt immer der Buchungsmonat (kein Vorauszahlungs-Versatz).
+     Rücklastschriften sind ausgeschlossen, weil sie Ausgänge (negativ) sind. */
+  const istLastschrift = (b.buchungstext||'')==='EINZELLASTSCHRIFTEINZUG'
+    || (Number(b.betrag)>0 && /lastschrift/i.test(String(b.buchungstext||'')));
   if(istLastschrift) return `${y}-${String(mo).padStart(2,'0')}`;
   // Zweck nach Mietmonat durchsuchen (DATUM-Feld ausblenden)
   // v216: nur Zeile 1 auswerten – Folgezeilen enthalten Fremddaten (Abrechnungs-
   // zeiträume, Fälligkeiten), die sonst den Mietmonat verfälschen würden.
   const z=((b.zweckKey!=null && b.zweckKey!=='') ? b.zweckKey : (b.zweck||''))
             .replace(/DATUM\s*\d{1,2}\.\d{1,2}\.\d{4}.*/i,'');
-  let mm=z.match(/\b(0?[1-9]|1[0-2])[./](?:20)?26\b/);
-  if(mm) return `2026-${String(+mm[1]).padStart(2,'0')}`;
-  for(const [nm,mz] of [['mai','05'],['juni','06'],['juli','07'],['august','08'],
-       ['september','09'],['oktober','10'],['november','11'],['dezember','12'],
-       ['januar','01'],['februar','02'],['märz','03'],['april','04']]){
-    if(z.toLowerCase().includes(nm)) return `2026-${mz}`;
+  /* v264 (Nutzerbefund Zuckmantel): Das Jahr wurde hier fest auf 2026 gesetzt.
+     Dadurch landete „Miete Januar" (gezahlt 14.01.2025) im Mietmonat 2026-01 und
+     verschwand aus 2025. Das Jahr wird jetzt aus dem ZAHLUNGSDATUM abgeleitet:
+     Nennt der Zweck einen Monat ohne Jahr, gilt das Zahlungsjahr – außer der
+     genannte Monat liegt mehr als ein halbes Jahr entfernt, dann ist das Vor-
+     bzw. Folgejahr gemeint (z. B. Zahlung im Januar für „Dezember"). */
+  const _jahrFuer=(monatNr)=>{
+    let jy=y; const d=monatNr-mo;
+    if(d>6) jy=y-1; else if(d<-6) jy=y+1;
+    return `${jy}-${String(monatNr).padStart(2,'0')}`;
+  };
+  let mm=z.match(/\b(0?[1-9]|1[0-2])[./](?:20)?(\d{2})\b/);
+  if(mm) return `20${mm[2]}-${String(+mm[1]).padStart(2,'0')}`;
+  // Monatsnamen – auch ohne Umlaut, wie Banken sie oft schreiben („Marz", „Maerz").
+  for(const [nm,mz] of [['mai',5],['juni',6],['juli',7],['august',8],
+       ['september',9],['oktober',10],['november',11],['dezember',12],
+       ['januar',1],['februar',2],['märz',3],['maerz',3],['marz',3],['april',4]]){
+    if(z.toLowerCase().includes(nm)) return _jahrFuer(mz);
   }
   // pränumerando: Zahlung ab 25. zählt für Folgemonat
   if(tag>=25){ const nm=mo===12?1:mo+1, ny=mo===12?y+1:y; return `${ny}-${String(nm).padStart(2,'0')}`; }
@@ -32728,11 +32911,13 @@ function zaIstStellplatz(zweck){
    "stellplatz 59  7.2026" mit eingesammelt); "- WE 66" beendet die Liste. */
 function zaSpNummern(zweck){
   const t=String(zweck||'');
-  const re=/(?:stellpl(?:a|ä|ae)tz\w*|garagenstellpl\w*|einstellplatz\w*|tiefgarage|(?:^|[\s\-.,])tg(?=[\s\-.:0-9]))[^0-9]{0,14}(\d{1,3}(?:\s*(?:[,+\/]|und)\s*\d{1,3})*)/gi;
+  const re=/(?:stellpl(?:a|ä|ae)tz\w*|garagenstellpl\w*|einstellplatz\w*|tiefgarage|(?:^|[\s\-.,])tg(?=[\s\-.:0-9]))[^0-9]{0,14}(\d{1,3}(?:\s*(?:[,+\/&]|und|bis|u\.?)\s*\d{1,3})*)/gi;
   const out=new Set();
   let m;
   while((m=re.exec(t))!==null){
-    for(const z of m[1].split(/[,+\/]|und/)){
+    // v266: Banken trennen Stellplätze auch mit „u", „u.", „und", „&" oder Bindestrich –
+    // bisher ging dabei jeder Platz nach dem ersten verloren (Befund „STELLPLATZ 58 U 59").
+    for(const z of m[1].split(/[,+\/&]|\bund\b|\bbis\b|\bu\.?/i)){
       const n=parseInt(z.trim(),10);
       if(n>=1 && n<=200) out.add(n);
     }
@@ -33427,7 +33612,8 @@ function zaBuchungRecord(kontoId, b, match, einnahme){
     mieterId: match?.mieterId || null,
     mieterName: match?.name || null,
     zuordnungVia: match?.via || null,
-    konfidenz: match ? (match.manuell ? 'sicher' : (match.via==='iban'||match.via==='sp' ? 'sicher' : 'wahrscheinlich')) : null,
+    konfidenz: match ? (match.manuell ? 'sicher' : (match.via==='iban'||match.via==='sp' ? 'sicher'
+               : (match.via==='name' ? 'unsicher' : 'wahrscheinlich'))) : null,
     status: match ? (match.manuell ? 'geprueft' : 'erkannt') : (einnahme ? 'geprueft' : 'ungeprueft'),
     /* v213 (F2): manuell kategorisierte Einnahme ohne Mieterbezug */
     ...((!match && einnahme) ? { kategorie: einnahme.kat, ...(einnahme.notiz ? {notiz: einnahme.notiz} : {}) } : {}),
