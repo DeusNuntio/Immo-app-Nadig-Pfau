@@ -892,7 +892,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=35;   // v242: +buch_journal (F4 GoBD)
-const APP_VERSION = '2026-07-22-v259';
+const APP_VERSION = '2026-07-23-v263';
 /* v222 (14.07.2026): KI-Auslesen Zaehlerstand aus Foto (analog rechnungOcrErkennen).
    Neuer Button "Zaehlerstand aus Foto auslesen (KI)" in modalZaehlerstand,
    sichtbar sobald ein Foto vorhanden ist. Sendet Base64+MimeType+Zaehlerart
@@ -8496,6 +8496,7 @@ async function deleteMitTombstone(store, id){
   rec.value[store] = rec.value[store] || {};
   rec.value[store][id] = nowIso();
   await idbPut('settings', rec);
+  syncSoon();   // v263: Löschung zeitnah verteilen, sonst lebt der Satz auf anderen Geräten weiter
 }
 
 // ── Arbeitszeiten vor einem Stichdatum löschen (für Bereinigung der Testdaten) ──
@@ -12878,7 +12879,7 @@ async function toggleAufgabe(id){
 }
 async function deleteAufgabe(id){
   if(!confirm('Diese Aufgabe wirklich löschen?')) return;
-  await idbDelete('aufgaben',id); bcSend('aufgabe_changed',{id});
+  await deleteMitTombstone('aufgaben', id); bcSend('aufgabe_changed',{id});
   await refreshAufgaben(); if(curPage==='objekt') await renderObjTab('aufgaben');
   toast('Aufgabe gelöscht');
 }
@@ -12975,7 +12976,7 @@ async function deleteMangel(id){
   if(!confirm('Diesen Mangel wirklich löschen?')) return;
   let store='maengel';
   if(!(await idbGet('maengel',id))){ if(await idbGet('reparaturen',id).catch(()=>null)) store='reparaturen'; }
-  await idbDelete(store,id); bcSend('mangel_changed',{id});
+  await deleteMitTombstone(store, id); bcSend('mangel_changed',{id});
   await syncEinzugNachMangelStatus(id);
   await refreshAufgaben(); toast('Mangel gelöscht');
 }
@@ -12986,7 +12987,7 @@ async function toggleReparatur(id){
 }
 async function deleteReparatur(id){
   if(!confirm('Diese Reparatur wirklich löschen?')) return;
-  await idbDelete('reparaturen',id); await refreshAufgaben(); toast('Reparatur gelöscht');
+  await deleteMitTombstone('reparaturen', id); await refreshAufgaben(); toast('Reparatur gelöscht');
 }
 
 
@@ -29656,7 +29657,9 @@ function uid(){return 'id_'+Date.now()+'_'+Math.random().toString(36).slice(2,7)
    Das Journal darf eine Buchung nie blockieren → alles in try/catch. */
 const BUCH_JOURNAL_FELDER=['mieterId','mieterName','mietmonat','kategorie','kategorien',
   'status','notiz','objektId','kostengruppe','leistungVonISO','leistungBisISO',
-  'leistungQuelle','erstattungFuer','konfidenz','zuordnungVia','_leerstand'];
+  'leistungQuelle','erstattungFuer','konfidenz','zuordnungVia','_leerstand',
+  'zurueckgebuchtVon','ruecklastFuer','ruecklastGebuehr',
+  'zurueckgezahltVon','ruecklaeuferFuer','ruecklaeuferGebuehr'];
 function _bjNorm(v){
   if(v===undefined||v===null||v==='') return '';
   if(Array.isArray(v)||typeof v==='object'){ try{ return JSON.stringify(v); }catch(_){ return String(v); } }
@@ -30338,6 +30341,219 @@ function zaIstUmtauschAbsender(name, zweck){
   if(/r(ü|ue)cksendung|r(ü|ue)ckerstattung|umtausch|widerruf|refund|storno|gutschrift.*(bestellung|kauf)/.test(t)) return true;
   return ZA_UMTAUSCH_ABSENDER.some(re=>re.test(t));
 }
+/* ══════════════════════════════════════════════════════════════════
+   v260: Rücklastschrift-Erkennung & Auto-Verrechnung
+   Eine Rücklastschrift (Ausgang) bucht eine zuvor eingezogene Miete
+   (Eingang) zurück. Ohne Verrechnung bliebe der Ur-Eingang im Ist
+   stehen und zählte die Zahlung doppelt (Nutzerbefund WE 5, 03/25:
+   Ist 1.700 statt 850). Der Ur-Eingang wird über das Feld
+   `zurueckgebuchtVon` markiert und fällt damit aus zaSollIst. Die
+   Differenz |RL| − Eingang wird als (Bank-)Rücklastgebühr auf der RL
+   vermerkt (ruecklastGebuehr); die Einspeisung als §280-Forderung
+   folgt in einem separaten Schritt. */
+const ZA_RUECKLAST_RE = /(ruecklastschrift|rücklastschrift|lastschriftr(ue|ü)ckgabe|lastschrift\s*r(ue|ü)ck|r(ue|ü)cklastung|r(ue|ü)ckgabe\s*lastschrift|sepa[- ]?r(ue|ü)cklast|nichteinl(oe|ö)sung|nicht eingel(oe|ö)st|r-?transaktion|chargeback)/;
+function buchIstRuecklastschrift(b){
+  if(!b || b.typ!=='ausgang') return false;
+  const t = buchNorm((b.zweck||'')+' '+(b.buchungstext||'')+' '+(b.name||''));
+  return ZA_RUECKLAST_RE.test(t);
+}
+/* Sucht zu einer Rücklastschrift den passenden Ur-Eingang: gleiches
+   Konto, Namens-/IBAN-Bezug, Betrag ≈ |RL| (Toleranz für Bankgebühr),
+   Eingang zeitlich vor der RL (≤ 14 Tage). */
+function buchRuecklastMatch(rl, alle){
+  const rlAbs = Math.abs(Number(rl.betrag)||0);
+  const rlDat = rl.datumISO||'';
+  const nameN = buchNorm(rl.name);
+  const ibanN = rl.iban||'';
+  const TOL = 20;   // EUR – deckt Rücklastgebühr/Rundung ab
+  const TAGE = 14;
+  let best=null, bestScore=Infinity;
+  for(const e of alle){
+    if(!e || e.typ!=='eingang' || e.id===rl.id) continue;
+    if(e.kontoId!==rl.kontoId) continue;
+    if(e.zurueckgebuchtVon || e.erstattungFuer) continue;
+    const eName = buchNorm(e.name);
+    const bezug = (ibanN && e.iban===ibanN)
+               || (nameN && eName && (eName.includes(nameN) || nameN.includes(eName)));
+    if(!bezug) continue;
+    const eAbs = Math.abs(Number(e.betrag)||0);
+    const diff = Math.abs(rlAbs - eAbs);
+    if(diff > TOL) continue;
+    if(!e.datumISO || !rlDat) continue;
+    const tage = (new Date(rlDat+'T12:00:00') - new Date(e.datumISO+'T12:00:00'))/86400000;
+    if(tage < 0 || tage > TAGE) continue;
+    const score = diff*100 + tage;   // primär Betragsnähe, sekundär Zeitnähe
+    if(score < bestScore){ bestScore=score; best=e; }
+  }
+  return best;
+}
+/* Idempotente Stapelverarbeitung: verknüpft alle noch nicht
+   verrechneten Rücklastschriften mit ihrem Ur-Eingang. Rückgabe:
+   Anzahl neu verrechneter Paare. */
+async function buchRuecklastschriftenVerarbeiten(){
+  let alle;
+  try { alle = await idbGetAll('buchungen'); } catch(_){ return 0; }
+  const offene = alle.filter(b => buchIstRuecklastschrift(b) && !b.ruecklastFuer);
+  if(!offene.length) return 0;
+  let n=0;
+  for(const rl of offene){
+    const e = buchRuecklastMatch(rl, alle);
+    if(!e) continue;
+    const eAlt = {...e};
+    e.zurueckgebuchtVon = rl.id;
+    e.updatedAt = nowIso();
+    rl.ruecklastFuer = e.id;
+    rl.ruecklastGebuehr = Math.round(Math.max(0, Math.abs(Number(rl.betrag)||0) - Math.abs(Number(e.betrag)||0))*100)/100;
+    rl.updatedAt = nowIso();
+    try { await idbPut('buchungen', e); await idbPut('buchungen', rl); }
+    catch(_){ continue; }
+    try { await buchJournal('aenderung', eAlt, e, 'Rücklastschrift automatisch verrechnet'); } catch(_){}
+    // v261: Bankgebühr als Verzugsschaden des Mieters erfassen (§ 280 I, § 286 BGB).
+    if(e.mieterId && rl.ruecklastGebuehr > 0){
+      try {
+        await mieterNebenforderungAnlegen(e.mieterId, {
+          art:'ruecklastgebuehr', betrag: rl.ruecklastGebuehr, datumISO: rl.datumISO||'',
+          buchungId: rl.id, grund:'Rücklastschriftgebühr ' + (rl.datumISO||'')
+        });
+      } catch(_){}
+    }
+    n++;
+  }
+  if(n) syncSoon();
+  return n;
+}
+/* ══════════════════════════════════════════════════════════════════
+   v261: Rückläufer eigener Zahlungen + §280-Nebenforderungen
+
+   Zwei Fälle, die rechtlich AUSEINANDERZUHALTEN sind:
+   (a) Rücklastschrift (v260): unser Einzug platzt beim Mieter.
+       Verursacher = Zahler → Gebühr ist Verzugsschaden des Mieters
+       (§ 280 Abs. 1, § 286 BGB) → Nebenforderung.
+   (b) Rückläufer: WIR überweisen an ein falsches/erloschenes Konto,
+       das Geld kommt zurück. Verursacher = wir → Gebühr ist eigener
+       Aufwand (Bankkosten/Werbungskosten), NIEMALS Mieterforderung.
+
+   Nebenforderungen werden bewusst NICHT in den Mietrückstand
+   eingerechnet: die Kündigungsschwelle des § 543 Abs. 2 Nr. 3 BGB
+   bemisst sich allein nach der MIETE. Sie laufen als eigener Posten. */
+const ZA_RUECKLAEUFER_RE = /(r(ue|ü)ck(ueberweisung|überweisung)|r(ue|ü)ckl(ae|ä)ufer|retoure|zahlung\s*retour|unzustellbar|konto\s*(erloschen|aufgel(oe|ö)st|existiert nicht)|iban\s*(falsch|ungueltig|ungültig)|empf(ae|ä)nger\s*unbekannt|nicht\s*ausf(ue|ü)hrbar|zur(ue|ü)ck(gesandt|gegeben))/;
+function buchIstRuecklaeufer(b){
+  if(!b || b.typ!=='eingang') return false;
+  const t = buchNorm((b.zweck||'')+' '+(b.buchungstext||'')+' '+(b.name||''));
+  if(ZA_RUECKLAST_RE.test(t)) return false;   // echte Rücklastschrift hat Vorrang
+  return ZA_RUECKLAEUFER_RE.test(t);
+}
+/* Sucht zum Rückläufer die eigene Ur-Zahlung (Ausgang). */
+function buchRuecklaeuferMatch(ein, alle){
+  const einAbs=Math.abs(Number(ein.betrag)||0), einDat=ein.datumISO||'';
+  const nameN=buchNorm(ein.name), ibanN=ein.iban||'';
+  const TOL=20, TAGE=21;
+  let best=null, bestScore=Infinity;
+  for(const a of alle){
+    if(!a || a.typ!=='ausgang' || a.id===ein.id) continue;
+    if(a.kontoId!==ein.kontoId) continue;
+    if(a.zurueckgezahltVon || a.ruecklastFuer) continue;
+    const aName=buchNorm(a.name);
+    const bezug=(ibanN && a.iban===ibanN) || (nameN && aName && (aName.includes(nameN)||nameN.includes(aName)));
+    if(!bezug) continue;
+    const diff=Math.abs(einAbs-Math.abs(Number(a.betrag)||0));
+    if(diff>TOL) continue;
+    if(!a.datumISO || !einDat) continue;
+    const tage=(new Date(einDat+'T12:00:00')-new Date(a.datumISO+'T12:00:00'))/86400000;
+    if(tage<0 || tage>TAGE) continue;
+    const score=diff*100+tage;
+    if(score<bestScore){ bestScore=score; best=a; }
+  }
+  return best;
+}
+async function buchRuecklaeuferVerarbeiten(){
+  let alle; try{ alle=await idbGetAll('buchungen'); }catch(_){ return 0; }
+  const offene=alle.filter(b=>buchIstRuecklaeufer(b) && !b.ruecklaeuferFuer);
+  if(!offene.length) return 0;
+  let n=0;
+  for(const ein of offene){
+    const a=buchRuecklaeuferMatch(ein,alle);
+    if(!a) continue;
+    const aAlt={...a};
+    a.zurueckgezahltVon=ein.id; a.updatedAt=nowIso();
+    ein.ruecklaeuferFuer=a.id;
+    // Differenz = von der Bank einbehaltene Gebühr → unser Aufwand
+    ein.ruecklaeuferGebuehr=rc(Math.max(0, Math.abs(Number(a.betrag)||0)-Math.abs(Number(ein.betrag)||0)));
+    if(!ein.kategorie) ein.kategorie='fehlbuchung_rueck';
+    ein.updatedAt=nowIso();
+    try{ await idbPut('buchungen',a); await idbPut('buchungen',ein); }catch(_){ continue; }
+    try{ await buchJournal('aenderung',aAlt,a,'Rückläufer eigener Zahlung automatisch verrechnet'); }catch(_){}
+    n++;
+  }
+  if(n) syncSoon();
+  return n;
+}
+/* Legt eine Nebenforderung am Mieter an (idempotent über buchungId). */
+async function mieterNebenforderungAnlegen(mieterId, daten){
+  if(!mieterId || !daten || !(Number(daten.betrag)>0)) return false;
+  let m; try{ m=await idbGet('mieter',mieterId); }catch(_){ return false; }
+  if(!m) return false;
+  m.nebenforderungen=Array.isArray(m.nebenforderungen)?m.nebenforderungen:[];
+  if(daten.buchungId && m.nebenforderungen.some(x=>x && x.buchungId===daten.buchungId)) return false;
+  m.nebenforderungen.push({
+    id: uid(), art: daten.art||'ruecklastgebuehr',
+    betrag: rc(daten.betrag), datumISO: daten.datumISO||'',
+    buchungId: daten.buchungId||'', grund: daten.grund||'',
+    status: 'offen', erstellt: nowIso()
+  });
+  m.updatedAt=nowIso();
+  try{ await idbPut('mieter',m); }catch(_){ return false; }
+  return true;
+}
+/* Summe der offenen Nebenforderungen eines Mieter-Records. */
+function nfOffenSumme(m){
+  if(!m || !Array.isArray(m.nebenforderungen)) return 0;
+  return rc(m.nebenforderungen.filter(x=>x && x.status==='offen')
+    .reduce((a,x)=>a+(Number(x.betrag)||0),0));
+}
+/* Status einer Nebenforderung ändern (erlassen / bezahlt / wieder offen). */
+async function nfStatusSetzen(mieterId, nfId, status){
+  const m=await idbGet('mieter',mieterId).catch(()=>null);
+  if(!m || !Array.isArray(m.nebenforderungen)) return;
+  const e=m.nebenforderungen.find(x=>x && x.id===nfId);
+  if(!e) return;
+  e.status=status; e.geaendertAm=nowIso();
+  m.updatedAt=nowIso();
+  try{ await idbPut('mieter',m); syncSoon(); }catch(_){ toast('Speichern fehlgeschlagen'); return; }
+  toast(status==='erlassen'?'Forderung erlassen':(status==='bezahlt'?'Als bezahlt vermerkt':'Wieder offen'));
+  if(typeof nfModal==='function') nfModal(mieterId);
+}
+/* Übersicht der Nebenforderungen eines Mieters. */
+async function nfModal(mieterId){
+  const m=await idbGet('mieter',mieterId).catch(()=>null);
+  if(!m){ toast('Mieter nicht gefunden'); return; }
+  const eur=n=>(Number(n)||0).toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const liste=Array.isArray(m.nebenforderungen)?m.nebenforderungen:[];
+  const zeilen=liste.slice().reverse().map(e=>{
+    const dat=e.datumISO?new Date(e.datumISO+'T12:00:00').toLocaleDateString('de-DE'):'-';
+    const farbe=e.status==='offen'?'var(--ink)':'var(--ink-40)';
+    const stat=e.status==='offen'?'offen':(e.status==='erlassen'?'erlassen':'bezahlt');
+    const btns=e.status==='offen'
+      ? `<button class="btn btn-sm" onclick="nfStatusSetzen('${m.id}','${e.id}','bezahlt')">Bezahlt</button>
+         <button class="btn btn-sm" onclick="nfStatusSetzen('${m.id}','${e.id}','erlassen')">Erlassen</button>`
+      : `<button class="btn btn-sm" onclick="nfStatusSetzen('${m.id}','${e.id}','offen')">Wieder offen</button>`;
+    return `<tr style="border-bottom:1px solid var(--line)">
+      <td style="padding:6px;font-size:11px;color:var(--ink-40)">${esc(dat)}</td>
+      <td style="padding:6px;font-size:12px;color:${farbe}">${esc(e.grund||'Rücklastschriftgebühr')}
+        <div style="font-size:10px;color:var(--ink-40)">${esc(stat)}</div></td>
+      <td style="padding:6px;text-align:right;font-variant-numeric:tabular-nums;color:${farbe}">${eur(e.betrag)} &euro;</td>
+      <td style="padding:6px;text-align:right;white-space:nowrap">${btns}</td></tr>`;
+  }).join('');
+  showModal(`<div class="m-title"><i class="ti ti-receipt-2"></i> Nebenforderungen &ndash; ${esc(m.mieter||'')}</div>
+    <div style="font-size:11px;color:var(--ink-40);margin-bottom:8px">
+      Verzugsschaden nach &sect; 280 Abs. 1, &sect; 286 BGB &ndash; getrennt vom Mietr&uuml;ckstand gef&uuml;hrt.
+      Nur die tats&auml;chlich angefallene Bankgeb&uuml;hr ist erstattungsf&auml;hig; eine eigene
+      Bearbeitungspauschale darf nicht verlangt werden.</div>
+    ${liste.length?`<table style="width:100%;border-collapse:collapse"><tbody>${zeilen}</tbody></table>
+      <div style="margin-top:10px;text-align:right;font-size:13px">Offen: <strong>${eur(nfOffenSumme(m))} &euro;</strong></div>`
+      :'<p style="color:var(--ink-40);font-size:13px">Keine Nebenforderungen erfasst.</p>'}
+    <button class="btn btn-full" style="margin-top:12px" onclick="closeModal()">Schlie&szlig;en</button>`);
+}
 function zaMatch(buchungen, mieterListe, konto, spIdx){
   const objSet=konto?new Set(konto.objekte):null;
   const pool=mieterListe.filter(m=>!objSet || objSet.has(m.objektId));
@@ -30645,6 +30861,9 @@ async function zaRenderVerlauf(){
   if(!konto){ toast('Bitte zuerst ein Konto wählen.'); return; }
   ZA_VERLAUF.kontoId = konto.id;
 
+  // v260: Rücklastschriften automatisch mit dem Ur-Eingang verrechnen (idempotent)
+  try { await buchRuecklastschriftenVerarbeiten(); } catch(_){}
+  try { await buchRuecklaeuferVerarbeiten(); } catch(_){}
   // Alle gespeicherten Buchungen dieses Kontos laden
   let alle=[];
   try { alle = await idbGetAll('buchungen'); } catch(_){ alle=[]; }
@@ -31122,7 +31341,12 @@ function zaRenderMietkonto(buch, mieter, monate, konto, spIdx){
     .mk-wrap{overflow:auto;max-height:72vh;position:relative;-webkit-overflow-scrolling:touch}
     .mk-wrap table{border-collapse:separate;border-spacing:0}
     .mk-wrap thead th{position:sticky;top:0;z-index:3;background:var(--card,#fff);box-shadow:inset 0 -1px 0 var(--line)}
-    .mk-wrap thead tr:nth-child(2) th{top:34px;z-index:3}
+    /* v263: Nur die Monatszeile (Datum) bleibt oben kleben. Die Unterzeile
+       „Ist / Δ Soll" scrollt mit → auf dem Telefon sind mehr Datenzeilen sichtbar.
+       Die linken Spalten der Unterzeile bleiben seitlich fixiert (top:auto = nur
+       horizontal), damit die Spaltenzuordnung beim Querscrollen erhalten bleibt. */
+    .mk-wrap thead tr:nth-child(2) th{position:static;z-index:1}
+    .mk-wrap thead tr:nth-child(2) th.mk-fix{position:sticky;top:auto;z-index:4}
     .mk-wrap .mk-fix{position:sticky;z-index:2}
     .mk-wrap .mk-fix1{left:0;min-width:38px}
     .mk-wrap .mk-fix2{left:38px;min-width:150px;max-width:230px;box-shadow:inset -1px 0 0 var(--line)}
@@ -31143,13 +31367,13 @@ function zaRenderMietkonto(buch, mieter, monate, konto, spIdx){
     <table style="width:100%;border-collapse:separate;border-spacing:0;font-size:13px;min-width:${300+monate.length*120}px">
       <thead>
         <tr style="border-bottom:2px solid var(--line)">
-          <th rowspan="2" class="mk-fix mk-fix1" style="padding:6px;text-align:left;font-size:11px;color:var(--ink-40)">WE</th>
-          <th rowspan="2" class="mk-fix mk-fix2" style="padding:6px;text-align:left;font-size:11px;color:var(--ink-40)">Mieter</th>
-          <th rowspan="2" style="padding:6px;text-align:right;font-size:11px;color:var(--ink-40)">Soll<br>(Netto+NK)</th>
-          <th rowspan="2" style="padding:6px;text-align:right;font-size:11px;color:var(--ink-40);background:var(--ink-05)">Saldo<br>(kumuliert)</th>
+          <th class="mk-fix mk-fix1" style="padding:6px;text-align:left;font-size:11px;color:var(--ink-40)">WE</th>
+          <th class="mk-fix mk-fix2" style="padding:6px;text-align:left;font-size:11px;color:var(--ink-40)">Mieter</th>
+          <th style="padding:6px;text-align:right;font-size:11px;color:var(--ink-40)">Soll<br>(Netto+NK)</th>
+          <th style="padding:6px;text-align:right;font-size:11px;color:var(--ink-40);background:var(--ink-05)">Saldo<br>(kumuliert)</th>
           ${monHdr}
         </tr>
-        <tr style="border-bottom:1px solid var(--line)">${subHdr}</tr>
+        <tr style="border-bottom:1px solid var(--line)"><th class="mk-fix mk-fix1"></th><th class="mk-fix mk-fix2"></th><th></th><th></th>${subHdr}</tr>
       </thead>
       <tbody>${trs}</tbody>
     </table></div>
@@ -32585,6 +32809,9 @@ async function opRueckstaende(fensterMonate){
       && !m.leerstand && !/leerstand/i.test(String(m.mieter)));
   const spIdx = await spIndexAlle();
   const rows = zaSollIst(buch, mieter, monate, spIdx);
+  // v261: offene Nebenforderungen je Mieter (getrennt vom Mietrückstand!)
+  const nfIdx = {};
+  for (const mm of alleMieter){ if (mm && mm.id) nfIdx[mm.id] = nfOffenSumme(mm); }
   const erg = [];
   for (const r of rows){
     let soll = 0, ist = 0, ohneDaten = 0; const offeneMonate = [];
@@ -32596,11 +32823,12 @@ async function opRueckstaende(fensterMonate){
       if (v.status === 'offen' || v.status === 'weniger') offeneMonate.push({monat:mo, fehlt: rc(v.sollMo - v.ist)});
     }
     const rueckstand = rc(Math.max(0, soll - ist));
-    if (rueckstand < 0.5) continue;
+    const nf = nfIdx[r.mieterId] || 0;
+    if (rueckstand < 0.5 && nf < 0.005) continue;
     const monatsmieten = r.soll > 0 ? rueckstand / r.soll : 0;
     erg.push({ mieterId:r.mieterId, mieter:r.mieter, weNr:r.weNr, objektId:r.objektId,
       soll:r.soll, rueckstand, monatsmieten: Math.round(monatsmieten*10)/10, mmExakt: monatsmieten,
-      offeneMonate, ehem:!!r.ehem, tg:!!r.tg, ohneDaten, einzugFehlt: !r.einzugISO });
+      offeneMonate, ehem:!!r.ehem, tg:!!r.tg, ohneDaten, einzugFehlt: !r.einzugISO, nf });
   }
   erg.sort((a,b) => b.rueckstand - a.rueckstand);
   return {rows:erg, monate, datenAb};
@@ -32632,7 +32860,7 @@ async function modalOffenePosten(){
     return `<tr style="border-bottom:1px solid var(--line)">
       <td style="padding:6px;font-size:11px;color:var(--ink-40)">${esc(r.weNr||(r.tg?'TG':''))}</td>
       <td style="padding:6px;font-size:13px">${esc(r.mieter)}${r.ehem?' <span class="chip chip-warn" style="font-size:9px">ehem.</span>':''}${badge}${chipEinzug}
-        <div style="font-size:10px;color:var(--ink-40)">offen: ${esc(moTxt||'-')} \u00b7 letzte Mahnung: ${esc(histTxt)}${r.ohneDaten?` \u00b7 ${r.ohneDaten} Mon. vor Erfassungsbeginn nicht gewertet`:''}</div></td>
+        <div style="font-size:10px;color:var(--ink-40)">offen: ${esc(moTxt||'-')} \u00b7 letzte Mahnung: ${esc(histTxt)}${r.ohneDaten?` \u00b7 ${r.ohneDaten} Mon. vor Erfassungsbeginn nicht gewertet`:''}</div>${r.nf?`<div style="font-size:10px;margin-top:2px"><span class="chip" style="font-size:9px;background:var(--amber-l);color:#7c4a03">Nebenforderung \u00a7280 BGB: ${eur(r.nf)} \u20ac</span> <button class="btn btn-sm" style="font-size:10px;padding:1px 6px" onclick="nfModal(\'${r.mieterId}\')">Details</button></div>`:''}</td>
       <td style="padding:6px;text-align:right;font-variant-numeric:tabular-nums;font-weight:700;color:${farbe}">${eur(r.rueckstand)} \u20ac
         <div style="font-size:10px;font-weight:400;color:var(--ink-40)">\u2248 ${String(r.monatsmieten).replace('.',',')} Monatsmieten</div></td>
       <td style="padding:6px;text-align:right"><button class="btn btn-sm btn-copper" onclick="modalMahnung('${r.mieterId}')"><i class="ti ti-mail-exclamation"></i> Mahnen</button></td>
@@ -32651,6 +32879,7 @@ async function modalOffenePosten(){
     return kopf + g.list.map(zeile).join('');
   }).join('');
   const gesamt = rc(rows.reduce((a,r) => a + r.rueckstand, 0));
+  const gesamtNf = rc(rows.reduce((a,r) => a + (r.nf||0), 0));
   showModal(`
     <div class="m-title"><i class="ti ti-alert-circle"></i> Offene Posten (Mietr\u00fcckst\u00e4nde)</div>
     <div style="font-size:11px;color:var(--ink-40);margin-bottom:10px">Zeitraum: ${esc(monate[0])} bis ${esc(monate[monate.length-1])} \u00b7 Kontokorrent-Sicht (\u00dcberzahlungen gleichen L\u00fccken aus) \u00b7 laufender Monat ab dem 7. gewertet (\u00a7 556b BGB)</div>
@@ -32662,6 +32891,7 @@ async function modalOffenePosten(){
         <th style="padding:6px;text-align:right;font-size:11px;color:var(--ink-40)">R\u00fcckstand</th>
         <th></th></tr></thead>
       <tbody>${trs}</tbody></table></div>
+      ${gesamtNf?`<div style="margin-top:6px;font-size:12px;text-align:right;color:var(--ink-40)">zzgl. Nebenforderungen (\u00a7 280 BGB): <strong>${eur(gesamtNf)} \u20ac</strong> \u00b7 nicht k\u00fcndigungsrelevant</div>`:''}
       <div style="margin-top:10px;font-size:13px;text-align:right">Summe R\u00fcckst\u00e4nde: <strong>${eur(gesamt)} \u20ac</strong></div>`
       : (datenAb ? `<p style="color:var(--green);font-size:14px"><i class="ti ti-circle-check"></i> Keine R\u00fcckst\u00e4nde \u2013 alle Mietkonten sind ausgeglichen.</p>` : `<p style="font-size:13px;color:var(--ink-60)"><i class="ti ti-info-circle"></i> Noch keine Zahlungseing\u00e4nge erfasst \u2013 eine R\u00fcckstandsberechnung ist erst nach Erfassung der Mietzahlungen m\u00f6glich.</p>`)}
     <div style="font-size:10px;color:var(--ink-40);margin-top:12px">Hinweis: Verzug tritt bei der Miete kalenderm\u00e4\u00dfig ohne Mahnung ein (\u00a7\u00a7 556b Abs. 1, 286 Abs. 2 Nr. 1 BGB). Bei k\u00fcndigungsrelevanten R\u00fcckst\u00e4nden anwaltliche Pr\u00fcfung empfohlen.</div>
@@ -32884,7 +33114,42 @@ async function anlageVExport(){
   const einzel=[];   // Zeilen für Blatt 2
   const objEin={};   // objektId -> Mieteingänge (E1+E2)
   const objAus={};   // v234 (B1-Steuerteil): Kostenstelle -> Werbungskosten (W-Gruppen)
+  /* ── v262: Verrechnung von Rücklastschriften und Rückläufern ──────────
+     Eine zurückgebuchte Zahlung ist weder Einnahme noch Werbungskosten;
+     steuerlich bleibt allein die einbehaltene Bankgebühr als Aufwand (W11).
+     WICHTIG (§ 11 EStG, Zu-/Abflussprinzip): verrechnet wird nur, wenn BEIDE
+     Buchungen im selben Auswertungsjahr und Konto liegen. Liegt die
+     Gegenbuchung in einem anderen Jahr, bleibt es beim Zufluss- bzw.
+     Abflussjahr — dann wird NICHT verrechnet (sonst entstünde eine
+     periodenfremde Korrektur). Keine Steuerberatung. */
+  const _avIds = new Set(buch.map(x=>x.id));
+  const _avNetto = {anzahl:0, summe:0, gebuehr:0};
+  const _avGebGr = _AV_KAT_IDX['aus:bankgebuehren'] || _AV_KAT_IDX['aus:__ausUnkat'];
   for(const b of buch){
+    // (a) neutralisierte Ur-Buchung: fällt komplett aus der Auswertung
+    if((b.zurueckgebuchtVon && _avIds.has(b.zurueckgebuchtVon)) ||
+       (b.zurueckgezahltVon && _avIds.has(b.zurueckgezahltVon))){
+      _avNetto.anzahl++; _avNetto.summe = rc(_avNetto.summe + Math.abs(Number(b.betrag)||0));
+      continue;
+    }
+    // (b) Gegenbuchung: nur die Bankgebühr zählt als Werbungskosten
+    const _gegenId = (b.ruecklastFuer && _avIds.has(b.ruecklastFuer)) ? b.ruecklastFuer
+                   : ((b.ruecklaeuferFuer && _avIds.has(b.ruecklaeuferFuer)) ? b.ruecklaeuferFuer : null);
+    if(_gegenId){
+      const geb = rc(Number(b.ruecklastGebuehr || b.ruecklaeuferGebuehr) || 0);
+      _avNetto.anzahl++; _avNetto.summe = rc(_avNetto.summe + Math.abs(Number(b.betrag)||0));
+      if(geb > 0){
+        summen[_avGebGr.g] = rc((summen[_avGebGr.g]||0) + geb);
+        _avNetto.gebuehr = rc(_avNetto.gebuehr + geb);
+        einzel.push([ b.datumISO||'', 'Ausgabe', rc(-geb),
+          b.ruecklastFuer ? 'Rücklastschriftgebühr' : 'Rückläufergebühr (eigene Zahlung)',
+          _avGebGr.g+' '+_avGebGr.label, b.mieterName||b.name||'', '', b.zweck||'', '',
+          buchKostenstelleName(b)||'' ]);
+        const _ksK = b.kostengruppe ? 'grp:'+b.kostengruppe : (b.objektId ? 'obj:'+b.objektId : '?');
+        objAus[_ksK] = rc((objAus[_ksK]||0) + geb);
+      }
+      continue;
+    }
     const seite=b.typ==='eingang'?'ein':'aus';
     // v234: Kostenstelle für Einzelnachweis + Kosten-je-Objekt (Eingänge: Mieter-Objekt als Fallback)
     const ksName = buchKostenstelleName(b)
@@ -32939,6 +33204,14 @@ async function anlageVExport(){
   A.push(['– Kautionen sind durchlaufende Posten; steuerbar erst bei Verrechnung mit Forderungen.']);
   A.push(['– „Miet-Eingänge brutto“ enthalten Umlagen; Aufschlüsselung Kaltmiete/NK ggf. über Soll-Werte.']);
 
+  if(_avNetto.anzahl){
+    A.push([]);
+    A.push(['Verrechnete Rücklastschriften / Rückläufer']);
+    A.push(['Betroffene Buchungen', _avNetto.anzahl]);
+    A.push(['Neutralisiertes Volumen (nicht als Einnahme/Ausgabe gewertet)', _avNetto.summe]);
+    A.push(['davon als Bankgebühr in W11 erfasst', _avNetto.gebuehr]);
+    A.push(['Hinweis: Verrechnung nur bei Gegenbuchung im selben Jahr (§ 11 EStG).']);
+  }
   const ws1=XLSX.utils.aoa_to_sheet(A);
   ws1['!cols']=[{wch:8},{wch:78},{wch:14},{wch:30}];
 
@@ -33214,7 +33487,7 @@ function zaSollIst(buchungen, mieterListe, monate, spIdx){
   // Ist je Mieter+Monat
   const ist={}; // mieterId -> {monat -> {miete, stellplatz}}
   for(const b of buchungen){
-    if(b.typ!=='eingang' || !b.mieterId || b.erstattungFuer) continue;
+    if(b.typ!=='eingang' || !b.mieterId || b.erstattungFuer || b.zurueckgebuchtVon) continue;
     if(monate && !monate.includes(b.mietmonat)) continue;
     const key=b.mieterId;
     (ist[key]=ist[key]||{});
@@ -35047,7 +35320,7 @@ async function saveEditMangel(id, store) {
 
 async function deleteMangelConfirm(id, store) {
   if (!confirm('Eintrag wirklich löschen?')) return;
-  await idbDelete(store, id);
+  await deleteMitTombstone(store, id);
   closeModal(); bcSend('mangel_changed',{id});
   await refreshAufgaben(); await renderDash(); toast('Gelöscht');
 }
