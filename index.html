@@ -402,6 +402,15 @@ button.chip.chip-active{background:var(--ink);color:#fff;border-color:var(--ink)
   .app-body{max-width:1460px}
   .app-header,.bottom-nav{padding-left:max(14px,calc((100% - 1460px)/2));padding-right:max(14px,calc((100% - 1460px)/2))}
 }
+/* ── v268: Breite Fibu-Ansicht (umschaltbar) ───────────────────────────
+   Die Mietkonto-Matrix ist sehr breit; auf dem PC blieb rechts viel Rand
+   ungenutzt. Mit der Klasse `fibu-breit` am <body> nutzt NUR die Fibu-Seite
+   die volle Fensterbreite – alle anderen Seiten behalten ihr Raster.
+   Die Umschaltung merkt sich die App (Einstellung `fibuBreit`). */
+body.fibu-breit .app-body{max-width:none !important;margin:0 !important}
+body.fibu-breit .app-header,
+body.fibu-breit .bottom-nav{padding-left:14px !important;padding-right:14px !important}
+body.fibu-breit .mk-wrap{max-height:78vh}
 @keyframes fadeInScale{from{opacity:0;transform:scale(.97)}to{opacity:1;transform:scale(1)}}
 @media print{
   .bottom-nav,.app-header,.fab,.modal-bg,.toast{display:none!important}
@@ -892,7 +901,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=35;   // v242: +buch_journal (F4 GoBD)
-const APP_VERSION = '2026-07-23-v266';
+const APP_VERSION = '2026-07-24-v272';
 /* v222 (14.07.2026): KI-Auslesen Zaehlerstand aus Foto (analog rechnungOcrErkennen).
    Neuer Button "Zaehlerstand aus Foto auslesen (KI)" in modalZaehlerstand,
    sichtbar sobald ein Foto vorhanden ist. Sendet Base64+MimeType+Zaehlerart
@@ -1835,6 +1844,8 @@ function nav(id,title,sub,push=true){
   if(id!=='protokoll'){ try { localStorage.removeItem('openProtokoll'); } catch(e){} }
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.getElementById('page-'+id)?.classList.add('active');
+  // v268: Breitmodus nur auf der Einstellungen-Seite (Fibu) – sonst zurücksetzen.
+  if(id!=='settings') document.body.classList.remove('fibu-breit');
   const TITLES={dash:'Dashboard',aufgaben:'Aufgaben & Mängel',settings:'Einstellungen',
                 objekt:'Objekt',mieter:'Mieter',protokoll:'Übergabeprotokoll',
                 'protokoll-archiv':'Protokoll-Archiv','mail':'Posteingang',
@@ -3861,7 +3872,7 @@ async function zeigeZaehlerVerlauf(zaehlerId){
 
 async function delZaehlerstand(id, zaehlerId){
   if(!confirm('Diese Ablesung wirklich löschen?')) return;
-  await idbDelete('zaehlerstaende', id);
+  await deleteMitTombstone('zaehlerstaende', id);
   clearTimeout(window._syncTimer);
   window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
   await zeigeZaehlerVerlauf(zaehlerId);
@@ -3984,7 +3995,7 @@ async function delZaehler(zaehlerId, objektId){
   if(!confirm('Diesen Zähler wirklich löschen? Zugehörige Ablesungen bleiben erhalten, verlieren aber die Zuordnung.')) return;
   const z=await idbGet('zaehler', zaehlerId);
   if(z?.versorgerId){ await spiegelZaehlerVersorger(zaehlerId, z.versorgerId, ''); }
-  await idbDelete('zaehler', zaehlerId);
+  await deleteMitTombstone('zaehler', zaehlerId);
   closeModal();
   clearTimeout(window._syncTimer);
   window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
@@ -4475,7 +4486,7 @@ async function saveVersorgerFortsetzen(formData){
 // Erstellt/aktualisiert die Kalender-Erinnerung 1 Monat vor Kündigungsstichtag.
 async function syncVersorgerErinnerung(v){
   // Bestehende Erinnerung entfernen, falls vorhanden
-  if(v.terminId){ await idbDelete('termine', v.terminId).catch(()=>{}); v.terminId=null; }
+  if(v.terminId){ await deleteMitTombstone('termine', v.terminId).catch(()=>{}); v.terminId=null; }
   if(!v.vertragsende){ await idbPut('versorger', v); return; }
   const ende=new Date(v.vertragsende);
   const kuendMonate=parseInt(v.kuendigungsfristMonate)||0;
@@ -4508,10 +4519,10 @@ async function syncVersorgerErinnerung(v){
 async function deleteVersorger(versorgerId, objektId){
   if(!confirm('Versorger wirklich löschen? Die zugehörige Kalender-Erinnerung wird ebenfalls entfernt.')) return;
   const v=await idbGet('versorger', versorgerId);
-  if(v?.terminId) await idbDelete('termine', v.terminId).catch(()=>{});
+  if(v?.terminId) await deleteMitTombstone('termine', v.terminId).catch(()=>{});
   // Verknüpften Zähler lösen, damit keine verwaiste Zuordnung zurückbleibt
   if(v?.zaehlerId) await spiegelVersorgerZaehler(versorgerId, v.zaehlerId, '');
-  await idbDelete('versorger', versorgerId);
+  await deleteMitTombstone('versorger', versorgerId);
   closeModal();
   clearTimeout(window._syncTimer);
   window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
@@ -4796,7 +4807,7 @@ async function deleteLagerort(ortId){
   for(const a of artikel){
     if(a.lagerorte?.includes(ortId)){ a.lagerorte=a.lagerorte.filter(x=>x!==ortId); await idbPut('lager', a); }
   }
-  await idbDelete('lager', ortId);
+  await deleteMitTombstone('lager', ortId);
   clearTimeout(window._syncTimer); window._syncTimer=setTimeout(()=>syncToOneDrive(),3000);
   await zeigeLagerorte();
   toast('Lagerort gelöscht');
@@ -6026,13 +6037,21 @@ async function mailNachrichtErledigt(id, btn){
   const key=(await idbGet('settings','backendKey').catch(()=>null))?.value;
   if(key){
     try{
-      await fetchMitTimeout(BACKEND_AZURE+'/api/inbox-mark-read',{
+      /* v272 (P8-A): Der Status wurde bisher nicht geprüft. `fetch` wirft nur bei
+         Netzwerkfehlern – ein HTTP 500 kam als erfüllte Zusage zurück, die Karte
+         blieb ausgeblendet und es erschien „Als erledigt markiert ✓", obwohl der
+         Server nichts gespeichert hatte. Bei Fehlschlag wird das optimistische
+         Ausblenden jetzt zurückgenommen und KEIN Erfolg gemeldet. */
+      const r = await fetchMitTimeout(BACKEND_AZURE+'/api/inbox-mark-read',{
         method:'POST', headers:{'Content-Type':'application/json','x-functions-key':key},
         body:JSON.stringify({ id })
       });
+      if(!r || !r.ok) throw new Error('HTTP '+(r ? r.status : 'ohne Antwort'));
     }catch(err){
       console.warn('Nachricht als erledigt markieren:', err);   // v244 (R26)
+      if(karte) karte.style.display='';
       toast('„Erledigt“ konnte am Server nicht gespeichert werden – bitte später erneut versuchen.', 5000);
+      return;
     }
   }
   toast('Als erledigt markiert ✓');
@@ -6263,13 +6282,18 @@ async function mailPapierkorbAktion(id, aktion, btn){
   if(karte) karte.style.display='none';
   const key=(await idbGet('settings','backendKey').catch(()=>null))?.value;
   try{
-    await fetchMitTimeout(BACKEND_AZURE+'/api/inbox-trash',{
+    // v272 (P8-A): siehe mailNachrichtErledigt – ohne Statusprüfung gilt auch ein
+    // HTTP 500 als Erfolg und der Eintrag verschwindet nur scheinbar.
+    const r = await fetchMitTimeout(BACKEND_AZURE+'/api/inbox-trash',{
       method:'POST', headers:{'Content-Type':'application/json','x-functions-key':key||''},
       body:JSON.stringify({ id, aktion })
     });
+    if(!r || !r.ok) throw new Error('HTTP '+(r ? r.status : 'ohne Antwort'));
   }catch(e){
     console.warn('Papierkorb-Aktion:', e);   // v244 (R26)
+    if(karte) karte.style.display='';
     toast('Aktion am Server fehlgeschlagen – der Eintrag bleibt unverändert.', 5000);
+    return;
   }
   toast(aktion==='restore'?'Wiederhergestellt ✓':'Endgültig gelöscht ✓');
   _mailBadgeLetzter=0; updateMailBadge();
@@ -7543,7 +7567,7 @@ async function urlaubStornieren(id){
   a.status='storniert'; a.geaendert=nowIso();
   await idbPut('abwesenheit', a);
   // ggf. Kalendereintrag entfernen
-  await idbDelete('termine', 'urlaub_'+id).catch(()=>{});
+  await deleteMitTombstone('termine', 'urlaub_'+id);
   bcSend('urlaub_changed',{id});
   syncSoon(); renderUrlaub();
   toast('Urlaub storniert');
@@ -7787,7 +7811,7 @@ async function taetigkeitKatToggle(katId){
 }
 async function delTaetigkeitKat(katId){
   if(!confirm('Tätigkeit löschen? Bereits erfasste Zeiten behalten ihren Namen.')) return;
-  await idbDelete('taetigkeit_kat', katId);
+  await deleteMitTombstone('taetigkeit_kat', katId);
   syncSoon();
   await modalTaetigkeitenVerwalten();
   toast('Gelöscht');
@@ -9534,7 +9558,7 @@ async function deleteLagerArtikel(artikelId){
   const a=await idbGet('lager', artikelId);
   if(!a) return;
   if(!confirm(`Artikel „${a.bezeichnung}" wirklich löschen?`)) return;
-  await idbDelete('lager', artikelId);
+  await deleteMitTombstone('lager', artikelId);
   closeModal();
   clearTimeout(window._syncTimer);
   window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
@@ -10331,7 +10355,7 @@ async function anforderungErledigt(anfId){
 
 async function anforderungLoeschen(anfId){
   if(!confirm('Anforderung löschen?')) return;
-  await idbDelete('lager_anforderung', anfId);
+  await deleteMitTombstone('lager_anforderung', anfId);
   clearTimeout(window._syncTimer); window._syncTimer=setTimeout(()=>syncToOneDrive(),3000);
   await zeigeLagerAnforderungen();
   toast('Anforderung gelöscht');
@@ -10837,7 +10861,7 @@ async function saveVersicherung(objektId, versId){
 async function versicherungLoeschen(objektId, versId){
   if(!istVerwalter()){ toast('Nur für Admins'); return; }
   if(!confirm('Diese Versicherung wirklich löschen?')) return;
-  await idbDelete('versicherungen',versId);
+  await deleteMitTombstone('versicherungen', versId);
   clearTimeout(window._syncTimer);
   window._syncTimer=setTimeout(()=>syncToOneDrive(),2000);
   toast('Versicherung gelöscht');
@@ -11808,6 +11832,10 @@ async function showMieter(id){
       ${istVerwalter()&&mieteProQm(m)!==null?`<div class="det-field"><label>Kaltmiete je m²</label><span>${mieteProQmHTML(m,_stamm.mietspiegel)}${_stamm.mietspiegel?(()=>{const a=mietspiegelAmpel(mieteProQm(m),_stamm.mietspiegel);return a?` <span class="det-zusatz" style="color:${ampelAufDunkel(a.farbe)}">· ${a.label} (MS ${String(_stamm.mietspiegel).replace('.',',')} €/m²)</span>`:'';})():' <span class="det-zusatz" style="color:var(--ink-10)">· kein Mietspiegel hinterlegt</span>'}</span></div>`:''}
       <div class="det-field"><label>Einzug</label><span>${m.einzug||'–'}</span></div>
       ${istVerwalter()?(()=>{ const _kd=kautionDetailVon(m); const _si=kautionStatusInfo(_kd.status); const _ai=kautionArtInfo(_kd.art); return `<div class="det-field"><label>Kaution</label><span>${fmtEur(kautionSaldo(_kd))} <span class="det-zusatz" style="color:${ampelAufDunkel(_si.farbe)}">· ${_ai.label.split(' (')[0]} · ${_si.label}</span></span></div>`; })():''}
+      ${tg?`<div class="det-field"><label>TG-Stellplatz</label><span>Nr. ${tg.nr} · ${fmtEur(tg.miete)}/Mon.</span></div>`:''}
+      ${m.uebergabe?`<div class="det-field"><label>Übergabe</label><span>${esc(m.uebergabe)}</span></div>`:''}
+      ${istVerwalter()&&m.vertragsmodell?`<div class="det-field"><label>Vertragsmodell</label><span>${esc(m.vertragsmodell)}</span></div>`:''}
+      ${istVerwalter()&&m.krKlausel==='Ja'?`<div class="det-field"><label>KR-Klausel</label><span>${fmtEur(m.krHoehe)} je Fall · ${m.krProzent?m.krProzent+'%':'–'}${m.krMaxEuro?' (max. '+fmtEur(m.krMaxEuro)+'/Jahr)':' p.a.'}</span></div>`:''}
       ${m.telefon?`<div class="det-field"><label>Telefon</label><span><a href="${telHref(m.telefon)}">${esc(m.telefon)}</a></span></div>`:''}
       ${m.email?`<div class="det-field"><label>E-Mail</label><span><a href="${mailHref(m.email)}">${esc(m.email)}</a></span></div>`:''}
     </div>
@@ -11822,12 +11850,7 @@ async function showMieter(id){
         ${m.bankBemerkung?`<div class="bank-zeile"><span>Bemerkung</span><b>${esc(m.bankBemerkung)}</b></div>`:''}
       </div>
     </details>`:''}
-    <div style="display:none"><!-- dummy --></div
-      ${tg?`<div class="det-field"><label>TG-Stellplatz</label><span>Nr. ${tg.nr} · ${fmtEur(tg.miete)}/Mon.</span></div>`:''}
-      ${m.uebergabe?`<div class="det-field"><label>Übergabe</label><span>${m.uebergabe}</span></div>`:''}
-      ${istVerwalter()&&m.vertragsmodell?`<div class="det-field"><label>Vertragsmodell</label><span>${esc(m.vertragsmodell)}</span></div>`:''}
-      ${istVerwalter()&&m.krKlausel==='Ja'?`<div class="det-field"><label>KR-Klausel</label><span>${fmtEur(m.krHoehe)} je Fall · ${m.krProzent?m.krProzent+'%':'–'}${m.krMaxEuro?' (max. '+fmtEur(m.krMaxEuro)+'/Jahr)':' p.a.'}</span></div>`:''}
-    </div>
+    <div style="display:none"><!-- Platzhalter (v267: fehlendes > repariert) --></div>
   </div>
   ${personenBlockHTML(m)}
   ${altListe.length?`<div class="card" style="margin-bottom:12px">
@@ -12063,7 +12086,7 @@ async function zeigeGespMietbescheinigung(mbId){
 async function loescheGespMietbescheinigung(mbId, mieterId){
   if(!istVerwalter()){ toast('Nur für Admins'); return; }
   if(!confirm('Diese gespeicherte Mietbescheinigung wirklich löschen?')) return;
-  await idbDelete('mietbescheinigungen', mbId);
+  await deleteMitTombstone('mietbescheinigungen', mbId);
   bcSend('mietbescheinigung_saved', {mieterId});
   toast('Bescheinigung gelöscht');
   if(typeof showMieter==='function') showMieter(mieterId);
@@ -12174,7 +12197,7 @@ async function mvEntwurfWiederherstellen(eid){
 async function loescheMvEntwurf(eid, mieterId){
   if(!istVerwalter()){ toast('Nur für Admins'); return; }
   if(!confirm('Diesen Mietvertrag-Entwurf wirklich löschen?')) return;
-  await idbDelete('mv_entwuerfe', eid);
+  await deleteMitTombstone('mv_entwuerfe', eid);
   bcSend('mv_entwurf_saved', {mieterId});
   toast('Entwurf gelöscht');
   if(typeof showMieter==='function') showMieter(mieterId);
@@ -12355,7 +12378,7 @@ async function wartungErledigt(id){
 
 async function deleteWartung(id){
   if(!confirm('Wartungsfrist wirklich löschen?')) return;
-  await idbDelete('wartung', id);
+  await deleteMitTombstone('wartung', id);
   clearTimeout(window._syncTimer);
   window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
   await renderWartung();
@@ -13927,7 +13950,7 @@ async function dokTeilen(id) {
 
 async function deleteDok(id) {
   if (!confirm('Dokument wirklich löschen?')) return;
-  await idbDelete('dokumente', id);
+  await deleteMitTombstone('dokumente', id);
   clearTimeout(window._syncTimer);
   window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
   toast('Dokument gelöscht');
@@ -15202,6 +15225,25 @@ async function erstelleNKA(objektId, korrektur) {
         </tr>
       </table>
 
+      ${(()=>{ /* v269: Sonstige Forderungen – bewusst NICHT in der Summentabelle.
+           Eine Rücklastschriftgebühr ist Verzugsschaden nach § 280 BGB und keine
+           umlagefähige Betriebskostenposition nach BetrKV; als Abrechnungsposition
+           würde sie die NKA angreifbar machen. Deshalb eigener Abschnitt darunter,
+           rechnerisch getrennt vom Abrechnungsergebnis. */
+        const _nf = nfOffenImZeitraum(m, von, bis);
+        if(!_nf.length) return '';
+        const _sum = _nf.reduce((a,x)=>a+(Number(x.betrag)||0),0);
+        return `<table class="summen-table" style="margin-top:14px">
+          <tr><td colspan="2" style="font-weight:600">Sonstige offene Forderungen</td></tr>
+          ${_nf.map(x=>{
+            const _d = x.datumISO ? x.datumISO.split('-').reverse().join('.') : '';
+            return `<tr><td>${esc(x.grund||'Rücklastschriftgebühr')}${_d?` (${_d})`:''}</td><td>${fmtEur(x.betrag)}</td></tr>`;
+          }).join('')}
+          <tr class="total"><td>Summe</td><td>${fmtEur(_sum)}</td></tr>
+        </table>
+        <p style="font-size:11px;color:#666;margin-top:4px">Diese Forderungen sind nicht Bestandteil der Nebenkostenabrechnung und werden gesondert ausgewiesen.</p>`;
+      })()}
+
       ${ex.bem?`<div class="bemerkung"><strong>Hinweis:</strong> ${ex.bem}</div>`:''}
 
       <p class="abschluss">${diffPos
@@ -16020,6 +16062,25 @@ async function erstelleNKALiegenschaft(lgId, korrektur){
         <tr><td>Summe Vorauszahlung</td><td>${fmtEur(vzJahres)}</td></tr>
         <tr class="${diffPos?'nachzahl':'gutschr'}"><td>${diffPos?'Nachzahlung':'Guthaben'}</td><td>${fmtEur(diffAbs)}</td></tr>
       </table>
+      ${(()=>{ /* v269: Sonstige Forderungen – bewusst NICHT in der Summentabelle.
+           Eine Rücklastschriftgebühr ist Verzugsschaden nach § 280 BGB und keine
+           umlagefähige Betriebskostenposition nach BetrKV; als Abrechnungsposition
+           würde sie die NKA angreifbar machen. Deshalb eigener Abschnitt darunter,
+           rechnerisch getrennt vom Abrechnungsergebnis. */
+        const _nf = nfOffenImZeitraum(m, von, bis);
+        if(!_nf.length) return '';
+        const _sum = _nf.reduce((a,x)=>a+(Number(x.betrag)||0),0);
+        return `<table class="summen-table" style="margin-top:14px">
+          <tr><td colspan="2" style="font-weight:600">Sonstige offene Forderungen</td></tr>
+          ${_nf.map(x=>{
+            const _d = x.datumISO ? x.datumISO.split('-').reverse().join('.') : '';
+            return `<tr><td>${esc(x.grund||'Rücklastschriftgebühr')}${_d?` (${_d})`:''}</td><td>${fmtEur(x.betrag)}</td></tr>`;
+          }).join('')}
+          <tr class="total"><td>Summe</td><td>${fmtEur(_sum)}</td></tr>
+        </table>
+        <p style="font-size:11px;color:#666;margin-top:4px">Diese Forderungen sind nicht Bestandteil der Nebenkostenabrechnung und werden gesondert ausgewiesen.</p>`;
+      })()}
+
       ${ex.bem?`<div class="bemerkung"><strong>Hinweis:</strong> ${ex.bem}</div>`:''}
       <p class="abschluss">${diffPos
         ? ((m.zahlweise==='sepa'||m.sepaMandat)
@@ -19133,7 +19194,7 @@ async function zeigeGespKautionsquittung(kqId){
 async function loescheGespKautionsquittung(kqId, mieterId){
   if(!istVerwalter()){ toast('Nur für Admins'); return; }
   if(!confirm('Diese gespeicherte Kautionsquittung wirklich löschen?')) return;
-  await idbDelete('kautionsquittungen',kqId);
+  await deleteMitTombstone('kautionsquittungen', kqId);
   bcSend('kautionsquittung_saved',{mieterId});
   toast('Quittung gelöscht');
   if(typeof showMieter==='function') showMieter(mieterId);
@@ -19461,7 +19522,7 @@ async function renderNKAArchiv(el, objektId) {
 
 async function deleteNKA(id) {
   if (!confirm('NKA-Eintrag wirklich löschen?')) return;
-  await idbDelete('nka_archiv', id);
+  await deleteMitTombstone('nka_archiv', id);
   clearTimeout(window._syncTimer);
   window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
   const el = document.getElementById('objTabContent');
@@ -20866,7 +20927,7 @@ async function toggleEinkauf(id) {
 
 async function deleteEinkauf(id) {
   if (!confirm('Eintrag löschen?')) return;
-  await idbDelete('einkaufsliste', id);
+  await deleteMitTombstone('einkaufsliste', id);
   clearTimeout(window._syncTimer);
   window._syncTimer = setTimeout(()=>syncToOneDrive(),3000);
   await renderEinkaufsliste();
@@ -21474,6 +21535,32 @@ async function runGlobalSearch(q) {
         results.push({type:'protokoll', icon:'ti-clipboard-check', color:'var(--green)', label:(p.mieterName||'–')+' · WE '+(p.weNr||'?'), sub:p.objektName+' · '+fmtDate(p.datum), action:`closeModal();editProtokoll('${p.id}')`, id:p.id});
     });
 
+    /* v267: Buchungen mitdurchsuchen – Verwendungszweck und Buchungstext enthalten
+       oft die entscheidende Angabe (Stellplatz-Nr., Mietmonat, „Miete + NK für WE 05").
+       Ohne sie ließ sich eine Zahlung nur über den Absendernamen finden. */
+    try{
+      const bu = await idbGetAll('buchungen');
+      const treffer = [];
+      for(const b of bu){
+        if(!b || b.geloescht) continue;
+        const txt = [b.zweck, b.buchungstext, b.name, b.mieterName, b.notiz]
+                      .filter(Boolean).join(' ').toLowerCase();
+        if(!txt.includes(ql)) continue;
+        treffer.push(b);
+        if(treffer.length >= 25) break;
+      }
+      treffer.sort((a,b)=>String(b.datumISO||'').localeCompare(String(a.datumISO||'')));
+      for(const b of treffer){
+        const dat = b.datumISO ? b.datumISO.split('-').reverse().join('.') : '';
+        const betrag = (Number(b.betrag)||0).toLocaleString('de-DE',
+                        {minimumFractionDigits:2, maximumFractionDigits:2});
+        results.push({ type:'buchung', icon:'ti-cash', color:'var(--green)',
+          label: `${betrag} € · ${b.mieterName || b.name || 'ohne Absender'}`,
+          sub: `${dat}${b.zweck?' · '+String(b.zweck).slice(0,70):''}`,
+          action: 'closeModal();nav(\'einstellungen\',\'Einstellungen\')' });
+      }
+    }catch(_){ }
+
     if (!el) return;
     if (!results.length) {
       el.innerHTML = '<div style="text-align:center;color:var(--ink-40);padding:20px;font-size:13px"><i class="ti ti-search-off" style="font-size:28px;display:block;margin-bottom:6px"></i>Keine Ergebnisse für „'+q+'"</div>';
@@ -21983,7 +22070,7 @@ async function updateTermin(id) {
 
 async function deleteTermin(id) {
   if (!confirm('Termin löschen?')) return;
-  await idbDelete('termine', id);
+  await deleteMitTombstone('termine', id);
   closeModal();
   clearTimeout(window._syncTimer);
   window._syncTimer = setTimeout(()=>syncToOneDrive(),3000);
@@ -25874,6 +25961,9 @@ function switchSettingsTab(tab){
     b.classList.toggle('active', b.dataset.tab===tab);
   });
   if(tab==='kontrolle') renderKontrolle();
+  // v268: Breitmodus gilt nur für die Fibu-Ansicht.
+  if(tab==='zahlung'){ try{ fibuBreitAnwenden(); }catch(_){ } }
+  else document.body.classList.remove('fibu-breit');
   try{rotationAktualisieren();}catch(_){}   // v240: Drehung nur im Zahlungen-Tab
 }
 
@@ -26449,7 +26539,7 @@ async function renderSettings(){
       ${isAdmin?`<button class="st-tab" data-tab="daten" onclick="switchSettingsTab('daten')"><i class="ti ti-database"></i><span>Daten</span></button>`:''}
       ${isAdmin?`<button class="st-tab" data-tab="druck" onclick="switchSettingsTab('druck')"><i class="ti ti-printer"></i><span>Druckcenter</span></button>`:''}
       ${istSysAdmin?`<button class="st-tab" data-tab="system" onclick="switchSettingsTab('system')"><i class="ti ti-settings"></i><span>System</span></button>`:''}
-      ${isAdmin?`<button class="st-tab" data-tab="zahlung" onclick="switchSettingsTab('zahlung')"><i class="ti ti-cash-banknote"></i><span>Zahlungen</span></button>`:''}
+      ${isAdmin?`<button class="st-tab" data-tab="zahlung" onclick="switchSettingsTab('zahlung')"><i class="ti ti-cash-banknote"></i><span>Fibu</span></button>`:''}
       ${CU?.id==='u_admin'?`<button class="st-tab" data-tab="kontrolle" onclick="switchSettingsTab('kontrolle')"><i class="ti ti-shield-lock"></i><span>Kontrolle</span></button>`:''}
     </div>
 
@@ -26780,6 +26870,7 @@ async function renderSettings(){
   if(isAdmin) await renderUserList_();
   if(isAdmin){ const pcb=document.getElementById('pausePauschalCb'); if(pcb) pcb.checked=await ladePausePauschal(); }
   if(isAdmin){ try{
+      await fibuBreitLaden();
       await zaLetztesKontoLaden();
       const _sel=document.getElementById('zaKonto');
       if(_sel && ZA_LETZTES_KONTO && [..._sel.options].some(o=>o.value===ZA_LETZTES_KONTO)) _sel.value=ZA_LETZTES_KONTO;
@@ -30531,6 +30622,67 @@ async function mieterNebenforderungAnlegen(mieterId, daten){
   try{ await idbPut('mieter',m); }catch(_){ return false; }
   return true;
 }
+/* ══════════════════════════════════════════════════════════════════
+   v269: Hat der Mieter die Rücklastschriftgebühr mitüberwiesen, entsteht im
+   Mietkonto eine Überzahlung. Ohne Abgleich bliebe die Nebenforderung
+   trotzdem „offen" – sie würde erneut gemahnt und in der NKA auftauchen.
+   Bewusst streng: nur wenn es GENAU EINEN offenen Posten gibt und der
+   überzahlte Betrag EXAKT passt. Bei mehreren Posten wäre die Zuordnung
+   geraten; eine falsch als bezahlt markierte Forderung fiele aus dem
+   Mahnlauf, eine falsch offene führte zu einer unberechtigten Mahnung.
+   Die Überzahlung darf im Monat der Forderung oder später liegen. */
+async function nfAutoBezahltPruefen(mieterId, ueberzahlungen){
+  if(!mieterId || !Array.isArray(ueberzahlungen) || !ueberzahlungen.length) return 0;
+  let m; try{ m=await idbGet('mieter', mieterId); }catch(_){ return 0; }
+  if(!m || !Array.isArray(m.nebenforderungen)) return 0;
+  const offen = m.nebenforderungen.filter(x=>x && x.status==='offen');
+  if(offen.length !== 1) return 0;            // mehrdeutig -> nicht raten
+  const nf = offen[0];
+  const soll = rc(Number(nf.betrag)||0);
+  if(!(soll > 0)) return 0;
+  const abMonat = String(nf.datumISO||'').slice(0,7);
+  const treffer = ueberzahlungen.find(u =>
+        u && rc(u.betrag) === soll
+        && (!abMonat || String(u.monat||'') >= abMonat));
+  if(!treffer) return 0;
+  nf.status='bezahlt'; nf.geaendertAm=nowIso();
+  nf.bezahltVia='auto'; nf.bezahltMonat=treffer.monat||'';
+  m.updatedAt=nowIso();
+  try{ await idbPut('mieter', m); syncSoon(); }catch(_){ return 0; }
+  return 1;
+}
+/* v270: Bindeglied zwischen Mietkonto und Nebenforderungen. Aus den bereits
+   berechneten Soll/Ist-Zeilen werden je Mieter die Monate mit Überzahlung
+   gesammelt (diff > 0) und gegen die offenen Nebenforderungen geprüft.
+   Läuft still im Hintergrund; markiert nur bei eindeutiger Lage (s.
+   nfAutoBezahltPruefen) und meldet die Anzahl der Treffer zurück. */
+async function nfAbgleichAusZeilen(rows){
+  if(!Array.isArray(rows) || !rows.length) return 0;
+  let n=0;
+  for(const r of rows){
+    if(!r || !r.mieterId || !r.monate) continue;
+    const ueber=[];
+    for(const mo in r.monate){
+      const v=r.monate[mo];
+      if(v && v.aktiv && Number(v.diff) > 0) ueber.push({betrag:rc(v.diff), monat:mo});
+    }
+    if(!ueber.length) continue;
+    try{ n += await nfAutoBezahltPruefen(r.mieterId, ueber); }catch(_){ }
+  }
+  return n;
+}
+/* Offene Nebenforderungen innerhalb eines Zeitraums (für den NKA-Abschnitt). */
+function nfOffenImZeitraum(m, vonISO, bisISO){
+  if(!m || !Array.isArray(m.nebenforderungen)) return [];
+  return m.nebenforderungen.filter(x=>{
+    if(!x || x.status!=='offen') return false;
+    const d=String(x.datumISO||'');
+    if(!d) return false;
+    if(vonISO && d < vonISO) return false;
+    if(bisISO && d > bisISO) return false;
+    return true;
+  });
+}
 /* Summe der offenen Nebenforderungen eines Mieter-Records. */
 function nfOffenSumme(m){
   if(!m || !Array.isArray(m.nebenforderungen)) return 0;
@@ -30714,6 +30866,27 @@ function zaSyncIbanSpiegel(m){
 let ZA_STATE = { konto:null, results:[], dateiName:'' };
 /* v266: Zuletzt gewähltes Konto (aus settings geladen, s. zaLetztesKontoLaden). */
 let ZA_LETZTES_KONTO = '';
+/* v268: Breitmodus der Fibu-Ansicht laden/umschalten. Die Klasse wird nur
+   gesetzt, solange die Einstellungen-Seite mit dem Fibu-Reiter offen ist –
+   verlässt man die Seite, wird sie in switchSettingsTab wieder entfernt. */
+let FIBU_BREIT = false;
+async function fibuBreitLaden(){
+  try{ const r=await idbGet('settings','fibuBreit'); FIBU_BREIT = !!(r && r.value); }
+  catch(_){ FIBU_BREIT=false; }
+  fibuBreitAnwenden();
+}
+function fibuBreitAnwenden(){
+  document.body.classList.toggle('fibu-breit', !!FIBU_BREIT);
+  const b=document.getElementById('fibuBreitBtn');
+  if(b) b.innerHTML = FIBU_BREIT
+    ? '<i class="ti ti-arrows-minimize"></i> Schmal'
+    : '<i class="ti ti-arrows-maximize"></i> Vollbild';
+}
+async function fibuBreitUmschalten(){
+  FIBU_BREIT = !FIBU_BREIT;
+  fibuBreitAnwenden();
+  try{ await idbPut('settings', {id:'fibuBreit', value:FIBU_BREIT}); }catch(_){ }
+}
 async function zaLetztesKontoLaden(){
   try{ const r=await idbGet('settings','zaLetztesKonto'); ZA_LETZTES_KONTO = r?.value || ''; }
   catch(_){ ZA_LETZTES_KONTO=''; }
@@ -30983,6 +31156,7 @@ async function zaRenderVerlauf(){
         <i class="ti ti-chart-pie"></i> Auswertung</button>
       <span style="flex:1"></span>
       <button class="btn btn-sm" title="Barzahlung eines Mieters erfassen (bar erhaltene Miete/Kaution)" onclick="modalBarzahlung()"><i class="ti ti-coin"></i> Barzahlung</button>
+      <button class="btn btn-sm" id="fibuBreitBtn" title="Ansicht auf volle Fensterbreite umschalten" onclick="fibuBreitUmschalten()"><i class="ti ti-arrows-maximize"></i> Vollbild</button>
       <button class="btn btn-sm" title="Liste für die Anlage einer SEPA-Sammellastschrift (Excel)" onclick="zaExportSammellastschrift()"><i class="ti ti-building-bank"></i> Sammellastschrift</button>
       <button class="btn btn-sm" title="Alle Buchungen dieses Kontos als Excel exportieren" onclick="zaExportBuchungen()"><i class="ti ti-file-spreadsheet"></i> Excel</button>
       <button class="btn btn-sm" title="Import-Verlauf ansehen / Import rückgängig machen" onclick="modalImportVerlauf()"><i class="ti ti-file-import"></i> Importe</button>
@@ -30992,6 +31166,16 @@ async function zaRenderVerlauf(){
       <button class="btn btn-sm" title="Mietrückstände und Mahnwesen" onclick="modalOffenePosten()"><i class="ti ti-alert-circle"></i> Offene Posten</button>
       <button class="btn btn-sm" title="Steuer-Jahresauswertung nach Anlage-V-Gliederung (Excel)" onclick="modalAnlageV()"><i class="ti ti-receipt-tax"></i> Anlage V</button>
     </div>`;
+
+  /* v270: Überzahlungen gegen offene Nebenforderungen abgleichen. Läuft auf den
+     bereits berechneten Zeilen; markiert eine Forderung nur bei eindeutiger Lage
+     (genau ein offener Posten, exakt passender Betrag – s. nfAutoBezahltPruefen).
+     Bewusst vor dem Rendern, damit die Änderung sofort sichtbar wird. */
+  try {
+    const _rowsNf = zaSollIst(buch, mieter, monate, spIdx);
+    const _n = await nfAbgleichAusZeilen(_rowsNf);
+    if(_n) toast(`${_n} Nebenforderung${_n>1?'en':''} als bezahlt erkannt ✓`);
+  } catch(_){ }
 
   let inhalt;
   if(ZA_VERLAUF.sicht==='mietkonto'){
@@ -31488,7 +31672,14 @@ function zaRenderMietkonto(buch, mieter, monate, konto, spIdx){
      die Spalten WE/Mieter links. Voraussetzung ist ein Scroll-Container mit fester
      Maximalhoehe – ohne ihn wuerde `position:sticky` vertikal wirkungslos bleiben. */
   return `<style>
-    .mk-wrap{overflow:auto;max-height:72vh;position:relative;-webkit-overflow-scrolling:touch}
+    .mk-wrap{overflow:auto;max-height:72vh;position:relative;-webkit-overflow-scrolling:touch;
+      scrollbar-width:auto;scrollbar-gutter:stable}
+    /* v267: Die waagerechte Scrollleiste blendete sich auf dem Telefon aus – damit war
+       nicht erkennbar, dass rechts noch Monate folgen. Sie bleibt jetzt sichtbar. */
+    .mk-wrap::-webkit-scrollbar{height:10px;width:10px;-webkit-appearance:none}
+    .mk-wrap::-webkit-scrollbar-track{background:var(--ink-05);border-radius:5px}
+    .mk-wrap::-webkit-scrollbar-thumb{background:var(--ink-20);border-radius:5px}
+    .mk-wrap::-webkit-scrollbar-thumb:hover{background:var(--ink-40)}
     .mk-wrap table{border-collapse:separate;border-spacing:0}
     .mk-wrap thead th{position:sticky;top:0;z-index:3;background:var(--card,#fff);box-shadow:inset 0 -1px 0 var(--line)}
     /* v263: Nur die Monatszeile (Datum) bleibt oben kleben. Die Unterzeile
@@ -33021,9 +33212,22 @@ async function opRueckstaende(fensterMonate){
 
 function _opStufeLabel(st){ return st===1 ? 'Zahlungserinnerung' : (st===2 ? '1. Mahnung' : '2. Mahnung (letzte)'); }
 
-async function modalOffenePosten(){
+/* v269: Reiter in den Offenen Posten. Gruppiert nach Standort; RT und MIN
+   liegen beide in Düsseldorf, werden aber getrennt geführt, weil sie
+   unterschiedliche Objekte und Briefköpfe haben. */
+const OP_REITER = [
+  {id:'alle', label:'Alle',            objektIds:null},
+  {id:'RT',   label:'RT',              objektIds:['ruhrt41']},
+  {id:'MIN',  label:'MIN',             objektIds:['mind23','mind25']},
+  {id:'KR',   label:'KR',              objektIds:['inr181','inr183','inr185','wilm7','wilm9','wilm11','wilm13','tgkr']},
+  {id:'MG',   label:'MG',              objektIds:['kyff28','kyff30','kyff32']},
+];
+async function modalOffenePosten(reiter){
   if (!istVerwalter()){ toast('Nur f\u00fcr Verwalter'); return; }
-  const {rows, monate, datenAb} = await opRueckstaende(12);
+  const _rt = OP_REITER.find(x=>x.id===reiter) || OP_REITER[0];
+  let {rows, monate, datenAb} = await opRueckstaende(12);
+  const _alle = rows;
+  if (_rt.objektIds) rows = rows.filter(r => _rt.objektIds.includes(r.objektId));
   // Mahnhistorie-Index (mieterId -> Record) fuer die Anzeige der letzten Mahnung
   window._opMieterIdx = {};
   try {
@@ -33067,6 +33271,13 @@ async function modalOffenePosten(){
   const gesamtNf = rc(rows.reduce((a,r) => a + (r.nf||0), 0));
   showModal(`
     <div class="m-title"><i class="ti ti-alert-circle"></i> Offene Posten (Mietr\u00fcckst\u00e4nde)</div>
+    <div style="display:flex;gap:4px;overflow-x:auto;margin-bottom:10px;padding-bottom:2px">
+      ${OP_REITER.map(t=>{
+        const _n = t.objektIds ? _alle.filter(r=>t.objektIds.includes(r.objektId)).length : _alle.length;
+        const _akt = t.id===_rt.id;
+        return `<button class="btn btn-sm" style="white-space:nowrap;${_akt?'background:var(--copper,#b87333);color:#fff;border-color:transparent':''}" onclick="modalOffenePosten('${t.id}')">${esc(t.label)}${_n?` (${_n})`:''}</button>`;
+      }).join('')}
+    </div>
     <div style="font-size:11px;color:var(--ink-40);margin-bottom:10px">Zeitraum: ${esc(monate[0])} bis ${esc(monate[monate.length-1])} \u00b7 Kontokorrent-Sicht (\u00dcberzahlungen gleichen L\u00fccken aus) \u00b7 laufender Monat ab dem 7. gewertet (\u00a7 556b BGB)</div>
     ${datenAb && datenAb > monate[0] ? `<div style="background:var(--amber-l);border-left:3px solid var(--amber);padding:8px 10px;border-radius:6px;font-size:11px;margin-bottom:10px"><strong>Hinweis zur Datenlage:</strong> Zahlungseing\u00e4nge sind in der App erst ab <strong>${datenAb.slice(5)}/${datenAb.slice(0,4)}</strong> erfasst. Fr\u00fchere Monate des Zeitraums werden nicht als R\u00fcckstand gewertet und sind hier nicht enthalten.</div>` : ''}
     ${rows.length ? `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">
