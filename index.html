@@ -123,7 +123,11 @@ body{background:var(--surface);color:var(--ink);font-size:15px;-webkit-font-smoo
 .bb-card.bb-notdienst{border-left:3px solid var(--red)}
 .bb-badge{display:inline-block;background:var(--red-l);color:var(--red);font-size:10px;font-weight:600;padding:1px 7px;border-radius:10px;margin-left:6px;vertical-align:middle}
 .settings-card{background:var(--white);border-radius:var(--radius-lg);border:1px solid var(--ink-10);padding:16px;margin-bottom:12px;box-shadow:var(--shadow);min-width:0;max-width:100%;overflow-x:hidden;overflow-x:clip}  /* v240: Karte darf den Viewport nicht sprengen (Bild-2-Befund) */
-.settings-tabs{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:14px;position:sticky;top:0;z-index:5;background:var(--bg,#f4f5f7);padding:4px 0}
+/* v273: z-index von 5 auf 20. Die Fibu-Tabelle setzt ihre fixierten Kopfzellen
+   ebenfalls auf 5; bei Gleichstand gewinnt das spätere Element im DOM und die
+   Tabellenüberschrift schob sich über die Bereichskacheln. Der Abstand zu 20
+   lässt der Tabelle Raum für ihre eigene Staffelung (2–5). */
+.settings-tabs{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:14px;position:sticky;top:0;z-index:20;background:var(--bg,#f4f5f7);padding:4px 0}
 .st-tab{flex:1 1 92px;min-width:92px;display:flex;flex-direction:column;align-items:center;gap:3px;padding:8px 4px;border:1px solid var(--ink-10);border-radius:10px;background:var(--white);color:var(--ink-40);font-size:11px;font-weight:600;cursor:pointer;transition:all .15s}
 .st-tab i{font-size:18px}
 .st-tab.active{background:#0C447C;color:#fff;border-color:#0C447C}
@@ -541,6 +545,14 @@ body.printing-active #printRoot{display:block!important}
 
 
 @keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+
+/* v273: Warnhinweis für unvollständige Briefköpfe (R23).
+   Bewusst als Klasse, nicht als Inline-Style – Audit-Befund D1. */
+.warn-kasten{
+  background:#FEF2F2;border:1px solid #FCA5A5;border-radius:8px;
+  padding:8px 10px;margin-bottom:10px;font-size:11.5px;color:#991B1B;line-height:1.45
+}
+.warn-marke{font-size:10px;color:#991B1B;font-weight:600}
 </style>
 <meta name="apple-mobile-web-app-title" content="Nadig Pfau Hausverwaltung">
 <link rel="apple-touch-icon" href="icon-192.png">
@@ -901,7 +913,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=35;   // v242: +buch_journal (F4 GoBD)
-const APP_VERSION = '2026-07-24-v272';
+const APP_VERSION = '2026-07-25-v273';
 /* v222 (14.07.2026): KI-Auslesen Zaehlerstand aus Foto (analog rechnungOcrErkennen).
    Neuer Button "Zaehlerstand aus Foto auslesen (KI)" in modalZaehlerstand,
    sichtbar sobald ein Foto vorhanden ist. Sendet Base64+MimeType+Zaehlerart
@@ -1749,6 +1761,12 @@ function updatePinDisplay(){
 async function tryLogin(){
   const uid=document.getElementById('loginUserSel').value;
   if(!uid){showLoginErr('Bitte Benutzer wählen');pinBuf='';updatePinDisplay();return;}
+  // v273 (S1): laufende Sperre hat Vorrang vor jeder PIN-Prüfung.
+  const sperre = anmeldeSperreStatus(uid);
+  if(sperre.gesperrt){
+    showLoginErr('Zu viele Fehlversuche. Erneut möglich in ' + fmtSperrDauer(sperre.restSek) + '.');
+    pinBuf='';updatePinDisplay();return;
+  }
   let user=await idbGet('users',uid);
   // v204 (P16): Rettungsanker – trägt der Datensatz (z. B. gerade erst von einem
   // Altgerät gemergt) noch einen Klartext-PIN ohne Hash, zuerst migrieren.
@@ -1756,8 +1774,14 @@ async function tryLogin(){
     try{ await pinMigrationAlleUser(); user=await idbGet('users',uid); }catch(_){}
   }
   if(!user || !(await pinPruefen(user, pinBuf))){
-    showLoginErr('Falscher PIN');pinBuf='';updatePinDisplay();return;
+    // v273 (S1): Fehlversuch zählen und die nächste Wartezeit ansagen.
+    const wartezeit = fehlversuchZaehlen(uid);
+    showLoginErr(wartezeit
+      ? 'Falscher PIN. Nächster Versuch in ' + fmtSperrDauer(wartezeit) + '.'
+      : 'Falscher PIN');
+    pinBuf='';updatePinDisplay();return;
   }
+  anmeldeSperreLoeschen(uid);   // v273 (S1): erfolgreiche Anmeldung setzt den Zähler zurück
   // v239 (R4): PIN transparent auf PBKDF2 anheben – wenn das pinKdf-Flag fehlt
   // ODER der gespeicherte Hash nicht dem korrekten PBKDF2-Wert entspricht
   // (Merge-Feld-Mix, siehe pinPruefen). Nur nach ERFOLGREICHER Prüfung; schlägt
@@ -1775,6 +1799,7 @@ async function tryLogin(){
   try { sessionStorage.setItem('activeSession', uid); } catch(e) {}
   try { localStorage.setItem('activeSession', JSON.stringify({uid, ts: Date.now(), tag: today()})); } catch(e) {}
   CU=user;pinBuf='';
+  sitzungsUhrStarten();   // v273 (S2)
   // Kontrolle: letzte Aktivität + Gerätekennung am Benutzer hinterlegen (für Admin-Übersicht)
   try { await erfasseAktivitaet(user); } catch(e){}
   showScreen('appScreen');
@@ -1821,7 +1846,168 @@ function showLoginErr(msg){
   el.textContent=msg;el.classList.add('show');
   setTimeout(()=>el.classList.remove('show'),2500);
 }
+/* ═══════════════════════════════════════════════════════════
+   ZUGRIFFSSCHUTZ (v273) – Audit S1 + S2
+   S1  Anmeldesperre nach Fehlversuchen, gestaffelt
+   S2  Sitzungssperre nach Inaktivität, rollenabhängig
+
+   Speicherort bewusst localStorage, NICHT der settings-Store:
+   settings wird über OneDrive gesynct (nur SETTINGS_GEHEIM ist
+   gefiltert). Eine dort abgelegte Sperre würde auf alle Geräte
+   wandern – ein Vertipper am Hausmeister-Telefon sperrte dann
+   auch das Büro-Tablet. Sperre und Sitzungsuhr sind geräteweit.
+═══════════════════════════════════════════════════════════ */
+
+/* Wartezeit in Sekunden nach dem n-ten Fehlversuch; Index = n − 1.
+   Die ersten drei Versuche bleiben frei – Vertipper sind der Normalfall.
+   Ab dem vierten: 5 s · 15 s · 1 Min · 5 Min · 15 Min · 1 Std (Deckel). */
+const SPERR_STUFEN = [0, 0, 0, 5, 15, 60, 300, 900, 3600];
+
+/* Sitzungsfrist je Rolle in Minuten. Hausmeister arbeiten länger am
+   selben Vorgang (Protokoll vor Ort), Büro-Rollen sehen mehr Daten. */
+const SITZUNG_MINUTEN = { admin: 15, eigentuemer: 15, hm: 60 };
+/* Frist, sobald die App in den Hintergrund wechselt (Gerät weggelegt). */
+const SITZUNG_HINTERGRUND_MIN = 2;
+
+function sperrSchluessel(uid){ return 'loginSperre_' + uid; }
+
+function anmeldeSperreLesen(uid){
+  try{
+    const roh = localStorage.getItem(sperrSchluessel(uid));
+    if(!roh) return null;
+    const d = jsonSicher(roh, null);
+    return (d && typeof d.versuche === 'number') ? d : null;
+  }catch(e){ egal('Anmeldesperre nicht lesbar (Privatmodus?)', e); return null; }
+}
+
+/* Liefert { gesperrt, restSek, versuche }. */
+function anmeldeSperreStatus(uid){
+  const d = anmeldeSperreLesen(uid);
+  if(!d) return { gesperrt:false, restSek:0, versuche:0 };
+  const restSek = Math.ceil((new Date(d.bis).getTime() - Date.now()) / 1000);
+  return restSek > 0
+    ? { gesperrt:true,  restSek, versuche:d.versuche }
+    : { gesperrt:false, restSek:0, versuche:d.versuche };
+}
+
+/* Zählt einen Fehlversuch und liefert die neue Wartezeit in Sekunden. */
+function fehlversuchZaehlen(uid){
+  const versuche = (anmeldeSperreLesen(uid)?.versuche || 0) + 1;
+  const wartezeit = SPERR_STUFEN[Math.min(versuche - 1, SPERR_STUFEN.length - 1)];
+  try{
+    localStorage.setItem(sperrSchluessel(uid), JSON.stringify({
+      versuche,
+      bis: new Date(Date.now() + wartezeit * 1000).toISOString(),
+      letzterVersuch: nowIso(),
+      geraet: getDeviceId()
+    }));
+  }catch(e){ console.warn('Anmeldesperre nicht speicherbar:', e); }
+  return wartezeit;
+}
+
+function anmeldeSperreLoeschen(uid){
+  try{ localStorage.removeItem(sperrSchluessel(uid)); }catch(e){ egal('Anmeldesperre nicht löschbar', e); }
+}
+
+/* Kurze Dauerangabe für Meldungen: 45 s / 3 Min / 1 Std */
+function fmtSperrDauer(sek){
+  if(sek < 60)   return sek + ' Sekunden';
+  if(sek < 3600) return Math.ceil(sek / 60) + ' Minuten';
+  const std = Math.round(sek / 3600);
+  return std === 1 ? 'einer Stunde' : std + ' Stunden';
+}
+
+/* ── S2: Sitzungsuhr ── */
+let _sperrUhr = null;
+let _letzteAktion = Date.now();
+let _sitzungHandlerAktiv = false;
+
+function sitzungsFristMin(rolle){
+  return SITZUNG_MINUTEN[rolle] ?? 15;
+}
+
+/* Merkt die letzte Benutzeraktion und schreibt sie in den Session-Marker,
+   damit ein zwischenzeitlicher OS-Reload dieselbe Frist sieht. */
+function sitzungAktivitaet(){
+  _letzteAktion = Date.now();
+  if(!CU) return;
+  try{
+    localStorage.setItem('activeSession', JSON.stringify({
+      uid: CU.id, ts: _letzteAktion, tag: today()
+    }));
+  }catch(e){ egal('Sitzungsmarker nicht speicherbar', e); }
+}
+
+function sitzungsUhrStoppen(){
+  if(_sperrUhr){ clearInterval(_sperrUhr); _sperrUhr = null; }
+}
+
+function sitzungsUhrStarten(){
+  sitzungsUhrStoppen();
+  _letzteAktion = Date.now();
+  const fristMs = () => sitzungsFristMin(CU?.role) * 60000;
+
+  const pruefe = () => {
+    if(!CU) { sitzungsUhrStoppen(); return; }
+    if(Date.now() - _letzteAktion > fristMs()) bildschirmSperren();
+  };
+  _sperrUhr = setInterval(pruefe, 30000);
+
+  // Handler nur einmal registrieren – sitzungsUhrStarten läuft bei jeder Anmeldung.
+  if(_sitzungHandlerAktiv) return;
+  _sitzungHandlerAktiv = true;
+
+  // 'wheel'/'scroll' bewusst mit dabei: am Desktop erzeugt reines Lesen und
+  // Scrollen weder pointerdown noch keydown – ohne diese beiden würde eine
+  // längere Liste beim Durchsehen die Sperre auslösen.
+  ['pointerdown','keydown','touchstart','wheel','scroll'].forEach(typ =>
+    document.addEventListener(typ, () => { if(CU) _letzteAktion = Date.now(); }, { passive:true, capture:true }));
+
+  // Bei jeder Aktion den Marker mitschreiben – gedrosselt, damit localStorage
+  // nicht bei jedem Fingertipp beschrieben wird.
+  setInterval(() => { if(CU && Date.now() - _letzteAktion < 60000) sitzungAktivitaet(); }, 60000);
+
+  document.addEventListener('visibilitychange', () => {
+    if(!CU) return;
+    if(document.hidden){
+      sitzungAktivitaet();
+      // Im Hintergrund gilt die kurze Frist: Restzeit auf SITZUNG_HINTERGRUND_MIN kürzen.
+      const kurz = sitzungsFristMin(CU.role) - SITZUNG_HINTERGRUND_MIN;
+      if(kurz > 0) _letzteAktion = Date.now() - kurz * 60000;
+    } else {
+      pruefe();
+    }
+  });
+}
+
+/* Sperrt den Bildschirm, ohne Daten zu verwerfen: die IndexedDB bleibt
+   unberührt, es wird nur die Anmeldung zurückgesetzt. */
+function bildschirmSperren(){
+  if(!CU) return;
+  const uid = CU.id;
+  sitzungsUhrStoppen();
+  try{ closeModal(); }catch(e){ egal('kein offener Dialog', e); }
+  CU = null; pinBuf = '';
+  stoppeHintergrundTimer();
+  try { sessionStorage.removeItem('activeSession'); } catch(e) { egal('sessionStorage gesperrt', e); }
+  try { localStorage.removeItem('activeSession'); } catch(e) { egal('localStorage gesperrt', e); }
+  try{ updatePinDisplay(); }catch(e){ egal('PIN-Anzeige noch nicht im DOM', e); }
+  showScreen('loginScreen');
+  loadLoginUsers().then(() => {
+    const sel = document.getElementById('loginUserSel');
+    if(sel && uid) sel.value = uid;          // Benutzer bleibt vorgewählt
+  }).catch(e => console.warn('loadLoginUsers nach Sperre:', e));
+  try{ toast('Aus Sicherheitsgründen gesperrt – bitte erneut anmelden.', 4000); }catch(e){ egal('Toast nicht darstellbar', e); }
+}
+
+/* Prüft beim App-Start, ob der Session-Marker noch innerhalb der Frist liegt. */
+function sitzungMarkerGueltig(ts, rolle){
+  if(!ts) return false;
+  return (Date.now() - ts) <= sitzungsFristMin(rolle) * 60000;
+}
+
 function doLogout(){
+  sitzungsUhrStoppen();       // v273 (S2)
   CU=null;pinBuf='';
   stoppeHintergrundTimer();   // Review B8: laufende Intervalle beenden
   try { sessionStorage.removeItem('activeSession'); } catch(e) {}
@@ -1948,6 +2134,17 @@ async function initApp(){
       if(n) console.log('F1 Objekt-Migration:', n, 'Buchungen zugeordnet');
     }
   }catch(e){ console.warn('Objekt-Migration:', e); }
+  try{
+    // v273: Geschäftskontakt einheitlich auf info@nadigpfau.de. Gespeicherte
+    // Briefköpfe überschreiben die Startwerte, deshalb reicht eine Änderung im
+    // Quellcode nicht aus – die Altadresse muss in settings mitgezogen werden.
+    const mailDone=await idbGet('settings','mailMigrationV273');
+    if(!mailDone || !mailDone.value){
+      const n=await migriereGeschaeftsmail();
+      await idbPut('settings',{id:'mailMigrationV273', value:'1', geaendert:nowIso()});
+      if(n) console.log('v273 Geschäftsmail-Migration:', n, 'Briefkopf/Köpfe angepasst');
+    }
+  }catch(e){ console.warn('Geschäftsmail-Migration:', e); }
   // v235 (F2): Leistungszeitraum-Nachbefüllung – genau einmal.
   try{
     const done=await idbGet('settings','leistungMigrationV235');
@@ -8199,6 +8396,14 @@ async function fetchMitTimeout(url, opts={}, ms=15000){
   try{ return await fetch(url, {...opts, signal:ac.signal}); }
   finally{ clearTimeout(t); }
 }
+/* ── Bewusst ignorierter Fehler (v273, Audit Q6) ──
+   Macht die Absicht sichtbar und prüfbar: ein leeres catch{} sieht aus wie ein
+   vergessener Fall, egal('Grund', e) sagt, dass der Fehler folgenlos ist.
+   Ausgabe nur in der Entwicklerkonsole, nie im Protokoll und nie beim Nutzer. */
+function egal(grund, fehler){
+  if(fehler) console.debug('[egal] ' + grund + ':', fehler);
+}
+
 /* ── JSON.parse ohne Absturz (Review B7) ──
    Liefert bei korruptem Eingang den Fallback statt eine unbehandelte Exception. */
 function jsonSicher(s, fallback){
@@ -16494,30 +16699,38 @@ async function bereinigeProtokollPapierkorb() {
 
 // Gruppen-Standardadressen (überschreibbar via Einstellungen, gespeichert in settings)
 const BRIEFKOPF_DEFAULTS = {
+  // v273 (R23): Für 'mg' stehen hier bewusst KEINE Kontaktdaten mehr.
+  // Der Quellcode ist über GitHub Pages weltweit abrufbar; die bisherigen
+  // Startwerte enthielten Privatanschrift, Festnetz, Mobil und zwei private
+  // Freemail-Adressen zweier Miteigentümer. Gepflegt wird dieser Briefkopf
+  // ausschliesslich unter Einstellungen → Briefköpfe; der Wert liegt in
+  // settings['briefkopf_mg'] und wird über OneDrive synchronisiert.
+  // Die Gruppen kr/dus/pfau tragen Geschäftsdaten der GbR (auch im Impressum
+  // veröffentlicht) und bleiben deshalb als Startwert erhalten.
   mg: {
-    name:'Hausverwaltung Roland B. Nadig', absender:'Hausverwaltung Roland B. Nadig',
-    zusatz:'Dipl.Ing. Architekt · AKNW 17646',
-    strasse:'Zur Verlach 37', ort:'40723 Hilden',
-    tel:'02103 2509710 · Mobil: 0157 50984524',
-    email:'rolandnadig@gmx.de · alexandernadig@gmx.de',
+    name:'', absender:'',
+    zusatz:'',
+    strasse:'', ort:'',
+    tel:'',
+    email:'',
   },
   kr: {
     name:'Hausverwaltung Alexander-Roland Nadig und Anna-Alexandra Pfau', absender:'Hausverwaltung Nadig Pfau',
     zusatz:'',
     strasse:'Venloer Straße 20', ort:'40477 Düsseldorf',
-    tel:'0177 / 2509710', email:'nadigpfau-hausverwaltung@gmx.de',
+    tel:'0177 / 2509710', email:'info@nadigpfau.de',
   },
   dus: {
     name:'Hausverwaltung Alexander-Roland Nadig und Anna-Alexandra Pfau', absender:'Hausverwaltung Nadig Pfau',
     zusatz:'',
     strasse:'Venloer Straße 20', ort:'40477 Düsseldorf',
-    tel:'0177 / 2509710', email:'nadigpfau-hausverwaltung@gmx.de',
+    tel:'0177 / 2509710', email:'info@nadigpfau.de',
   },
   pfau: {
     name:'Anna-Alexandra Pfau und Torben Pfau', absender:'Anna-Alexandra und Torben Pfau',
     zusatz:'',
     strasse:'Venloer Straße 20', ort:'40477 Düsseldorf',
-    tel:'0177 / 2509710', email:'nadigpfau-hausverwaltung@gmx.de',
+    tel:'0177 / 2509710', email:'info@nadigpfau.de',
   },
 };
 // ── Eigentümer-/Vermieter-Stammdaten (Punkt 1.1) ─────────────────
@@ -16577,6 +16790,17 @@ async function ladeBriefkopfCache(){
     try{ const o=await idbGet('settings','briefkopf_override_'+k); _briefkopfOverride[k]=(o&&o.value)||''; }catch(_){}
   }
 }
+/* v273 (R23): Ein Briefkopf ist erst brauchbar, wenn Name, Anschrift und ein
+   Rückkanal gepflegt sind. Fehlt etwas, entstünde sonst ein Schreiben ohne
+   Absender – bei Mieterschreiben ein handfestes Problem (§ 130 BGB Zugang,
+   Nachweisbarkeit des Absenders). */
+const BRIEFKOPF_PFLICHT = ['name','strasse','ort'];
+function briefkopfVollstaendig(bk){
+  if(!bk) return false;
+  if(!BRIEFKOPF_PFLICHT.every(f => String(bk[f]||'').trim())) return false;
+  return !!(String(bk.tel||'').trim() || String(bk.email||'').trim());
+}
+
 function getBriefkopfFor(gruppeKey){
   // Umleitung beachten: ist für diese Gruppe ein anderer Briefkopf gewählt, diesen verwenden.
   const ziel = _briefkopfOverride[gruppeKey] || gruppeKey;
@@ -16618,9 +16842,20 @@ function adressNachnamen(m){
   return w.length>1 ? w[w.length-1] : roh;
 }
 
+let _briefkopfGewarnt = {};
 function getBriefkopf(objektId) {
   const obj = getObj(objektId);
-  return getBriefkopfFor(briefkopfGruppe(obj));
+  const gruppe = briefkopfGruppe(obj);
+  const bk = getBriefkopfFor(gruppe);
+  // v273 (R23): Nach einer Neuinstallation vor dem ersten Sync kann der
+  // Briefkopf leer sein. Einmal je Sitzung und Gruppe deutlich darauf hinweisen,
+  // statt stillschweigend ein Schreiben ohne Absender zu erzeugen.
+  if(!briefkopfVollstaendig(bk) && !_briefkopfGewarnt[gruppe]){
+    _briefkopfGewarnt[gruppe] = true;
+    try{ toast('Briefkopf unvollständig – bitte unter Einstellungen → Briefköpfe ergänzen.', 6000); }
+    catch(e){ egal('Toast nicht darstellbar', e); }
+  }
+  return bk;
 }
 
 // Einstellungs-UI für die drei Gruppen-Briefköpfe
@@ -16682,9 +16917,18 @@ function renderBriefkopfConfig(){
           ${ovWahl?`<div style="font-size:10px;color:#9E5E24;margin-top:4px"><i class="ti ti-info-circle"></i> Abweichender Briefkopf aktiv – alle Dokumente dieser Gruppe nutzen aktuell ${ovWahl==='mg'?'Roland B. Nadig':'Nadig Pfau'}.</div>`:''}
         </div>
         <div style="font-size:11px;color:var(--ink-40);margin-bottom:8px">Die folgenden Felder bearbeiten den <b>${g.label}</b>-Briefkopf selbst (Adresse, Telefon). Sie sind unabhängig von der Umleitung oben.</div>` : '';
-    return `<details style="border:1px solid var(--ink-10);border-radius:8px;padding:8px 10px;margin-bottom:8px">
-      <summary style="font-weight:600;font-size:13px;cursor:pointer;color:var(--copper)">${g.label}${(_briefkopfOverride[g.key])?' <span style=\'font-size:10px;color:#9E5E24;font-weight:600\'>· abweichend</span>':''}</summary>
+    // v273 (R23): fehlende Pflichtangaben sichtbar machen – genau dort, wo man sie behebt.
+    const unvollstaendig = !briefkopfVollstaendig(b);
+    const warnHtml = unvollstaendig ? `
+        <div class="warn-kasten">
+          <b><i class="ti ti-alert-triangle"></i> Dieser Briefkopf ist unvollständig.</b><br>
+          Schreiben dieser Gruppe erscheinen ohne vollständigen Absender. Bitte Name,
+          Straße, PLZ/Ort sowie Telefon oder E-Mail eintragen und speichern.
+        </div>` : '';
+    return `<details style="border:1px solid var(--ink-10);border-radius:8px;padding:8px 10px;margin-bottom:8px"${unvollstaendig?' open':''}>
+      <summary style="font-weight:600;font-size:13px;cursor:pointer;color:var(--copper)">${g.label}${unvollstaendig?' <span class=\'warn-marke\'>· unvollständig</span>':''}${(_briefkopfOverride[g.key])?' <span style=\'font-size:10px;color:#9E5E24;font-weight:600\'>· abweichend</span>':''}</summary>
       <div style="margin-top:8px">
+        ${warnHtml}
         ${ovHtml}
         ${feld(g.key,'name','Voller Name (Gruß / Briefende)',b.name)}
         ${feld(g.key,'absender','Absenderzeile (über Adressfeld, ohne Vornamen)',b.absender||b.name)}
@@ -16698,6 +16942,33 @@ function renderBriefkopfConfig(){
     </details>`;
   }).join('');
 }
+/* v273: Ersetzt die frühere Geschäftsadresse in bereits gespeicherten Briefköpfen.
+   Bewusst eng gefasst – nur die eine Altadresse, alles andere bleibt unangetastet,
+   damit individuell gepflegte Abweichungen nicht überschrieben werden.
+   Liefert die Anzahl geänderter Briefköpfe. */
+const GESCHAEFTSMAIL_NEU = 'info@nadigpfau.de';
+const GESCHAEFTSMAIL_ALT = /^nadigpfau-hausverwaltung@gmx\.de$/i;
+async function migriereGeschaeftsmail(){
+  let geaendert = 0;
+  for(const k of ['mg','kr','dus','pfau']){
+    let e = null;
+    try{ e = await idbGet('settings','briefkopf_'+k); }catch(err){ egal('Briefkopf nicht lesbar', err); }
+    const wert = e && e.value;
+    if(!wert || !GESCHAEFTSMAIL_ALT.test(String(wert.email||'').trim())) continue;
+    wert.email = GESCHAEFTSMAIL_NEU;
+    try{
+      await idbPut('settings',{id:'briefkopf_'+k, value:wert, geaendert:nowIso()});
+      _briefkopfCache[k] = wert;
+      geaendert++;
+    }catch(err){ console.warn('Briefkopf '+k+' nicht speicherbar:', err); }
+  }
+  if(geaendert){
+    clearTimeout(window._syncTimer);
+    window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
+  }
+  return geaendert;
+}
+
 async function saveBriefkopf(key){
   const g=f=>document.getElementById('bk_'+key+'_'+f)?.value.trim()||'';
   const data={name:g('name'),absender:g('absender'),zusatz:g('zusatz'),strasse:g('strasse'),ort:g('ort'),tel:g('tel'),email:g('email')};
@@ -19949,10 +20220,15 @@ async function druckeBrief(mieterId, objektId) {
 
   // Absender bestimmen
   const abs = {
-    hausverwaltung: {name:'Hausverwaltung Nadig Pfau', strasse:'Venloer Straße 20', ort:'40477 Düsseldorf', tel:'0177 / 2509710', email:'nadigpfau-hausverwaltung@gmx.de'},
-    eigentuemer:    {name:'Alexander-Roland Nadig und Anna-Alexandra Pfau', strasse:'Venloer Straße 20', ort:'40477 Düsseldorf', tel:'0177 / 2509710', email:'nadigpfau-hausverwaltung@gmx.de'},
+    hausverwaltung: {name:'Hausverwaltung Nadig Pfau', strasse:'Venloer Straße 20', ort:'40477 Düsseldorf', tel:'0177 / 2509710', email:'info@nadigpfau.de'},
+    eigentuemer:    {name:'Alexander-Roland Nadig und Anna-Alexandra Pfau', strasse:'Venloer Straße 20', ort:'40477 Düsseldorf', tel:'0177 / 2509710', email:'info@nadigpfau.de'},
     hausmeister:    {name:CU?.name||'Hausmeister', strasse:'', ort:'', tel:'', email:''},
-    roland:         {name:'Roland B. Nadig, Dipl.Ing. Architekt', strasse:'Zur Verlach 37', ort:'40723 Hilden', tel:'02103 2509710 · Mobil: 0157 50984524', email:'rolandnadig@gmx.de'},
+    // v273 (R23): keine Kontaktdaten mehr im Quellcode – der Absender wird aus
+    // dem MG-Briefkopf gespeist (Einstellungen → Briefköpfe, settings['briefkopf_mg']).
+    // Damit gibt es für diese Daten nur noch eine Pflegestelle.
+    roland:         (()=>{ const b = getBriefkopfFor('mg');
+                           return {name:b.name||'', strasse:b.strasse||'', ort:b.ort||'',
+                                   tel:b.tel||'', email:b.email||''}; })(),
   }[absType] || {};
 
   const obj = empfaenger[0] ? getObj(empfaenger[0].objektId) : null;
@@ -36683,19 +36959,26 @@ window.addEventListener('DOMContentLoaded', async () => {
     // Aktive Session wiederherstellen (nach OS-Reload, z. B. nach Kamera-Nutzung)
     let sessionUid = null;
     let sessionTag = null;
+    let sessionTs = null;   // v273 (S2): letzte Aktivität aus dem Marker
     try { sessionUid = sessionStorage.getItem('activeSession'); } catch(e) {}
     if (!sessionUid) {
       try {
         const raw = localStorage.getItem('activeSession');
         if (raw) {
           const s = JSON.parse(raw);
-          // nur innerhalb von 12 Stunden automatisch wieder anmelden
-          if (s && s.uid && s.ts && (Date.now() - s.ts) < 12*60*60*1000) { sessionUid = s.uid; sessionTag = s.tag||null; }
+          // v273 (S2): kein 12-Stunden-Fenster mehr. Der Marker trägt die letzte
+          // Aktivität; die endgültige Frist hängt von der Rolle ab und wird unten
+          // geprüft, sobald der Benutzer geladen ist. Hier nur eine großzügige
+          // Obergrenze, damit offensichtlich alte Marker gar nicht erst geladen werden.
+          if (s && s.uid && s.ts && (Date.now() - s.ts) < 2*60*60*1000) { sessionUid = s.uid; sessionTag = s.tag||null; sessionTs = s.ts; }
         }
       } catch(e) {}
     } else {
       // sessionStorage aktiv: Login-Tag aus localStorage nachladen für Mitternachts-Prüfung
-      try { const raw = localStorage.getItem('activeSession'); if (raw) sessionTag = (JSON.parse(raw)||{}).tag||null; } catch(e) {}
+      try {
+        const raw = localStorage.getItem('activeSession');
+        if (raw) { const s = JSON.parse(raw)||{}; sessionTag = s.tag||null; sessionTs = s.ts||null; }
+      } catch(e) { egal('Sitzungsmarker unlesbar', e); }
     }
     // Auto-Logout nach Mitternacht: wurde an einem früheren Kalendertag angemeldet, Session verwerfen
     if (sessionUid && sessionTag && sessionTag !== today()) {
@@ -36705,8 +36988,18 @@ window.addEventListener('DOMContentLoaded', async () => {
     }
     if (sessionUid) {
       const user = await idbGet('users', sessionUid).catch(()=>null);
-      if (user && user.aktiv !== false) {
+      // v273 (S2): Sitzung nur fortsetzen, wenn die letzte Aktivität innerhalb
+      // der Frist dieser Rolle liegt. Der Kamera-/OS-Reload (Sekunden bis wenige
+      // Minuten) bleibt dadurch unverändert bequem, ein liegen gelassenes Gerät
+      // verlangt dagegen wieder den PIN.
+      if (user && user.aktiv !== false && !sitzungMarkerGueltig(sessionTs, user.role)) {
+        try { sessionStorage.removeItem('activeSession'); } catch(e) { egal('sessionStorage gesperrt', e); }
+        try { localStorage.removeItem('activeSession'); } catch(e) { egal('localStorage gesperrt', e); }
+        sessionUid = null;
+      }
+      if (sessionUid && user && user.aktiv !== false) {
         CU = user;
+        sitzungsUhrStarten();
         try { sessionStorage.setItem('activeSession', sessionUid); } catch(e) {}
         try { localStorage.setItem('activeSession', JSON.stringify({uid: sessionUid, ts: Date.now(), tag: sessionTag||today()})); } catch(e) {}
         showScreen('appScreen');
