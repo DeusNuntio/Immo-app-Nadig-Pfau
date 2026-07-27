@@ -913,7 +913,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=35;   // v242: +buch_journal (F4 GoBD)
-const APP_VERSION = '2026-07-26-v275';
+const APP_VERSION = '2026-07-27-v276';
 /* v222 (14.07.2026): KI-Auslesen Zaehlerstand aus Foto (analog rechnungOcrErkennen).
    Neuer Button "Zaehlerstand aus Foto auslesen (KI)" in modalZaehlerstand,
    sichtbar sobald ein Foto vorhanden ist. Sendet Base64+MimeType+Zaehlerart
@@ -1371,6 +1371,49 @@ const OBJEKTE=[
    sichtbarFuer:['u_admin','u_pfau','u_roland'], privat:true},
   {id:'amboss10', gruppe:'pfau',       name:'Amboßstr. 10',         ort:'40547 Düsseldorf',    nr:7,color:'c-dus'},
 ];
+/* ── A+S-Heizkostenabrechnung (v276) ────────────────────────────────────────
+   Gas und Schornsteinfeger werden NICHT in der App verteilt, sondern von der
+   A+S GmbH abgerechnet: wir melden Brennstoff- und Betriebskosten, A+S rechnet
+   je Mieter ab und liefert die Einzelbetraege zurueck (NKA-Schluessel 'einzeln').
+
+   Die Zuordnung Objekt -> Abrechnungseinheit ist nicht 1:1. In Krefeld liegen
+   mehrere Hausnummern auf EINEM Aktenzeichen, in Duesseldorf hat dagegen jedes
+   Haus ein eigenes - auch Mindener 23 und 25, die im OneDrive-Baum zu einem
+   Gebaeude zusammengefasst sind. Deshalb eine eigene Tabelle statt einer
+   Ableitung aus `gruppe` oder `nr`.
+   Quelle: A+S-Onlineportal, Stand 27.07.2026. */
+const AS_EINHEITEN = [
+  {id:'as_ruhrt41', az:'401717', name:'Ruhrtalstraße 41',            objekte:['ruhrt41']},
+  {id:'as_mind23',  az:'401726', name:'Mindener Straße 23',          objekte:['mind23']},
+  {id:'as_mind25',  az:'401901', name:'Mindener Straße 25',          objekte:['mind25']},
+  {id:'as_kyff28',  az:'102070', name:'Kyffhäuserstraße 28',         objekte:['kyff28']},
+  {id:'as_kyff30',  az:'102054', name:'Kyffhäuserstraße 30',         objekte:['kyff30']},
+  {id:'as_kyff32',  az:'102069', name:'Kyffhäuserstraße 32',         objekte:['kyff32']},
+  {id:'as_inrath',  az:'207942', name:'Inrather Straße 181, 183, 185', objekte:['inr181','inr183','inr185']},
+  {id:'as_wilm',    az:'207941', name:'Wilmendyk 7, 9, 11, 13',      objekte:['wilm7','wilm9','wilm11','wilm13']},
+];
+/* Objekt-ID -> Abrechnungseinheit. Objekte ohne Eintrag (Monheim, Hilden,
+   Amboßstr., Tiefgarage) haben keine A+S-Abrechnung. */
+const AS_OBJ_MAP = (()=>{ const m={}; AS_EINHEITEN.forEach(e=>e.objekte.forEach(o=>m[o]=e)); return m; })();
+function asEinheitFuer(objektId){ return AS_OBJ_MAP[objektId] || null; }
+
+/* Brennstoffe mit Primaerenergiefaktor (nicht erneuerbarer Anteil).
+   Quelle: Anlage 4 GEG (zu § 22 Abs. 1). Der Wert ist gesetzlich festgelegt und
+   steht NICHT auf der Versorgerrechnung - nicht mit dem Emissionsfaktor in
+   kg CO2/kWh verwechseln, den die Rechnungen ausweisen.
+   Abweichungen sind moeglich (Biomethan-Beimischung, Fernwaerme mit vom
+   Versorger veroeffentlichtem Wert), deshalb ist `pef` in der A+S-Ansicht
+   ueberschreibbar. */
+const BRENNSTOFFE = [
+  {id:'erdgas',    name:'Erdgas',      pef:1.1, einheit:'kWh'},
+  {id:'heizoel',   name:'Öl',          pef:1.1, einheit:'l'},
+  {id:'fluessig',  name:'Flüssiggas',  pef:1.1, einheit:'kg'},
+  {id:'fernwaerme',name:'Fernwärme',   pef:null, einheit:'kWh'},   // vom Versorger zu erfragen
+  {id:'pellets',   name:'Pellets',     pef:0.2, einheit:'kg'},
+  {id:'strom',     name:'Strom',       pef:1.8, einheit:'kWh'},
+];
+function brennstoffFuer(id){ return BRENNSTOFFE.find(b=>b.id===id) || null; }
+
 const OBJ_MAP={
   'Ruhrtalstr. 41':'ruhrt41','Mindener Str. 23':'mind23','Mindener Str. 25':'mind25',
   'Kyffhäuser 28':'kyff28','Kyffhäuser 30':'kyff30','Kyffhäuser 32':'kyff32',
@@ -2914,6 +2957,52 @@ const TG_SP_ANZAHL_STANDARD = 65;   // Stellplätze 1–65 (Stand CSV 07/2026)
    allerersten Anlegen der Stellplätze angewandt; spätere Änderungen bleiben. */
 const TG_SP_SEED = {"3":{"name":"Klug Olga","weNr":"67","extern":false},"4":{"name":"Jurtz Uwe","weNr":"49","extern":false},"5":{"name":"Betcher Lucas","weNr":"","extern":true},"6":{"name":"Witting Matthias","weNr":"32","extern":false},"7":{"name":"Stabel Viktor","weNr":"56","extern":false},"8":{"name":"Röttjes-Weitjens Anette","weNr":"","extern":true},"9":{"name":"Röttjes-Weitjens Anette","weNr":"","extern":true},"10":{"name":"Giebing Beate","weNr":"10","extern":false},"12":{"name":"Beller Herrmann","weNr":"12","extern":false},"14":{"name":"Cezary Jarosik","weNr":"19","extern":false},"16":{"name":"Benedens Petra","weNr":"","extern":true},"17":{"name":"Jurtz Uwe","weNr":"49","extern":false},"18":{"name":"Szczepaniak Jan","weNr":"29","extern":false},"19":{"name":"Kuhs Peter","weNr":"6","extern":false},"21":{"name":"Pantin Tanja","weNr":"46","extern":false},"23":{"name":"Busche Alexander","weNr":"","extern":true},"25":{"name":"Busche Alexander","weNr":"","extern":true},"26":{"name":"Busche Alexander","weNr":"","extern":true},"27":{"name":"Westphal Ines","weNr":"","extern":true},"28":{"name":"Majachrzak  Jan","weNr":"28","extern":false},"29":{"name":"Burzan Franz","weNr":"18","extern":false},"30":{"name":"Derichs Monika","weNr":"","extern":true},"33":{"name":"Gergely Tomas","weNr":"39","extern":false},"34":{"name":"Gergely Tomas","weNr":"39","extern":false},"36":{"name":"Jurtz Uwe","weNr":"49","extern":false},"37":{"name":"Nicolay Karen","weNr":"55","extern":false},"38":{"name":"Laenen.Heino","weNr":"47","extern":false},"39":{"name":"Papapstaikois Nikoloas","weNr":"4","extern":false},"40":{"name":"Kühn Dirk","weNr":"","extern":true},"41":{"name":"Letsche Jürgen","weNr":"","extern":true},"42":{"name":"Chormaya Ella","weNr":"42","extern":false},"43":{"name":"Baicu Nicu-Julian","weNr":"","extern":true},"45":{"name":"Ernst Edgar","weNr":"2","extern":false},"46":{"name":"Nöcker Hermann-Dieter","weNr":"37","extern":false},"47":{"name":"Sperling Daniel","weNr":"","extern":true},"49":{"name":"Kirchner Barbara","weNr":"66","extern":false},"51":{"name":"Rotariu Alexandru","weNr":"","extern":true},"52":{"name":"Wilde Daniel","weNr":"","extern":true},"53":{"name":"Banaszczuk Sabrina","weNr":"53","extern":false},"54":{"name":"Sperling Daniel","weNr":"","extern":true},"55":{"name":"Tari Mohammadi Merhad","weNr":"25","extern":false},"56":{"name":"Cieslok Jozef","weNr":"60","extern":false},"59":{"name":"Cezary Jarosik","weNr":"19","extern":false},"62":{"name":"Kaiser Melanie","weNr":"","extern":true},"63":{"name":"Netta  Andre","weNr":"59","extern":false},"64":{"name":"Rotariu Alexandru","weNr":"","extern":true},"65":{"name":"Bonten Ralf","weNr":"","extern":true}};
 const TG_SP_MIETE_STANDARD  = 45;   // €/Monat; Abweichungen je Platz am Record
+/* v276: Kaution je Tiefgaragen-Schluessel. ACHTUNG – rechtlich nicht
+   selbsttragend: Eine Sicherheit muss vertraglich vereinbart sein. Bei
+   Stellplaetzen, die Teil eines Wohnraummietvertrages sind, zaehlt sie zur
+   Gesamtkaution und unterliegt der Grenze des § 551 Abs. 1 BGB (drei
+   Nettokaltmieten). Bei eigenstaendigem Stellplatzmietvertrag ist der Betrag
+   frei vereinbar. Der Wert dient hier der Soll-Berechnung; ob er gefordert
+   werden kann, entscheidet der jeweilige Vertrag. */
+const TG_SCHLUESSEL_KAUTION = 50;   // € je Schlüssel
+
+/* Alle Stellplaetze eines Mieters – Quelle ist ausschliesslich der Store
+   'stellplaetze' (mieterId). Der Alt-Store 'tg' mit m.tgNr ist abgeloest und
+   wird hier bewusst nicht mehr gelesen. */
+/* Vom Mieter zum Stellplatz im TG-Objekt. Merkt den Zielplatz vor, damit die
+   Stellplatzliste ihn hervorheben kann. */
+async function tgSpringeZuStellplatz(objektId, spId){
+  window._tgFokusSp = spId || null;
+  await showObjekt(objektId);
+}
+
+async function stellplaetzeVonMieter(mieterId){
+  if(!mieterId) return [];
+  const alle = await idbGetAll('stellplaetze').catch(()=>[]);
+  return alle.filter(sp=>sp && !sp.geloescht && sp.mieterId===mieterId)
+             .sort((a,b)=>(Number(a.nr)||0)-(Number(b.nr)||0));
+}
+
+/* Schluesselanzahl je Stellplatz: am Record hinterlegt, sonst Vorschlag aus der
+   Haushaltsgroesse (ein Schluessel, bei zwei und mehr Personen zwei). Der
+   Vorschlag ersetzt keine vertragliche Vereinbarung – er ist nur Vorbelegung. */
+function tgSchluesselAnzahl(sp, mieter){
+  const gesetzt = parseInt(sp?.schluessel);
+  if(Number.isFinite(gesetzt) && gesetzt >= 0) return gesetzt;
+  return (mieter && personenAnzahl(mieter) >= 2) ? 2 : 1;
+}
+/* Soll-Kaution aus allen Stellplaetzen eines Mieters. */
+function tgKautionSoll(spListe, mieter){
+  return (spListe||[]).reduce((sum,sp)=>sum + tgSchluesselAnzahl(sp,mieter)*TG_SCHLUESSEL_KAUTION, 0);
+}
+/* Reiner Stellplatzmieter: haengt an einem Tiefgaragen-Objekt und hat keine
+   Wohnraumdaten. Fuer solche Mieter sind Wohnflaeche, NK-Vorauszahlung und
+   Gesamtmiete gegenstandslos und werden ausgeblendet. */
+function istReinerTgMieter(m){
+  if(!m) return false;
+  if(!getObj(m.objektId)?.tiefgarage) return false;
+  return !(Number(m.flaeche)>0) && !(Number(m.miete)>0) && !(Number(m.nk)>0);
+}
 
 function spHistEintrag(sp, typ, text){
   sp.historie = sp.historie||[];
@@ -3093,6 +3182,11 @@ async function modalSpZuordnen(spId){
       <input type="date" id="spMietBeginn" value="${sp.mietBeginn||today()}"></div>
     <div class="f"><label>Monatsmiete (€)</label>
       <input type="text" inputmode="decimal" id="spMieteIn" value="${String(sp.miete).replace('.',',')}"></div>
+    <div class="f"><label>Ausgegebene Schlüssel</label>
+      <input type="number" min="0" max="9" step="1" id="spSchluessel" value="${sp.schluessel!=null?sp.schluessel:''}" placeholder="Vorschlag: 1, bei zwei Personen 2">
+      <div style="font-size:10px;color:var(--ink-40);margin-top:2px">
+        Kaution ${fmtEur(TG_SCHLUESSEL_KAUTION)} je Schlüssel – nur fordern, wenn im Mietvertrag vereinbart.
+      </div></div>
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="saveSpZuordnung('${sp.id}')"><i class="ti ti-check"></i> Zuordnen</button>
       <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
@@ -3114,6 +3208,15 @@ async function saveSpZuordnung(spId){
   if(sp.mieterId && sp.mieterId!==mid) spHistEintrag(sp,'freigabe',`Zuordnung beendet: ${vorher}`);
   sp.mieterId=m.id; sp.mieterName=m.mieter; sp.status='vermietet';
   sp.mietBeginn=beginn; if(miete>0) sp.miete=miete; sp.sperrGrund='';
+  // v276: Schluesselanzahl – leer lassen heisst "Vorschlag aus Haushaltsgroesse"
+  const schlRoh=document.getElementById('spSchluessel')?.value;
+  if(schlRoh!==undefined && String(schlRoh).trim()!==''){
+    const schl=parseInt(schlRoh);
+    if(Number.isFinite(schl) && schl>=0 && schl<=9){
+      if(sp.schluessel!==schl) spHistEintrag(sp,'schluessel',`Schlüssel: ${sp.schluessel!=null?sp.schluessel:'–'} → ${schl} (Kaution ${fmtEur(schl*TG_SCHLUESSEL_KAUTION)})`);
+      sp.schluessel=schl;
+    }
+  }
   spHistEintrag(sp,'zuordnung',`Vermietet an ${m.mieter}${m.weNr?` (WE ${m.weNr})`:' (TG-Mieter)'} ab ${beginn.split('-').reverse().join('.')} · ${fmtEur(sp.miete)}/Monat`);
   sp.geaendert=now();
   await idbPut('stellplaetze', sp);
@@ -12026,7 +12129,10 @@ async function showMieter(id){
   const aufgaben=(await idbGetAll('aufgaben')).filter(a=>a.mieterId===id&&a.status!=='erledigt');
   const maengel=(await idbGetAll('maengel')).filter(x=>x.mieterId===id&&x.status!=='behoben');
   const prots=(await idbGetAll('protokolle')).filter(p=>!p._papierkorb&&p.mieterId===id);
-  const tg=m.tgNr?(await idbGet('tg',m.tgNr).catch(()=>null)):null;
+  // v276: Stellplaetze aus 'stellplaetze' (mieterId) statt aus dem
+  // abgeloesten Store 'tg' ueber m.tgNr – dort standen sie nie.
+  const tgListe = await stellplaetzeVonMieter(id);
+  const nurTg   = istReinerTgMieter(m);
   // v240: ALLE ehemaligen Mieter derselben Wohnung (auch ohne _vormieterId-Verknüpfung,
   // z. B. aus dem Bankimport angelegte Alt-Mieter) – sollen bei der Wohnung sichtbar sein.
   let altListe=[];
@@ -12052,14 +12158,22 @@ async function showMieter(id){
       <i class="ti ti-history"></i> Ehemaliger Mieter (ausgezogen${m.auszug?' am '+m.auszug:''}).${m.neueAdresse?' Neue Anschrift: '+m.neueAdresse:''}
     </div>`:''}
     <div class="det-grid">
+${nurTg?'':`
       ${istVerwalter()?`<div class="det-field"><label>Miete</label><span>${fmtEur(m.miete)}</span></div>
       <div class="det-field"><label>NK-Vorauszahlung</label><span>${fmtEur(m.nk)}</span></div>
       <div class="det-field"><label>Gesamtmiete</label><span>${fmtEur(m.gesamt)}</span></div>`:''}
-      <div class="det-field"><label>Wohnfläche</label><span>${m.flaeche?esc(m.flaeche)+' m²':'–'}</span></div>
+      <div class="det-field"><label>Wohnfläche</label><span>${m.flaeche?esc(m.flaeche)+' m²':'–'}</span></div>`}
       ${istVerwalter()&&mieteProQm(m)!==null?`<div class="det-field"><label>Kaltmiete je m²</label><span>${mieteProQmHTML(m,_stamm.mietspiegel)}${_stamm.mietspiegel?(()=>{const a=mietspiegelAmpel(mieteProQm(m),_stamm.mietspiegel);return a?` <span class="det-zusatz" style="color:${ampelAufDunkel(a.farbe)}">· ${a.label} (MS ${String(_stamm.mietspiegel).replace('.',',')} €/m²)</span>`:'';})():' <span class="det-zusatz" style="color:var(--ink-10)">· kein Mietspiegel hinterlegt</span>'}</span></div>`:''}
       <div class="det-field"><label>Einzug</label><span>${m.einzug||'–'}</span></div>
       ${istVerwalter()?(()=>{ const _kd=kautionDetailVon(m); const _si=kautionStatusInfo(_kd.status); const _ai=kautionArtInfo(_kd.art); return `<div class="det-field"><label>Kaution</label><span>${fmtEur(kautionSaldo(_kd))} <span class="det-zusatz" style="color:${ampelAufDunkel(_si.farbe)}">· ${_ai.label.split(' (')[0]} · ${_si.label}</span></span></div>`; })():''}
-      ${tg?`<div class="det-field"><label>TG-Stellplatz</label><span>Nr. ${tg.nr} · ${fmtEur(tg.miete)}/Mon.</span></div>`:''}
+      ${tgListe.map(sp=>`<div class="det-field" style="cursor:pointer" onclick="tgSpringeZuStellplatz('${sp.objektId}','${sp.id}')" title="Zum Stellplatz springen">
+        <label>TG ${esc(String(sp.nr))}</label>
+        <span>${fmtEur(sp.miete)}/Mon. <i class="ti ti-arrow-right" style="font-size:11px;color:var(--ink-40)"></i></span></div>`).join('')}
+      ${tgListe.length&&istVerwalter()?(()=>{
+        const anz=tgListe.reduce((a,sp)=>a+tgSchluesselAnzahl(sp,m),0);
+        return `<div class="det-field"><label>TG-Schlüssel</label><span>${anz} · Kaution ${fmtEur(tgKautionSoll(tgListe,m))}</span></div>`;
+      })():''}
+      ${nurTg&&tgListe.length?`<div class="det-field"><label>TG-Miete gesamt</label><span>${fmtEur(tgListe.reduce((a,sp)=>a+(Number(sp.miete)||0),0))}/Mon.</span></div>`:''}
       ${m.uebergabe?`<div class="det-field"><label>Übergabe</label><span>${esc(m.uebergabe)}</span></div>`:''}
       ${istVerwalter()&&m.vertragsmodell?`<div class="det-field"><label>Vertragsmodell</label><span>${esc(m.vertragsmodell)}</span></div>`:''}
       ${istVerwalter()&&m.krKlausel==='Ja'?`<div class="det-field"><label>KR-Klausel</label><span>${fmtEur(m.krHoehe)} je Fall · ${m.krProzent?m.krProzent+'%':'–'}${m.krMaxEuro?' (max. '+fmtEur(m.krMaxEuro)+'/Jahr)':' p.a.'}</span></div>`:''}
@@ -34583,11 +34697,58 @@ function toast(msg,dur=2400){
 // Zuordnungsarten
 const RECHN_ZUORDNUNG = [
   {id:'nk',        name:'Objekt + Kostenart (NK-Umlage)', umlage:true},
+  /* v276: Heizkosten laufen ueber A+S, nicht ueber die App-NKA. Vorher wurden
+     solche Rechnungen auf die Kostenart 'heizung' (schluessel 'einzeln') gebucht
+     und verschwanden dort still aus der Abrechnung, weil 'einzeln'-Positionen
+     aus den Gesamtkosten gefiltert und beim Verteilen uebersprungen werden.
+     Jetzt eigene Art mit sichtbarer Sammelansicht. */
+  {id:'heizextern',name:'Heizkosten extern (A+S)',        umlage:false, as:true},
   {id:'mieter',    name:'Objekt + Mieter (direkt)',       umlage:false},
   {id:'reparatur', name:'Reparatur / Mangel',             umlage:false},
   {id:'allgemein', name:'Allgemein / Verwaltung',         umlage:false},
 ];
+/* Positionen der A+S-Aufstellung. 'brennstoff' fuellt Block 1 des Formulars,
+   die uebrigen Block 2 (weitere Heizungsbetriebskosten nach § 7 HeizkostenV).
+   `lohn:true` = fuer diese Position ist der Lohnanteil nach § 35a EStG
+   getrennt anzugeben, sonst kann A+S den Ausweis fuer die Mieter nicht
+   erstellen (Hinweis auf dem Formular). */
+const AS_POSITIONEN = [
+  {id:'brennstoff',   name:'Brennstoff / Lieferung',     block:1, lohn:false},
+  {id:'betriebsstrom',name:'Betriebsstrom Heizung',      block:2, lohn:false},
+  {id:'schornstein',  name:'Schornsteinreinigung',       block:2, lohn:true},
+  {id:'wartung',      name:'Heizungswartung',            block:2, lohn:true},
+  {id:'abzug',        name:'Abzug (vor der Abrechnung)', block:3, lohn:false},
+];
+function asPositionName(id){ return AS_POSITIONEN.find(p=>p.id===id)?.name || id; }
 function rechnZuordnungName(id){ return RECHN_ZUORDNUNG.find(z=>z.id===id)?.name || id; }
+
+/* v276: Blendet die Felder der A+S-Maske je Position ein bzw. aus und zeigt an,
+   auf welches Aktenzeichen die Rechnung laeuft. */
+function rechnAsPosWechsel(){
+  const pos=document.getElementById('rAsPos')?.value||'';
+  const def=AS_POSITIONEN.find(p=>p.id===pos);
+  const zeige=(id,an)=>{ const e=document.getElementById(id); if(e) e.style.display=an?'':'none'; };
+  // Menge, Einheit und CO2 gibt es nur bei Brennstofflieferungen (Block 1)
+  zeige('rAsVerbrauchWrap', pos==='brennstoff');
+  zeige('rAsCo2Wrap',       pos==='brennstoff');
+  zeige('rLohnWrap',        !!def?.lohn);
+
+  const info=document.getElementById('rAsEinheitInfo');
+  if(info){
+    const objId=document.getElementById('rObj')?.value||'';
+    const eh=asEinheitFuer(objId);
+    if(!objId) info.innerHTML='<i class="ti ti-alert-circle"></i> Bitte Objekt wählen.';
+    else if(eh) info.innerHTML=`<i class="ti ti-file-text"></i> Abrechnungseinheit ${esc(eh.name)} · Aktenzeichen <b>${esc(eh.az)}</b>`;
+    else info.innerHTML='<i class="ti ti-alert-triangle" style="color:var(--red,#C0392B)"></i> Für dieses Objekt ist keine A+S-Abrechnungseinheit hinterlegt.';
+  }
+  if(def?.lohn){
+    const lw=document.getElementById('rLohnWrap');
+    if(lw && !lw.dataset.hint){
+      lw.dataset.hint='1';
+      lw.insertAdjacentHTML('beforeend','<div style="font-size:10px;color:var(--ink-40);margin-top:2px">Ohne diese Angabe kann A+S den § 35a-Ausweis für die Mieter nicht erstellen.</div>');
+    }
+  }
+}
 
 // Filter-State für die Rechnungsliste
 let rechnFilter = { objId:'all', zuordnung:'all', status:'all', jahr:'all', q:'' };
@@ -34741,6 +34902,21 @@ async function modalRechnungErfassen(rechnung){
         <input type="date" id="rFaellig" value="${r.faellig||''}"></div>
     </div>
 
+    <!-- v276: Endabrechnungen weisen oft ein Guthaben aus. Der Betrag oben ist
+         der Aufwand (Verbrauchskosten), das Guthaben der Zahlungsstrom zurueck
+         aufs Konto - beides muss getrennt erfassbar sein, sonst laesst sich der
+         Bankeingang spaeter nicht zuordnen. -->
+    <div class="f-row">
+      <div class="f" style="flex:1"><label>Guthaben / Erstattung €</label>
+        <input type="number" inputmode="decimal" step="0.01" id="rGuthaben" value="${r.guthaben!=null?r.guthaben:''}" placeholder="nur bei Erstattung"></div>
+      <div class="f" style="flex:1"><label>Erstattung am</label>
+        <input type="date" id="rGuthabenDatum" value="${r.guthabenDatum||''}"></div>
+    </div>
+    <div id="rGuthabenHinweis" style="display:none;font-size:11px;color:var(--copper,#b87333);margin:-4px 0 8px">
+      <i class="ti ti-info-circle"></i> Der Betrag oben bleibt der Aufwand für die Abrechnung.
+      Das Guthaben ist der Rückfluss aufs Konto und wird als Einnahme geführt.
+    </div>
+
     <div class="f"><label>Zuordnung *</label>
       <select id="rZuordnung" onchange="rechnZuordnungWechsel()">
         ${RECHN_ZUORDNUNG.map(z=>`<option value="${z.id}"${r.zuordnung===z.id?' selected':''}>${z.name}</option>`).join('')}
@@ -34754,6 +34930,44 @@ async function modalRechnungErfassen(rechnung){
 
     <div class="f" id="rKostenartWrap" style="display:none"><label>Kostenart (für NK-Umlage)</label>
       <select id="rKostenart"></select></div>
+
+    <!-- v276: Angaben fuer die A+S-Heizkostenaufstellung -->
+    <div id="rAsWrap" style="display:none">
+      <div class="f"><label>Position der A+S-Aufstellung</label>
+        <select id="rAsPos" onchange="rechnAsPosWechsel()">
+          ${AS_POSITIONEN.map(p=>`<option value="${p.id}"${r.asPosition===p.id?' selected':''}>${p.name}</option>`).join('')}
+        </select></div>
+      <div id="rAsEinheitInfo" style="font-size:11px;color:var(--ink-60);margin:-4px 0 8px"></div>
+      <div class="f-row" id="rAsVerbrauchWrap">
+        <div class="f" style="flex:1"><label>Menge</label>
+          <input type="number" inputmode="decimal" step="0.001" id="rVerbrauch" value="${r.verbrauchMenge!=null?r.verbrauchMenge:''}" placeholder="z. B. 1635"></div>
+        <div class="f" style="flex:1"><label>Einheit</label>
+          <select id="rVerbrauchEinheit">
+            <option value="">–</option>
+            ${['kWh','MWh','m3','l','kg','t','GJ'].map(e=>`<option value="${e}"${r.verbrauchEinheit===e?' selected':''}>${e==='m3'?'m³':e}</option>`).join('')}
+          </select></div>
+      </div>
+      <div class="f-row" id="rAsCo2Wrap">
+        <div class="f" style="flex:1"><label>CO₂-Ausstoß kg</label>
+          <input type="number" inputmode="decimal" step="0.01" id="rCo2Menge" value="${r.co2MengeKg!=null?r.co2MengeKg:''}" placeholder="Rechnung"></div>
+        <div class="f" style="flex:1"><label>CO₂-Kosten €</label>
+          <input type="number" inputmode="decimal" step="0.0001" id="rCo2Kosten" value="${r.co2KostenEur!=null?r.co2KostenEur:''}" placeholder="Rechnung"></div>
+      </div>
+      <div class="f-row">
+        <div class="f" style="flex:1"><label>MwSt.-Betrag €</label>
+          <input type="number" inputmode="decimal" step="0.01" id="rMwstBetrag" value="${r.mwstBetrag!=null?r.mwstBetrag:''}" placeholder="optional"></div>
+        <div class="f" style="flex:1" id="rLohnWrap"><label>davon Lohnkosten € (§ 35a)</label>
+          <input type="number" inputmode="decimal" step="0.01" id="rLohnanteil" value="${r.lohnanteil!=null?r.lohnanteil:''}" placeholder="aus Rechnung"></div>
+      </div>
+      <div class="f-row">
+        <div class="f" style="flex:1"><label>Leistung von</label>
+          <input type="date" id="rLeistungVon" value="${r.leistungVonISO||''}"></div>
+        <div class="f" style="flex:1"><label>Leistung bis</label>
+          <input type="date" id="rLeistungBis" value="${r.leistungBisISO||''}"></div>
+      </div>
+      <div class="f"><label>Zählernummer</label>
+        <input type="text" id="rZaehlernr" value="${esc(r.zaehlernummer||'')}" placeholder="optional"></div>
+    </div>
 
     <div class="f" id="rMieterWrap" style="display:none"><label>Mieter</label>
       <select id="rMieter"><option value="">– Mieter wählen –</option></select></div>
@@ -35065,6 +35279,9 @@ function rechnZuordnungWechsel(){
   show('rKostenartWrap', z==='nk');
   show('rMieterWrap', z==='mieter');
   show('rReparaturWrap', z==='reparatur');
+  // v276: A+S-Block nur bei externer Heizkostenabrechnung
+  const asWrap=document.getElementById('rAsWrap');
+  if(asWrap){ asWrap.style.display = (z==='heizextern') ? '' : 'none'; if(z==='heizextern') rechnAsPosWechsel(); }
 }
 
 // Objektwechsel → Kostenarten, Mieter, Reparaturen neu laden
