@@ -913,7 +913,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=35;   // v242: +buch_journal (F4 GoBD)
-const APP_VERSION = '2026-07-25-v273';
+const APP_VERSION = '2026-07-26-v275';
 /* v222 (14.07.2026): KI-Auslesen Zaehlerstand aus Foto (analog rechnungOcrErkennen).
    Neuer Button "Zaehlerstand aus Foto auslesen (KI)" in modalZaehlerstand,
    sichtbar sobald ein Foto vorhanden ist. Sendet Base64+MimeType+Zaehlerart
@@ -1865,9 +1865,24 @@ const SPERR_STUFEN = [0, 0, 0, 5, 15, 60, 300, 900, 3600];
 
 /* Sitzungsfrist je Rolle in Minuten. Hausmeister arbeiten länger am
    selben Vorgang (Protokoll vor Ort), Büro-Rollen sehen mehr Daten. */
-const SITZUNG_MINUTEN = { admin: 15, eigentuemer: 15, hm: 60 };
-/* Frist, sobald die App in den Hintergrund wechselt (Gerät weggelegt). */
+/* v275: einheitlich 60 Minuten. Die vorherigen 15 Minuten für Büro-Rollen waren
+   für das Telefon gedacht und am Arbeitsplatz unpraktikabel – eine Sperre, die
+   im Arbeitsfluss stört, wird umgangen und schützt dann gar nichts. */
+const SITZUNG_MINUTEN = { admin: 60, eigentuemer: 60, hm: 60 };
+/* Frist, sobald die App in den Hintergrund wechselt (Gerät weggelegt).
+   Greift nur auf Touch-Geräten – siehe istTastaturGeraet(). */
 const SITZUNG_HINTERGRUND_MIN = 2;
+
+/* v275: Am Desktop feuert 'visibilitychange' bereits beim Wechsel in einen
+   anderen Browser-Tab. Die Kurzfrist von 2 Minuten hätte dort bedeutet: kurz
+   in die Mail geschaut, zurück – gesperrt. Gemeint war aber das weggelegte
+   Telefon. Deshalb gilt die Kurzfrist nur auf Geräten ohne feinen Zeiger. */
+function istTastaturGeraet(){
+  try{
+    return window.matchMedia('(pointer: fine)').matches
+        && !window.matchMedia('(hover: none)').matches;
+  }catch(e){ return false; }
+}
 
 function sperrSchluessel(uid){ return 'loginSperre_' + uid; }
 
@@ -1971,9 +1986,12 @@ function sitzungsUhrStarten(){
     if(!CU) return;
     if(document.hidden){
       sitzungAktivitaet();
-      // Im Hintergrund gilt die kurze Frist: Restzeit auf SITZUNG_HINTERGRUND_MIN kürzen.
-      const kurz = sitzungsFristMin(CU.role) - SITZUNG_HINTERGRUND_MIN;
-      if(kurz > 0) _letzteAktion = Date.now() - kurz * 60000;
+      // Kurzfrist nur auf Touch-Geräten: am Desktop ist der Auslöser meist nur
+      // ein Tab-Wechsel, kein weggelegtes Gerät.
+      if(!istTastaturGeraet()){
+        const kurz = sitzungsFristMin(CU.role) - SITZUNG_HINTERGRUND_MIN;
+        if(kurz > 0) _letzteAktion = Date.now() - kurz * 60000;
+      }
     } else {
       pruefe();
     }
@@ -6096,10 +6114,13 @@ async function saAlsInteressentImportieren(id){
   const key=(await idbGet('settings','backendKey').catch(()=>null))?.value;
   if(key){
     try{
-      await fetchMitTimeout(BACKEND_AZURE+'/api/inbox-sa/mark-read',{
+      // v273: Statusprüfung nachgezogen (letzte Stelle nach P8-A). Ohne sie gilt
+      // auch ein HTTP 500 als Erfolg und die Warnung unten läuft nie an.
+      const r = await fetchMitTimeout(BACKEND_AZURE+'/api/inbox-sa/mark-read',{
         method:'POST', headers:{'Content-Type':'application/json','x-functions-key':key},
         body:JSON.stringify({ id:e.id })
       });
+      if(!r || !r.ok) throw new Error('HTTP '+(r ? r.status : 'ohne Antwort'));
     }catch(err){
       // v244 (R26): bisher still verschluckt – die Selbstauskunft blieb serverseitig
       // ungelesen, obwohl die Oberfläche „erledigt“ anzeigte.
@@ -6225,7 +6246,8 @@ async function mailRenderNachrichten(body){
 }
 
 // Website-Nachricht als gelesen/verarbeitet markieren (optimistisch).
-// Backend-Route robust: /api/inbox-mark-read; Fehler/404 werden ignoriert, Eintrag verschwindet trotzdem.
+// Backend-Route /api/inbox-mark-read. Seit v272 (P8-A) wird der HTTP-Status geprüft:
+// bei Fehlschlag wird das optimistische Ausblenden zurückgenommen (Kommentar war veraltet).
 async function mailNachrichtErledigt(id, btn){
   if(!id){ toast('Keine ID'); return; }
   const karte = btn && btn.closest ? btn.closest('div[style*="border"]') : null;
