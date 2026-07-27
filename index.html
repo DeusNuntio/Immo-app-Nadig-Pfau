@@ -913,7 +913,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=35;   // v242: +buch_journal (F4 GoBD)
-const APP_VERSION = '2026-07-27-v276';
+const APP_VERSION = '2026-07-27-v278';
 /* v222 (14.07.2026): KI-Auslesen Zaehlerstand aus Foto (analog rechnungOcrErkennen).
    Neuer Button "Zaehlerstand aus Foto auslesen (KI)" in modalZaehlerstand,
    sichtbar sobald ein Foto vorhanden ist. Sendet Base64+MimeType+Zaehlerart
@@ -2339,7 +2339,7 @@ async function renderDash() {
   // v181 (Punkt 5): Zähler-Schnellsuche – Nummer (auch Teilstück) oder Bezeichnung
   html += `<div class="card" style="margin-bottom:12px">
     <div class="card-hdr"><i class="ti ti-gauge"></i> Zähler suchen</div>
-    <input type="text" id="dashZaehlerSuche" enterkeyhint="search" placeholder="Zählernummer (auch Teilstück) oder Bezeichnung …"
+    <input type="text" id="dashZaehlerSuche" enterkeyhint="search" placeholder="Suche: Name, WE 12, TG 43, Zählernr., IBAN, Telefon …"
       oninput="zaehlerSucheInput()" style="width:100%;padding:10px;border:1px solid var(--ink-20);border-radius:8px;font-size:14px">
     <div id="dashZaehlerTreffer" style="margin-top:8px"></div>
   </div>`;
@@ -3157,6 +3157,30 @@ async function renderObjStellplaetze(el){
     </div>`;
   }
   el.innerHTML=h;
+  // v277: Kommt der Aufruf von einer TG-Zeile der Mieterkarte, zum Platz
+  // scrollen und kurz hervorheben. Fokus danach loeschen, damit ein spaeteres
+  // Oeffnen der Liste nicht erneut springt.
+  if(window._tgFokusSp){
+    const ziel=document.getElementById('spCard_'+window._tgFokusSp);
+    window._tgFokusSp=null;
+    if(ziel){
+      requestAnimationFrame(()=>{
+        ziel.scrollIntoView({behavior:'smooth', block:'center'});
+        ziel.style.boxShadow='0 0 0 2px var(--copper)';
+        ziel.style.background='var(--ink-05)';
+        setTimeout(()=>{ ziel.style.boxShadow=''; ziel.style.background=''; }, 2000);
+      });
+    }
+  }
+}
+
+/* v277: Nach einer Aenderung am Stellplatz die passende Ansicht neu aufbauen.
+   Ohne das blieb eine offene Mieterkarte auf dem alten Betrag stehen - genau
+   der Fall, in dem TG 58 dort noch 90 EUR zeigte, obwohl die Liste 45 EUR
+   auswies. */
+async function spAnsichtAktualisieren(sp){
+  if(curPage==='objekt' && currentObjId===sp?.objektId){ await renderObjTab('stellplaetze'); return; }
+  if(curPage==='mieter' && sp?.mieterId && currentMieterId===sp.mieterId){ await showMieter(sp.mieterId); }
 }
 
 /* Zuordnen/Wechseln: Krefelder Wohnungsmieter, bestehende TG-Mieter oder Neuanlage */
@@ -3222,7 +3246,7 @@ async function saveSpZuordnung(spId){
   await idbPut('stellplaetze', sp);
   syncSoon(); closeModal();
   toast(`Stellplatz ${sp.nr} → ${m.mieter} ✓`);
-  if(curPage==='objekt') await renderObjTab('stellplaetze');
+  await spAnsichtAktualisieren(sp);
 }
 
 /* Externen TG-Mieter anlegen (Person ohne Wohnung im Bestand) */
@@ -3343,7 +3367,7 @@ async function saveSpMiete(spId){
     await idbPut('stellplaetze', sp); syncSoon();
   }
   closeModal();
-  if(curPage==='objekt') await renderObjTab('stellplaetze');
+  await spAnsichtAktualisieren(sp);
 }
 
 async function modalNeuerStellplatz(objektId){
@@ -3698,37 +3722,113 @@ function zaehlerSucheInput(){
   clearTimeout(window._zaehlerSucheTimer);
   window._zaehlerSucheTimer=setTimeout(zaehlerSucheAusfuehren, 250);
 }
+/* v278: Universalsuche. Sammelt Treffer aus mehreren Quellen und zeigt sie
+   gruppiert. Jede Quelle liefert {typ, titel, zeile, icon, aktion, rang} –
+   `rang` steuert die Sortierung (0 = bester Treffer). Berechtigungen werden je
+   Quelle geprueft: `darfObjekt` fuer Objektbezug, `istVerwalter` fuer
+   Bankdaten. */
 async function zaehlerSucheAusfuehren(){
   const box=document.getElementById('dashZaehlerTreffer');
   const q=(document.getElementById('dashZaehlerSuche')?.value||'').trim();
   if(!box) return;
   if(q.length<2){ box.innerHTML = q ? '<div style="font-size:12px;color:var(--ink-40)">Mindestens 2 Zeichen eingeben …</div>' : ''; return; }
   const qn=zaehlerSucheNorm(q), ql=q.toLowerCase();
-  let alle=[];
-  try{ alle=await idbGetAll('zaehler'); }catch(e){}
-  const treffer=alle.filter(z=>{
-    if(!z || !darfObjekt(z.objektId)) return false;
-    const nr=zaehlerSucheNorm(z.zaehlernummer);
-    return (nr && nr.includes(qn)) || (z.name||'').toLowerCase().includes(ql);
-  }).sort((a,b)=>{
-    // exakte/beginnende Nummerntreffer zuerst
-    const an=zaehlerSucheNorm(a.zaehlernummer), bn=zaehlerSucheNorm(b.zaehlernummer);
-    const ap=an.startsWith(qn)?0:1, bp=bn.startsWith(qn)?0:1;
-    return ap-bp || (a.name||'').localeCompare(b.name||'','de');
-  }).slice(0,15);
-  if(!treffer.length){ box.innerHTML='<div style="font-size:12px;color:var(--ink-40)">Keine passenden Zähler gefunden.</div>'; return; }
-  box.innerHTML=treffer.map(z=>{
-    const obj=getObj(z.objektId);
-    return `<div style="display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--ink-10);cursor:pointer" onclick="zaehlerTrefferOeffnen('${z.id}')">
-      <i class="ti ${ZAEHLER_ICON[z.art]||'ti-gauge'}" style="font-size:18px;color:var(--copper)"></i>
+
+  /* "WE 12" / "TG 43" gezielt erkennen – ohne das wuerde die 12 auch in
+     Zaehlernummern und IBANs treffen und die Liste zumuellen. */
+  const mWe = ql.match(/^we\s*(\d+)$/);
+  const mTg = ql.match(/^tg\s*(\d+)$/);
+  const nurZiffern = /^\d+$/.test(ql);
+
+  const treffer=[];
+  const add=(o)=>treffer.push(o);
+
+  // ── Mieter ─────────────────────────────────────────────────────────────
+  let mieter=[];
+  try{ mieter=await idbGetAll('mieter'); }catch(e){}
+  for(const m of mieter){
+    if(!m || !m.mieter || !darfObjekt(m.objektId)) continue;
+    if(m._vormieter && !ql.includes('ehem')) { /* Altmieter nur nachrangig */ }
+    const obj=getObj(m.objektId);
+    const weNr=String(m.weNr||'');
+    let rang=null, warum='';
+    if(mWe){ if(weNr===mWe[1]) { rang=0; warum='WE '+weNr; } }
+    else if(mTg){ /* Stellplaetze weiter unten */ }
+    else {
+      const name=(m.mieter||'').toLowerCase();
+      if(name.includes(ql)) { rang = name.startsWith(ql)?0:1; warum=''; }
+      else if(istVerwalter() && m.iban && zaehlerSucheNorm(m.iban).includes(qn)) { rang=2; warum='IBAN'; }
+      else if(m.telefon && zaehlerSucheNorm(m.telefon).includes(qn)) { rang=2; warum='Telefon'; }
+      else if(m.email && (m.email||'').toLowerCase().includes(ql)) { rang=2; warum='E-Mail'; }
+      else if(nurZiffern && weNr===ql) { rang=1; warum='WE '+weNr; }
+    }
+    if(rang===null) continue;
+    if(m._vormieter) rang+=4;
+    add({typ:'Mieter', icon:'ti-user', rang,
+      titel:(m.mieter||'')+(m._vormieter?' (ehemalig)':'')+(m.leerstand?' · Leerstand':''),
+      zeile:[obj?.name||'', weNr?'WE '+weNr:'', warum].filter(Boolean).join(' · '),
+      aktion:`showMieter('${m.id}')`});
+  }
+
+  // ── Stellplaetze ───────────────────────────────────────────────────────
+  let sps=[];
+  try{ sps=await idbGetAll('stellplaetze'); }catch(e){}
+  for(const sp of sps){
+    if(!sp || sp.geloescht || !darfObjekt(sp.objektId)) continue;
+    const nr=String(sp.nr||'');
+    let rang=null;
+    if(mTg){ if(nr===mTg[1]) rang=0; }
+    else if(nurZiffern){ if(nr===ql) rang=1; }
+    else if((sp.mieterName||'').toLowerCase().includes(ql)) rang=2;
+    if(rang===null) continue;
+    add({typ:'Stellplatz', icon:'ti-parking', rang,
+      titel:'TG '+nr+' · '+fmtEur(sp.miete)+'/Mon.',
+      zeile:[sp.status==='vermietet'?(sp.mieterName||''):sp.status, getObj(sp.objektId)?.name||''].filter(Boolean).join(' · '),
+      aktion:`tgSpringeZuStellplatz('${sp.objektId}','${sp.id}')`});
+  }
+
+  // ── Zaehler (bisherige Logik) ──────────────────────────────────────────
+  if(!mWe && !mTg){
+    let alle=[];
+    try{ alle=await idbGetAll('zaehler'); }catch(e){}
+    for(const z of alle){
+      if(!z || !darfObjekt(z.objektId)) continue;
+      const nr=zaehlerSucheNorm(z.zaehlernummer);
+      const nameTreffer=(z.name||'').toLowerCase().includes(ql);
+      if(!(nr && nr.includes(qn)) && !nameTreffer) continue;
+      add({typ:'Zähler', icon:ZAEHLER_ICON[z.art]||'ti-gauge', rang: (nr&&nr.startsWith(qn))?0:2,
+        titel:(z.name||'')+(z.weNr?' · WE '+z.weNr:' · Allgemein'),
+        zeile:[z.zaehlernummer?'Nr. '+z.zaehlernummer:'', getObj(z.objektId)?.name||''].filter(Boolean).join(' · '),
+        aktion:`zaehlerTrefferOeffnen('${z.id}')`});
+    }
+  }
+
+  // ── Objekte ────────────────────────────────────────────────────────────
+  if(!mWe && !mTg){
+    for(const o of OBJEKTE){
+      if(!darfObjekt(o.id)) continue;
+      if(!(o.name||'').toLowerCase().includes(ql) && !(o.ort||'').toLowerCase().includes(ql)) continue;
+      add({typ:'Objekt', icon:'ti-building', rang:1, titel:o.name, zeile:o.ort||'',
+        aktion:`showObjekt('${o.id}')`});
+    }
+  }
+
+  if(!treffer.length){ box.innerHTML='<div style="font-size:12px;color:var(--ink-40)">Nichts gefunden. Versucht wurden Name, WE-Nr., TG-Nr., Zählernummer, IBAN, Telefon und Objekt.</div>'; return; }
+
+  treffer.sort((a,b)=> a.rang-b.rang || (a.titel||'').localeCompare(b.titel||'','de'));
+  const gekuerzt=treffer.slice(0,20);
+  const rest=treffer.length-gekuerzt.length;
+  box.innerHTML=gekuerzt.map(t=>`<div style="display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--ink-10);cursor:pointer" onclick="${t.aktion}">
+      <i class="ti ${t.icon}" style="font-size:18px;color:var(--copper)"></i>
       <div style="flex:1;min-width:0">
-        <div style="font-size:13px;font-weight:600">${esc(z.name||'')}${z.weNr?` <span style="font-size:11px;color:var(--copper)">· WE ${esc(String(z.weNr))}</span>`:' <span style="font-size:11px;color:var(--ink-40)">· Allgemein</span>'}</div>
-        <div style="font-size:11px;color:var(--ink-40)">${z.zaehlernummer?`<i class="ti ti-hash"></i> ${esc(z.zaehlernummer)} · `:''}${esc(obj?.name||'')}</div>
+        <div style="font-size:13px;font-weight:600">${esc(t.titel)}</div>
+        <div style="font-size:11px;color:var(--ink-40)"><span style="color:var(--copper)">${t.typ}</span>${t.zeile?' · '+esc(t.zeile):''}</div>
       </div>
       <i class="ti ti-chevron-right" style="color:var(--ink-30)"></i>
-    </div>`;
-  }).join('');
+    </div>`).join('')
+    + (rest>0?`<div style="font-size:11px;color:var(--ink-40);padding-top:6px">… und ${rest} weitere. Suche verfeinern.</div>`:'');
 }
+
 async function zaehlerTrefferOeffnen(zid){
   const z=await idbGet('zaehler', zid).catch(()=>null);
   if(!z) return;
@@ -22689,9 +22789,12 @@ function mieterFormHTML(obj, m={}) {
           m.auszug.split('.').reverse().join('-'):m.auszug||''}">
         <div id="mAuszugHint" style="font-size:10px;color:var(--copper-d);margin-top:2px"></div></div>
     </div>
-    <div class="f-row">
-      <div class="f"><label>TG-Stellplatz Nr.</label>
-        <input type="text" id="mTgNr" value="${m.tgNr||''}"></div>
+    <!-- v277: Stellplaetze kommen aus dem Store 'stellplaetze'. Das alte
+         Freitextfeld bleibt als verstecktes Altfeld erhalten, damit die
+         Speicherlogik unveraendert weiterlaeuft. -->
+    <input type="hidden" id="mTgNr" value="${escAttr(m.tgNr||'')}">
+    <div class="f"><label>Tiefgaragen-Stellplätze</label>
+      <div id="mTgBlock" style="font-size:12px;color:var(--ink-60)">wird geladen …</div>
     </div>
     <div class="f-row">
       <div class="f"><label>Vertragsmodell / Vertragswerk</label>
@@ -23055,6 +23158,28 @@ async function modalEditMieter(id) {
     </div>`);
   vzHistInit(m); vzHistRender();
   mfInit(m); mfRender();
+  mTgBlockRender(id);
+}
+
+/* v277: Stellplaetze im Bearbeiten-Dialog anzeigen. Miete und Nummer werden
+   bewusst NICHT hier bearbeitet - sie gehoeren an den Stellplatz-Record, wo
+   jede Aenderung in der Historie landet. Der Knopf fuehrt dorthin. */
+async function mTgBlockRender(mieterId){
+  const el=document.getElementById('mTgBlock'); if(!el) return;
+  const liste=await stellplaetzeVonMieter(mieterId).catch(()=>[]);
+  if(!liste.length){
+    el.innerHTML='<span style="color:var(--ink-40)">Kein Stellplatz zugeordnet. Zuordnung erfolgt im Tiefgaragen-Objekt.</span>';
+    return;
+  }
+  const m=await idbGet('mieter',mieterId).catch(()=>null);
+  el.innerHTML=liste.map(sp=>`<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--ink-05)">
+      <div style="width:38px;height:30px;border-radius:6px;background:var(--ink-05);display:flex;align-items:center;justify-content:center;font-weight:700;color:var(--copper);font-size:12px">${esc(String(sp.nr))}</div>
+      <div style="flex:1"><b>${fmtEur(sp.miete)}</b>/Mon.
+        <span style="color:var(--ink-40)"> · ${tgSchluesselAnzahl(sp,m)} Schlüssel</span></div>
+      <button class="btn btn-sm" onclick="closeModal(); modalSpMiete('${sp.id}')" title="Miete am Stellplatz ändern"><i class="ti ti-currency-euro"></i></button>
+      <button class="btn btn-sm" onclick="closeModal(); tgSpringeZuStellplatz('${sp.objektId}','${sp.id}')" title="Zum Stellplatz"><i class="ti ti-arrow-right"></i></button>
+    </div>`).join('')
+    + `<div style="margin-top:6px;font-size:11px;color:var(--ink-40)">Summe ${fmtEur(liste.reduce((a,sp)=>a+(Number(sp.miete)||0),0))}/Mon. · Schlüsselkaution ${fmtEur(tgKautionSoll(liste,m))}</div>`;
 }
 
 async function saveEditMieter(id) {
@@ -34720,6 +34845,160 @@ const AS_POSITIONEN = [
   {id:'abzug',        name:'Abzug (vor der Abrechnung)', block:3, lohn:false},
 ];
 function asPositionName(id){ return AS_POSITIONEN.find(p=>p.id===id)?.name || id; }
+
+/* ── A+S-Aufstellung (v278) ─────────────────────────────────────────────────
+   Sammelt die Rechnungen einer Abrechnungseinheit und erzeugt die Meldung an
+   A+S im Aufbau des Formulars. Der Abrechnungszeitraum ist je Einheit und
+   Heizung verschieden und passt oft nicht zu den Lieferzeitraeumen - deshalb
+   wird er hier frei eingegeben und jede Rechnung geprueft, ob sie ganz,
+   teilweise oder gar nicht hineinfaellt. */
+
+/* Anteil einer Rechnung am Abrechnungszeitraum. Weist die Rechnung eigene
+   Teilabschnitte aus (teilzeitraeume aus der OCR), werden diese verwendet -
+   das ist genauer als jede eigene Rechnung. Sonst taggenau pro rata. */
+function asAnteilBerechnen(r, vonISO, bisISO){
+  const rv=r.leistungVonISO||r.datum, rb=r.leistungBisISO||r.leistungVonISO||r.datum;
+  if(!rv) return {faktor:1, hinweis:'ohne Zeitraum – voll gezählt'};
+  const tag=x=>Math.floor(new Date(x+'T00:00:00Z').getTime()/86400000);
+  const [a,b,v,z]=[tag(rv),tag(rb),tag(vonISO),tag(bisISO)];
+  if(b<v||a>z) return {faktor:0, hinweis:'außerhalb des Zeitraums'};
+  if(a>=v&&b<=z) return {faktor:1, hinweis:''};
+  // Teilüberschneidung: erst versuchen, die Abschnitte der Rechnung zu nutzen
+  if(Array.isArray(r.teilzeitraeume)&&r.teilzeitraeume.length){
+    let inn=0, ges=0;
+    for(const t of r.teilzeitraeume){
+      const bet=Number(t.betrag)||0; ges+=bet;
+      const ta=tag(t.von), tb=tag(t.bis);
+      if(ta>=v&&tb<=z) inn+=bet;
+    }
+    if(ges>0) return {faktor:inn/ges, hinweis:'aus Teilabschnitten der Rechnung'};
+  }
+  const ueber=Math.min(b,z)-Math.max(a,v)+1, gesamt=b-a+1;
+  return {faktor: gesamt>0?ueber/gesamt:0, hinweis:'tagesanteilig ('+ueber+' von '+gesamt+' Tagen)'};
+}
+
+async function modalAsAufstellung(einheitId){
+  const eh=AS_EINHEITEN.find(x=>x.id===einheitId)||AS_EINHEITEN[0];
+  const j=new Date().getFullYear();
+  showModal(`<div class="m-title"><i class="ti ti-flame"></i> A+S-Heizkostenaufstellung</div>
+    <div class="f"><label>Abrechnungseinheit</label>
+      <select id="asEinheit">${AS_EINHEITEN.map(x=>`<option value="${x.id}"${x.id===eh.id?' selected':''}>${esc(x.name)} · AZ ${x.az}</option>`).join('')}</select></div>
+    <div class="f-row">
+      <div class="f" style="flex:1"><label>Zeitraum von</label><input type="date" id="asVon" value="${j-1}-07-01"></div>
+      <div class="f" style="flex:1"><label>bis</label><input type="date" id="asBis" value="${j}-06-30"></div>
+    </div>
+    <div class="f"><label>Brennstoff</label>
+      <select id="asBrennstoff">${BRENNSTOFFE.map(b=>`<option value="${b.id}"${b.id==='erdgas'?' selected':''}>${b.name}${b.pef!=null?' · PEF '+String(b.pef).replace('.',','):''}</option>`).join('')}</select></div>
+    <p style="font-size:11px;color:var(--ink-40)">Rechnungen, die nur teilweise in den Zeitraum fallen, werden anteilig übernommen – bevorzugt anhand der Abschnitte auf der Rechnung, sonst tagesanteilig. Jede Zeile ist im Ausdruck nachvollziehbar.</p>
+    <div class="f-row" style="margin-top:12px">
+      <button class="btn btn-copper btn-full" onclick="asAufstellungDrucken()"><i class="ti ti-printer"></i> Aufstellung erzeugen</button>
+      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+    </div>`);
+}
+
+async function asAufstellungDrucken(){
+  const eh=AS_EINHEITEN.find(x=>x.id===document.getElementById('asEinheit').value);
+  const von=document.getElementById('asVon').value, bis=document.getElementById('asBis').value;
+  const bs=brennstoffFuer(document.getElementById('asBrennstoff').value);
+  if(!von||!bis||bis<von){ toast('Bitte gültigen Zeitraum wählen.'); return; }
+
+  const alle=(await idbGetAll('rechnungen').catch(()=>[]))
+    .filter(r=>r && r.zuordnung==='heizextern' && eh.objekte.includes(r.objektId));
+  const zeilen=[];
+  for(const r of alle){
+    const {faktor,hinweis}=asAnteilBerechnen(r,von,bis);
+    if(faktor<=0) continue;
+    zeilen.push({r,faktor,hinweis,
+      betrag:(Number(r.betrag)||0)*faktor,
+      mwst:(Number(r.mwstBetrag)||0)*faktor,
+      menge:(Number(r.verbrauchMenge)||0)*faktor,
+      co2kg:(Number(r.co2MengeKg)||0)*faktor,
+      co2eur:(Number(r.co2KostenEur)||0)*faktor,
+      lohn:(Number(r.lohnanteil)||0)*faktor});
+  }
+  if(!zeilen.length){ toast('Keine Rechnungen mit Zuordnung „Heizkosten extern" in diesem Zeitraum.'); return; }
+
+  const block=(n)=>zeilen.filter(z=>(AS_POSITIONEN.find(p=>p.id===(z.r.asPosition||'brennstoff'))?.block)===n);
+  const dfmtd=x=>x?String(x).split('-').reverse().join('.'):'';
+  const n2=x=>(Number(x)||0).toFixed(2).replace('.',',');
+  const n3=x=>(Number(x)||0).toFixed(3).replace('.',',');
+  const sum=(l,k)=>l.reduce((a,z)=>a+(z[k]||0),0);
+
+  const b1=block(1), b2=block(2), b3=block(3);
+  const zeileB1=z=>`<tr>
+    <td>${dfmtd(z.r.datum)}</td><td class="r">${z.menge?n3(z.menge):''}</td>
+    <td class="r">${n2(z.betrag)}</td><td class="r">${z.mwst?n2(z.mwst):''}</td>
+    <td class="r">${z.co2eur?n2(z.co2eur):''}</td><td class="r">${z.co2kg?n2(z.co2kg):''}</td>
+    <td class="r">${bs&&bs.pef!=null?String(bs.pef).replace('.',','):''}</td></tr>
+    ${z.hinweis?`<tr class="hw"><td colspan="7">${esc(z.r.lieferant||'')}${z.r.rechnungsnr?' · Rg. '+esc(z.r.rechnungsnr):''} · ${esc(z.hinweis)}</td></tr>`:
+      `<tr class="hw"><td colspan="7">${esc(z.r.lieferant||'')}${z.r.rechnungsnr?' · Rg. '+esc(z.r.rechnungsnr):''}</td></tr>`}`;
+  const zeileB2=z=>`<tr>
+    <td>${esc(asPositionName(z.r.asPosition))}</td><td>${dfmtd(z.r.datum)}</td>
+    <td class="r">${n2(z.betrag)}</td><td class="r">${z.mwst?n2(z.mwst):''}</td>
+    <td class="r">${z.lohn?n2(z.lohn):'<b style="color:#b00">fehlt</b>'}</td></tr>
+    <tr class="hw"><td colspan="5">${esc(z.r.lieferant||'')}${z.hinweis?' · '+esc(z.hinweis):''}</td></tr>`;
+
+  const ohneLohn=b2.filter(z=>AS_POSITIONEN.find(p=>p.id===z.r.asPosition)?.lohn && !z.lohn).length;
+
+  const html=`<!DOCTYPE html><html lang="de"><head><meta charset="utf-8">
+<title>A+S-Heizkostenaufstellung ${esc(eh.name)}</title>
+<style>
+ body{font-family:Arial,Helvetica,sans-serif;font-size:11px;color:#111;margin:24px}
+ h1{font-size:16px;margin:0 0 2px} h2{font-size:12px;margin:16px 0 4px;background:#eee;padding:4px 6px}
+ .kopf{display:flex;justify-content:space-between;border-bottom:2px solid #333;padding-bottom:8px;margin-bottom:10px}
+ .az{font-size:14px;font-weight:700}
+ table{width:100%;border-collapse:collapse;margin-bottom:4px}
+ th,td{border:1px solid #999;padding:3px 5px;text-align:left;vertical-align:top}
+ th{background:#f3f3f3;font-size:10px}
+ td.r{text-align:right} tr.hw td{border-top:none;font-size:9px;color:#666;padding-top:0}
+ tfoot td{font-weight:700;background:#f7f7f7}
+ .warn{border:1px solid #b00;background:#fff4f4;color:#b00;padding:6px 8px;margin:8px 0;font-size:10px}
+ .fuss{margin-top:18px;font-size:9px;color:#666;border-top:1px solid #ccc;padding-top:6px}
+</style></head><body>
+<div class="kopf">
+  <div><h1>Heizkostenaufstellung</h1>
+    <div>Abrechnungseinheit: <b>${esc(eh.name)}</b></div>
+    <div>Abrechnungszeitraum: ${dfmtd(von)} – ${dfmtd(bis)}</div>
+    <div>Brennstoff: ${esc(bs?.name||'–')}${bs&&bs.pef!=null?` · Primärenergiefaktor ${String(bs.pef).replace('.',',')} (Anlage 4 GEG)`:''}</div></div>
+  <div style="text-align:right"><div class="az">Aktenzeichen ${esc(eh.az)}</div>
+    <div>Grundstücksgem. Nadig, Pfau</div><div>Zur Verlach 37, 40723 Hilden</div>
+    <div>erstellt ${new Date().toLocaleDateString('de-DE')}</div></div>
+</div>
+
+<h2>1. Brennstoffkosten</h2>
+${b1.length?`<table>
+ <thead><tr><th>Datum</th><th>Menge${bs?' in '+bs.einheit:''}</th><th>Gesamtbrutto €</th><th>MwSt. €</th>
+ <th>CO₂-Abgabe €</th><th>CO₂-Ausstoß kg</th><th>Primärenergie&shy;faktor</th></tr></thead>
+ <tbody>${b1.map(zeileB1).join('')}</tbody>
+ <tfoot><tr><td>Summe</td><td class="r">${n3(sum(b1,'menge'))}</td><td class="r">${n2(sum(b1,'betrag'))}</td>
+ <td class="r">${n2(sum(b1,'mwst'))}</td><td class="r">${n2(sum(b1,'co2eur'))}</td>
+ <td class="r">${n2(sum(b1,'co2kg'))}</td><td></td></tr></tfoot></table>`
+ :'<p style="color:#666">Keine Brennstofflieferungen im Zeitraum erfasst.</p>'}
+
+<h2>2. Weitere Heizungsbetriebskosten (§ 7 HeizkostenV)</h2>
+${b2.length?`<table>
+ <thead><tr><th>Position</th><th>Datum</th><th>Gesamtbrutto €</th><th>MwSt. €</th><th>davon Lohnkosten €</th></tr></thead>
+ <tbody>${b2.map(zeileB2).join('')}</tbody>
+ <tfoot><tr><td colspan="2">Summe</td><td class="r">${n2(sum(b2,'betrag'))}</td>
+ <td class="r">${n2(sum(b2,'mwst'))}</td><td class="r">${n2(sum(b2,'lohn'))}</td></tr></tfoot></table>`
+ :'<p style="color:#666">Keine weiteren Betriebskosten im Zeitraum erfasst.</p>'}
+${ohneLohn?`<div class="warn">Bei ${ohneLohn} Position${ohneLohn>1?'en':''} fehlt der Lohnkostenanteil. Ohne diese Angabe kann A+S den Ausweis der haushaltsnahen Handwerkerleistungen nach § 35a EStG für die Mieter nicht erstellen.</div>`:''}
+
+${b3.length?`<h2>3. Abzüge</h2><table>
+ <thead><tr><th>Position</th><th>Datum</th><th>Betrag €</th></tr></thead>
+ <tbody>${b3.map(z=>`<tr><td>${esc(z.r.lieferant||'')}</td><td>${dfmtd(z.r.datum)}</td><td class="r">${n2(z.betrag)}</td></tr>`).join('')}</tbody>
+ <tfoot><tr><td colspan="2">Summe</td><td class="r">${n2(sum(b3,'betrag'))}</td></tr></tfoot></table>`:''}
+
+<div class="fuss">
+ Erstellt aus der Hausverwaltung Nadig &amp; Pfau · ${zeilen.length} Rechnungsposition${zeilen.length!==1?'en':''} ausgewertet.
+ Anteilig übernommene Rechnungen sind je Zeile gekennzeichnet. Der Primärenergiefaktor ist die gesetzliche
+ Vorgabe nach Anlage 4 GEG und nicht mit dem Emissionsfaktor in kg CO₂/kWh der Versorgerrechnung zu verwechseln.
+ Angaben ohne Gewähr – vor Einreichung bitte gegen die Originalbelege prüfen.
+</div></body></html>`;
+
+  closeModal();
+  druckHTML(html, 'A+S-Aufstellung '+eh.name, null, true);
+}
 function rechnZuordnungName(id){ return RECHN_ZUORDNUNG.find(z=>z.id===id)?.name || id; }
 
 /* v276: Blendet die Felder der A+S-Maske je Position ein bzw. aus und zeigt an,
@@ -34789,6 +35068,7 @@ async function renderRechnungen(){
   const summeOffen=rc(liste.filter(r=>!r.bezahlt).reduce((s,r)=>s+(Number(r.betrag)||0),0));
 
   let h=`<div class="s-hdr"><div class="s-title"><i class="ti ti-file-invoice"></i> Rechnungen</div>
+    <button class="btn btn-sm" onclick="modalAsAufstellung()" title="Heizkostenaufstellung für A+S erzeugen"><i class="ti ti-flame"></i> A+S</button>
     <button class="btn btn-sm btn-copper" onclick="modalRechnungErfassen()"><i class="ti ti-plus"></i> Erfassen</button>
   </div>`;
 
