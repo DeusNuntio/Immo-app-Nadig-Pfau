@@ -1230,7 +1230,34 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=35;   // v242: +buch_journal (F4 GoBD)
-const APP_VERSION = '2026-07-29-v287';
+const APP_VERSION = '2026-07-29-v288';
+/* v288 (29.07.2026): Duplex-Leerseiten ueber hinterlegte Seitenzahlen.
+   Nutzerbefund am Ausdruck vom 29.07.2026 (16 Seiten): v287 hat zwar Leerseiten
+   eingefuegt, aber an den FALSCHEN Stellen - auf S. 13 und S. 16 statt vor
+   Merkblatt (S. 8) und Datenschutzhinweis (S. 12).
+   URSACHE: v287 rechnete die Seitenzahl aus der Hoehe hoch (Hoehe/Seitenhoehe).
+   Das geht systematisch daneben, sobald break-inside:avoid greift - eine Liste
+   oder ein Unterschriftsblock, der nicht mehr auf die Seite passt, rutscht
+   komplett auf die naechste und laesst unten Leerraum, den eine reine
+   Hoehenrechnung nicht kennt. Die Hausordnung fiel deshalb mit 2 statt 3 Seiten
+   aus, und ab da lag die gesamte Rechnung daneben.
+   LOESUNG: Die Anlageninhalte sind statisch, ihre Seitenzahl damit exakt
+   bekannt. Sie steht jetzt in ANLAGE_DRUCKSEITEN und wird als data-seiten an
+   den Anlagen-Container geschrieben; das Druck-Script liest sie, statt zu
+   schaetzen. Gemessen wird nur noch der Hauptteil - der variiert mit den
+   gewaehlten Optionen (Mietpreisbremse, Sondervereinbarungen) und besteht
+   ueberwiegend aus Fliesstext, bei dem die Hochrechnung traegt. Die Messung des
+   Hauptteils war schon in v287 richtig: die Hausordnung begann korrekt auf S. 5.
+   BEIM AENDERN BEACHTEN: Wird der Text einer Anlage laenger oder kuerzer, muss
+   die Zahl in ANLAGE_DRUCKSEITEN angepasst werden. Ein Fehler faellt am Vermerk
+   auf der Leerseite auf, bleibt also nicht unbemerkt.
+   Ausserdem: Die Rueckstellung der Messbreite liegt jetzt in einem finally -
+   bei einem Fehler waere sonst mit der schmalen Messbreite gedruckt worden.
+   Keine Store-/DB-Aenderung; DB_VER bleibt 35.
+   NICHT AUS DER APP LOESBAR: Die Zeile mit Datum, Titel, URL und Seitenzahl am
+   oberen und unteren Blattrand stammt vom BROWSER, nicht aus dem Dokument. Sie
+   laesst sich per CSS nicht abschalten; im Druckdialog gibt es dafuer den
+   Schalter "Kopf- und Fusszeilen". Der Browser merkt sich die Einstellung. */
 /* v287 (29.07.2026): Zwei Nutzerbefunde am gedruckten Vertrag (Mindener 25, WE 13).
    1) LEERSEITEN FUER DEN DUPLEXDRUCK WERDEN JETZT SELBST BERECHNET.
       v285 hatte das ueber CSS geloest (page-break-before:right). Der Befund am
@@ -18525,42 +18552,73 @@ function mvVertragHTML(d){
    bei einer Anlage, die eine Seite fast genau fuellt, kann die Rechnung um eine
    Seite danebenliegen. Deshalb traegt jede Leerseite einen sichtbaren Vermerk -
    ein Fehler faellt beim Zusammenheften sofort auf, statt unbemerkt zu bleiben. */
+/* v288: Umfang jeder Anlage in DRUCKSEITEN.
+
+   Warum hinterlegt und nicht gemessen: v287 hat die Seitenzahl aus der Hoehe
+   hochgerechnet (Hoehe / Seitenhoehe). Das geht systematisch daneben, sobald
+   break-inside:avoid im Spiel ist - eine Liste oder ein Unterschriftsblock, der
+   nicht mehr auf die Seite passt, rutscht komplett auf die naechste und laesst
+   unten Leerraum, den eine reine Hoehenrechnung nicht kennt. Am Ausdruck vom
+   29.07.2026 fiel die Hausordnung deshalb mit 2 statt 3 Seiten aus, und die
+   Leerseiten landeten zwei Anlagen zu spaet.
+
+   Die Anlageninhalte sind statisch (Hausordnung, Merkblatt, Datenschutzhinweis
+   sind feste Texte), ihre Seitenzahl ist damit stabil und exakt bekannt.
+   Platzhalterseiten sind immer genau eine Seite.
+
+   WICHTIG BEIM AENDERN: Wird der Text einer Anlage laenger oder kuerzer, muss
+   die Zahl hier angepasst werden - sonst sitzen die Leerseiten falsch. Ein
+   Fehler faellt am Vermerk auf der Leerseite auf, bleibt also nicht unbemerkt.
+   Stand der Werte: Ausdruck vom 29.07.2026 (v287, Schriften eingebettet). */
+const ANLAGE_DRUCKSEITEN = {
+  hausordnung: 3,   // § 1 bis § 10 samt Unterschriftszeile
+  merkblatt:   3,   // Regeln · Lueftungsregeln · Heizperiode
+  dsgvo:       1,   // seit v285 im Kompaktmodus einseitig
+  sepa:        1,   // ausgefuelltes Mandat, Kompaktmodus
+};
+const ANLAGE_PLATZHALTER_SEITEN = 1;
+
 function mvDuplexScript(){
   const code = `(function(){
     try{
+      var anlagen=[].slice.call(document.querySelectorAll('.mv-pb'));
+      if(!anlagen.length) return;
+
+      /* Nur der Hauptteil wird gemessen - sein Umfang haengt von den gewaehlten
+         Optionen ab (Mietpreisbremse, Sondervereinbarungen, Anlagenliste). Er
+         besteht ueberwiegend aus Fliesstext, der ueber Seitengrenzen laufen
+         darf; die Hochrechnung ueber die Hoehe traegt hier. Fuer die Anlagen
+         waere sie unbrauchbar - deshalb bringen die ihre Seitenzahl mit. */
       var BREITE='178mm', HOEHE='264mm';
       var body=document.body;
       var altBreite=body.style.width;
       body.style.width=BREITE;
-      var mess=document.createElement('div');
-      mess.style.cssText='height:'+HOEHE+';position:absolute;left:-9999px;top:0';
-      body.appendChild(mess);
-      var H=mess.getBoundingClientRect().height;
-      if(mess.parentNode) mess.parentNode.removeChild(mess);
-      if(!(H>1)){ body.style.width=altBreite; return; }
+      var H=0, hauptHoehe=0;
+      try{
+        var mess=document.createElement('div');
+        mess.style.cssText='height:'+HOEHE+';position:absolute;left:-9999px;top:0';
+        body.appendChild(mess);
+        H=mess.getBoundingClientRect().height;
+        if(mess.parentNode) mess.parentNode.removeChild(mess);
+        hauptHoehe=anlagen[0].getBoundingClientRect().top + (window.pageYOffset||0);
+      } finally {
+        /* Muss auch bei einem Fehler zurueckgesetzt werden - sonst wuerde mit
+           der schmalen Messbreite gedruckt. */
+        body.style.width=altBreite;
+      }
+      if(!(H>1)) return;
 
-      var oben=function(el){ return el.getBoundingClientRect().top + (window.pageYOffset||0); };
-      var punkte=[].slice.call(document.querySelectorAll('.mv-pb, .anlage-vt .pb'));
-      var seite=1, start=0;
-
-      for(var i=0;i<punkte.length;i++){
-        var el=punkte[i];
-        var top=oben(el);
-        // Seiten, die der Abschnitt davor belegt hat (mindestens eine).
-        var belegt=Math.max(1, Math.ceil((top-start-1)/H));
-        seite+=belegt;
-        start=top;
-        // Nur Anlagenanfaenge sollen ungerade beginnen, nicht die internen
-        // Umbrueche innerhalb einer Anlage.
-        if(el.className.indexOf('mv-pb')>=0 && seite%2===0){
+      var seite=1 + Math.max(1, Math.ceil((hauptHoehe-1)/H));   // erste Anlage
+      for(var i=0;i<anlagen.length;i++){
+        if(seite%2===0){
           var leer=document.createElement('div');
           leer.className='mv-leerseite';
-          el.parentNode.insertBefore(leer, el);
+          anlagen[i].parentNode.insertBefore(leer, anlagen[i]);
           seite++;
-          start=oben(el);   // nach dem Einfuegen hat sich alles verschoben
         }
+        var n=parseInt(anlagen[i].getAttribute('data-seiten'),10);
+        seite += (n>0 ? n : 1);
       }
-      body.style.width=altBreite;
     }catch(e){ /* Im Zweifel ohne Leerseiten drucken - besser als ein zerschossenes Layout. */ }
   })()`;
   return '<scr'+'ipt>'+code+'</scr'+'ipt>';
@@ -18615,7 +18673,10 @@ function mvAnlagenSeiten(anl, d){
          eine Stufe groesser gesetzt als vorgesehen und brachen entsprechend
          anders um. Die Klasse wandert deshalb auf den Wrapper. */
       const kompakt = mvAnlageBodyClass(full);
-      out += '<div class="mv-pb anlage-vt' + (kompakt?' '+kompakt:'') + '">' + inner + '</div>';
+      /* v288: Umfang mitgeben, damit das Duplex-Script die Seitenlage exakt
+         rechnen kann statt sie zu schaetzen. */
+      const seiten = ANLAGE_DRUCKSEITEN[a.key] || 1;
+      out += '<div class="mv-pb anlage-vt' + (kompakt?' '+kompakt:'') + '" data-seiten="' + seiten + '">' + inner + '</div>';
       return;
     }
     // Energieausweis: vorhandene Kennwerte aus dem Entwurf mit ausgeben
@@ -18626,7 +18687,7 @@ function mvAnlagenSeiten(anl, d){
       extra = '<p style="margin-top:10px">Energieausweis vorgelegt: ' + vorgelegt
         + (kw ? ('<br>Kennwerte: ' + kw) : '') + '</p>';
     }
-    out += '<div class="mv-pb">'
+    out += '<div class="mv-pb" data-seiten="' + ANLAGE_PLATZHALTER_SEITEN + '">'
       + '<h2 style="margin-top:0">' + mvEsc(a.titel) + '</h2>'
       + '<p>' + mvEsc(a.hinweis) + '</p>'
       + extra
