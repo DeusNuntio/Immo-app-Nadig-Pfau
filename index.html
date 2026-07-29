@@ -1230,7 +1230,58 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=35;   // v242: +buch_journal (F4 GoBD)
-const APP_VERSION = '2026-07-29-v288';
+const APP_VERSION = '2026-07-29-v290';
+/* v290 (29.07.2026): PIN-Anmeldung - Datensatz konnte dauerhaft unbrauchbar werden.
+   NUTZERBEFUND 29.07.2026: Der Hausmeister kam auf einem neu eingerichteten Handy
+   mit dem RICHTIGEN PIN nicht hinein; auf dem alten Geraet funktionierte derselbe
+   PIN weiter. Sync war grün, es lag also keine Uebertragungsstoerung vor.
+   URSACHE: pinSalt, pinHash und pinKdf sind EIN zusammengehoeriges Tripel - ein
+   Hash ist nur zusammen mit genau dem Salt pruefbar, aus dem er entstanden ist.
+   mergeRecord() fuehrte sie aber FELDWEISE zusammen. Fehlt auf der gewinnenden
+   Seite eines der Felder oder ist es leer, holt die Rueckholschleife es von der
+   Gegenseite - und es entsteht Salt von Geraet A mit Hash von Geraet B. Ein so
+   entstandener Benutzer laesst sich mit KEINEM PIN mehr anmelden, auch nicht mit
+   dem richtigen. Die vorhandene Selbstheilung in pinPruefen deckte das NICHT ab:
+   sie faengt nur einen abweichenden pinKdf-Wert ab, nicht ein falsches Salt.
+   Reproduziert in test_pinmerge.mjs - 3 von 5 Merge-Szenarien erzeugten ein
+   gemischtes Paar; nach dem Fix keines mehr.
+   1) FIX IM MERGE: Das Tripel wird immer komplett von EINER Seite uebernommen -
+      von der gewinnenden, sofern sie ein brauchbares Paar traegt, sonst von der
+      anderen. Nie mehr gemischt. Nebeneffekt: auch der bisher selbstgeheilte
+      pinKdf-Mix entsteht nicht mehr, der Fallback in pinPruefen bleibt als
+      Sicherheitsnetz fuer Altbestaende erhalten.
+   2) DIAGNOSE BEIM LOGIN: Traegt ein Datensatz kein brauchbares PIN-Paar, meldete
+      die App "Falscher PIN" - und schickte den Nutzer damit auf eine endlose
+      Suche nach einem Tippfehler, den es nicht gab. Der Fall wird jetzt benannt
+      ("kein PIN hinterlegt, Administrator muss ihn neu setzen") und zaehlt NICHT
+      als Fehlversuch: eine Wartesperre wuerde die Lage nur verschlimmern, da kein
+      weiterer Versuch je helfen koennte.
+   BEREITS BETROFFENE DATENSAETZE heilt der Fix nicht rueckwirkend - dort ist der
+   korrekte Hash unwiederbringlich verloren. Abhilfe: Administrator setzt in der
+   Benutzerverwaltung einen neuen PIN; das erzeugt ein frisches, konsistentes
+   Tripel und verteilt es ueber OneDrive.
+   Keine Store-/DB-Aenderung; DB_VER bleibt 35. */
+/* v289 (29.07.2026): Manueller Seitenumbruch raus, Seitenzahlen GEMESSEN.
+   1) Der harte Umbruch vor "Richtig heizen in der Heizperiode" (h2 class="pb")
+      ist entfernt - Nutzerwunsch. Er erzwang eine fast leere Seite: die Liste
+      der Lueftungsregeln stand allein auf einer Seite, danach begann zwingend
+      eine neue. Jetzt fliesst der Text; Seite 1 und 2 des Merkblatts sind
+      gefuellt, auf Seite 3 steht nur noch der Unterschriftsblock. Damit gibt es
+      im ganzen Dokument keinen manuell gesetzten Umbruch mehr.
+   2) ANLAGE_DRUCKSEITEN sind jetzt GEMESSEN statt geschaetzt. Neues Werkzeug
+      messen_mv.py: laedt die App in echtem Chromium, laesst sie die Anlage im
+      MIETVERTRAGS-KONTEXT erzeugen (gescopte Styles, Wrapper mit Kompaktklasse)
+      und druckt sie zu PDF; die Seitenzahl kommt aus pdfinfo.
+      WICHTIG - warum der Kontext zaehlt: Dieselbe Anlage als EINZELDOKUMENT
+      gemessen ergibt 2 Seiten, im Mietvertrag sind es 3. Nur die Messung im
+      Mietvertrags-Kontext deckt sich mit dem Ausdruck des Nutzers; sie
+      reproduziert die 3 Seiten der Hausordnung aus dem Ausdruck vom 29.07.2026.
+      Korrigiert wurden dadurch zwei Werte, die in v288 falsch geraten waren:
+      Datenschutzhinweis 1 -> 2 Seiten, SEPA-Mandat 1 -> 2 Seiten.
+   BEIM AENDERN EINER ANLAGE: messen_mv.py erneut laufen lassen und die Zahlen
+   in ANLAGE_DRUCKSEITEN nachziehen. Ein Fehler faellt am Vermerk auf der
+   Leerseite auf, bleibt also nicht unbemerkt.
+   Keine Store-/DB-Aenderung; DB_VER bleibt 35. */
 /* v288 (29.07.2026): Duplex-Leerseiten ueber hinterlegte Seitenzahlen.
    Nutzerbefund am Ausdruck vom 29.07.2026 (16 Seiten): v287 hat zwar Leerseiten
    eingefuegt, aber an den FALSCHEN Stellen - auf S. 13 und S. 16 statt vor
@@ -2321,6 +2372,18 @@ async function tryLogin(){
   // Altgerät gemergt) noch einen Klartext-PIN ohne Hash, zuerst migrieren.
   if(user && !user.pinHash && user.pin!=null){
     try{ await pinMigrationAlleUser(); user=await idbGet('users',uid); }catch(_){}
+  }
+  /* v290: Traegt der Datensatz kein brauchbares PIN-Paar, ist keine Anmeldung
+     moeglich - egal welcher PIN eingegeben wird. Das als "Falscher PIN" zu
+     melden, schickt den Nutzer auf eine endlose Suche nach einem Tippfehler
+     (Nutzerbefund 29.07.2026: Hausmeister kam auf einem neu eingerichteten
+     Geraet mit dem richtigen PIN nicht hinein). Der Fall wird deshalb benannt,
+     und er zaehlt NICHT als Fehlversuch - eine Wartesperre wuerde die Lage nur
+     verschlimmern, ohne dass ein weiterer Versuch je helfen koennte. */
+  if(user && (!user.pinHash || !user.pinSalt)){
+    showLoginErr('Für diesen Benutzer ist auf diesem Gerät kein PIN hinterlegt. '
+      + 'Ein Administrator muss den PIN neu setzen (Benutzerverwaltung).');
+    pinBuf='';updatePinDisplay();return;
   }
   if(!user || !(await pinPruefen(user, pinBuf))){
     // v273 (S1): Fehlversuch zählen und die nächste Wartezeit ansagen.
@@ -18566,15 +18629,24 @@ function mvVertragHTML(d){
    sind feste Texte), ihre Seitenzahl ist damit stabil und exakt bekannt.
    Platzhalterseiten sind immer genau eine Seite.
 
+   HERKUNFT DER WERTE (v289): nicht geschaetzt, sondern MIT ECHTEM CHROMIUM
+   GEMESSEN - siehe messen_mv.py im Projekt. Das Werkzeug laedt die App, laesst
+   sie die Anlage im Mietvertrags-Kontext erzeugen (gescopte Styles, Wrapper mit
+   Kompaktklasse) und druckt sie zu PDF. Wichtig: Eine Messung des
+   EINZELDOKUMENTS reicht nicht - die Hausordnung ergab dort 2 Seiten, im
+   Mietvertrag sind es 3. Nur der Mietvertrags-Kontext deckt sich mit dem, was
+   der Nutzer ausdruckt.
+
    WICHTIG BEIM AENDERN: Wird der Text einer Anlage laenger oder kuerzer, muss
-   die Zahl hier angepasst werden - sonst sitzen die Leerseiten falsch. Ein
-   Fehler faellt am Vermerk auf der Leerseite auf, bleibt also nicht unbemerkt.
-   Stand der Werte: Ausdruck vom 29.07.2026 (v287, Schriften eingebettet). */
+   messen_mv.py erneut laufen und die Zahl hier angepasst werden - sonst sitzen
+   die Leerseiten falsch. Ein Fehler faellt am Vermerk auf der Leerseite auf,
+   bleibt also nicht unbemerkt.
+   Stand der Werte: 29.07.2026, v289, ohne manuellen Umbruch im Merkblatt. */
 const ANLAGE_DRUCKSEITEN = {
   hausordnung: 3,   // § 1 bis § 10 samt Unterschriftszeile
   merkblatt:   3,   // Regeln · Lueftungsregeln · Heizperiode
-  dsgvo:       1,   // seit v285 im Kompaktmodus einseitig
-  sepa:        1,   // ausgefuelltes Mandat, Kompaktmodus
+  dsgvo:        2,   // Haupttext + Unterschrift/Fusszeile
+  sepa:         2,   // ausgefuelltes Mandat (Platzhalter waere 1 Seite)
 };
 const ANLAGE_PLATZHALTER_SEITEN = 1;
 
@@ -27755,7 +27827,7 @@ function anlageMerkblattHtml(objektId, weNr, autoDruck){
       <li>Im Bad während des Duschens/Badens die Tür geschlossen halten, danach Fliesen abziehen und kräftig stoßlüften.</li>
       <li>Beim und nach dem Kochen intensiv lüften, um Feuchtigkeit und Gerüche zu entfernen.</li>
     </ul>
-    <h2 class="pb" style="border-top:none;padding-top:0">Richtig heizen in der Heizperiode</h2>
+    <h2>Richtig heizen in der Heizperiode</h2>
     <p style="font-weight:700;color:#0c447c;margin-bottom:2px">Thermostat richtig einstellen</p>
     <p style="font-size:9pt;color:#666">Die Zahl steht für die Wunschtemperatur – nicht für die Heizgeschwindigkeit. Voll aufdrehen macht es nicht schneller warm.</p>
     <div class="thermo">
@@ -29186,6 +29258,31 @@ function mergeRecord(local, remote){
       if(!(grabStamp && secStamp && String(grabStamp) >= String(secStamp))) merged[k]=secondary[k];
     }
   }
+  /* v290 KRITISCH: pinSalt, pinHash und pinKdf sind EIN zusammengehoeriges
+     Tripel - ein Hash ist nur zusammen mit genau dem Salt pruefbar, aus dem er
+     entstanden ist. Die feldweise Zusammenfuehrung oben kann sie mischen, sobald
+     auf der gewinnenden Seite eines der Felder fehlt oder leer ist: die
+     Rueckholschleife holt dann das fehlende Feld von der Gegenseite, und es
+     entsteht Salt von Geraet A mit Hash von Geraet B. Ein so entstandener
+     Benutzer laesst sich mit KEINEM PIN mehr anmelden - auch nicht mit dem
+     richtigen. Die Selbstheilung in pinPruefen greift hier nicht, sie deckt nur
+     einen abweichenden pinKdf-Wert ab, nicht ein falsches Salt.
+     Reproduziert in test_pinmerge.mjs (3 von 5 Szenarien).
+     Regel: Das Tripel wird immer komplett von EINER Seite uebernommen - von der
+     gewinnenden, sofern sie ein brauchbares Paar traegt, sonst von der anderen. */
+  const _pinFelder = ['pinSalt','pinHash','pinKdf'];
+  const _pinBrauchbar = o => o && !_istLeer(o.pinSalt) && !_istLeer(o.pinHash);
+  if(_pinFelder.some(k => k in local || k in remote)){
+    const quelle = _pinBrauchbar(primary) ? primary
+                 : _pinBrauchbar(secondary) ? secondary
+                 : null;
+    if(quelle){
+      for(const k of _pinFelder){
+        if(_istLeer(quelle[k])) delete merged[k]; else merged[k] = quelle[k];
+      }
+    }
+  }
+
   if(Object.keys(grab).length) merged._geleert = grab; else if(merged._geleert) delete merged._geleert;
   // Stempel auf den jüngeren setzen
   const neuerStamp = (rs>ls)?rs:ls;
