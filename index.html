@@ -1230,7 +1230,40 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=35;   // v242: +buch_journal (F4 GoBD)
-const APP_VERSION = '2026-07-29-v286';
+const APP_VERSION = '2026-07-29-v287';
+/* v287 (29.07.2026): Zwei Nutzerbefunde am gedruckten Vertrag (Mindener 25, WE 13).
+   1) LEERSEITEN FUER DEN DUPLEXDRUCK WERDEN JETZT SELBST BERECHNET.
+      v285 hatte das ueber CSS geloest (page-break-before:right). Der Befund am
+      Ausdruck vom 29.07.2026 zeigt: CHROME SETZT DAS BEIM DRUCKEN NICHT UM -
+      das PDF hatte 15 Seiten, die Anlagen begannen weiter auf geraden Seiten
+      (Merkblatt S. 8, Datenschutz S. 12, Energieausweis S. 14). Es bleibt nur,
+      die Seitenlage selbst zu messen: mvDuplexScript() laeuft im erzeugten
+      Druckfenster VOR window.print(), rechnet aus, auf welcher Seite jede Anlage
+      beginnt, und schiebt bei Bedarf eine Leerseite davor.
+      Zur Messung wird die Breite kurzzeitig auf den Druckbereich gesetzt
+      (178 mm = A4 minus Seitenraender), sonst laufen die Zeilen anders um und
+      die Rechnung geht daneben. Harte Umbrueche (.mv-pb je Anlage, .pb innerhalb
+      des Merkblatts) werden mitgezaehlt; nur Anlagenanfaenge werden verschoben.
+      GRENZE, bewusst so gebaut: Bildschirm- und Druckrendering koennen minimal
+      abweichen; bei einer Anlage, die eine Seite fast genau fuellt, kann die
+      Rechnung um eine Seite danebenliegen. Jede Leerseite traegt deshalb einen
+      sichtbaren Vermerk ("Diese Seite bleibt aus drucktechnischen Gruenden
+      frei") - ein Fehler faellt beim Zusammenheften sofort auf, statt unbemerkt
+      zu bleiben. Faellt das Script aus, wird ohne Leerseiten gedruckt; das ist
+      besser als ein zerschossenes Layout.
+   2) AUFZAEHLUNGEN WERDEN NICHT MEHR MITTEN DURCHGESCHNITTEN. Im Merkblatt stand
+      die Liste "Die wichtigsten Lueftungsregeln" ueber zwei Seiten verteilt -
+      vier Punkte unten auf der einen, zwei allein auf der naechsten. Die
+      REIHENFOLGE stimmte bereits (das war der v285-Fix gegen position:absolute),
+      der Umbruch mitten in der Aufzaehlung blieb aber. Jetzt haelt ul zusammen.
+      Bewusst nur fuer kurze Listen gedacht: eine Liste laenger als eine Seite
+      wuerde ueber den Seitenrand hinauslaufen - im Merkblatt und in der
+      Hausordnung hat die laengste sieben Punkte.
+   Keine Store-/DB-Aenderung; DB_VER bleibt 35.
+   HINWEIS ZUM SEPA-MANDAT: Erscheint im Vertrag weiterhin die Platzhalterseite,
+   fehlt die Glaeubiger-Identifikationsnummer in den Gebaeude-Stammdaten des
+   Objekts. Das ist so gewollt (v286) - ein Mandat ohne gueltige Kennung waere
+   fuer den Einzug unbrauchbar. */
 /* v286 (29.07.2026): Rechnungspositionen, handschriftliche Vermerke, Kuerzelaufloesung.
    Ziel: nach gekauften Gegenstaenden suchen koennen ("Wo habe ich den Tuerdruecker
    gekauft?"). Bis v285 kannte eine Rechnung nur Kopfdaten.
@@ -18315,11 +18348,23 @@ function mvVertragHTML(d){
       .mv-sig { margin-top:10px; }
       .mv-sigrow { display:flex; gap:48px; margin-top:40px; }
       .mv-sigline { flex:1; border-top:1px solid #333; padding-top:4px; font-size:9pt; color:#555; }
-      /* v285: Jede Anlage beginnt auf einer ungeraden Seite (Vorderseite).
-         'right' laesst den Browser bei Bedarf eine Leerseite einschieben - beim
-         beidseitigen Druck liegt damit jede Anlage oben auf einem neuen Blatt.
-         Der interne Umbruch im Merkblatt bleibt 'always' (kein Anlagenanfang). */
-      .mv-pb { page-break-before:right; break-before:recto; }
+      /* v287: Jede Anlage beginnt auf einer ungeraden Seite (Vorderseite), damit
+         sie beim beidseitigen Druck oben auf einem frischen Blatt liegt.
+         v285 hatte das ueber page-break-before:right geloest - Chrome setzt das
+         beim Drucken jedoch NICHT um (Nutzerbefund am Vertrag vom 29.07.2026:
+         Anlagen begannen weiter auf geraden Seiten). Deshalb hier wieder der
+         schlichte Umbruch; die Leerseiten rechnet duplexLeerseiten() vor dem
+         Druck selbst aus und fuegt sie ein. */
+      .mv-pb { page-break-before:always; }
+      /* Bewusst freigelassene Rueckseite. Sie traegt einen Vermerk, damit beim
+         Zusammenheften sofort erkennbar ist, dass hier nichts fehlt - und damit
+         eine falsch berechnete Leerseite auffaellt statt unbemerkt zu bleiben. */
+      .mv-leerseite { page-break-before:always; height:255mm; position:relative; }
+      .mv-leerseite:after {
+        content:'Diese Seite bleibt aus drucktechnischen Gründen frei.';
+        position:absolute; top:50%; left:0; right:0; text-align:center;
+        font-size:8pt; color:#bbb; font-style:italic;
+      }
       .mv-box { background:#f4f7fb; border:1px solid #d4e0ec; border-radius:4px; padding:8px 11px; margin:6px 0; page-break-inside:avoid; }
       .mv-row { break-inside:avoid; }
       .mv-sig, .mv-sigrow { page-break-inside:avoid; }
@@ -18452,10 +18497,73 @@ function mvVertragHTML(d){
   // klar gekennzeichnete Platzhalterseite erzeugt (vom Vermieter beizufügen).
   h += mvAnlagenSeiten(anl, d);
 
+  /* v287: Vor dem Druck die Leerseiten fuer den beidseitigen Druck einrechnen.
+     Laeuft im erzeugten Druckfenster, deshalb als eingebettetes Script. */
+  h += mvDuplexScript();
+
   // Auto-Druck
   h += '<scr'+'ipt>(function(){var p=function(){setTimeout(function(){window.focus();window.print();},600);};if(document.readyState===\'complete\'){p();}else{window.addEventListener(\'load\',p);}})()</scr'+'ipt>';
   h += '</body></html>';
   return h;
+}
+
+/* v287: Rechnet im Druckfenster aus, auf welcher Seite jede Anlage beginnt, und
+   schiebt bei Bedarf eine Leerseite davor - damit jede Anlage beim beidseitigen
+   Druck oben auf einem frischen Blatt liegt.
+
+   Warum selbst rechnen: CSS kennt dafuer page-break-before:right, Chrome setzt
+   das beim Drucken aber nicht um (Nutzerbefund v286). Es bleibt nur, die
+   Seitenlage zu messen.
+
+   Wie gemessen wird: Der Browser bricht im Bildschirmlayout nicht um, also wird
+   die Seitenlage aus der Hoehe hochgerechnet. Dafuer muss die Breite der des
+   Druckbereichs entsprechen (A4 minus Seitenraender = 178 mm), sonst laufen die
+   Zeilen anders um und die Rechnung geht daneben. Die harten Umbrueche
+   (.mv-pb je Anlage, .pb innerhalb des Merkblatts) werden mitgezaehlt.
+
+   GRENZE: Bildschirm- und Druckrendering koennen minimal voneinander abweichen;
+   bei einer Anlage, die eine Seite fast genau fuellt, kann die Rechnung um eine
+   Seite danebenliegen. Deshalb traegt jede Leerseite einen sichtbaren Vermerk -
+   ein Fehler faellt beim Zusammenheften sofort auf, statt unbemerkt zu bleiben. */
+function mvDuplexScript(){
+  const code = `(function(){
+    try{
+      var BREITE='178mm', HOEHE='264mm';
+      var body=document.body;
+      var altBreite=body.style.width;
+      body.style.width=BREITE;
+      var mess=document.createElement('div');
+      mess.style.cssText='height:'+HOEHE+';position:absolute;left:-9999px;top:0';
+      body.appendChild(mess);
+      var H=mess.getBoundingClientRect().height;
+      if(mess.parentNode) mess.parentNode.removeChild(mess);
+      if(!(H>1)){ body.style.width=altBreite; return; }
+
+      var oben=function(el){ return el.getBoundingClientRect().top + (window.pageYOffset||0); };
+      var punkte=[].slice.call(document.querySelectorAll('.mv-pb, .anlage-vt .pb'));
+      var seite=1, start=0;
+
+      for(var i=0;i<punkte.length;i++){
+        var el=punkte[i];
+        var top=oben(el);
+        // Seiten, die der Abschnitt davor belegt hat (mindestens eine).
+        var belegt=Math.max(1, Math.ceil((top-start-1)/H));
+        seite+=belegt;
+        start=top;
+        // Nur Anlagenanfaenge sollen ungerade beginnen, nicht die internen
+        // Umbrueche innerhalb einer Anlage.
+        if(el.className.indexOf('mv-pb')>=0 && seite%2===0){
+          var leer=document.createElement('div');
+          leer.className='mv-leerseite';
+          el.parentNode.insertBefore(leer, el);
+          seite++;
+          start=oben(el);   // nach dem Einfuegen hat sich alles verschoben
+        }
+      }
+      body.style.width=altBreite;
+    }catch(e){ /* Im Zweifel ohne Leerseiten drucken - besser als ein zerschossenes Layout. */ }
+  })()`;
+  return '<scr'+'ipt>'+code+'</scr'+'ipt>';
 }
 
 // Erzeugt für jede angeklickte Anlage eine eigene Seite (Seitenumbruch davor).
@@ -27372,7 +27480,15 @@ function anlageRahmen(titel, untertitel, innerHtml, fussSeiten, bodyClass){
      landeten sie unter der Unterschriftszeile. Jetzt steht der Strich im
      normalen Textfluss (Einzug ueber text-indent), und einzelne Punkte werden
      nicht mehr mitten im Satz getrennt. */
-  ul{margin:0 0 8px 0;padding-left:0;list-style:none}
+  /* v287: Der Nutzerbefund am Vertrag vom 29.07.2026 zeigte die Liste
+     "Die wichtigsten Lüftungsregeln" über zwei Seiten verteilt - vier Punkte
+     unten auf der einen, zwei allein auf der nächsten. Die Reihenfolge stimmte
+     (das war der v285-Fix), der Umbruch mitten in der Aufzählung blieb aber.
+     Kurze Aufzählungen werden deshalb zusammengehalten. Bewusst nur für Listen
+     unter etwa einer halben Seite gedacht - eine Liste, die länger als eine
+     Seite ist, würde sonst über den Seitenrand hinauslaufen; im Merkblatt und
+     in der Hausordnung hat die längste sieben Punkte. */
+  ul{margin:0 0 8px 0;padding-left:0;list-style:none;page-break-inside:avoid;break-inside:avoid}
   li{margin:0 0 4px 0;padding-left:14px;text-indent:-14px;page-break-inside:avoid;break-inside:avoid}
   li:before{content:"– ";color:#0c447c}
   .box{border:1px solid #e2e8f0;border-radius:8px;padding:11px 14px;margin:8px 0;background:#f8fafc}
