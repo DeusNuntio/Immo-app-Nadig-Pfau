@@ -487,6 +487,38 @@ button.chip.chip-active{background:var(--ink);color:#fff;border-color:var(--ink)
 
 /* ── FORM ── */
 .f-section{margin-bottom:18px}
+/* v285: Hilfetext unter einem Formularfeld. Bisher an rund 50 Stellen als
+   Inlinestil dupliziert; neue Felder nutzen die Klasse. */
+.f-hint{font-size:10px;color:var(--ink-40);margin-top:2px}
+/* v286: Überschrift eines Formularbereichs, der kein einzelnes Feld beschriftet.
+   Bewusst kein Beschriftungselement – das gehört an ein Eingabefeld gebunden. */
+.f-titel{font-size:12px;font-weight:600;color:var(--ink-60);margin-bottom:4px}
+/* v286: Positionsliste einer Rechnung. Kompakt gehalten – auf dem Telefon
+   stehen hier schnell 30 Zeilen. */
+.rpos{display:flex;align-items:flex-start;gap:8px;padding:6px 8px;border-radius:6px;border:1px solid var(--ink-10);margin-bottom:4px}
+.rpos-markiert{border-color:var(--copper,#b87333);background:var(--copper-bg,rgba(184,115,51,.06))}
+.rpos input[type=checkbox]{margin-top:2px;flex:0 0 auto}
+.rpos-text{flex:1;min-width:0;cursor:pointer}
+.rpos-bez{font-size:12px;font-weight:600;word-break:break-word}
+.rpos-detail{font-size:10px;color:var(--ink-40);margin-top:1px}
+.rpos-klartext{font-size:10px;color:var(--ink-60);margin-top:2px;font-style:italic}
+.rpos-unsicher{color:var(--rot,#b91c1c);font-style:normal}
+.rpos-quelle{color:var(--ink-40);font-style:normal}
+.rpos-preis{font-size:12px;font-variant-numeric:tabular-nums;white-space:nowrap;flex:0 0 auto}
+.rpos-hinweis{font-size:11px;line-height:1.4;margin-top:6px;padding:6px 8px;border-radius:6px}
+.rpos-hinweis-ok{color:var(--gruen,#15803d);background:rgba(21,128,61,.07)}
+.rpos-hinweis-warn{color:var(--rot,#b91c1c);background:rgba(185,28,28,.07)}
+.rpos-hinweis-mild{color:var(--ink-60);background:var(--ink-05,rgba(0,0,0,.04))}
+.rpos-mini{font-size:11px;background:none;border:none;padding:0;text-decoration:underline;cursor:pointer;color:inherit}
+/* Positionen in der Detailansicht (nur Anzeige, keine Auswahl) */
+.rpos-det{display:flex;justify-content:space-between;gap:8px;font-size:12px;padding:3px 0;border-bottom:1px solid var(--ink-05,rgba(0,0,0,.05))}
+.rpos-det-aus{color:var(--ink-40)}
+
+/* v285: IBAN-Hinweis unter dem Eingabefeld. Leer = kein Platzverbrauch. */
+.iban-hinweis{font-size:10px;line-height:1.35;margin-top:3px}
+.iban-hinweis:empty{display:none}
+.iban-hinweis-warn{color:var(--rot,#b91c1c)}
+.iban-hinweis-mild{color:var(--ink-40)}
 .f-section-title{font-size:11px;font-weight:700;color:var(--ink-40);text-transform:uppercase;letter-spacing:.7px;margin-bottom:10px;display:flex;align-items:center;gap:5px;padding-bottom:6px;border-bottom:1px solid var(--ink-10)}
 .f-section-title i{color:var(--copper);font-size:13px}
 .f{margin-bottom:9px}
@@ -1198,7 +1230,136 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=35;   // v242: +buch_journal (F4 GoBD)
-const APP_VERSION = '2026-07-28-v284';
+const APP_VERSION = '2026-07-29-v286';
+/* v286 (29.07.2026): Rechnungspositionen, handschriftliche Vermerke, Kuerzelaufloesung.
+   Ziel: nach gekauften Gegenstaenden suchen koennen ("Wo habe ich den Tuerdruecker
+   gekauft?"). Bis v285 kannte eine Rechnung nur Kopfdaten.
+   1) POSITIONEN. rechnungOcr.js liefert jetzt positionen[] (bezeichnung, artikelnr,
+      menge, einheit, einzelpreis, gesamtpreis, markiert). Die App speichert sie an
+      der Rechnung (r.positionen) und durchsucht sie in der Universalsuche - im
+      Originaltext UND im aufgeloesten Klartext, damit sowohl "SCHR SPAX" als auch
+      "Schraube" trifft. Auch NICHT angehakte Posten werden gespeichert
+      (Nutzerentscheidung): sie sind nicht bezahlt, aber durchsuchbar; die
+      Trefferzeile kennzeichnet sie entsprechend.
+   2) HANDSCHRIFTLICHE MARKIERUNGEN. Ein Kreuz/Haken vor einer Position bedeutet:
+      dieser Posten wird von der Rechnung bezahlt. Die KI erkennt das, ABER
+      Handschrifterkennung ist NICHT sicher genug fuer eine automatische Buchung -
+      eine uebersehene Markierung ergibt einen zu niedrigen, eine erfundene einen zu
+      hohen Betrag, und beides faellt beim Buchen nicht auf. Deshalb:
+      rechnPosSummePruefen() summiert die angehakten Positionen und vergleicht mit
+      dem Betragsfeld; bei Abweichung erscheint ein Hinweis mit beiden Zahlen und
+      der Differenz statt einer stillen Uebernahme. Jede Position bleibt einzeln
+      umschaltbar. rechnPosSummeMarkiert() liefert bewusst null, wenn nicht ALLE
+      angehakten Positionen einen Preis tragen - eine unvollstaendige Summe wuerde
+      falschen Alarm ausloesen.
+      Betragsvorschlag (Nutzerentscheidung): die Summe wird ins Betragsfeld
+      uebernommen, aber nur wenn dieses noch leer ist. Ein bereits erkannter oder
+      eingegebener Betrag wird nie ueberschrieben.
+   3) HANDSCHRIFTLICHE BELEGNUMMER. Neues Feld r.belegNrHand fuer die eigene
+      Ablage-Nummerierung, bewusst getrennt von der Rechnungsnummer des Lieferanten
+      (sonst spaeter nicht mehr auseinanderzuhalten). In der Suche nur EXAKT
+      verglichen - die Nummer ist meist zwei- bis dreistellig und traefe sonst
+      ueberall. Handschriftliche Ziffern werden gelegentlich verwechselt (1/7, 4/9),
+      daher nur Vorschlag und nur in ein leeres Feld.
+   4) KUERZELAUFLOESUNG (neuer Backend-Endpunkt artikelKlartext.js,
+      /api/artikel-klartext). Loest Baumarkt-Kuerzel wie "SCHR SPAX 4X40 VZ TK" per
+      Websuche in Klartext auf. Bewusst ein EIGENER Endpunkt, nicht ein Modus in
+      rechnung-ocr:
+        - DATENSCHUTZ: hier wird KEIN Beleg uebertragen, nur die Artikeltexte und
+          der Lieferantenname. Der Endpunkt nimmt technisch gar keine Datei
+          entgegen, damit die Trennung nicht versehentlich aufgehoben werden kann.
+        - Die Websuche dauert deutlich laenger und kostet mehr; sie laeuft deshalb
+          erst auf Knopfdruck, nicht bei jeder Belegerkennung (Nutzerentscheidung).
+      HALLUZINATIONSSCHUTZ: Ein erfundener Klartext ist SCHLECHTER als ein
+      unaufgeloestes Kuerzel - er klingt plausibel und wird spaeter von niemandem
+      hinterfragt. Deshalb bleibt das Originalkuerzel immer das Massgebliche und
+      wird nie ueberschrieben; der Klartext steht als gekennzeichnete Ergaenzung
+      darunter, mit Konfidenz und Quelle. Das Backend laesst ausserdem nur Kuerzel
+      durch, die auch angefragt wurden (treffnerSaeubern) - so kann das Modell keine
+      Zeilen erfinden, die es nie gesehen hat. "niedrig" wird als unsicher markiert.
+   Backend: rechnungOcr.js (max_tokens 1024 -> 8000, Timeout 40 -> 60 s, neue
+   Felder additiv - alte App-Staende ignorieren sie einfach), NEU artikelKlartext.js.
+   DSGVO: Verzeichnis der Auftragsverarbeiter v1.3 und Verarbeitungstaetigkeiten
+   v1.3 - neuer Abschnitt zur Websuche, offene Punkte A4 (Suchanbieter benennen)
+   und A5 (personenbezogene Angaben im Positionstext).
+   Keine Store-/DB-Aenderung; DB_VER bleibt 35. */
+/* v285 (28.07.2026): Druckbild der Mietvertrags-Anlagen + Geschaeftsanschrift.
+   1) ANLAGEN BEGINNEN AUF UNGERADER SEITE. `.mv-pb` nutzt statt
+      page-break-before:always jetzt :right (break-before:recto). Der Browser
+      schiebt bei Bedarf eine Leerseite ein - beim beidseitigen Druck liegt damit
+      jede Anlage oben auf einem frischen Blatt, was das Zusammenheften erlaubt.
+      Der interne Umbruch im Merkblatt ("Richtig heizen in der Heizperiode")
+      bleibt bewusst 'always', er ist kein Anlagenanfang.
+   2) UMBRUCHFEHLER IN AUFZAEHLUNGEN BEHOBEN (Nutzerbefund). Der Strich vor einem
+      Listenpunkt lag als position:absolute in einem li{position:relative}. Brach
+      eine Liste ueber die Seitengrenze, setzte Chrome die restlichen Punkte ans
+      Ende der Folgeseite - in der Hausordnung standen vier Punkte aus § 8
+      unterhalb der Unterschriftszeile, im Merkblatt ebenso. Der Strich steht
+      jetzt im normalen Textfluss (text-indent), einzelne Punkte werden per
+      break-inside:avoid nicht mehr mitten im Satz getrennt.
+   3) KOMPAKTMODUS DER ANLAGEN WIRKTE IM MIETVERTRAG NICHT. Die Regeln hingen an
+      body.ho-kompakt / .mb-kompakt / .ds-kompakt; im Mietvertrag gibt es dieses
+      <body> nicht, mvSammleAnlagenStyles erzeugte daraus ".anlage-vt body.…" und
+      traf nichts. Folge: Hausordnung und Merkblatt wurden dort eine Stufe groesser
+      gesetzt als vorgesehen und brachen entsprechend anders um als im
+      Einzelausdruck. Die Klasse wandert jetzt auf den Wrapper (mvAnlageBodyClass),
+      das Scoping schreibt fuehrendes body auf .anlage-vt um.
+   4) OBJEKT UND WOHNUNG IN DER HAUSORDNUNG. mvAnlagenSeiten griff bereits auf
+      d.objektId zu, doch mvBaueRenderdaten lieferte weder objektId noch weNr -
+      die Kopfzeile trug deshalb dauerhaft "Objekt: ____ Wohnung: ____". Beide
+      Felder werden jetzt mitgefuehrt und an Hausordnung, Merkblatt und
+      Datenschutzhinweis durchgereicht.
+   5) SEPA-LASTSCHRIFTMANDAT ALS ECHTE ANLAGE (neu: anlageSepaHtml). Wortlaut der
+      Ermaechtigung und der Erstattungshinweise nach dem in der Verordnung (EU)
+      Nr. 260/2012 vorgegebenen Mandatstext, Aufbau als Eigenentwicklung (der
+      Sparkassen-Vordruck wird nicht nachgebildet, kein Fremd-Copyright). Enthaelt
+      alle Pflichtangaben des SEPA-Rulebooks. Glaeubiger-ID und abweichende
+      Glaeubigeranschrift werden je Gebaeude in den Stammdaten gepflegt
+      (sepaGlaeubigerId / sepaGlaeubigerAnschrift) - KEINE Bankdaten im Quellcode,
+      der ueber GitHub Pages oeffentlich abrufbar ist (Lehre aus R23). Ohne
+      gepflegte Glaeubiger-ID bleibt es bei der Platzhalterseite; ein Mandat mit
+      falscher Kennung waere fuer den Einzug unbrauchbar. Die Mandatsreferenz
+      erzeugt mvMandatsreferenz() nach dem Muster MIND25-WE13-202609 (hoechstens
+      35 Zeichen, nur im Rulebook erlaubte Zeichen, ohne personenbezogene Daten).
+   6) GESCHAEFTSANSCHRIFT AUF ZUR VERLACH 37, 40723 HILDEN (Nutzerentscheidung).
+      Betrifft die Briefkopfgruppen kr, dus und mg sowie die Eigentuemer-Stammdaten
+      Nadig/Pfau. Die Amboßstr. 10 (Gruppe 'pfau') behaelt Venloer Straße 20.
+      Die Adresse war an fuenf Stellen dupliziert und lief deshalb auseinander -
+      jetzt gibt es mit VERWALTER_STRASSE/_ORT genau eine Pflegestelle im Code.
+      Wie bei der Geschaeftsmail (v273) reicht das allein nicht: ein in den
+      Einstellungen gespeicherter Briefkopf ueberschreibt die Startwerte, und ueber
+      OneDrive kaeme die Altanschrift auf dem naechsten Geraet zurueck. Deshalb
+      zieht migriereVerwalteranschrift() einmalig gespeicherte Briefkoepfe, die
+      Eigentuemerliste und die Eigentuemer-Kopien in objekt_stamm mit; angefasst
+      wird nur, was woertlich die Altanschrift traegt.
+      RECHTLICHER HINWEIS: Die Vermieteranschrift im Mietvertrag ist die
+      Zustelladresse fuer Kuendigungen und Maengelanzeigen (§ 130 BGB). Laufende
+      Vertraege sind davon nicht beruehrt - den Bestandsmietern ist die neue
+      Anschrift gesondert mitzuteilen. Die Glaeubigeranschrift auf dem SEPA-Mandat
+      muss mit der bei der Bank hinterlegten uebereinstimmen (Nutzer meldet die
+      Aenderung der Sparkasse).
+   7) IBAN-PRUEFUNG (neu: ibanPruefen, ibanHinweisZeigen). Bis v284 wurde eine
+      IBAN nur formatiert (fmtIban), maskiert (ibanMaskiert) und normalisiert
+      (zaNormIban) - nie geprueft. Ein Zahlendreher wurde still uebernommen und
+      faellt an zwei Stellen teuer aus: der Zahlungsabgleich ordnet ueber die
+      hinterlegte IBAN zu (falsche IBAN = stille Nicht-Zuordnung, die erst ueber
+      den unerklaerlichen Rueckstand auffaellt), und bei der Kautionsabrechnung
+      wandert die IBAN direkt ins Auszahlungsschreiben. Geprueft wird nach
+      ISO 7064 (MOD 97-10, vgl. Art. 4 VO (EU) Nr. 260/2012 i. V. m. ISO 13616)
+      plus laenderspezifische Laenge (70 Laender hinterlegt). Bewusst eine
+      Warnung, keine Sperre: ein Zwischenstand muss speicherbar bleiben, und die
+      Laengentabelle kann bei neuen Laendern hinterherhinken. Ein unbekanntes
+      Laenderkuerzel wird durchgelassen und nur gekennzeichnet.
+      Angebunden sind alle fuenf IBAN-Felder (mIban, gsKtoIban, kdIban, kaIban,
+      tgmIban) ueber EIN delegiertes input-/focusin-Ereignis statt Handler je
+      Feld - die Formulare werden ueber innerHTML neu aufgebaut, einzeln
+      gebundene Handler gingen dabei verloren; ausserdem waechst so die Zahl der
+      Inline-Handler nicht (Audit-Punkt C1/R11). 'focusin' deckt Altbestaende ab.
+      Beim Speichern der Gebaeudedaten wird zusaetzlich geprueft, damit eine
+      unplausible Alt-IBAN auch ohne Anfassen des Feldes auffaellt.
+      Grenze der Pruefung: sie erkennt Zahlendreher und vertippte Stellen, nicht
+      aber, ob das Konto existiert oder wem es gehoert.
+   Keine Store-/DB-Aenderung; DB_VER bleibt 35. Neue Felder liegen in objekt_stamm. */
 /* v222 (14.07.2026): KI-Auslesen Zaehlerstand aus Foto (analog rechnungOcrErkennen).
    Neuer Button "Zaehlerstand aus Foto auslesen (KI)" in modalZaehlerstand,
    sichtbar sobald ein Foto vorhanden ist. Sendet Base64+MimeType+Zaehlerart
@@ -2491,6 +2652,16 @@ async function initApp(){
       if(n) console.log('v273 Geschäftsmail-Migration:', n, 'Briefkopf/Köpfe angepasst');
     }
   }catch(e){ console.warn('Geschäftsmail-Migration:', e); }
+  try{
+    // v285: Geschäftsanschrift auf Zur Verlach 37, 40723 Hilden. Gleiche
+    // Begründung wie oben – gespeicherte Werte müssen mitgezogen werden.
+    const adrDone=await idbGet('settings','anschriftMigrationV285');
+    if(!adrDone || !adrDone.value){
+      const n=await migriereVerwalteranschrift();
+      await idbPut('settings',{id:'anschriftMigrationV285', value:'1', geaendert:nowIso()});
+      if(n) console.log('v285 Anschrift-Migration:', n, 'Datensätze angepasst');
+    }
+  }catch(e){ console.warn('Anschrift-Migration:', e); }
   // v235 (F2): Leistungszeitraum-Nachbefüllung – genau einmal.
   try{
     const done=await idbGet('settings','leistungMigrationV235');
@@ -3544,7 +3715,7 @@ async function modalNeuerTgMieter(objektId, spId){
       <div class="f"><label for="tgmTel">Telefon</label><input type="tel" id="tgmTel"></div>
       <div class="f"><label for="tgmMail">E-Mail</label><input type="email" id="tgmMail"></div>
     </div>
-    <div class="f"><label for="tgmIban">IBAN (für Zahlungszuordnung)</label><input type="text" id="tgmIban" placeholder="DE.."></div>
+    <div class="f"><label for="tgmIban">IBAN (für Zahlungszuordnung)</label><input type="text" id="tgmIban" placeholder="DE.." data-iban></div>
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="saveNeuerTgMieter('${objektId}','${spId||''}')"><i class="ti ti-check"></i> Anlegen</button>
       <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
@@ -4099,8 +4270,10 @@ async function zaehlerSucheAusfuehren(){
   }
 
   // ── Rechnungen ─────────────────────────────────────────────────────────
-  //    Lieferant, Rechnungsnummer und Notiz; Betrag erst ab exakter Eingabe,
-  //    sonst treffen kurze Zahlen zu viele Belege.
+  //    Lieferant, Rechnungsnummer, eigene Beleg-Nr., Notiz und ab v286 die
+  //    Einzelposten; Betrag erst ab exakter Eingabe, sonst treffen kurze Zahlen
+  //    zu viele Belege. Die eigene Beleg-Nr. wird bewusst nur exakt verglichen –
+  //    sie ist meist zwei- bis dreistellig und träfe sonst überall.
   if(!mWe && !mTg && istVerwalter()){
     let rechn=[];
     try{ rechn=await idbGetAll('rechnungen'); }catch(e){ console.warn('Suche: Rechnungen nicht lesbar', e); }
@@ -4108,10 +4281,31 @@ async function zaehlerSucheAusfuehren(){
       if(!r || (r.objektId && !darfObjekt(r.objektId))) continue;
       const lief=(r.lieferant||'').toLowerCase();
       const nr=zaehlerSucheNorm(r.rechnungsnummer||r.nr);
+      const belegNr=zaehlerSucheNorm(r.belegNrHand);
       let rang=null, warum='';
       if(lief && lief.includes(ql)) rang = lief.startsWith(ql)?1:2;
       else if(nr && qn && nr.includes(qn)) { rang=1; warum='Rechnungsnr.'; }
+      else if(belegNr && qn && belegNr===qn) { rang=1; warum='eigene Beleg-Nr.'; }
       else if((r.notiz||'').toLowerCase().includes(ql)) { rang=3; warum='Notiz'; }
+      else {
+        /* v286: Suche über die Einzelposten – der eigentliche Zweck der
+           Positionserfassung ("Wo habe ich den Türdrücker gekauft?"). Gesucht
+           wird im Originaltext UND im aufgelösten Klartext, damit sowohl
+           "SCHR SPAX" als auch "Schraube" trifft. Die gefundene Position kommt
+           in die Trefferzeile, sonst wäre unklar, warum die Rechnung erscheint. */
+        for(const p of (Array.isArray(r.positionen)?r.positionen:[])){
+          if(!p) continue;
+          const bez=String(p.bezeichnung||'').toLowerCase();
+          const kla=String(p.klartext||'').toLowerCase();
+          const art=zaehlerSucheNorm(p.artikelnr);
+          if(bez.includes(ql) || kla.includes(ql) || (art && qn && art===qn)){
+            rang=2;
+            warum='Position: '+(p.bezeichnung||p.klartext||'').slice(0,40)
+                 +(p.markiert?'':' (nicht bezahlt)');
+            break;
+          }
+        }
+      }
       if(rang===null) continue;
       add({typ:'Rechnung', icon:'ti-file-invoice', rang,
         titel:(r.lieferant||'Ohne Lieferant')+' · '+fmtEur(r.betrag),
@@ -11402,12 +11596,18 @@ async function modalGebaeudeStamm(objektId){
       <input type="text" id="gsKtoInhaber" value="${esc(s.ktoInhaber||'')}" placeholder="z. B. Alexander-Roland Nadig u. Anna-Alexandra Pfau GbR"></div>
     <div class="f-row">
       <div class="f"><label for="gsKtoIban">IBAN</label>
-        <input type="text" id="gsKtoIban" value="${esc(s.ktoIban||'')}" placeholder="DE.. .... .... .... .... .." autocomplete="off"></div>
+        <input type="text" id="gsKtoIban" value="${esc(s.ktoIban||'')}" placeholder="DE.. .... .... .... .... .." autocomplete="off" data-iban></div>
       <div class="f"><label for="gsKtoBic">BIC</label>
         <input type="text" id="gsKtoBic" value="${esc(s.ktoBic||'')}" placeholder="optional" autocomplete="off"></div>
     </div>
     <div class="f"><label for="gsKtoBank">Bank (optional)</label>
       <input type="text" id="gsKtoBank" value="${esc(s.ktoBank||'')}" placeholder="z. B. Sparkasse Krefeld"></div>
+    <div class="f"><label for="gsSepaGlaeubigerId">Gläubiger-Identifikationsnummer (SEPA)</label>
+      <input type="text" id="gsSepaGlaeubigerId" value="${esc(s.sepaGlaeubigerId||'')}" placeholder="DE00ZZZ00000000000" autocomplete="off">
+      <div class="f-hint">Nur ausfüllen, wenn für dieses Objekt Lastschriften eingezogen werden. Erst dann erzeugt der Mietvertrag ein ausgefülltes SEPA-Mandat statt einer Platzhalterseite. Die Angabe muss mit der bei der Bank hinterlegten Gläubiger-ID übereinstimmen.</div></div>
+    <div class="f"><label for="gsSepaGlaeubigerAnschrift">Anschrift des Zahlungsempfängers auf dem Mandat (optional)</label>
+      <input type="text" id="gsSepaGlaeubigerAnschrift" value="${esc(s.sepaGlaeubigerAnschrift||'')}" placeholder="leer = Anschrift aus dem Briefkopf">
+      <div class="f-hint">Nur setzen, wenn die Bank zur Gläubiger-ID eine abweichende Anschrift führt.</div></div>
     <div class="f"><label for="gsKtoZweck">Verwendungszweck-Vorlage (optional)</label>
       <input type="text" id="gsKtoZweck" value="${esc(s.ktoZweck||'')}" placeholder="z. B. Miete {Objekt} WE {Nr} {Monat}">
       <div style="font-size:10px;color:var(--ink-40);margin-top:2px">Hinweis für den Mieter, wie der Verwendungszweck anzugeben ist.</div></div>
@@ -11494,6 +11694,8 @@ async function saveGebaeudeStamm(objektId){
     ktoBic:document.getElementById('gsKtoBic')?.value?.trim()||'',
     ktoBank:document.getElementById('gsKtoBank')?.value?.trim()||'',
     ktoZweck:document.getElementById('gsKtoZweck')?.value?.trim()||'',
+    sepaGlaeubigerId:document.getElementById('gsSepaGlaeubigerId')?.value?.trim()||'',
+    sepaGlaeubigerAnschrift:document.getElementById('gsSepaGlaeubigerAnschrift')?.value?.trim()||'',
     notiz:document.getElementById('gsNotiz')?.value?.trim()||'',
     energieausweis:{
       typ:        document.getElementById('gsEnTyp')?.value||'',
@@ -11513,7 +11715,12 @@ async function saveGebaeudeStamm(objektId){
   window._syncTimer=setTimeout(()=>syncToOneDrive(),3000);
   const tabEl=document.getElementById('objTabContent');
   if(tabEl) await renderObjMieter(tabEl);
-  toast('Gebäudedaten gespeichert ✓');
+  /* v285: Der Feldhinweis erscheint nur, wenn das Feld angefasst wurde. Beim
+     Speichern nochmals prüfen, damit ein Altbestand nicht unbemerkt bleibt.
+     Bewusst nur ein Hinweis – gespeichert wird in jedem Fall. */
+  const ibanPr = ibanPruefen(rec.ktoIban);
+  if(!ibanPr.ok) toast('Gebäudedaten gespeichert – IBAN bitte prüfen: '+ibanPr.text);
+  else toast('Gebäudedaten gespeichert ✓');
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -17377,6 +17584,19 @@ async function bereinigeProtokollPapierkorb() {
 ═══════════════════════════════════════════════════════════ */
 
 // Gruppen-Standardadressen (überschreibbar via Einstellungen, gespeichert in settings)
+/* v285: Geschaeftsanschrift der Verwaltung. Sie gilt fuer alle Objekte ausser
+   der Amboßstr. 10 (Briefkopfgruppe 'pfau', Eigentuemer Anna-Alexandra und
+   Torben Pfau). Frueher stand hier Venloer Straße 20; die Adresse war an fuenf
+   Stellen im Quellcode dupliziert und lief deshalb auseinander. Ab hier gibt es
+   genau eine Pflegestelle im Code - gespeicherte Briefkoepfe aus den
+   Einstellungen haben weiterhin Vorrang (migriereVerwalteranschrift zieht
+   Altwerte einmalig nach). */
+const VERWALTER_STRASSE = 'Zur Verlach 37';
+const VERWALTER_ORT     = '40723 Hilden';
+const VERWALTER_ANSCHRIFT = VERWALTER_STRASSE + ', ' + VERWALTER_ORT;
+/* Altanschrift - nur noch fuer die einmalige Migration gespeicherter Werte. */
+const VERWALTER_ANSCHRIFT_ALT = /^Venloer\s+Str(?:aße|asse|\.)?\s*20$/i;
+
 const BRIEFKOPF_DEFAULTS = {
   // v273 (R23): Für 'mg' stehen hier bewusst KEINE Kontaktdaten mehr.
   // Der Quellcode ist über GitHub Pages weltweit abrufbar; die bisherigen
@@ -17396,13 +17616,13 @@ const BRIEFKOPF_DEFAULTS = {
   kr: {
     name:'Hausverwaltung Alexander-Roland Nadig und Anna-Alexandra Pfau', absender:'Hausverwaltung Nadig Pfau',
     zusatz:'',
-    strasse:'Venloer Straße 20', ort:'40477 Düsseldorf',
+    strasse:VERWALTER_STRASSE, ort:VERWALTER_ORT,
     tel:'0177 / 2509710', email:'info@nadigpfau.de',
   },
   dus: {
     name:'Hausverwaltung Alexander-Roland Nadig und Anna-Alexandra Pfau', absender:'Hausverwaltung Nadig Pfau',
     zusatz:'',
-    strasse:'Venloer Straße 20', ort:'40477 Düsseldorf',
+    strasse:VERWALTER_STRASSE, ort:VERWALTER_ORT,
     tel:'0177 / 2509710', email:'info@nadigpfau.de',
   },
   pfau: {
@@ -17418,7 +17638,7 @@ const BRIEFKOPF_DEFAULTS = {
 // als Kopie) gespeichert. Wirkt als Stammdatum; ändert NICHT automatisch den
 // Verwalter-Briefkopf (dieser bleibt 'Hausverwaltung Nadig Pfau').
 const EIGENTUEMER_DEFAULTS = [
-  {id:'eig_nadig_pfau', name:'Alexander-Roland Nadig und Anna-Alexandra Pfau', anschrift:'Venloer Straße 20, 40477 Düsseldorf'},
+  {id:'eig_nadig_pfau', name:'Alexander-Roland Nadig und Anna-Alexandra Pfau', anschrift:VERWALTER_ANSCHRIFT},
   {id:'eig_roland',     name:'Roland B. Nadig',                                 anschrift:'Zur Verlach 37, 40723 Hilden'},
 ];
 // Auf AMTLICHEN Dokumenten (Mietbescheinigung § 23 WoGG, Wohnungsgeberbestätigung
@@ -17646,6 +17866,74 @@ async function migriereGeschaeftsmail(){
     window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
   }
   return geaendert;
+}
+
+/* v285: Die Geschaeftsanschrift wechselt auf Zur Verlach 37, 40723 Hilden.
+   Wie bei der Geschaeftsmail (v273) reicht eine Aenderung der Startwerte nicht:
+   ein in den Einstellungen gespeicherter Briefkopf ueberschreibt sie, und ueber
+   OneDrive kaeme die Altanschrift auf dem naechsten Geraet zurueck. Die
+   Migration zieht deshalb gespeicherte Briefkoepfe (ausser 'pfau' = Amboßstr.),
+   die zentrale Eigentuemerliste und die Eigentuemer-Kopien in objekt_stamm mit.
+   Sie laeuft genau einmal und fasst nur Datensaetze an, die woertlich die
+   Altanschrift tragen - abweichend gepflegte Adressen bleiben unberuehrt. */
+async function migriereVerwalteranschrift(){
+  let geaendert = 0;
+
+  // (a) Gespeicherte Briefkoepfe. 'pfau' bleibt bewusst aussen vor.
+  for(const k of ['mg','kr','dus']){
+    let e = null;
+    try{ e = await idbGet('settings','briefkopf_'+k); }catch(err){ egal('Briefkopf nicht lesbar', err); }
+    const wert = e && e.value;
+    if(!wert || !VERWALTER_ANSCHRIFT_ALT.test(String(wert.strasse||'').trim())) continue;
+    wert.strasse = VERWALTER_STRASSE;
+    wert.ort     = VERWALTER_ORT;
+    try{
+      await idbPut('settings',{id:'briefkopf_'+k, value:wert, geaendert:nowIso()});
+      _briefkopfCache[k] = wert;
+      geaendert++;
+    }catch(err){ console.warn('Briefkopf '+k+' nicht speicherbar:', err); }
+  }
+
+  // (b) Zentrale Eigentuemerliste (nur der Eintrag Nadig/Pfau).
+  try{
+    const e = await idbGet('settings','eigentuemer_liste');
+    const liste = e && Array.isArray(e.value) ? e.value : null;
+    if(liste){
+      let treffer = 0;
+      liste.forEach(eig=>{
+        if(eig && eig.id==='eig_nadig_pfau' && anschriftIstAlt(eig.anschrift)){
+          eig.anschrift = VERWALTER_ANSCHRIFT; treffer++;
+        }
+      });
+      if(treffer){ await saveEigentuemerListe(liste); geaendert += treffer; }
+    }
+  }catch(err){ console.warn('Eigentuemerliste nicht migrierbar:', err); }
+
+  // (c) Eigentuemer-Kopien in den Gebaeude-Stammdaten.
+  try{
+    const alle = await idbGetAll('objekt_stamm');
+    for(const st of alle){
+      if(!st || !anschriftIstAlt(st.eigentuemerAnschrift)) continue;
+      if(st.eigentuemerId && st.eigentuemerId!=='eig_nadig_pfau') continue;
+      st.eigentuemerAnschrift = VERWALTER_ANSCHRIFT;
+      st.geaendert = nowIso();
+      try{ await idbPut('objekt_stamm', st); geaendert++; }
+      catch(err){ console.warn('Stammdatensatz nicht speicherbar:', err); }
+    }
+  }catch(err){ console.warn('Stammdaten nicht migrierbar:', err); }
+
+  if(geaendert){
+    clearTimeout(window._syncTimer);
+    window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
+  }
+  return geaendert;
+}
+/* Erkennt die Altanschrift auch als zusammengesetzte Zeile
+   ("Venloer Straße 20, 40477 Düsseldorf"). */
+function anschriftIstAlt(wert){
+  const t = String(wert||'').trim();
+  if(!t) return false;
+  return /^Venloer\s+Str(?:aße|asse|\.)?\s*20\s*(?:,\s*40477\s+D(?:ü|ue)sseldorf)?$/i.test(t);
 }
 
 async function saveBriefkopf(key){
@@ -18027,7 +18315,11 @@ function mvVertragHTML(d){
       .mv-sig { margin-top:10px; }
       .mv-sigrow { display:flex; gap:48px; margin-top:40px; }
       .mv-sigline { flex:1; border-top:1px solid #333; padding-top:4px; font-size:9pt; color:#555; }
-      .mv-pb { page-break-before:always; }
+      /* v285: Jede Anlage beginnt auf einer ungeraden Seite (Vorderseite).
+         'right' laesst den Browser bei Bedarf eine Leerseite einschieben - beim
+         beidseitigen Druck liegt damit jede Anlage oben auf einem neuen Blatt.
+         Der interne Umbruch im Merkblatt bleibt 'always' (kein Anlagenanfang). */
+      .mv-pb { page-break-before:right; break-before:recto; }
       .mv-box { background:#f4f7fb; border:1px solid #d4e0ec; border-radius:4px; padding:8px 11px; margin:6px 0; page-break-inside:avoid; }
       .mv-row { break-inside:avoid; }
       .mv-sig, .mv-sigrow { page-break-inside:avoid; }
@@ -18190,10 +18482,17 @@ function mvAnlagenSeiten(anl, d){
   // als echte Anlagenseite eingebettet (statt Platzhalter). Das zugehörige CSS
   // wird gesammelt und einmalig in den MV-Kopf injiziert (siehe mvSammleAnlagenStyles).
   const VOLLTEXT = {
-    hausordnung: ()=>anlageHausordnungHtml(d?.objektId||'', '', false),
-    merkblatt:   ()=>anlageMerkblattHtml(d?.objektId||'', '', false),
-    dsgvo:       ()=>anlageDatenschutzHtml(d?.objektId||'', '', false),
+    hausordnung: ()=>anlageHausordnungHtml(d?.objektId||'', d?.weNr||'', false),
+    merkblatt:   ()=>anlageMerkblattHtml(d?.objektId||'', d?.weNr||'', false),
+    dsgvo:       ()=>anlageDatenschutzHtml(d?.objektId||'', d?.weNr||'', false),
   };
+  /* v285: Das Mandat wird nur dann als ausgefuellte Seite erzeugt, wenn zum
+     Objekt eine Glaeubiger-ID hinterlegt ist. Fehlt sie, bleibt es beim
+     Platzhalter - ein Mandat ohne gueltige Glaeubiger-Identifikationsnummer
+     waere fuer den Einzug unbrauchbar und wuerde nur Rueckfragen ausloesen. */
+  if(d && String(d.sepaGlaeubigerId||'').trim()){
+    VOLLTEXT.sepa = ()=>anlageSepaHtml(d, false);
+  }
 
   let out = '';
   ANLAGEN.forEach(a=>{
@@ -18202,7 +18501,13 @@ function mvAnlagenSeiten(anl, d){
       // Inneren Body der Anlage extrahieren und mit Seitenumbruch einbetten.
       const full = VOLLTEXT[a.key]();
       const inner = mvAnlageInnerBody(full);
-      out += '<div class="mv-pb anlage-vt">' + inner + '</div>';
+      /* v285: Die Kompaktmodi der Anlagen (ho-/mb-/ds-/sepa-kompakt) hingen bisher
+         am <body> des Einzeldokuments. Im Mietvertrag gibt es dieses <body> nicht,
+         die Regeln liefen also ins Leere: Hausordnung und Merkblatt wurden dort
+         eine Stufe groesser gesetzt als vorgesehen und brachen entsprechend
+         anders um. Die Klasse wandert deshalb auf den Wrapper. */
+      const kompakt = mvAnlageBodyClass(full);
+      out += '<div class="mv-pb anlage-vt' + (kompakt?' '+kompakt:'') + '">' + inner + '</div>';
       return;
     }
     // Energieausweis: vorhandene Kennwerte aus dem Entwurf mit ausgeben
@@ -18226,6 +18531,12 @@ function mvAnlagenSeiten(anl, d){
   return out;
 }
 
+// Liest die Klasse vom <body> eines Anlagen-Dokuments (v285, Kompaktmodus).
+function mvAnlageBodyClass(fullHtml){
+  const m = /<body[^>]*\bclass=["']([^"']*)["']/i.exec(fullHtml);
+  return m ? m[1].trim() : '';
+}
+
 // Extrahiert den <body>-Inhalt eines Anlagen-Dokuments (ohne <head>/<style>).
 function mvAnlageInnerBody(fullHtml){
   const m = /<body[^>]*>([\s\S]*?)<\/body>/i.exec(fullHtml);
@@ -18236,7 +18547,7 @@ function mvAnlageInnerBody(fullHtml){
 // auch im Mietvertrags-PDF greifen. Wird einmalig in den MV-<head> injiziert.
 function mvSammleAnlagenStyles(anl){
   anl = anl || {};
-  if(!(anl.hausordnung || anl.merkblatt || anl.dsgvo)) return '';
+  if(!(anl.hausordnung || anl.merkblatt || anl.dsgvo || anl.sepa)) return '';
   // Eine der Anlagen liefert das vollständige Style-Set (alle teilen anlageRahmen).
   const probe = anlageMerkblattHtml('', '', false);
   const m = /<style>([\s\S]*?)<\/style>/i.exec(probe);
@@ -18246,7 +18557,14 @@ function mvSammleAnlagenStyles(anl){
     // @page und body unscoped lassen bzw. neutralisieren
     const s = sel.trim();
     if(s.startsWith('@')||s==='*'||s==='body') return br + ' .anlage-vt ' + (s==='body'?'':s) + '{';
-    const parts = s.split(',').map(x=>'.anlage-vt '+x.trim()).join(',');
+    /* v285: "body.ho-kompakt p" wurde bisher zu ".anlage-vt body.ho-kompakt p"
+       und traf damit nichts. Der Wrapper traegt die Kompaktklasse jetzt selbst,
+       also wird das fuehrende body durch .anlage-vt ersetzt (ohne Leerzeichen,
+       damit beide Klassen am selben Element verlangt werden). */
+    const parts = s.split(',').map(x=>{
+      const t = x.trim();
+      return /^body\./.test(t) ? t.replace(/^body/, '.anlage-vt') : '.anlage-vt '+t;
+    }).join(',');
     return br + ' ' + parts + '{';
   });
   return '<style>'+scoped+'</style>';
@@ -18960,7 +19278,37 @@ async function mvBaueRenderdaten(){
     // Anlagen / Energie
     energieausweis: D.energieausweis||'nein', energieKennwerte: D.energieKennwerte||'',
     anlagen: D.anlagen||{},
+    /* v285: mvAnlagenSeiten() griff bereits auf d.objektId zu - das Feld war hier
+       aber nie gesetzt, weshalb die Hausordnung dauerhaft die Platzhalterzeile
+       "Objekt: ____ Wohnung: ____" trug. Beide Werte werden jetzt mitgefuehrt. */
+    objektId: D.objektId||'',
+    weNr: D.weNr||'',
+    /* v285: SEPA-Mandat. Die Glaeubiger-ID wird je Gebaeude gepflegt
+       (Stammdaten -> Bankverbindung). Fehlt sie, bleibt es bei der
+       Platzhalterseite - lieber kein Mandat als eines mit falscher Kennung. */
+    sepaGlaeubigerId: gs.sepaGlaeubigerId||'',
+    sepaEmpfaenger: gs.ktoInhaber || bk.name || '',
+    sepaEmpfaengerAnschrift: gs.sepaGlaeubigerAnschrift || [bk.strasse, bk.ort].filter(Boolean).join(', '),
+    sepaMandatsreferenz: mvMandatsreferenz(D),
   };
+}
+
+/* v285: Mandatsreferenz nach SEPA-Regelwerk (Rulebook: hoechstens 35 Zeichen,
+   erlaubt sind Buchstaben, Ziffern und  / - ? : ( ) . , ' +  sowie Leerzeichen).
+   Aufbau Objekt-WE-Mietbeginn, z. B. MIND25-WE13-202609. Damit ist die Referenz
+   eindeutig, ohne personenbezogene Daten zu tragen, und bleibt bei einem
+   Kontowechsel des Mieters unveraendert gueltig. */
+function mvMandatsreferenz(D){
+  const teile = [];
+  const obj = String(D?.objektId||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+  if(obj) teile.push(obj.slice(0,10));
+  const we = String(D?.weNr||'').trim().toUpperCase().replace(/[^A-Z0-9]/g,'');
+  if(we) teile.push('WE'+we);
+  const beginn = String(D?.mietbeginn||'').trim();   // ISO JJJJ-MM-TT
+  const m = /^(\d{4})-(\d{2})/.exec(beginn);
+  if(m) teile.push(m[1]+m[2]);
+  const ref = teile.join('-');
+  return ref ? ref.slice(0,35) : '';
 }
 
 // ── Hauptaktion: PDF erzeugen, beim Mieter ablegen, Mieter-Datensatz anlegen ──
@@ -20046,7 +20394,7 @@ async function modalKautionsabrechnung(mieterId){
     <div style="display:flex;justify-content:space-between;align-items:baseline;background:var(--green-l);padding:8px 10px;border-radius:6px;margin:12px 0">
       <div><div style="font-weight:700" id="kaAuszahlung">–</div><div style="font-size:10px;color:var(--ink-40)" id="kaAuszahlungHint">→ Auszahlung an den Mieter</div></div>
     </div>
-    <div class="f"><label for="kaIban">Auszahlungskonto (IBAN)</label><input type="text" id="kaIban" class="inp" value="${esc(iban)}" placeholder="DE.."></div>
+    <div class="f"><label for="kaIban">Auszahlungskonto (IBAN)</label><input type="text" id="kaIban" class="inp" value="${esc(iban)}" placeholder="DE.." data-iban></div>
     <div class="f-row">
       <div class="f"><label for="kaDatum">Abrechnungsdatum</label><input type="date" id="kaDatum" class="inp" value="${today()}"></div>
       <div class="f"><label for="kaFrist">Zahlbar binnen (Tagen)</label><input type="number" inputmode="decimal" id="kaFrist" class="inp" value="14" min="1"></div>
@@ -20899,8 +21247,8 @@ async function druckeBrief(mieterId, objektId) {
 
   // Absender bestimmen
   const abs = {
-    hausverwaltung: {name:'Hausverwaltung Nadig Pfau', strasse:'Venloer Straße 20', ort:'40477 Düsseldorf', tel:'0177 / 2509710', email:'info@nadigpfau.de'},
-    eigentuemer:    {name:'Alexander-Roland Nadig und Anna-Alexandra Pfau', strasse:'Venloer Straße 20', ort:'40477 Düsseldorf', tel:'0177 / 2509710', email:'info@nadigpfau.de'},
+    hausverwaltung: {name:'Hausverwaltung Nadig Pfau', strasse:VERWALTER_STRASSE, ort:VERWALTER_ORT, tel:'0177 / 2509710', email:'info@nadigpfau.de'},
+    eigentuemer:    {name:'Alexander-Roland Nadig und Anna-Alexandra Pfau', strasse:VERWALTER_STRASSE, ort:VERWALTER_ORT, tel:'0177 / 2509710', email:'info@nadigpfau.de'},
     hausmeister:    {name:CU?.name||'Hausmeister', strasse:'', ort:'', tel:'', email:''},
     // v273 (R23): keine Kontaktdaten mehr im Quellcode – der Absender wird aus
     // dem MG-Briefkopf gespeist (Einstellungen → Briefköpfe, settings['briefkopf_mg']).
@@ -21056,7 +21404,7 @@ function druckeAushang(objektId) {
   const fmtD    = d => d ? new Date(d).toLocaleDateString('de-DE') : today();
 
   const abs = {
-    hausverwaltung: {name:'Hausverwaltung Nadig Pfau', sub:'Alexander-Roland Nadig und Anna-Alexandra Pfau · Venloer Straße 20 · 40477 Düsseldorf'},
+    hausverwaltung: {name:'Hausverwaltung Nadig Pfau', sub:'Alexander-Roland Nadig und Anna-Alexandra Pfau · '+VERWALTER_STRASSE+' · '+VERWALTER_ORT},
     eigentuemer:    {name:'Die Eigentümer', sub:'Alexander-Roland Nadig und Anna-Alexandra Pfau'},
     hausmeister:    {name:'Der Hausmeister', sub:CU?.name||''},
     roland:         {name:'Roland B. Nadig', sub:'Dipl.Ing. Architekt · Zur Verlach 37 · 40723 Hilden'},
@@ -23278,7 +23626,7 @@ function mieterFormHTML(obj, m={}) {
     </div>
     <div class="f-row">
       <div class="f"><label for="mIban">IBAN</label>
-        <input type="text" id="mIban" value="${esc(m.iban||'')}" placeholder="DE.. .... .... .... .... .." autocomplete="off"></div>
+        <input type="text" id="mIban" value="${esc(m.iban||'')}" placeholder="DE.. .... .... .... .... .." autocomplete="off" data-iban></div>
       <div class="f"><label for="mBic">BIC</label>
         <input type="text" id="mBic" value="${esc(m.bic||'')}" placeholder="optional" autocomplete="off"></div>
     </div>
@@ -24784,7 +25132,7 @@ async function modalKaution(mieterId){
           <input type="number" inputmode="decimal" id="kdZins" value="${kd.verzinsung||''}" step="0.01" placeholder="marktüblich"></div>
       </div>
       <div class="f"><label for="kdIban">IBAN Kautionskonto</label>
-        <input type="text" id="kdIban" value="${esc(kd.kontoIban||'')}" placeholder="getrennt vom Vermögen des Vermieters" autocomplete="off"></div>
+        <input type="text" id="kdIban" value="${esc(kd.kontoIban||'')}" placeholder="getrennt vom Vermögen des Vermieters" autocomplete="off" data-iban></div>
     </div>
 
     <!-- Versicherungs-Block -->
@@ -27018,9 +27366,15 @@ function anlageRahmen(titel, untertitel, innerHtml, fussSeiten, bodyClass){
   .eyebrow{text-align:center;font-size:8.5pt;color:#888;text-transform:uppercase;letter-spacing:1px;margin-bottom:4px}
   h2{font-size:11.5pt;color:#0c447c;margin:14px 0 4px;padding-bottom:3px;border-bottom:1.5px solid #0c447c}
   p{margin:0 0 7px;text-align:justify}
+  /* v285: Der Aufzaehlungsstrich lag frueher als position:absolute im
+     li{position:relative}. Brach eine Liste ueber die Seitengrenze, setzte
+     Chrome die restlichen Punkte ans Ende der Folgeseite - in der Hausordnung
+     landeten sie unter der Unterschriftszeile. Jetzt steht der Strich im
+     normalen Textfluss (Einzug ueber text-indent), und einzelne Punkte werden
+     nicht mehr mitten im Satz getrennt. */
   ul{margin:0 0 8px 0;padding-left:0;list-style:none}
-  li{margin:0 0 4px 0;padding-left:14px;position:relative}
-  li:before{content:"–";position:absolute;left:0;color:#0c447c}
+  li{margin:0 0 4px 0;padding-left:14px;text-indent:-14px;page-break-inside:avoid;break-inside:avoid}
+  li:before{content:"– ";color:#0c447c}
   .box{border:1px solid #e2e8f0;border-radius:8px;padding:11px 14px;margin:8px 0;background:#f8fafc}
   .box.warn{border-color:#d9a200;background:#fdf6e7}
   .box b{color:#0c447c}
@@ -27069,6 +27423,32 @@ function anlageRahmen(titel, untertitel, innerHtml, fussSeiten, bodyClass){
   body.ho-kompakt .sig .anerk{margin-bottom:12px}
   body.ho-kompakt .sigrow{margin-top:24px}
   body.ho-kompakt .foot{margin-top:10px}
+  /* SEPA-Mandat (v285) – Formularfelder mit Ausfuelllinien */
+  body.sepa-kompakt{font-size:9.5pt;line-height:1.35}
+  body.sepa-kompakt h1{font-size:15pt;margin-bottom:0}
+  body.sepa-kompakt .sub{margin-bottom:10px;font-style:normal;font-size:10pt;color:#555}
+  .sepa-block{border:1px solid #cbd5e1;border-radius:6px;padding:9px 11px;margin:9px 0;page-break-inside:avoid}
+  .sepa-zeile{margin-bottom:9px}
+  .sepa-zeile:last-child{margin-bottom:0}
+  .sepa-label{font-weight:700;font-size:8.5pt;color:#0c447c;margin-bottom:2px}
+  .sepa-en{font-weight:400;color:#777;font-style:italic}
+  .sepa-inhalt{font-size:10pt}
+  .sepa-wert{font-weight:700}
+  .sepa-leer{display:inline-block;border-bottom:1px solid #555;height:14px;vertical-align:bottom}
+  .sepa-b1{min-width:120px}.sepa-b2{min-width:160px}.sepa-b3{min-width:220px}.sepa-b4{min-width:300px}
+  .sepa-hinweis{font-size:7.5pt;color:#777;margin-top:2px}
+  .sepa-text{margin:10px 0;text-align:justify}
+  .sepa-text p{margin:0 0 6px}
+  .sepa-en-text{font-size:8.5pt;color:#555}
+  .sepa-art{font-size:9.5pt}
+  .sepa-kreuz{font-size:12pt;vertical-align:-1px}
+  .sepa-box{font-size:12pt;vertical-align:-1px;color:#666}
+  .sepa-abstand{margin-left:26px}
+  .sepa-zwei{display:flex;gap:30px}
+  .sepa-zwei>div{flex:1}
+  body.sepa-kompakt .sig{margin-top:14px}
+  body.sepa-kompakt .sig .anerk{margin-bottom:14px;font-size:8.5pt}
+  body.sepa-kompakt .sigrow{margin-top:26px}
   /* Datenschutz kompakt – auf 1 Seite */
   body.ds-kompakt{font-size:9pt;line-height:1.32}
   body.ds-kompakt h1{font-size:14pt}
@@ -27244,11 +27624,81 @@ function anlageMerkblattHtml(objektId, weNr, autoDruck){
   return anlageRahmen('Richtig heizen und lüften', '', inner, null, 'mb-kompakt');
 }
 
+/* ── SEPA-LASTSCHRIFTMANDAT (v285) ───────────────────────────
+   Wortlaut der Ermaechtigung und der Erstattungshinweise nach dem in der
+   Verordnung (EU) Nr. 260/2012 vorgegebenen Mandatstext; Aufbau und Gestaltung
+   sind eine Eigenentwicklung (der Sparkassen-Vordruck wird nicht nachgebildet).
+   Pflichtangaben des SEPA-Rulebooks: Bezeichnung als Mandat, Glaeubigername und
+   -anschrift, Glaeubiger-Identifikationsnummer, Mandatsreferenz, Zahlungsart,
+   Angaben zum Zahlungspflichtigen sowie Ort, Datum und Unterschrift.
+   Das Mandat wird nur erzeugt, wenn zum Objekt eine Glaeubiger-ID gepflegt ist. */
+function anlageSepaHtml(daten, autoDruck){
+  const d = daten || {};
+  /* Groesse der Ausfuelllinie ueber Klassen statt Inlinestil (QA: inline_style). */
+  const feld = (wert, breite) => wert
+    ? '<span class="sepa-wert">' + esc(wert) + '</span>'
+    : '<span class="sepa-leer sepa-b' + (breite>=300?'4':breite>=200?'3':breite>=160?'2':'1') + '"></span>';
+  const zeile = (deLabel, enLabel, inhalt, hinweis) => `
+    <div class="sepa-zeile">
+      <div class="sepa-label">${esc(deLabel)}${enLabel?' <span class="sepa-en">/ '+esc(enLabel)+'</span>':''}</div>
+      <div class="sepa-inhalt">${inhalt}</div>
+      ${hinweis?'<div class="sepa-hinweis">'+hinweis+'</div>':''}
+    </div>`;
+
+  const inner = `
+    <div class="eyebrow">Anlage zum Mietvertrag – SEPA-Lastschriftmandat</div>
+    <h1>SEPA-LASTSCHRIFTMANDAT</h1>
+    <div class="sub">SEPA Direct Debit Mandate</div>
+
+    <div class="sepa-block">
+      ${zeile('Name des Zahlungsempfängers','Creditor name', feld(d.sepaEmpfaenger, 300))}
+      ${zeile('Anschrift des Zahlungsempfängers','Creditor address', feld(d.sepaEmpfaengerAnschrift, 300))}
+      ${zeile('Gläubiger-Identifikationsnummer','Creditor identifier', feld(d.sepaGlaeubigerId, 220))}
+      ${zeile('Mandatsreferenz','Mandate reference', feld(d.sepaMandatsreferenz, 220),
+              'Vom Zahlungsempfänger vergeben. / Completed by the creditor.')}
+    </div>
+
+    <div class="sepa-text">
+      <p>Ich ermächtige / Wir ermächtigen (A) den Zahlungsempfänger <b>${esc(d.sepaEmpfaenger||'')}</b>, Zahlungen von meinem / unserem Konto mittels Lastschrift einzuziehen. Zugleich (B) weise ich mein / weisen wir unser Kreditinstitut an, die vom Zahlungsempfänger <b>${esc(d.sepaEmpfaenger||'')}</b> auf mein / unser Konto gezogenen Lastschriften einzulösen.</p>
+      <p><b>Hinweis:</b> Ich kann / Wir können innerhalb von acht Wochen, beginnend mit dem Belastungsdatum, die Erstattung des belasteten Betrages verlangen. Es gelten dabei die mit meinem / unserem Kreditinstitut vereinbarten Bedingungen.</p>
+      <p class="sepa-en-text">By signing this mandate form, you authorise (A) the creditor ${esc(d.sepaEmpfaenger||'')} to send instructions to your bank to debit your account and (B) your bank to debit your account in accordance with the instructions from the creditor ${esc(d.sepaEmpfaenger||'')}.</p>
+      <p class="sepa-en-text">As part of your rights, you are entitled to a refund from your bank under the terms and conditions of your agreement with your bank. A refund must be claimed within 8 weeks starting from the date on which your account was debited.</p>
+    </div>
+
+    <div class="sepa-block">
+      <div class="sepa-zeile">
+        <div class="sepa-label">Zahlungsart <span class="sepa-en">/ Type of payment</span></div>
+        <div class="sepa-inhalt sepa-art">
+          <span class="sepa-kreuz">☒</span> Wiederkehrende Zahlung <span class="sepa-en">/ Recurrent payment</span>
+          <span class="sepa-abstand"><span class="sepa-box">☐</span> Einmalige Zahlung <span class="sepa-en">/ One-off payment</span></span>
+        </div>
+      </div>
+      ${zeile('Name des Zahlungspflichtigen (Kontoinhaber)','Debtor name', feld('', 300))}
+      ${zeile('Anschrift des Zahlungspflichtigen (Kontoinhaber)','Debtor address', feld('', 300),
+              'Angabe freigestellt. / Optional information.')}
+      ${zeile('IBAN des Zahlungspflichtigen (max. 34 Stellen)','IBAN of the debtor', feld('', 300))}
+      ${zeile('BIC (8 oder 11 Stellen)','BIC', feld('', 200),
+              'Die Angabe des BIC kann entfallen, wenn der Zahlungsdienstleister des Zahlungspflichtigen in einem EU-/EWR-Mitgliedsstaat ansässig ist. / The BIC is optional when the debtor bank is located in a EEA SEPA country.')}
+      <div class="sepa-zeile sepa-zwei">
+        <div><div class="sepa-label">Ort <span class="sepa-en">/ Location</span></div>${feld('', 160)}</div>
+        <div><div class="sepa-label">Datum (TT.MM.JJJJ) <span class="sepa-en">/ Date</span></div>${feld('', 160)}</div>
+      </div>
+    </div>
+
+    <div class="sig">
+      <p class="anerk">Unterschrift(en) des Zahlungspflichtigen (Kontoinhaber) / Signature(s) of the debtor</p>
+      <div class="sigrow"><div class="sigline">Unterschrift</div><div class="sigline">weitere Unterschrift</div></div>
+    </div>
+    <div class="foot">Hausverwaltung Nadig / Pfau · SEPA-Lastschriftmandat</div>
+    ${autoDruck?anlageAutoDruck():''}`;
+  return anlageRahmen('SEPA-Lastschriftmandat', '', inner, null, 'sepa-kompakt');
+}
+
 // ── DATENSCHUTZHINWEIS (Art. 13 DSGVO) ────────────────────
 function anlageDatenschutzHtml(objektId, weNr, autoDruck){
   const bk = objektId ? getBriefkopf(objektId) : null;
   const verantwortlich = (bk && (bk.absender||bk.name)) ? (bk.absender||bk.name) : 'Hausverwaltung Nadig / Pfau';
-  const anschrift = (bk && bk.strasse) ? [bk.strasse, bk.ort].filter(Boolean).join(', ') : 'Venloer Str. 20, 40477 Düsseldorf';
+  const anschrift = (bk && bk.strasse) ? [bk.strasse, bk.ort].filter(Boolean).join(', ') : VERWALTER_ANSCHRIFT;
   const mail = (bk && bk.email) ? bk.email : 'info@nadigpfau.de';
   const inner = `
     <div class="eyebrow">Anlage zum Mietvertrag – Datenschutz</div>
@@ -30843,6 +31293,101 @@ function mailHref(v){ return 'mailto:'+escAttr(String(v==null?'':v).replace(/[\s
 function today(){return new Date().toISOString().split('T')[0];}
 function now(){return new Date().toLocaleString('de-DE');}
 // IBAN in 4er-Gruppen darstellen, Beispiel (fiktiv): DE00 1234 5678 9012 3456 78
+/* ── IBAN-PRUEFUNG (v285) ────────────────────────────────────
+   Bis v284 wurde eine IBAN nur formatiert, maskiert und normalisiert,
+   aber nie geprueft - ein Zahlendreher wurde still uebernommen. Das faellt
+   an zwei Stellen teuer aus: der Zahlungsabgleich ordnet ueber die
+   hinterlegte IBAN zu (falsche IBAN = stille Nicht-Zuordnung, die erst
+   ueber den unerklaerlichen Rueckstand auffaellt), und bei der
+   Kautionsabrechnung wandert die IBAN direkt ins Auszahlungsschreiben.
+
+   Geprueft wird nach ISO 7064 (MOD 97-10, Art. 4 der Verordnung (EU)
+   Nr. 260/2012 i. V. m. ISO 13616) plus die laenderspezifische Laenge.
+   Die Pruefung erkennt Zahlendreher und vertippte Einzelstellen; sie kann
+   NICHT feststellen, ob das Konto existiert oder wem es gehoert.
+
+   Bewusst eine Warnung, keine Sperre: ein Zwischenstand muss speicherbar
+   bleiben, und die Laengentabelle kann bei neuen Laendern hinterherhinken. */
+const IBAN_LAENGEN = {
+  AD:24, AE:23, AL:28, AT:20, AZ:28, BA:20, BE:16, BG:22, BH:22, BI:27, BR:29,
+  BY:28, CH:21, CR:22, CY:28, CZ:24, DE:22, DJ:27, DK:18, DO:28, EE:20, EG:29,
+  ES:24, FI:18, FO:18, FR:27, GB:22, GE:22, GI:23, GL:18, GR:27, GT:28, HR:21,
+  HU:28, IE:22, IL:23, IQ:23, IS:26, IT:27, JO:30, KW:30, KZ:20, LB:28, LC:32,
+  LI:21, LT:20, LU:20, LV:21, LY:25, MC:27, MD:24, ME:22, MK:19, MR:27, MT:31,
+  MU:30, NL:18, NO:15, PK:24, PL:28, PS:29, PT:25, QA:29, RO:24, RS:22, RU:33,
+  SA:24, SC:31, SD:18, SE:24, SI:19, SK:24, SM:27, SO:23, ST:25, SV:28, TL:23,
+  TN:24, TR:26, UA:29, VA:22, VG:24, XK:20,
+};
+
+/* Liefert {ok, art, text}. art: 'leer' | 'gueltig' | 'unbekanntesLand'
+   | 'format' | 'laenge' | 'pruefziffer'. */
+function ibanPruefen(wert){
+  const iban = String(wert||'').replace(/[\s\-.]/g, '').toUpperCase();
+  if(!iban) return { ok:true, art:'leer', text:'' };
+  if(!/^[A-Z]{2}[0-9]{2}[A-Z0-9]{6,30}$/.test(iban)){
+    return { ok:false, art:'format',
+             text:'Ungewöhnliches Format – erwartet werden zwei Buchstaben (Land), zwei Prüfziffern und die Kontokennung.' };
+  }
+  const land = iban.slice(0,2);
+  const soll = IBAN_LAENGEN[land];
+  if(!soll){
+    return { ok:true, art:'unbekanntesLand',
+             text:'Das Länderkürzel '+land+' ist hier nicht hinterlegt – die Länge wurde nicht geprüft.' };
+  }
+  if(iban.length !== soll){
+    return { ok:false, art:'laenge',
+             text:'Für '+land+' sind '+soll+' Stellen vorgesehen, eingegeben wurden '+iban.length+'.' };
+  }
+  // MOD 97-10: erste vier Zeichen ans Ende, Buchstaben als Zahl (A=10 … Z=35),
+  // Rest schrittweise bilden, damit die Zahl nicht die Zahlengenauigkeit sprengt.
+  const umgestellt = iban.slice(4) + iban.slice(0,4);
+  let rest = 0;
+  for(const zeichen of umgestellt){
+    const teil = (zeichen >= '0' && zeichen <= '9')
+      ? zeichen
+      : String(zeichen.charCodeAt(0) - 55);
+    for(const ziffer of teil) rest = (rest * 10 + Number(ziffer)) % 97;
+  }
+  if(rest !== 1){
+    return { ok:false, art:'pruefziffer',
+             text:'Die Prüfziffer stimmt nicht – meist ein Zahlendreher oder eine vertippte Stelle.' };
+  }
+  return { ok:true, art:'gueltig', text:'Prüfziffer stimmt.' };
+}
+
+/* Blendet den Hinweis unter einem Eingabefeld ein. Der Hinweiskasten wird bei
+   Bedarf erzeugt, damit die Formulare selbst nur ein data-iban tragen muessen. */
+function ibanHinweisZeigen(el){
+  if(!el) return;
+  const pruef = ibanPruefen(el.value);
+  let box = el.nextElementSibling;
+  if(!box || !box.classList || !box.classList.contains('iban-hinweis')){
+    box = document.createElement('div');
+    box.className = 'iban-hinweis';
+    el.insertAdjacentElement('afterend', box);
+  }
+  if(pruef.art === 'leer' || pruef.art === 'gueltig'){
+    box.textContent = '';
+    box.className = 'iban-hinweis';
+    return;
+  }
+  box.textContent = pruef.text;
+  box.className = 'iban-hinweis ' + (pruef.ok ? 'iban-hinweis-mild' : 'iban-hinweis-warn');
+}
+
+/* Eine Delegation für alle IBAN-Felder statt Handler je Feld: die Formulare
+   werden über innerHTML neu aufgebaut, einzeln gebundene Handler gingen dabei
+   verloren. 'focusin' deckt zusätzlich Altbestände ab, die nie bearbeitet
+   werden – der Hinweis erscheint, sobald das Feld angetippt wird. */
+if(typeof document !== 'undefined'){
+  const ibanReagieren = ev => {
+    const el = ev.target;
+    if(el && el.tagName === 'INPUT' && el.hasAttribute('data-iban')) ibanHinweisZeigen(el);
+  };
+  document.addEventListener('input', ibanReagieren);
+  document.addEventListener('focusin', ibanReagieren);
+}
+
 function fmtIban(iban){
   if(!iban) return '';
   const clean=String(iban).replace(/\s+/g,'').toUpperCase();
@@ -35628,6 +36173,9 @@ function fmtDatumKurz(ds){
 async function modalRechnungErfassen(rechnung){
   if(!istVerwalter()){ toast('Nur für Admins'); return; }
   _rechnBeleg = rechnung?.beleg ? {data:rechnung.beleg, mimeType:rechnung.belegMime, name:rechnung.belegName||'Beleg'} : null;
+  /* v286: Positionen leben waehrend der Bearbeitung im Speicher (wie _rechnBeleg)
+     und werden erst beim Speichern in den Datensatz geschrieben. */
+  _rechnPositionen = Array.isArray(rechnung?.positionen) ? rechnung.positionen.map(p=>({...p})) : [];
   const myObj=await getMyObjekte();
   const isEdit=!!rechnung;
   const r=rechnung||{};
@@ -35639,12 +36187,14 @@ async function modalRechnungErfassen(rechnung){
     <div class="f-row">
       <div class="f" style="flex:1"><label for="rNr">Rechnungsnr.</label>
         <input type="text" id="rNr" value="${esc(r.rechnungsnr||'')}" placeholder="optional"></div>
+      <div class="f" style="flex:1"><label for="rBelegNr">Eigene Beleg-Nr.</label>
+        <input type="text" id="rBelegNr" value="${esc(r.belegNrHand||'')}" placeholder="handschriftlich"></div>
       <div class="f" style="flex:1"><label for="rDatum">Rechnungsdatum *</label>
         <input type="date" id="rDatum" value="${r.datum||heute}"></div>
     </div>
     <div class="f-row">
       <div class="f" style="flex:1"><label for="rBetrag">Betrag (brutto) € *</label>
-        <input type="number" inputmode="decimal" step="0.01" id="rBetrag" value="${r.betrag!=null?r.betrag:''}" placeholder="0,00"></div>
+        <input type="number" inputmode="decimal" step="0.01" id="rBetrag" value="${r.betrag!=null?r.betrag:''}" placeholder="0,00" oninput="rechnPosSummePruefen()"></div>
       <div class="f" style="flex:1"><label for="rFaellig">Fällig bis</label>
         <input type="date" id="rFaellig" value="${r.faellig||''}"></div>
     </div>
@@ -35741,6 +36291,20 @@ async function modalRechnungErfassen(rechnung){
       <input type="file" id="rBelegPdf" accept="application/pdf,text/xml,application/xml,.xml" style="display:none" onchange="rechnBelegPdf(this)">
     </div>
 
+    <!-- v286: Einzelposten des Belegs. Der Bereich bleibt leer, bis die
+         KI-Erkennung Positionen geliefert hat oder eine gespeicherte Rechnung
+         welche mitbringt - er soll das Formular nicht unnoetig aufblaehen. -->
+    <div class="f" id="rPosWrap" style="display:none">
+      <div class="f-titel">Positionen <span id="rPosAnzahl" style="font-weight:400;color:var(--ink-40)"></span></div>
+      <div id="rPosListe"></div>
+      <div id="rPosSummeHinweis"></div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">
+        <button type="button" class="btn btn-sm" id="rPosKlartextBtn" onclick="rechnKuerzelAufloesen()"><i class="ti ti-world-search"></i> Kürzel auflösen</button>
+        <button type="button" class="btn btn-sm" onclick="rechnPosAlleUmschalten()"><i class="ti ti-checkbox"></i> Alle / keine</button>
+      </div>
+      <div style="font-size:10px;color:var(--ink-40);margin-top:4px"><i class="ti ti-info-circle"></i> Angehakt = von dieser Rechnung bezahlt. Bei „Kürzel auflösen" werden nur die Artikeltexte und der Lieferantenname an den KI-Dienst übermittelt – nicht der Beleg.</div>
+    </div>
+
     <div class="f"><label>Notiz</label>
       <textarea spellcheck="true" lang="de" id="rNotiz" rows="2" placeholder="optional">${esc(r.notiz||'')}</textarea></div>
 
@@ -35750,6 +36314,7 @@ async function modalRechnungErfassen(rechnung){
     </div>`);
 
   rechnZuordnungWechsel();
+  rechnPosRender();
   await rechnObjWechsel();
   // bei Bearbeiten vorhandene Bezüge vorbelegen
   if(isEdit){
@@ -35810,6 +36375,182 @@ async function rechnungOcrErkennen(){
 }
 // Trägt den KI-Vorschlag in die Formularfelder ein – befüllt nur erkannte Werte,
 // erzwingt nichts und lässt vom Nutzer bereits Eingetragenes wo möglich bestehen.
+/* ══════════════════════════════════════════════════════════════
+   RECHNUNGSPOSITIONEN (v286)
+   Die Einzelposten eines Belegs, damit spaeter nach gekauften Gegenstaenden
+   gesucht werden kann ("Wo habe ich den Tuerdruecker gekauft?").
+
+   Datensatz je Position:
+     bezeichnung        Artikeltext wie gedruckt - das Massgebliche
+     artikelnr, menge, einheit, einzelpreis, gesamtpreis
+     markiert           handschriftlich angekreuzt = von dieser Rechnung bezahlt
+     klartext           aufgeloestes Kuerzel (KI + Websuche), NUR Ergaenzung
+     klartextKonfidenz  hoch|mittel|niedrig
+     klartextQuelle     Domain der Fundstelle
+
+   Zur Verlaesslichkeit: Die Handschrifterkennung ist nicht sicher genug fuer
+   eine automatische Buchung. Deshalb wird die Summe der angehakten Positionen
+   gegen den eingetragenen Betrag geprueft und bei Abweichung ein Hinweis
+   gezeigt - statt still einen falschen Betrag zu uebernehmen. Jede Position
+   bleibt einzeln umschaltbar, eine Fehlerkennung ist in zwei Sekunden
+   korrigiert. */
+let _rechnPositionen = [];
+
+/* Waehrung ohne Symbol, fuer Vergleiche und kompakte Anzeige. */
+function rechnPosEur(betrag){
+  return (Math.round(Number(betrag||0)*100)/100).toLocaleString('de-DE',
+    {minimumFractionDigits:2, maximumFractionDigits:2});
+}
+
+/* Summe der angehakten Positionen. null, wenn nicht alle einen Preis tragen -
+   eine unvollstaendige Summe waere schlimmer als gar keine, weil sie einen
+   falschen Alarm ausloesen wuerde. */
+function rechnPosSummeMarkiert(){
+  const mark = _rechnPositionen.filter(p=>p && p.markiert);
+  if(!mark.length) return null;
+  if(!mark.every(p=>typeof p.gesamtpreis==='number')) return null;
+  return Math.round(mark.reduce((a,p)=>a+p.gesamtpreis,0)*100)/100;
+}
+
+function rechnPosRender(){
+  const wrap=document.getElementById('rPosWrap');
+  const liste=document.getElementById('rPosListe');
+  if(!wrap||!liste) return;
+  if(!_rechnPositionen.length){ wrap.style.display='none'; liste.innerHTML=''; return; }
+  wrap.style.display='';
+
+  const anzahl=document.getElementById('rPosAnzahl');
+  const markAnz=_rechnPositionen.filter(p=>p.markiert).length;
+  if(anzahl) anzahl.textContent='· '+_rechnPositionen.length+' Posten'
+    + (markAnz?(', '+markAnz+' angehakt'):'');
+
+  liste.innerHTML=_rechnPositionen.map((p,i)=>{
+    const preis = typeof p.gesamtpreis==='number' ? rechnPosEur(p.gesamtpreis)+' €' : '';
+    const menge = p.menge!=null ? (p.menge+(p.einheit?' '+esc(p.einheit):'')) : '';
+    const detail=[menge, p.artikelnr?('Art. '+esc(p.artikelnr)):''].filter(Boolean).join(' · ');
+    /* Der Klartext steht unter dem Original und ist als KI-Ergaenzung
+       gekennzeichnet - das Kuerzel bleibt sichtbar und wird nie ersetzt. */
+    const klartext = p.klartext
+      ? `<div class="rpos-klartext"><i class="ti ti-sparkles"></i> ${esc(p.klartext)}`
+        + (p.klartextKonfidenz==='niedrig'?' <span class="rpos-unsicher">(unsicher)</span>':'')
+        + (p.klartextQuelle?` <span class="rpos-quelle">${esc(p.klartextQuelle)}</span>`:'')
+        + '</div>'
+      : '';
+    return `<div class="rpos${p.markiert?' rpos-markiert':''}">
+      <input type="checkbox" id="rPos${i}" ${p.markiert?'checked':''} onchange="rechnPosUmschalten(${i})">
+      <label for="rPos${i}" class="rpos-text">
+        <div class="rpos-bez">${esc(p.bezeichnung||'')}</div>
+        ${detail?`<div class="rpos-detail">${detail}</div>`:''}
+        ${klartext}
+      </label>
+      <div class="rpos-preis">${preis}</div>
+    </div>`;
+  }).join('');
+
+  rechnPosSummePruefen();
+}
+
+/* Vergleicht die Summe der angehakten Positionen mit dem Betragsfeld und macht
+   Abweichungen sichtbar. Das ist die Absicherung gegen eine uebersehene oder
+   erfundene Markierung - siehe Kommentar oben. */
+function rechnPosSummePruefen(){
+  const box=document.getElementById('rPosSummeHinweis');
+  if(!box) return;
+  const summe=rechnPosSummeMarkiert();
+  if(summe==null){ box.innerHTML=''; return; }
+  const feld=document.getElementById('rBetrag');
+  const betrag=feld && feld.value!=='' ? Number(feld.value) : null;
+  if(betrag==null || !isFinite(betrag)){
+    box.innerHTML='<div class="rpos-hinweis rpos-hinweis-mild">Angehakt: '+rechnPosEur(summe)
+      +' € <button type="button" class="rpos-mini" onclick="rechnPosSummeUebernehmen()">als Betrag übernehmen</button></div>';
+    return;
+  }
+  const diff=Math.round((betrag-summe)*100)/100;
+  if(Math.abs(diff)<0.005){
+    box.innerHTML='<div class="rpos-hinweis rpos-hinweis-ok"><i class="ti ti-check"></i> Angehakte Positionen ergeben genau den Betrag.</div>';
+    return;
+  }
+  box.innerHTML='<div class="rpos-hinweis rpos-hinweis-warn"><i class="ti ti-alert-triangle"></i> '
+    +'Angehakt: '+rechnPosEur(summe)+' €, eingetragen: '+rechnPosEur(betrag)+' € ('
+    +(diff>0?'+':'')+rechnPosEur(diff)+' €). Bitte prüfen, ob eine Markierung übersehen wurde. '
+    +'<button type="button" class="rpos-mini" onclick="rechnPosSummeUebernehmen()">Summe übernehmen</button></div>';
+}
+
+function rechnPosSummeUebernehmen(){
+  const summe=rechnPosSummeMarkiert();
+  const feld=document.getElementById('rBetrag');
+  if(summe==null||!feld) return;
+  feld.value=summe;
+  rechnPosSummePruefen();
+  toast('Betrag aus den angehakten Positionen übernommen ✓');
+}
+
+function rechnPosUmschalten(i){
+  const p=_rechnPositionen[i];
+  if(!p) return;
+  p.markiert=!p.markiert;
+  rechnPosRender();
+}
+
+function rechnPosAlleUmschalten(){
+  const alleAn=_rechnPositionen.every(p=>p.markiert);
+  _rechnPositionen.forEach(p=>{ p.markiert=!alleAn; });
+  rechnPosRender();
+}
+
+/* Kuerzel aufloesen - zweiter, ausdruecklicher Schritt (Nutzerentscheidung v286).
+   Laeuft NICHT automatisch bei jeder Erkennung: die Websuche dauert deutlich
+   laenger und kostet mehr. Uebermittelt werden nur Artikeltexte und der
+   Lieferantenname - der Beleg bleibt hier vollstaendig im Haus. */
+async function rechnKuerzelAufloesen(){
+  if(!_rechnPositionen.length){ toast('Keine Positionen vorhanden'); return; }
+  const gs=await getSettings();
+  if(!gs.backendKey){ toast('Kein Backend-Schlüssel hinterlegt (Einstellungen → System).'); return; }
+
+  /* Nur Positionen anfragen, die noch keinen Klartext haben. */
+  const offen=_rechnPositionen.filter(p=>p && p.bezeichnung && !p.klartext);
+  if(!offen.length){ toast('Alle Positionen sind bereits aufgelöst'); return; }
+  const kuerzel=[...new Set(offen.map(p=>String(p.bezeichnung).trim()))].slice(0,25);
+
+  const btn=document.getElementById('rPosKlartextBtn');
+  const alt=btn?btn.innerHTML:'';
+  if(btn){ btn.disabled=true; btn.innerHTML='<i class="ti ti-loader-2"></i> Suche läuft …'; }
+  try{
+    const res=await fetchMitTimeout(BACKEND_AZURE+'/api/artikel-klartext',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-functions-key':gs.backendKey},
+      body:JSON.stringify({ lieferant:document.getElementById('rLieferant')?.value?.trim()||'', kuerzel }),
+    }, 130000);
+    if(res.status===404){ toast('Endpunkt ist noch nicht eingerichtet (/api/artikel-klartext).'); return; }
+    if(!res.ok){ toast('Auflösung fehlgeschlagen (HTTP '+res.status+')'); return; }
+    const daten=await res.json().catch(()=>null);
+    if(!daten || daten.error){ toast(daten?.error||'Auflösung fehlgeschlagen'); return; }
+    const treffer=Array.isArray(daten.treffer)?daten.treffer:[];
+    if(!treffer.length){ toast('Keine Kürzel eindeutig auflösbar – Originaltexte bleiben stehen'); return; }
+
+    let uebernommen=0;
+    for(const t of treffer){
+      if(!t || !t.kuerzel || !t.klartext) continue;
+      for(const p of _rechnPositionen){
+        if(String(p.bezeichnung||'').trim()!==String(t.kuerzel).trim()) continue;
+        if(p.klartext) continue;
+        p.klartext=String(t.klartext).slice(0,120);
+        p.klartextKonfidenz=t.konfidenz||'niedrig';
+        p.klartextQuelle=t.quelle||'';
+        uebernommen++;
+      }
+    }
+    rechnPosRender();
+    const rest=kuerzel.length-treffer.length;
+    toast(uebernommen+' Position(en) ergänzt'+(rest>0?(' · '+rest+' blieben offen'):'')+' ✓');
+  }catch(e){
+    console.warn('Kürzelauflösung:', e);
+    toast('Auflösung nicht möglich (Zeitüberschreitung oder Netzfehler)');
+  }finally{
+    if(btn){ btn.disabled=false; btn.innerHTML=alt; }
+  }
+}
+
 function rechnungOcrVorschlagAnwenden(v){
   if(!v||typeof v!=='object') return;
   const setV=(id,val)=>{ const e=document.getElementById(id); if(e && val!=null && val!=='') e.value=val; };
@@ -35833,6 +36574,43 @@ function rechnungOcrVorschlagAnwenden(v){
   if(v.leistungszeitraum) hinweise.push('Zeitraum: '+v.leistungszeitraum);
   if(v.iban) hinweise.push('IBAN: '+v.iban);
   if(v.notizVorschlag) hinweise.push(v.notizVorschlag);
+
+  /* v286: handschriftliche Ablage-Nummer. Handschriftliche Ziffern werden
+     gelegentlich verwechselt (1/7, 4/9), deshalb nur vorbelegen, wenn das Feld
+     noch leer ist - eine eigene Eingabe wird nie ueberschrieben. */
+  if(v.belegNrHand){
+    const bn=document.getElementById('rBelegNr');
+    if(bn && !bn.value) bn.value=v.belegNrHand;
+  }
+
+  /* v286: Positionen uebernehmen. Auch nicht markierte werden gespeichert -
+     sie bleiben durchsuchbar (Nutzerentscheidung). */
+  if(Array.isArray(v.positionen) && v.positionen.length){
+    _rechnPositionen = v.positionen.map(p=>({
+      bezeichnung: String(p.bezeichnung||'').slice(0,200),
+      artikelnr:   p.artikelnr!=null?String(p.artikelnr).slice(0,60):undefined,
+      menge:       typeof p.menge==='number'?p.menge:undefined,
+      einheit:     p.einheit!=null?String(p.einheit).slice(0,16):undefined,
+      einzelpreis: typeof p.einzelpreis==='number'?p.einzelpreis:undefined,
+      gesamtpreis: typeof p.gesamtpreis==='number'?p.gesamtpreis:undefined,
+      markiert:    p.markiert===true,
+    })).filter(p=>p.bezeichnung);
+    rechnPosRender();
+
+    /* Betragsvorschlag aus den angehakten Positionen (Nutzerentscheidung v286).
+       Nur, wenn das Betragsfeld noch leer ist - ein bereits eingetragener oder
+       aus den Kopfdaten erkannter Betrag wird nicht ueberschrieben. Die
+       Abweichungspruefung in rechnPosSummePruefen bleibt in jedem Fall aktiv. */
+    if(v.markierungenGefunden){
+      const summe=rechnPosSummeMarkiert();
+      const feld=document.getElementById('rBetrag');
+      if(summe!=null && feld && !feld.value){
+        feld.value=summe;
+        hinweise.push('Betrag aus '+_rechnPositionen.filter(p=>p.markiert).length+' angehakten Positionen');
+      }
+      rechnPosSummePruefen();
+    }
+  }
   if(hinweise.length){
     const nt=document.getElementById('rNotiz');
     if(nt){ nt.value = (nt.value?nt.value+'\n':'') + hinweise.join(' · '); }
@@ -36137,6 +36915,13 @@ async function rechnungSpeichern(id){
     id: id||uid(),
     lieferant,
     rechnungsnr: document.getElementById('rNr').value.trim(),
+    /* v286: eigene, handschriftlich auf den Beleg geschriebene Ablage-Nummer -
+       bewusst getrennt von der Rechnungsnummer des Lieferanten, sonst waeren
+       die beiden spaeter nicht mehr auseinanderzuhalten. */
+    belegNrHand: document.getElementById('rBelegNr')?.value?.trim()||'',
+    /* Auch NICHT angehakte Positionen werden gespeichert: sie sind bezahlt oder
+       nicht, durchsuchbar sind sie in jedem Fall (Nutzerentscheidung v286). */
+    positionen: Array.isArray(_rechnPositionen) && _rechnPositionen.length ? _rechnPositionen : null,
     datum,
     faellig: document.getElementById('rFaellig').value||null,
     betrag,
@@ -36156,6 +36941,7 @@ async function rechnungSpeichern(id){
   };
   await idbPut('rechnungen', rec);
   _rechnBeleg=null;
+  _rechnPositionen=[];
   closeModal();
   syncSoon();
   toast('Rechnung gespeichert ✓');
@@ -36171,6 +36957,23 @@ async function modalRechnungDetail(id){
   else if(r.zuordnung==='mieter') bezug=r.mieterName?('Mieter: '+r.mieterName):'Mieter: –';
   else if(r.zuordnung==='reparatur') bezug=r.reparaturTitel?('Reparatur: '+r.reparaturTitel):'Reparatur: –';
   else bezug='Allgemein / Verwaltung';
+
+  /* v286: Positionen in der Detailansicht. Angehakte zuerst erkennbar, nicht
+     angehakte blasser – sie sind mitgespeichert und durchsuchbar, gehoeren aber
+     nicht zum bezahlten Umfang. */
+  let posHtml='';
+  if(Array.isArray(r.positionen) && r.positionen.length){
+    const mark=r.positionen.filter(p=>p.markiert);
+    const zeile=p=>`<div class="rpos-det${p.markiert?'':' rpos-det-aus'}">
+      <span>${p.markiert?'<i class="ti ti-check"></i> ':''}${esc(p.bezeichnung||'')}${
+        p.klartext?`<br><span style="font-size:10px;font-style:italic">${esc(p.klartext)}</span>`:''}</span>
+      <span style="font-variant-numeric:tabular-nums;white-space:nowrap">${
+        typeof p.gesamtpreis==='number'?rechnPosEur(p.gesamtpreis)+' €':''}</span></div>`;
+    posHtml=`<details style="margin-top:10px">
+      <summary style="font-size:12px;cursor:pointer"><i class="ti ti-list-details"></i> Positionen (${r.positionen.length}${mark.length?', '+mark.length+' bezahlt':''})</summary>
+      <div style="margin-top:6px">${r.positionen.map(zeile).join('')}</div>
+    </details>`;
+  }
 
   let belegHtml='';
   if(r.beleg){
@@ -36193,12 +36996,14 @@ async function modalRechnungDetail(id){
       </div>
       <div style="font-size:12px;color:var(--ink-60);margin-top:8px;line-height:1.7">
         ${r.rechnungsnr?`<div>Rechnungsnr.: ${esc(r.rechnungsnr)}</div>`:''}
+        ${r.belegNrHand?`<div>Eigene Beleg-Nr.: ${esc(r.belegNrHand)}</div>`:''}
         <div>Datum: ${r.datum?fmtDatumKurz(r.datum):'–'}</div>
         ${r.faellig?`<div>Fällig bis: ${fmtDatumKurz(r.faellig)}</div>`:''}
         ${r.objektId?`<div>Objekt: ${esc(zielName(r.objektId))}</div>`:''}
         <div>Art: ${z?.name||r.zuordnung}${z?.umlage?' (umlagefähig)':''}</div>
         <div>${esc(bezug)}</div>
         ${r.notiz?`<div style="margin-top:6px;padding-top:6px;border-top:1px solid var(--ink-10)">${esc(r.notiz)}</div>`:''}
+        ${posHtml}
       </div>
     </div>
     ${belegHtml}
