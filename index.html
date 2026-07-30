@@ -1230,7 +1230,89 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=35;   // v242: +buch_journal (F4 GoBD)
-const APP_VERSION = '2026-07-29-v290';
+const APP_VERSION = '2026-07-30-v293';
+/* v293 (30.07.2026): NKA - anteilig beruecksichtigte Belege werden ausgewiesen.
+   Schliesst den in v292 offen gelassenen Punkt: buchKatSummen lieferte die Liste
+   `anteilig` bereits, angezeigt wurde sie nicht. Eine stille Teilberuecksichtigung
+   waere in einer Abrechnung nicht nachvollziehbar - der Mieter kann Belegeinsicht
+   verlangen (§ 259 BGB), und die Rechenschritte muessen dann darstellbar sein.
+   Das Buchpanel der NKA zeigt jetzt je Beleg Empfaenger, Leistungszeitraum,
+   vollen Betrag, Prozentsatz und den angesetzten Teilbetrag. Aufgeklappt wird
+   auf Wunsch (details/summary), damit das Panel bei vielen Belegen nicht
+   unuebersichtlich wird, mit Hinweis, dass die Aufstellung in die Belegsammlung
+   zur Abrechnung gehoert.
+   Reine Anzeige - keine Rechenaenderung gegenueber v292.
+   BACKEND (gleiche Runde, offene Befunde aus Code-Review Nr. 2):
+   - inbox-mark-read.js und token-check.js gaben bei fehlender App-Setting den
+     NAMEN der Einstellung an den Client zurueck ('STORAGE_CONNECTION fehlt').
+     Das verraet die Konfigurationsstruktur des Backends. Jetzt nur noch
+     {ok:false}; die Diagnose steht im Serverprotokoll.
+   - zaehlerOcr.js meldete 'Anthropic <status>' nach aussen - Dienstleister und
+     Statuscode gehoeren nicht in die Antwort. Jetzt dieselbe Formulierung wie
+     rechnungOcr.js ('KI-Dienst nicht erreichbar'), war bisher inkonsistent.
+   - NEU tests/test_backend_leak.mjs: prueft ALLE 13 Backend-Dateien darauf, dass
+     kein Konfigurationsname, keine rohe Fehlermeldung (e.message) und kein Name
+     des KI-Dienstleisters im jsonBody landet. Gegenprobe gegen die alten Dateien
+     bestanden - der Test haette die Befunde gefunden.
+   Keine Store-/DB-Aenderung; DB_VER bleibt 35. */
+/* v292 (30.07.2026): NKA - taggenaue Anteilung periodenuebergreifender Kosten.
+   Letzter Schritt von F2 (Befund B2). Felder, Texterkennung (v235) und das
+   Zuordnungsdatum (v236) gab es bereits; offen war die Anteilung selbst.
+   VORHER: buchNkaDatum() ordnete eine Rechnung nach dem MITTELPUNKT ihres
+   Leistungszeitraums genau einem Jahr zu. Eine Rechnung ueber
+   01.07.2024-30.06.2025 floss damit zu 100 % in ein Jahr, obwohl nur die
+   Haelfte der Leistung darauf entfaellt.
+   JETZT: buchZeitAnteil(b, von, bis) liefert den Anteil 0..1 aus der
+   Ueberlappung der Tage; buchKatSummen multipliziert die Betraege damit.
+   Geprueft ist unter anderem, dass die Anteile ueber mehrere Jahre in Summe
+   exakt 1 ergeben - sonst ginge Geld verloren oder wuerde doppelt gezaehlt.
+   RECHTLICHER RAHMEN (keine Rechtsberatung): Der Vermieter darf Betriebskosten
+   grundsaetzlich nach dem Abflussprinzip abrechnen (BGH VIII ZR 27/07).
+   Zwingend ist das Leistungsprinzip dort, wo der Verbrauch im Abrechnungs-
+   zeitraum massgeblich ist, insbesondere bei Heizkosten nach HeizkostenV. Wer
+   das Leistungsprinzip waehlt, sollte es einheitlich anwenden. Die App wendet
+   es an, sobald ein Leistungszeitraum hinterlegt ist - ohne Leistungszeitraum
+   bleibt es beim Zahlungsdatum, der Bestand aendert sich also nicht von selbst.
+   TRANSPARENZ: buchKatSummen liefert `anteilig` mit jedem nur teilweise
+   beruecksichtigten Beleg (Empfaenger, Zeitraum, Anteil, voller Betrag). Eine
+   stille Teilberuecksichtigung waere in einer Abrechnung nicht nachvollziehbar;
+   der Mieter kann Belegeinsicht verlangen.
+   UNPLAUSIBLE ANGABEN (Ende vor Beginn, kaputtes Datum) fallen auf das
+   Zahlungsdatum zurueck statt einen negativen Anteil zu erzeugen.
+   ANLAGE V bleibt bewusst beim Zahlungsdatum (§ 11 EStG, Zuflussprinzip) -
+   die Anteilung gilt nur fuer die NKA.
+   Keine Store-/DB-Aenderung; DB_VER bleibt 35. Tests: tests/test_zeitanteil.mjs (34). */
+/* v291 (30.07.2026): Anlage-V-Export - GEMEINSAM-Positionen nachvollziehbar machen.
+   Letzter offener Teil von F1 Schritt 3 (Befund B1, Steuerteil).
+   AUSGANGSLAGE: Das Blatt "Kosten je Objekt" fuehrte Kosten einer Kostengruppe als
+   eine Zeile "GEMEINSAM: Krefeld gemischt" - ohne Angabe, WELCHE Haeuser gemeint
+   sind. Der Steuerberater musste das aus den Stammdaten heraussuchen. Anlage V
+   wird je Objekt abgegeben, die Zuordnung ist also unvermeidlich.
+   1) BETROFFENE GEBAEUDE WERDEN GENANNT. Neue Spalte im Blatt, gefuellt aus
+      buchBetroffeneObjekte(b) - der Funktion, die es dafuer schon gab und die im
+      Steuerteil bisher ungenutzt blieb. avMerkeGruppenObjekte() sammelt sie je
+      Kostenstelle; Einzelobjekte werden uebersprungen, dort steht das Gebaeude
+      schon im Zeilentitel.
+   2) AUFTEILUNGSVORSCHLAG NACH WOHNFLAECHE in einem EIGENEN Blatt
+      ("Aufteilung (Vorschlag)"). BEWUSST getrennt und NICHT in die Summen der
+      anderen Blaetter eingerechnet: Welcher Verteilungsmassstab steuerlich
+      zutrifft - Wohnflaeche, Nutzflaeche, Anzahl Einheiten oder direkte
+      Zuordnung nach Verursachung - entscheidet der Steuerberater. Die App darf
+      das nicht vorwegnehmen; sie liefert nur die Rechengrundlage, damit er die
+      Flaechen nicht selbst zusammensuchen muss. Das Blatt sagt das ausdruecklich.
+      Verteilt wird mit nkaCentVerteilung() aus v284: die Summe der Anteile
+      entspricht centgenau dem Ausgangsbetrag, keine Rundungsdifferenz.
+   3) FEHLENDE WOHNFLAECHEN WERDEN AUSGEWIESEN, nicht stillschweigend als 0
+      angesetzt. Sonst verschoebe eine fehlende Stammdatenangabe die Anteile der
+      uebrigen Gebaeude, ohne dass es auffaellt - der Vorschlag waere still falsch.
+      Fehlt jede Flaeche einer Gruppe, wird gar nicht gerechnet, sondern die
+      Pflegestelle genannt. Fehlt eine einzelne, wird sie beim Namen genannt samt
+      Hinweis, dass sich die uebrigen Anteile dadurch verschieben, und am Blattende
+      steht die Warnung, den Vorschlag so nicht zu uebernehmen.
+   Keine Steuerberatung. Der konservative Ansatz aus v234 (keine automatische
+   Verteilung in den Summen) bleibt unveraendert - v291 macht nur sichtbar, was
+   verteilt werden muesste, und rechnet einen Vorschlag daneben.
+   Keine Store-/DB-Aenderung; DB_VER bleibt 35. Tests: tests/test_anlagev.mjs (28). */
 /* v290 (29.07.2026): PIN-Anmeldung - Datensatz konnte dauerhaft unbrauchbar werden.
    NUTZERBEFUND 29.07.2026: Der Hausmeister kam auf einem neu eingerichteten Handy
    mit dem RICHTIGEN PIN nicht hinein; auf dem alten Geraet funktionierte derselbe
@@ -15791,7 +15873,9 @@ async function nkaBuchPanelToggle(objektId){
   const _nkaRelevant=alle.filter(b=>b && b.kontoId===konto.id && nkaBuchungBezug(b,objektId)!=='fremd');
   const s=buchKatSummen(_nkaRelevant, von, bis, buchNkaDatum);   // v236 (F2): Leistungszeitraum statt Zahlungsdatum
   // v228 (F1 Schritt 3): Kennzeichnung gemeinsamer / unzugeordneter Kosten im Zeitraum
-  const _imZr=_nkaRelevant.filter(b=>b.typ==='ausgang' && (!von||buchNkaDatum(b)>=von) && (!bis||buchNkaDatum(b)<=bis));
+  /* v292: dieselbe Regel wie in buchKatSummen - eine Buchung gehoert dazu,
+     sobald ihr Leistungszeitraum den Abrechnungszeitraum ueberhaupt beruehrt. */
+  const _imZr=_nkaRelevant.filter(b=>b.typ==='ausgang' && buchZeitAnteil(b, von, bis) > 0);
   const _grpAnz=_imZr.filter(b=>nkaBuchungBezug(b,objektId)==='gruppe').length;
   const _unzAnz=_imZr.filter(b=>nkaBuchungBezug(b,objektId)==='unzugeordnet').length;
   const eur=n=>(Number(n)||0).toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:2});
@@ -15820,6 +15904,30 @@ async function nkaBuchPanelToggle(objektId){
        Einstellungen → Zahlungen → „Buchhaltung (Ausgaben)\" die Kostenstelle setzen.</div>` : '';
   const hinweisLz = `<div style="font-size:10px;color:var(--ink-40);margin-top:4px"><i class="ti ti-calendar-stats"></i>
     Zuordnung nach <strong>Leistungszeitraum</strong>, sofern erkannt (sonst Zahlungsdatum) – § 556 Abs. 3 BGB.</div>`;
+  /* v293: Belege, die nur mit einem Zeitanteil eingehen, werden einzeln
+     ausgewiesen. buchKatSummen liefert die Liste seit v292, angezeigt wurde sie
+     bisher nicht - eine stille Teilberuecksichtigung waere in einer Abrechnung
+     nicht nachvollziehbar, und der Mieter kann Belegeinsicht verlangen
+     (§ 259 BGB). Aufgeklappt wird nur auf Wunsch, damit das Panel bei vielen
+     Belegen nicht unuebersichtlich wird. */
+  const hinweisAnteilig = (s.anteilig && s.anteilig.length)
+    ? `<details style="margin-top:6px">
+        <summary style="font-size:11px;color:var(--copper,#b87333);cursor:pointer">
+          <i class="ti ti-chart-pie"></i> ${s.anteilig.length} Beleg(e) gehen nur anteilig ein –
+          Aufstellung anzeigen</summary>
+        <div style="font-size:10px;color:var(--ink-60);margin:4px 0 6px">
+          Diese Rechnungen betreffen einen Zeitraum, der über den Abrechnungszeitraum hinausreicht.
+          Angesetzt wird der auf den Abrechnungszeitraum entfallende Tagesanteil.</div>
+        ${s.anteilig.map(a=>`<div style="font-size:11px;padding:3px 0;border-bottom:1px solid var(--line)">
+          <div><strong>${esc(a.name||'ohne Empfänger')}</strong>
+            <span style="color:var(--ink-40)">${esc(a.von||'')} – ${esc(a.bis||'')}</span></div>
+          <div style="color:var(--ink-60)">
+            ${eur(a.voll)} € × ${(a.anteil*100).toFixed(1).replace('.',',')} %
+            = <strong>${eur(a.voll*a.anteil)} €</strong></div>
+        </div>`).join('')}
+        <div style="font-size:10px;color:var(--ink-40);margin-top:5px">
+          Diese Aufstellung gehört in die Belegsammlung zur Abrechnung.</div>
+      </details>` : '';
   const hinweisOhne = s.ohneKat.anzahl
     ? `<div style="font-size:11px;color:var(--amber);margin-top:6px"><i class="ti ti-alert-triangle"></i>
        ${s.ohneKat.anzahl} Ausgang/Ausgänge (${eur(s.ohneKat.summe)} €) im Zeitraum sind noch ohne Kategorie –
@@ -15832,7 +15940,7 @@ async function nkaBuchPanelToggle(objektId){
         ${hinweisOhne}
         ${hinweisGruppe}
         ${hinweisUnz}
-        ${hinweisLz}
+        ${hinweisLz}${hinweisAnteilig}
         <button type="button" class="btn btn-sm btn-copper" style="margin-top:8px" onclick="nkaBuchUebernehmen()">
           <i class="ti ti-check"></i> Ausgewählte übernehmen</button>
       </div>`
@@ -16944,7 +17052,7 @@ async function nkaLgBuchPanelToggle(lgId){
   const bis=document.getElementById('nkaLgBis')?.value||'';
   const alle=await idbGetAll('buchungen').catch(()=>[]);
   const imZr=alle.filter(b=>b && b.kontoId===konto.id && b.typ==='ausgang' && !b.storniert
-    && (!von||buchNkaDatum(b)>=von) && (!bis||buchNkaDatum(b)<=bis));   // v236 (F2): Leistungszeitraum
+    && buchZeitAnteil(b, von, bis) > 0);   // v292 (F2): Ueberlappung statt Mittelpunkt
   const drin=imZr.filter(b=>nkaLgBuchBezug(b,lg)==='drin');
   const unzAnz=imZr.filter(b=>nkaLgBuchBezug(b,lg)==='unzugeordnet').length;
   // Gruppieren nach Kategorie × Kreis (nur kategorisierte, umlagefähig oder nicht – Verwalter entscheidet per Auswahl)
@@ -32163,23 +32271,37 @@ function buchTeile(b){
 }
 /* Summen je Kategorie (und je Zahlungsempfänger) über frei wählbaren Zeitraum –
    Grundlage für Auswertung und NKA-Übernahme. */
+/* v292 (F2 Schritt 3): Rechnungen mit Leistungszeitraum werden ZEITANTEILIG
+   beruecksichtigt, nicht mehr ganz oder gar nicht (siehe buchZeitAnteil).
+   `anteilig` zaehlt die Faelle mit, damit die NKA sie ausweisen kann - eine
+   stille Teilberuecksichtigung waere in einer Abrechnung nicht nachvollziehbar.
+   Der Parameter datumFn bleibt aus Rueckwaertsgruenden erhalten: Aufrufer, die
+   ihn uebergeben, bekommen fuer Buchungen OHNE Leistungszeitraum dasselbe
+   Verhalten wie bisher. */
 function buchKatSummen(buchungen, vonISO, bisISO, datumFn){
-  const out={proKat:{}, ohneKat:{summe:0,anzahl:0}, gesamt:0};
+  const out={proKat:{}, ohneKat:{summe:0,anzahl:0}, gesamt:0, anteilig:[]};
   for(const b of buchungen){
     if(!b || b.typ!=='ausgang') continue;
-    const d=(datumFn?datumFn(b):(b.datumISO||''))||'';   // v236 (F2): NKA nutzt Leistungszeitraum
-    if(vonISO && d<vonISO) continue;
-    if(bisISO && d>bisISO) continue;
-    const betrag=Math.abs(Number(b.betrag)||0);
+    const anteil = buchZeitAnteil(b, vonISO, bisISO);
+    if(!(anteil > 0)) continue;
+    if(anteil < 1){
+      out.anteilig.push({
+        id: b.id, name: b.name||'', zweck: b.zweck||'',
+        von: b.leistungVonISO, bis: b.leistungBisISO,
+        anteil, voll: Math.abs(Number(b.betrag)||0),
+      });
+    }
+    const betrag=Math.abs(Number(b.betrag)||0) * anteil;
     out.gesamt+=betrag;
     const teile=buchTeile(b);
     if(!teile){ out.ohneKat.summe+=betrag; out.ohneKat.anzahl++; continue; }
     const empf=(b.name||'Unbekannt').trim()||'Unbekannt';
     for(const t of teile){
+      const tb=t.betrag*anteil;
       const k=(out.proKat[t.kat]=out.proKat[t.kat]||{summe:0,anzahl:0,empfaenger:{}});
-      k.summe+=t.betrag; k.anzahl++;
+      k.summe+=tb; k.anzahl++;
       const e=(k.empfaenger[empf]=k.empfaenger[empf]||{summe:0,anzahl:0});
-      e.summe+=t.betrag; e.anzahl++;
+      e.summe+=tb; e.anzahl++;
     }
   }
   return out;
@@ -35313,6 +35435,92 @@ async function modalAnlageV(){
     <button class="btn btn-full" style="margin-top:8px" onclick="closeModal()">Abbrechen</button>`);
 }
 
+/* v291: Merkt sich, welche Gebaeude hinter einer Gruppen-Kostenstelle stehen.
+   Nur fuer Gruppen sinnvoll - bei Einzelobjekten steht das Gebaeude schon im
+   Zeilentitel. */
+function avMerkeGruppenObjekte(karte, ksKey, b){
+  if(!ksKey || ksKey.slice(0,4)!=='grp:') return;
+  const objekte = buchBetroffeneObjekte(b);
+  if(!objekte.length) return;
+  if(!karte[ksKey]) karte[ksKey] = new Set();
+  objekte.forEach(oid => karte[ksKey].add(oid));
+}
+
+/* v291: Aufteilungsvorschlag fuer GEMEINSAM-Positionen nach Wohnflaeche.
+   Gibt null zurueck, wenn es nichts aufzuteilen gibt. Objekte ohne gepflegte
+   Wohnflaeche werden ausdruecklich AUSGEWIESEN statt stillschweigend mit 0
+   angesetzt - sonst verschoebe eine fehlende Stammdatenangabe die Anteile der
+   uebrigen Gebaeude, ohne dass es auffaellt. */
+function avAufteilungsvorschlag(objAus, grpObjekte, jahr, ksLabel, flaechen){
+  const gruppen = Object.keys(grpObjekte).filter(k => (objAus[k]||0) > 0);
+  if(!gruppen.length) return null;
+
+  const A = [];
+  A.push(['Aufteilungsvorschlag für GEMEINSAM-Positionen – '+jahr]);
+  A.push([]);
+  A.push(['ACHTUNG: Dies ist ein VORSCHLAG nach Wohnfläche und in den Summen der']);
+  A.push(['anderen Blätter NICHT enthalten. Welcher Verteilungsmaßstab steuerlich']);
+  A.push(['zutrifft, ist mit dem Steuerberater zu klären (z. B. Wohnfläche, Nutzfläche,']);
+  A.push(['Anzahl Einheiten oder eine direkte Zuordnung nach Verursachung).']);
+  A.push([]);
+
+  let fehlend = 0;
+  for(const k of gruppen){
+    const betrag = objAus[k];
+    const objekte = [...grpObjekte[k]];
+    const teilnehmer = objekte.map(oid => {
+      const fl = Number((flaechen && flaechen[oid]) || 0);
+      return { id: oid, wert: fl > 0 ? fl : 0, flaeche: fl };
+    });
+    const summeFl = teilnehmer.reduce((a,t)=>a+t.wert, 0);
+    const ohneFlaeche = teilnehmer.filter(t => !(t.flaeche > 0));
+
+    A.push([ksLabel(k), betrag]);
+    if(!(summeFl > 0)){
+      A.push(['', 'Aufteilung nicht möglich – für keines der Gebäude ist eine Wohnfläche gepflegt.']);
+      A.push(['', 'Nachzupflegen unter: Objekt → Gebäudedaten → Wohnfläche.']);
+      A.push([]);
+      fehlend++;
+      continue;
+    }
+    /* nkaCentVerteilung (v284) verteilt centgenau: die Summe der Anteile
+       entspricht exakt dem Ausgangsbetrag, keine Rundungsdifferenz. */
+    const anteile = nkaCentVerteilung(betrag, summeFl, teilnehmer);
+    A.push(['Gebäude','Wohnfläche (m²)','Anteil','Betrag (€)']);
+    let summeAnteil = 0;
+    for(const t of teilnehmer){
+      const wert = anteile.get(t.id) || 0;
+      summeAnteil = rc(summeAnteil + wert);
+      A.push([
+        (getObj(t.id)||{}).name || t.id,
+        t.flaeche > 0 ? t.flaeche : 'nicht gepflegt',
+        t.flaeche > 0 ? (Math.round(t.flaeche/summeFl*10000)/100)+' %' : '–',
+        wert,
+      ]);
+    }
+    A.push(['Summe', summeFl, '100 %', summeAnteil]);
+    if(summeAnteil !== rc(betrag)){
+      A.push(['', 'Hinweis: Summe weicht vom Ausgangsbetrag ab – bitte prüfen.']);
+    }
+    if(ohneFlaeche.length){
+      A.push(['', 'Ohne gepflegte Wohnfläche und daher unberücksichtigt: '
+        + ohneFlaeche.map(t=>(getObj(t.id)||{}).name||t.id).join(', ')
+        + ' – dadurch verschieben sich die Anteile der übrigen Gebäude.']);
+      fehlend++;
+    }
+    A.push([]);
+  }
+
+  if(fehlend){
+    A.push(['Es fehlen Wohnflächen in den Gebäudedaten. Solange sie fehlen, ist der']);
+    A.push(['Vorschlag unvollständig und sollte nicht übernommen werden.']);
+  }
+
+  const ws = XLSX.utils.aoa_to_sheet(A);
+  ws['!cols']=[{wch:46},{wch:18},{wch:12},{wch:14}];
+  return ws;
+}
+
 async function anlageVExport(){
   const konto=ZA_STATE.konto;
   if(!konto) return;
@@ -35333,6 +35541,11 @@ async function anlageVExport(){
   const einzel=[];   // Zeilen für Blatt 2
   const objEin={};   // objektId -> Mieteingänge (E1+E2)
   const objAus={};   // v234 (B1-Steuerteil): Kostenstelle -> Werbungskosten (W-Gruppen)
+  /* v291 (F1 Schritt 3, Steuerteil): Fuer jede Gruppen-Kostenstelle die betroffenen
+     Gebaeude mitfuehren. Bisher stand im Blatt nur "GEMEINSAM: Krefeld gemischt"
+     ohne Angabe, WELCHE Haeuser gemeint sind - der Steuerberater musste das aus
+     den Stammdaten heraussuchen. buchBetroffeneObjekte(b) weiss es. */
+  const grpObjekte={};   // 'grp:<id>' -> Set der betroffenen objektIds
   /* ── v262: Verrechnung von Rücklastschriften und Rückläufern ──────────
      Eine zurückgebuchte Zahlung ist weder Einnahme noch Werbungskosten;
      steuerlich bleibt allein die einbehaltene Bankgebühr als Aufwand (W11).
@@ -35366,6 +35579,7 @@ async function anlageVExport(){
           buchKostenstelleName(b)||'' ]);
         const _ksK = b.kostengruppe ? 'grp:'+b.kostengruppe : (b.objektId ? 'obj:'+b.objektId : '?');
         objAus[_ksK] = rc((objAus[_ksK]||0) + geb);
+        avMerkeGruppenObjekte(grpObjekte, _ksK, b);
       }
       continue;
     }
@@ -35388,6 +35602,7 @@ async function anlageVExport(){
       }
       if(seite==='aus'&&/^W/.test(gr.g)){
         objAus[ksKey]=rc((objAus[ksKey]||0)+t.betrag);
+        avMerkeGruppenObjekte(grpObjekte, ksKey, b);
       }
     }
   }
@@ -35452,26 +35667,48 @@ async function anlageVExport(){
     if(k.slice(0,4)==='grp:'){ const g=getKostengruppe(k.slice(4)); return 'GEMEINSAM: '+(g?g.name:k.slice(4)); }
     return (getObj(k.slice(4))||{}).name || k.slice(4);
   };
-  const zeilen4=Object.entries(objAus).map(([k,betr])=>[ksLabel(k), betr]);
+  /* v291: dritte Spalte nennt die betroffenen Gebaeude einer GEMEINSAM-Position. */
+  const zeilen4=Object.entries(objAus).map(([k,betr])=>[
+    ksLabel(k), betr,
+    (grpObjekte[k] ? [...grpObjekte[k]].map(oid=>(getObj(oid)||{}).name||oid).join(', ') : ''),
+  ]);
   zeilen4.sort((a,b)=>b[1]-a[1]);
   const ws4=XLSX.utils.aoa_to_sheet([
     ['Werbungskosten je Objekt/Kostenstelle – '+jahr+' (ohne AfA)'],
     [],
-    ['Objekt / Kostenstelle','Betrag (€)'],
+    ['Objekt / Kostenstelle','Betrag (€)','betroffene Gebäude (nur bei GEMEINSAM)'],
     ...zeilen4,
     ['Summe', rc(zeilen4.reduce((a,z)=>a+z[1],0))],
     [],
     ['Hinweise:'],
     ['– „GEMEINSAM"-Positionen betreffen mehrere Gebäude; Verteilungsmaßstab (z. B. Wohnfläche) mit dem Steuerberater festlegen.'],
     ['– „ohne Gebäude-Zuordnung": Kostenstelle in der Buchhaltung nachpflegen (Einstellungen → Zahlungen → Buchhaltung).'],
+    ['– Ein Aufteilungsvorschlag nach Wohnfläche steht im Blatt „Aufteilung (Vorschlag)". Er ist NICHT angewendet.'],
   ]);
-  ws4['!cols']=[{wch:52},{wch:16}];
+  ws4['!cols']=[{wch:52},{wch:16},{wch:60}];
+
+  /* v291: Eigenes Blatt mit dem Flaechenvorschlag. BEWUSST ein getrenntes Blatt
+     und NICHT in die Summen eingerechnet: Welcher Verteilungsmassstab steuerlich
+     zutrifft, entscheidet der Steuerberater - die App darf das nicht vorwegnehmen.
+     Das Blatt liefert nur die Rechengrundlage, damit er nicht selbst Flaechen
+     zusammensuchen muss. Verteilt wird mit nkaCentVerteilung (v284), damit die
+     Anteile auf den Cent genau die Ausgangssumme ergeben. */
+  /* Wohnflaechen aus den Gebaeudedaten holen - nur fuer die Gebaeude, die in einer
+     GEMEINSAM-Position vorkommen. */
+  const avFlaechen={};
+  try{
+    for(const st of await idbGetAll('objekt_stamm')){
+      if(st && st.id && st.wohnflaeche) avFlaechen[st.id]=Number(st.wohnflaeche)||0;
+    }
+  }catch(e){ egal('Wohnflächen für Aufteilungsvorschlag nicht lesbar', e); }
+  const ws5=avAufteilungsvorschlag(objAus, grpObjekte, jahr, ksLabel, avFlaechen);
 
   const wb=XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws1, 'Anlage V '+jahr);
   XLSX.utils.book_append_sheet(wb, ws2, 'Einzelnachweis');
   XLSX.utils.book_append_sheet(wb, ws3, 'Miete je Objekt');
   XLSX.utils.book_append_sheet(wb, ws4, 'Kosten je Objekt');
+  if(ws5) XLSX.utils.book_append_sheet(wb, ws5, 'Aufteilung (Vorschlag)');
   const name=(konto.label||'Konto').replace(/[^\wäöüÄÖÜß-]+/g,'_');
   XLSX.writeFile(wb, `AnlageV_${jahr}_${name}.xlsx`);
   toast('Anlage-V-Auswertung '+jahr+' exportiert ✓');
@@ -35521,6 +35758,58 @@ function buchNkaDatum(b){
     return new Date((von+bis)/2).toISOString().slice(0,10);
   }
   return (b && b.datumISO) || '';
+}
+
+/* v292 (F2 Schritt 3): Zeitanteil einer Buchung am Abrechnungszeitraum, 0 bis 1.
+
+   WARUM. buchNkaDatum() ordnet eine Rechnung bisher nach dem Mittelpunkt ihres
+   Leistungszeitraums genau EINEM Jahr zu (Mehrheitsregel). Bei einer Rechnung
+   ueber 01.07.2024-30.06.2025 landen damit 100 % in einem Jahr, obwohl nur die
+   Haelfte der Leistung darauf entfaellt. Wer nach dem Leistungsprinzip
+   abrechnet, teilt periodenuebergreifende Kosten zeitanteilig auf - genau das
+   macht diese Funktion.
+
+   RECHTLICHER RAHMEN (keine Rechtsberatung). Der Vermieter darf Betriebskosten
+   grundsaetzlich nach dem Abflussprinzip (Zahlungsdatum) abrechnen; der BGH hat
+   das bestaetigt (VIII ZR 27/07). Zwingend ist das Leistungsprinzip aber dort,
+   wo der Verbrauch im Abrechnungszeitraum massgeblich ist - insbesondere bei
+   Heizkosten nach der HeizkostenV. Wer sich fuer das Leistungsprinzip
+   entscheidet, sollte es einheitlich anwenden und nicht je Position wechseln.
+   Diese App wendet es an, sobald ein Leistungszeitraum hinterlegt ist.
+
+   VERHALTEN.
+   - Ohne Leistungszeitraum: Zahlungsdatum, ganz drin (1) oder ganz draussen (0).
+     Damit bleibt der Bestand unveraendert, solange nichts gepflegt ist.
+   - Mit Leistungszeitraum: ueberlappende Tage geteilt durch die Gesamtdauer.
+     Beide Grenzen zaehlen mit (ein Tag Leistung = ein Tag).
+   - Unplausible Zeitraeume (Ende vor Beginn) werden wie "kein Zeitraum"
+     behandelt, statt einen negativen Anteil zu erzeugen. */
+const _TAG_MS = 86400000;
+function _isoTag(iso){
+  const t = Date.parse(String(iso||'') + 'T00:00:00Z');
+  return Number.isFinite(t) ? t : null;
+}
+function buchZeitAnteil(b, vonISO, bisISO){
+  const rVon = _isoTag(vonISO), rBis = _isoTag(bisISO);
+  const lVon = _isoTag(b && b.leistungVonISO), lBis = _isoTag(b && b.leistungBisISO);
+
+  // Kein (brauchbarer) Leistungszeitraum -> Zahlungsdatum, alles oder nichts.
+  if(lVon === null || lBis === null || lBis < lVon){
+    const d = (b && b.datumISO) || '';
+    if(vonISO && d < vonISO) return 0;
+    if(bisISO && d > bisISO) return 0;
+    return 1;
+  }
+
+  // Offener Abrechnungszeitraum: keine Begrenzung auf dieser Seite.
+  const aVon = rVon === null ? lVon : Math.max(lVon, rVon);
+  const aBis = rBis === null ? lBis : Math.min(lBis, rBis);
+  if(aBis < aVon) return 0;
+
+  const tageGesamt = (lBis - lVon) / _TAG_MS + 1;
+  const tageDrin   = (aBis - aVon) / _TAG_MS + 1;
+  if(!(tageGesamt > 0)) return 0;
+  return Math.min(1, Math.max(0, tageDrin / tageGesamt));
 }
 
 /* v235 (F2): idempotente Nachbefüllung leistungVonISO/leistungBisISO an Bestandsbuchungen
