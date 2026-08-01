@@ -1045,22 +1045,22 @@ body.printing-active #printRoot{display:block!important}
   </main>
 
   <nav class="bottom-nav" aria-label="Hauptbereiche">
-    <button class="nav-btn active" id="nav-dash" onclick="nav('dash')">
+    <button class="nav-btn active" id="nav-dash" data-action-click="nav" data-arg="dash">
       <i class="ti ti-layout-dashboard"></i><span>Start</span>
     </button>
-    <button class="nav-btn" id="nav-aufgaben" onclick="nav('aufgaben')">
+    <button class="nav-btn" id="nav-aufgaben" data-action-click="nav" data-arg="aufgaben">
       <i class="ti ti-checklist"></i><span>ToDo</span>
       <div class="nav-badge" id="navBadge" style="display:none" onclick="event.stopPropagation();navToMaengel()"></div>
     </button>
-    <button class="nav-btn" id="nav-kalender" onclick="nav('kalender')">
+    <button class="nav-btn" id="nav-kalender" data-action-click="nav" data-arg="kalender">
       <i class="ti ti-calendar-event"></i><span>Kalender</span>
       <div class="nav-badge" id="kalBadge" style="display:none"></div>
     </button>
-    <button class="nav-btn" id="nav-mail" onclick="nav('mail')">
+    <button class="nav-btn" id="nav-mail" data-action-click="nav" data-arg="mail">
       <i class="ti ti-inbox"></i><span>Mail</span>
       <div class="nav-badge" id="mailBadge" style="display:none"></div>
     </button>
-    <button class="nav-btn" id="nav-settings" onclick="nav('settings')" title="Einstellungen" aria-label="Einstellungen">
+    <button class="nav-btn" id="nav-settings" data-action-click="nav" data-arg="settings" title="Einstellungen" aria-label="Einstellungen">
       <i class="ti ti-settings"></i><span>Config</span>
     </button>
   </nav>
@@ -1070,7 +1070,7 @@ body.printing-active #printRoot{display:block!important}
 <div class="modal-bg" id="modalBg">
   <div class="modal" id="modalBox">
     <div class="m-handle"></div>
-    <button class="m-close" type="button" onclick="closeModal()" aria-label="Dialog schließen (ohne Speichern)"><i class="ti ti-x"></i></button>
+    <button class="m-close" type="button" data-action-click="closeModal" aria-label="Dialog schließen (ohne Speichern)"><i class="ti ti-x"></i></button>
     <div id="modalBody"></div>
   </div>
 </div>
@@ -1230,7 +1230,167 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=35;   // v242: +buch_journal (F4 GoBD)
-const APP_VERSION = '2026-07-30-v293';
+const APP_VERSION = '2026-07-31-v296';
+/* v296 (31.07.2026): Zwei Befunde aus einem parallelen Chat gegengeprueft und behoben.
+   1) LIEGENSCHAFTS-NKA HATTE GAR KEIN ZWISCHENSPEICHERN. Bestaetigt: nkaLgPosKey
+      war seit Einfuehrung definiert, wurde aber an KEINER Stelle aufgerufen -
+      toter Code, und dahinter eine echte Luecke. Die Sammelabrechnung ueber alle
+      Haeuser einer Liegenschaft verwarf bei jedem Abbruch saemtliche Eingaben.
+      Das wiegt schwerer als beim Einzelhaus: Krefeld umfasst sieben Haeuser.
+      Neu: nkaLgSammlePositionen / nkaLgSavePositionen / nkaLgLoadPositionen /
+      nkaLgAbbrechen - bewusst im gleichen Aufbau wie die Einzelhaus-Variante
+      (v294), damit beide Masken dasselbe Verhalten zeigen und nicht getrennt
+      gepflegt werden muessen. Inklusive des v294-Schutzes gegen Speichern gegen
+      ein bereits ersetztes Formular.
+      ZUR ZUORDNUNG - hier weicht die Analyse aus dem anderen Chat ab: dieser
+      Fehler betrifft NICHT Mindener 23/25. Die Liegenschafts-Maske ist nur fuer
+      gruppe==='krefeld' und gruppe==='mg' erreichbar (Z. ~12667/12668), und
+      NKA_LG_VORLAGEN kennt ausschliesslich lg_krefeld und lg_mg - fuer lg_minden
+      existiert keine Vorlage. Mindener 23/25 laeuft ueber die Einzelhaus-Maske
+      modalNKA, deren Datenverlust in v294 behoben wurde. Es waren also ZWEI
+      unabhaengige Fehler in zwei verschiedenen Masken, nicht einer.
+   2) BRIEFKOPF MOENCHENGLADBACH (Nutzerbefund A5). Bestaetigt: saveBriefkopf()
+      speicherte korrekt, zeichnete die Einstellungsseite danach aber nicht neu -
+      der rote "unvollstaendig"-Hinweis blieb stehen und es sah aus, als sei
+      nichts angekommen. saveBriefkopfOverride() direkt darunter macht es seit
+      v112 richtig; dasselbe Muster jetzt auch hier.
+   node --check OK · Funktions-Diff v295->v296 = 0 verloren / +4 neu
+   (nkaLg-Speicherfunktionen). Geruest-Tests 24/24, Pilot-Praxistest gruen.
+   DB_VER unveraendert 35. GERAETETEST NOETIG: Liegenschafts-NKA Krefeld/MG
+   (Eingaben, Abbrechen, Wiederoeffnen) und Briefkopf Moenchengladbach. */
+/* v295 (30.07.2026): R11 Etappe 0 - Delegations-Geruest ertuechtigen.
+   Erster Schritt des CSP-Migrationsplans (§R11Plan). REIN ADDITIV: kein
+   einziger Bestandshandler wurde angefasst, die App verhaelt sich unveraendert.
+   Zweck ist ausschliesslich, das Geruest so weit zu bringen, dass die
+   Massenmigration ab Etappe 1 ueberhaupt moeglich ist.
+   AUSGANGSLAGE (in v294 nachgemessen, Planzahlen stammten aus v244): 1124
+   Inline-Handler - 958 onclick, 129 onchange, 34 oninput, 2 onerror,
+   1 onkeydown. Argumentverteilung: 0 Arg. 388 · 1 Arg. 427 · 2 Arg. 134 ·
+   3 Arg. 39 · 4 Arg. 8. Sonderfaelle: 63 mehrteilig, 40 ohne einfachen
+   Funktionsaufruf, 20 stopPropagation-Kombis, 5 Arrow-Funktionen.
+   1) data-arg3 / data-arg4. Das Geruest konnte bisher nur zwei Argumente
+      uebergeben; die 47 Handler mit 3-4 Argumenten waren damit gar nicht
+      migrierbar. Eine Luecke (arg1 gesetzt, arg2 leer, arg3 gesetzt) laesst die
+      Position erhalten, statt das dritte Argument als zweites durchzureichen.
+   2) data-args als JSON-Array - Ausweichweg fuer alles, was sich nicht als
+      flache Kette von Strings abbilden laesst (gemischte Typen, null,
+      verschachtelte Werte). Hat Vorrang vor data-arg; kaputtes JSON wird
+      protokolliert und faellt auf den Event-Aufruf zurueck, statt zu werfen.
+   3) data-argnum nimmt jetzt eine Positionsliste ("1,3"). Ohne Wert bleibt es
+      exakt beim v147-Verhalten (nur Argument 1 wird zu Number) - Attribute sind
+      immer Strings, ohne diese Angabe bekaeme eine Funktion "3" statt 3.
+   4) data-stop fuer die 20 Faelle onclick="event.stopPropagation();fn()".
+      BEIM TESTEN DES GERUESTS EIN ECHTER ENTWURFSFEHLER AUFGEFALLEN: die
+      Delegation haengt an `document` und feuert in der Bubble-Phase ALS
+      LETZTES - ein dort aufgerufenes stopPropagation() kommt zu spaet, die
+      aeusseren Listener sind laengst gelaufen. data-stop haette schlicht nicht
+      gewirkt. Loesung: data-stop-Elemente werden in der CAPTURE-Phase
+      abgearbeitet (dort ist `document` die ERSTE Station), alles Uebrige
+      unveraendert in der Bubble-Phase. Dass die Aktion damit fuer diese
+      Elemente minimal frueher laeuft, ist unkritisch: die App verwendet keinen
+      einzigen Capture-Listener (nachgeprueft, 0 Treffer), zwischen document und
+      dem Element liegt also nichts, dessen Reihenfolge sich verschieben koennte.
+      NEBENBEFUND: __delegate bricht seit v147 nach dem ERSTEN Treffer nach oben
+      ab. Sind aeusseres UND inneres Element migriert, loest ohnehin nur das
+      innere aus - data-stop wird also vor allem im MISCHZUSTAND der Etappen 1-6
+      gebraucht (migrierter Knopf in noch nicht migrierter Zeile) und ist nach
+      Etappe 7 groesstenteils entbehrlich.
+   5) Wrapper selbstAusblenden / elternAusblenden / alsManuellMarkieren fuer die
+      vier Handler, die nur aus einer this-Manipulation bestehen und deshalb
+      keinen Funktionsnamen haben, auf den data-action zeigen koennte. Ab
+      Etappe 1 verwendet, hier vorab angelegt und einzeln getestet.
+   TESTS: neue Datei test_delegation.mjs (24 Tests, Playwright/echtes Chromium -
+   Bubbling und stopPropagation sind genau das, was ein DOM-Nachbau verfehlen
+   wuerde). Prueft zuerst das unveraenderte v147-Verhalten als Regressionsnetz,
+   dann jede Neuerung einzeln. Der data-stop-Fehler unter Punkt 4 wurde von
+   diesen Tests gefunden, nicht beim Lesen des Codes - genau dafuer schreibt der
+   Plan Tests VOR dem ersten Bestandshandler vor.
+   NICHT Teil dieser Version: die 25 Handler des Musters PD.feld=this.value
+   (Uebergabeprotokoll). Systematisches Muster, gehoert mit einem eigenen
+   Setter-Wrapper in Etappe 6, nicht ins Geruest.
+   node --check OK · Funktions-Diff v294->v295 = 0 verloren / +2 neu
+   (__delegateArgs plus die drei Wrapper). DB_VER unveraendert 35.
+
+   R11 ETAPPE 1 (Pilot-Batch, ebenfalls in v295):
+   179 Inline-Handler auf das Geruest umgestellt - onclick faellt von 959 auf
+   780. Migriert: closeModal 129 · nav 20 · objTab 12 · openFoto 11 ·
+   switchSettingsTab 7. Die Funktionen selbst sind UNVERAENDERT, nur der
+   Aufrufweg wechselt; jeder Dialog der App ist damit ein Testfall, Fehler
+   fallen sofort auf und nicht erst in einem Rand-Feature.
+   Patch ueber patch_etappe1.py mit `assert`-Trefferzahl je Muster - nur
+   exakte, eindeutige Formen. Bewusst NICHT angefasst: Aufrufe innerhalb von
+   JS-Strings mit maskierten Anfuehrungszeichen (1x objTab, 1x nav) und ein
+   openFoto mit Anfuehrungszeichen im Argument - dort ist die Ersetzung nicht
+   mechanisch sicher, sie gehoeren in Etappe 6.
+   EINE FUNKTIONSANPASSUNG war noetig: objTab(t,btn) bekam btn frueher inline
+   als `this` uebergeben. Ueber die Delegation IST `this` bereits das
+   angeklickte Element, das zweite Argument entfaellt - objTab nimmt `this`
+   jetzt als Rueckfallebene. Direktaufrufe aus dem Code bleiben moeglich
+   (window hat kein classList, die Pruefung greift).
+   Registrierung verzoegert bis DOMContentLoaded: die fuenf Funktionen stehen
+   weiter unten im Skript und sind an der Stelle des Geruests noch nicht
+   deklariert.
+   ZU BEACHTEN FUER DIE FOLGEETAPPEN (Semantikunterschied): bei Inline-Handlern
+   feuert ein Klick auf ein Kind AUCH die onclick-Handler der Elternelemente
+   (Bubbling). Die Delegation bricht dagegen beim ERSTEN Treffer ab. Solange
+   nur eine der beiden Ebenen migriert ist, aendert sich nichts; sind spaeter
+   BEIDE migriert, laeuft nur noch die innere Aktion. Beim Pilot-Batch
+   unkritisch (die Knoepfe sitzen nicht in anklickbaren Elternelementen),
+   ab Etappe 2 aber je Batch zu pruefen.
+   PRAXISTEST im echten Chromium: App laedt ohne JS-Fehler, alle fuenf Aktionen
+   registriert, Dialog laesst sich ueber den migrierten Knopf schliessen.
+   node --check OK · Funktions-Diff nach Etappe 1 unveraendert 0 verloren.
+   GERAETETEST NOETIG - insbesondere: jeder Dialog auf/zu, Hauptnavigation,
+   Objekt-Reiter (aktiver Reiter muss markiert werden), Fotoanzeige. */
+/* v294 (30.07.2026): Gerätetest-Nachlese v285-v293 (Mindener 23/25 NKA, Mietvertrag).
+   1) NKA-DATENVERLUST BEI "ABBRECHEN" GEFUNDEN UND BEHOBEN. Nutzerbefund: nach
+      Abbruch der Eingabe war beim erneuten Öffnen alles weg, obwohl ein
+      Auto-Speichern (P8) existiert. Ursache: closeModal() blendet nur aus,
+      das Formular bleibt im Hintergrund-DOM. Öffnete direkt danach ein
+      anderer Dialog (z.B. Mieter löschen), ersetzte showModal() den Inhalt -
+      der noch ausstehende 800ms-Speichertimer feuerte danach gegen ein
+      bereits geleertes Formular und überschrieb den zuvor korrekten Stand mit
+      einem leeren. Fix: neue Funktion nkaAbbrechen() speichert beim Klick auf
+      "Abbrechen" sofort/synchron; zusätzlich bricht nkaSavePositionen() jetzt
+      ab, wenn #nkaFormWrap gar nicht mehr existiert (verhindert Phantom-
+      Speicherungen grundsätzlich, nicht nur für diesen einen Button).
+   2) WASCHMASCHINE ALS ANKREUZFELD JE MIETER (Mindener 23/25). Nicht jede
+      Wohnung hat Zugang zum Waschkeller - bisher wurde der Festbetrag
+      trotzdem an alle verteilt. "Strom Waschmaschine" ist jetzt kein
+      Gesamtkosten-Posten mehr, sondern ein Ankreuzfeld direkt unter
+      Kleinreparaturen je Mieter (Standard: angehakt, damit sich am
+      bisherigen Ergebnis nichts ändert, bis gezielt entankreuzt wird). Die
+      gedruckte NKA zeigt die Position weiterhin im gewohnten Format, nur eben
+      pro Mieter statt pauschal für alle.
+   3) "+" VOR NACHZAHLUNGEN IM NKA-ARCHIV ENTFERNT (Nutzerwunsch) - Rot/Grün
+      zeigt Nachzahlung/Guthaben bereits eindeutig.
+   4) HAUSORDNUNG/MERKBLATT WEITER VERDICHTET. Neu gebautes Mess-Werkzeug
+      (messen_mv_kontext.py, Playwright/Chromium, analog zum v289-Werkzeug)
+      druckt beide Anlagen GENAU IM MIETVERTRAGS-KONTEXT zu PDF und zählt die
+      Seiten. Ergebnis: Merkblatt lässt sich von 3 auf 2 Seiten verdichten
+      (10pt/1.4 -> 9,6pt/1,32, noch gut lesbar) - ANLAGE_DRUCKSEITEN.merkblatt
+      entsprechend auf 2 gesetzt. Die Hausordnung bleibt bei 3 Seiten: eine
+      Testverdichtung bis 9pt/1,24 hinunter änderte die gemessene Seitenzahl
+      NICHT (der Inhalt braucht strukturell mehr als 2 Seiten) - die Schrift
+      wurde deshalb wieder auf den besser lesbaren 9,5pt/1,34-Stand
+      zurückgesetzt, statt Lesbarkeit ohne Nutzen zu opfern. Einzeldruck über
+      das Druckcenter bleibt bei 2 Seiten je Anlage (unverändert, war schon so).
+   5) TELEFON/E-MAIL DES MIETERS FEHLTEN IM GEDRUCKTEN VERTRAG (Nutzerbefund:
+      "Kontaktdaten, falls noch nicht vorher gegeben"). Beide Felder werden im
+      Vertrags-Editor bereits erfasst und sogar in die Mieterakte
+      zurückgeschrieben (mvTel/mvMail, seit längerem vorhanden) - sie fehlten
+      aber im finalen Datenobjekt für die HTML-Erzeugung und tauchten deshalb
+      nie im Ausdruck auf. Jetzt im Abschnitt "Vertragsparteien" ausgewiesen:
+      liegen sie vor, werden sie gedruckt; fehlen sie, steht eine Ausfülllinie
+      zum handschriftlichen Nachtragen bei der Unterschrift bereit (wie beim
+      SEPA-Mandat/Geburtsdatum/Anschrift schon üblich, über mvLine()).
+   QA: node --check beide Script-Blöcke OK, Funktions-Diff v293->v294 = 0
+   verloren/+1 neu (nkaAbbrechen). qa_pruefer.py: 3 der 4 Grenzwert-Überschreitungen
+   bestanden bereits im unveränderten v293 (organisches Wachstum seit dem v284-
+   Einfrierstand, keine neue Ursache); einzig leere_catch_max stieg durch den
+   bewussten try/catch in nkaAbbrechen um 1 (Muster mit 164 Vorkommen bereits
+   im Bestand, kein neues Idiom). DB_VER unverändert 35. GERÄTETEST AUSSTEHEND
+   für alle fünf Punkte, insbesondere NKA Mindener 23/25 und Vertragsdruck. */
 /* v293 (30.07.2026): NKA - anteilig beruecksichtigte Belege werden ausgewiesen.
    Schliesst den in v292 offen gelassenen Punkt: buchKatSummen lieferte die Liste
    `anteilig` bereits, angezeigt wurde sie nicht. Eine stille Teilberuecksichtigung
@@ -2215,23 +2375,68 @@ function registerActions(map){
   for(const k in map){ window.__act[k] = map[k]; }
 }
 
+/* v294 (R11 Etappe 0): Argumente eines delegierten Elements ermitteln.
+   Zwei Wege, bewusst getrennt:
+   a) data-args = JSON-Array. Fuer alles, was sich nicht als flache Kette von
+      Strings abbilden laesst (verschachtelte Werte, gemischte Typen, null).
+      Hat Vorrang, weil es der ausdrucksstaerkere Weg ist.
+   b) data-arg / data-arg2 / data-arg3 / data-arg4 - der einfache Normalfall.
+      data-arg3/4 sind neu in v294 und decken die 47 Handler mit 3-4 Argumenten
+      ab, die bisher gar nicht migrierbar waren.
+   Zahlen: data-argnum ohne Wert = NUR das erste Argument wird zu Number
+   (Verhalten aus v147, unveraendert). Mit Wert = Liste der 1-basierten
+   Positionen, z.B. data-argnum="1,3". Attribute sind immer Strings; ohne diese
+   Angabe bekaeme eine Funktion "3" statt 3 und ein === -Vergleich schlaege fehl. */
+function __delegateArgs(el){
+  const roh = el.getAttribute('data-args');
+  if(roh !== null){
+    try { const j = JSON.parse(roh); return Array.isArray(j) ? j : [j]; }
+    catch(e){ console.error('data-args ist kein gueltiges JSON:', roh, e); return []; }
+  }
+  const werte = ['data-arg','data-arg2','data-arg3','data-arg4'].map(a => el.getAttribute(a));
+  // Nach dem letzten gesetzten Argument abschneiden: eine Luecke (arg1 + arg3,
+  // arg2 leer) bleibt als undefined erhalten, damit sich die Position nicht
+  // verschiebt und das dritte Argument nicht als zweites ankommt.
+  let letzter = -1;
+  werte.forEach((w,i)=>{ if(w !== null) letzter = i; });
+  if(letzter < 0) return [];
+  const numAttr = el.getAttribute('data-argnum');
+  let numPos;
+  if(numAttr === null)      numPos = [];
+  else if(numAttr === '')   numPos = [1];
+  else                      numPos = numAttr.split(',').map(x => parseInt(x.trim(),10));
+  return werte.slice(0, letzter+1).map((w,i) =>
+    w === null ? undefined : (numPos.includes(i+1) ? Number(w) : w));
+}
+
 // Zentrale Delegation. Sucht vom Ziel aufwärts das nächste Element mit
-// data-action-* und ruft die registrierte Funktion auf. data-arg / data-arg2
-// werden als Argumente übergeben (Strings; numerische via data-argnum).
-function __delegate(typ, ev){
+// data-action-* und ruft die registrierte Funktion auf.
+function __delegate(typ, ev, nurStop){
   let el = ev.target;
   const attr = 'data-action-' + typ; // z.B. data-action-click
   while(el && el !== document){
     if(el.nodeType === 1 && el.hasAttribute(attr)){
+      const hatStop = el.hasAttribute('data-stop');
+      /* v294 (R11 Etappe 0): data-stop wird in der CAPTURE-Phase abgearbeitet,
+         alles andere wie bisher in der Bubble-Phase.
+         Warum: die Delegation hängt an `document`. In der Bubble-Phase ist das
+         die LETZTE Station - ein dort aufgerufenes stopPropagation() käme zu
+         spät, die äußeren Listener wären längst gelaufen. Beim Testen des
+         Gerüsts genau so aufgefallen. In der Capture-Phase ist `document`
+         umgekehrt die ERSTE Station; das Anhalten wirkt dort tatsächlich.
+         Der Aufruf erfolgt dann ebenfalls schon in der Capture-Phase - für
+         diese Elemente minimal früher als beim bisherigen Inline-Muster
+         event.stopPropagation();fn(). Unkritisch, weil die App keinen einzigen
+         Capture-Listener verwendet (geprüft), zwischen document und dem Element
+         also nichts liegt, dessen Reihenfolge sich verschieben könnte.
+         Ohne data-stop bleibt es strikt beim v147-Verhalten. */
+      if(nurStop && !hatStop) return;      // in Capture nur data-stop-Elemente bedienen
+      if(!nurStop && hatStop) return;      // in Bubble bereits in Capture erledigt
       const name = el.getAttribute(attr);
       const fn = window.__act[name];
       if(typeof fn === 'function'){
-        const a1 = el.getAttribute('data-arg');
-        const a2 = el.getAttribute('data-arg2');
-        const numFlag = el.hasAttribute('data-argnum');
-        const args = [];
-        if(a1 !== null) args.push(numFlag ? Number(a1) : a1);
-        if(a2 !== null) args.push(a2);
+        if(hatStop) ev.stopPropagation();
+        const args = __delegateArgs(el);
         try { fn.apply(el, args.length ? args : [ev]); }
         catch(e){ console.error('Aktion '+name+' Fehler:', e); }
         return;
@@ -2241,9 +2446,27 @@ function __delegate(typ, ev){
   }
 }
 
-document.addEventListener('click',  e => __delegate('click',  e));
-document.addEventListener('change', e => __delegate('change', e));
-document.addEventListener('input',  e => __delegate('input',  e));
+['click','change','input'].forEach(typ => {
+  document.addEventListener(typ, e => __delegate(typ, e, true),  true);  // Capture: nur data-stop
+  document.addEventListener(typ, e => __delegate(typ, e, false));        // Bubble: alles Übrige
+});
+
+/* v294 (R11 Etappe 0): Wrapper fuer Handler, die bisher nur aus einer
+   this-Manipulation bestehen und deshalb keinen Funktionsnamen haben, auf den
+   sich data-action stuetzen koennte. Ab Etappe 1 verwendet - hier bewusst
+   vorab angelegt, damit das Geruest vollstaendig ist und einzeln getestet
+   werden kann, bevor Bestandshandler angefasst werden. */
+function selbstAusblenden(){ this.style.display = 'none'; }          // war: this.style.display='none'
+function elternAusblenden(){ this.parentNode.style.display = 'none'; } // war: this.parentNode.style.display='none'
+function alsManuellMarkieren(){ this.dataset.manuell = '1'; }         // war: this.dataset.manuell='1'
+registerActions({ selbstAusblenden, elternAusblenden, alsManuellMarkieren });
+/* v295 (R11 Etappe 1): Pilot-Batch. Die Funktionen selbst sind unveraendert -
+   nur der Aufrufweg wechselt von Inline-onclick auf data-action-click.
+   Registrierung verzoegert bis DOMContentLoaded, weil die Funktionen weiter
+   unten im Skript stehen und hier noch nicht deklariert sind. */
+document.addEventListener('DOMContentLoaded', () => {
+  registerActions({ closeModal, nav, objTab, switchSettingsTab, openFoto });
+});
 
 /* ═══════════════════════════════════════════════════════════
    AUTH STATE
@@ -2942,7 +3165,7 @@ async function renderDash() {
   let html = `<div class="stats-row" style="grid-template-columns:repeat(4,1fr)">
     <div class="stat hl"><div class="stat-n">${myObj.length}</div><div class="stat-l">Objekte</div></div>
     <div class="stat" style="cursor:pointer" onclick="modalMieterListe()"><div class="stat-n">${myMieter.length}</div><div class="stat-l">Mieter</div></div>
-    <div class="stat" style="cursor:pointer" onclick="nav('aufgaben')"><div class="stat-n" style="color:${myAuf.length?'var(--amber)':'var(--green)'}">${myAuf.length}</div><div class="stat-l">Aufgaben</div></div>
+    <div class="stat" style="cursor:pointer" data-action-click="nav" data-arg="aufgaben"><div class="stat-n" style="color:${myAuf.length?'var(--amber)':'var(--green)'}">${myAuf.length}</div><div class="stat-l">Aufgaben</div></div>
     <div class="stat" style="cursor:pointer" onclick="modalAddMangel(null,null)"><div class="stat-n" style="color:${myMng.length?'var(--red)':'var(--green)'}">${myMng.length}</div><div class="stat-l">Mängel</div></div>
   </div>`;
 
@@ -2986,15 +3209,15 @@ async function renderDash() {
   // Quick-Actions – neue Reihenfolge; Aufgaben/Mangel laufen über die Counter oben; Excel-Import nur Admin
   html += `<div class="quick-actions">
     <button class="qa-btn" onclick="modalAddAufgabe(null,null)"><i class="ti ti-plus"></i> ToDo</button>
-    <button class="qa-btn" onclick="nav('lager')"><i class="ti ti-package"></i> Lager</button>
+    <button class="qa-btn" data-action-click="nav" data-arg="lager"><i class="ti ti-package"></i> Lager</button>
     <button class="qa-btn" onclick="newProtokoll()"><i class="ti ti-clipboard-check"></i> Neues Protokoll</button>
-    <button class="qa-btn" onclick="nav('protokoll-archiv')"><i class="ti ti-clipboard-list"></i> Protokolle</button>
-    <button class="qa-btn copper" onclick="nav('zeit')"><i class="ti ti-clock"></i> Zeiterfassung</button>
-    ${CU?.role=='hm'?`<button class="qa-btn" onclick="nav('urlaub')"><i class="ti ti-beach"></i> Urlaub</button>`:''}
-    <button class="qa-btn" onclick="nav('wartung')"><i class="ti ti-calendar-stats"></i> Wartung</button>
-    <button class="qa-btn" onclick="nav('branchenbuch')"><i class="ti ti-address-book"></i> Branchenbuch</button>
+    <button class="qa-btn" data-action-click="nav" data-arg="protokoll-archiv"><i class="ti ti-clipboard-list"></i> Protokolle</button>
+    <button class="qa-btn copper" data-action-click="nav" data-arg="zeit"><i class="ti ti-clock"></i> Zeiterfassung</button>
+    ${CU?.role=='hm'?`<button class="qa-btn" data-action-click="nav" data-arg="urlaub"><i class="ti ti-beach"></i> Urlaub</button>`:''}
+    <button class="qa-btn" data-action-click="nav" data-arg="wartung"><i class="ti ti-calendar-stats"></i> Wartung</button>
+    <button class="qa-btn" data-action-click="nav" data-arg="branchenbuch"><i class="ti ti-address-book"></i> Branchenbuch</button>
     <button class="qa-btn" onclick="modalPacklistenTermine()"><i class="ti ti-backpack"></i> Packliste</button>
-    ${istVerwalter()?`<button class="qa-btn" onclick="nav('rechnungen')"><i class="ti ti-file-invoice"></i> Rechnungen</button>`:''}
+    ${istVerwalter()?`<button class="qa-btn" data-action-click="nav" data-arg="rechnungen"><i class="ti ti-file-invoice"></i> Rechnungen</button>`:''}
   </div>`;
 
   // v181 (Punkt 5): Zähler-Schnellsuche – Nummer (auch Teilstück) oder Bezeichnung
@@ -3016,14 +3239,14 @@ async function renderDash() {
         const c = w.tage<0?'var(--red)':'var(--amber)';
         const txt = w.tage<0?`${Math.abs(w.tage)} Tage überfällig`:`in ${w.tage} Tagen`;
         const obj = w.objektId?getObj(w.objektId):null;
-        return `<div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--ink-10);cursor:pointer" onclick="nav('wartung')">
+        return `<div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--ink-10);cursor:pointer" data-action-click="nav" data-arg="wartung">
           <div style="width:6px;height:6px;border-radius:50%;background:${c};flex-shrink:0"></div>
           <div style="flex:1;font-size:13px;color:var(--ink)">${esc(w.titel)}</div>
           <div style="font-size:11px;color:${c};font-weight:600;white-space:nowrap">${txt}</div>
           <div style="font-size:11px;color:var(--ink-40);white-space:nowrap">${obj?esc(obj.name):'Alle'}</div>
         </div>`;
       }).join('')}
-      ${faelligeWartung.length>4?`<div style="font-size:12px;color:var(--ink-40);padding-top:6px;cursor:pointer" onclick="nav('wartung')">+${faelligeWartung.length-4} weitere anzeigen</div>`:''}
+      ${faelligeWartung.length>4?`<div style="font-size:12px;color:var(--ink-40);padding-top:6px;cursor:pointer" data-action-click="nav" data-arg="wartung">+${faelligeWartung.length-4} weitere anzeigen</div>`:''}
     </div>`;
   }
 
@@ -3063,7 +3286,7 @@ async function renderDash() {
   if (istVerwalter()) {
     const offeneUrlaube=(await idbGetAll('abwesenheit')).filter(a=>a.typ==='urlaub'&&a.status==='beantragt');
     if (offeneUrlaube.length) {
-      html += `<div style="background:var(--amber-l);border-radius:10px;padding:10px 14px;margin-bottom:12px;display:flex;align-items:center;gap:10px;cursor:pointer" onclick="nav('urlaub')">
+      html += `<div style="background:var(--amber-l);border-radius:10px;padding:10px 14px;margin-bottom:12px;display:flex;align-items:center;gap:10px;cursor:pointer" data-action-click="nav" data-arg="urlaub">
         <i class="ti ti-beach" style="color:var(--amber);font-size:18px;flex-shrink:0"></i>
         <div style="flex:1"><div style="font-size:13px;font-weight:600;color:var(--amber)">${offeneUrlaube.length} offene${offeneUrlaube.length===1?'r':''} Urlaubsantrag${offeneUrlaube.length===1?'':'e'}</div>
         <div style="font-size:12px;color:var(--amber)">Tippen zum Prüfen und Freigeben</div></div>
@@ -3086,7 +3309,7 @@ async function renderDash() {
         <div style="font-size:11px;color:var(--ink-40)">${getObj(d.objektId)?.name||''}</div>
         <i class="ti ti-chevron-right" style="font-size:13px;color:var(--ink-40)"></i>
       </div>`).join('')}
-      ${dringend.length>3?`<div style="font-size:12px;color:var(--ink-40);padding-top:6px;cursor:pointer" onclick="nav('aufgaben')">+${dringend.length-3} weitere anzeigen</div>`:''}
+      ${dringend.length>3?`<div style="font-size:12px;color:var(--ink-40);padding-top:6px;cursor:pointer" data-action-click="nav" data-arg="aufgaben">+${dringend.length-3} weitere anzeigen</div>`:''}
     </div>`;
   }
 
@@ -3268,10 +3491,10 @@ async function showObjekt(objId){
   // v182: Tiefgarage – eigene Tab-Struktur (Stellplätze statt Mieter/Protokolle/NKA)
   if(obj.tiefgarage){
     el.innerHTML=`<div class="tab-bar">
-      <button class="tab-btn active" onclick="objTab('stellplaetze',this)">Stellplätze</button>
-      <button class="tab-btn" onclick="objTab('aufgaben',this)">Aufgaben</button>
-      <button class="tab-btn" onclick="objTab('maengel',this)">Mängel</button>
-      <button class="tab-btn" onclick="objTab('dokumente',this)">Dokumente</button>
+      <button class="tab-btn active" data-action-click="objTab" data-arg="stellplaetze">Stellplätze</button>
+      <button class="tab-btn" data-action-click="objTab" data-arg="aufgaben">Aufgaben</button>
+      <button class="tab-btn" data-action-click="objTab" data-arg="maengel">Mängel</button>
+      <button class="tab-btn" data-action-click="objTab" data-arg="dokumente">Dokumente</button>
     </div>
     <div id="objTabContent"></div>`;
     nav('objekt',obj.name,obj.ort);
@@ -3279,14 +3502,14 @@ async function showObjekt(objId){
     return;
   }
   el.innerHTML=`<div class="tab-bar">
-    ${istPrivat?'':`<button class="tab-btn active" onclick="objTab('mieter',this)">Mieter</button>
-    <button class="tab-btn" onclick="objTab('protokolle',this)">Protokolle</button>`}
-    <button class="tab-btn ${istPrivat?'active':''}" onclick="objTab('aufgaben',this)">Aufgaben</button>
-    <button class="tab-btn" onclick="objTab('maengel',this)">Mängel</button>
-    <button class="tab-btn" onclick="objTab('zaehler',this)">Zähler</button>
-    <button class="tab-btn" onclick="objTab('dokumente',this)">Dokumente</button>
-    ${istVerwalter()?`<button class="tab-btn" onclick="objTab('interessenten',this)">Interessenten</button>`:''}
-    ${istVerwalter()?`<button class="tab-btn" onclick="objTab('versorger',this)">Versorger</button>`:''}
+    ${istPrivat?'':`<button class="tab-btn active" data-action-click="objTab" data-arg="mieter">Mieter</button>
+    <button class="tab-btn" data-action-click="objTab" data-arg="protokolle">Protokolle</button>`}
+    <button class="tab-btn ${istPrivat?'active':''}" data-action-click="objTab" data-arg="aufgaben">Aufgaben</button>
+    <button class="tab-btn" data-action-click="objTab" data-arg="maengel">Mängel</button>
+    <button class="tab-btn" data-action-click="objTab" data-arg="zaehler">Zähler</button>
+    <button class="tab-btn" data-action-click="objTab" data-arg="dokumente">Dokumente</button>
+    ${istVerwalter()?`<button class="tab-btn" data-action-click="objTab" data-arg="interessenten">Interessenten</button>`:''}
+    ${istVerwalter()?`<button class="tab-btn" data-action-click="objTab" data-arg="versorger">Versorger</button>`:''}
     ${istVerwalter()&&!istPrivat?'<button class="tab-btn" onclick="objTab(\'nka\',this)">NKA-Archiv</button>':''}
   </div>
   <div id="objTabContent"></div>`;
@@ -3295,6 +3518,11 @@ async function showObjekt(objId){
 }
 
 async function objTab(t,btn){
+  // v295 (R11 Etappe 1): der Aufruf uebergab frueher inline `this` als btn.
+  // Ueber die Delegation ist `this` bereits das angeklickte Element, das
+  // zweite Argument entfaellt. Direktaufrufe aus dem Code (ohne this) bleiben
+  // unveraendert moeglich - window hat kein classList, die Pruefung greift.
+  if(!btn && this && this.classList) btn = this;
   document.querySelectorAll('#page-objekt .tab-btn').forEach(b=>b.classList.remove('active'));
   if(btn) btn.classList.add('active');
   await renderObjTab(t);
@@ -3342,7 +3570,7 @@ async function modalSpMieterhoehung(spId){
     <p style="font-size:11px;color:var(--ink-40)">Die Erhöhung wird zum Wirksamkeitsdatum automatisch übernommen. Bis dahin erscheint sie am Stellplatz als geplant. Ein Erhöhungsschreiben wird erzeugt und im Mieter-Archiv abgelegt.</p>
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="saveSpMieterhoehung('${sp.id}')"><i class="ti ti-file-text"></i> Schreiben erstellen & vormerken</button>
-      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
     </div>`);
 }
 
@@ -3445,7 +3673,7 @@ async function modalTgMietvertrag(spId){
     <p style="font-size:11px;color:var(--ink-40)">Der Vertrag wird als PDF geöffnet (Druck) und im Mieter-Archiv abgelegt.</p>
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="tgMietvertragDrucken('${sp.id}')"><i class="ti ti-printer"></i> Vertrag erstellen</button>
-      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
     </div>`);
 }
 
@@ -3874,7 +4102,7 @@ async function modalSpZuordnen(spId){
       </div></div>
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="saveSpZuordnung('${sp.id}')"><i class="ti ti-check"></i> Zuordnen</button>
-      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
     </div>
     <div style="border-top:1px solid var(--ink-10);margin-top:14px;padding-top:10px">
       <div style="font-size:12px;color:var(--ink-40);margin-bottom:6px">Mieter ist noch nicht angelegt (externer Stellplatzmieter)?</div>
@@ -3923,7 +4151,7 @@ async function modalNeuerTgMieter(objektId, spId){
     <div class="f"><label for="tgmIban">IBAN (für Zahlungszuordnung)</label><input type="text" id="tgmIban" placeholder="DE.." data-iban></div>
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="saveNeuerTgMieter('${objektId}','${spId||''}')"><i class="ti ti-check"></i> Anlegen</button>
-      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
     </div>`);
 }
 
@@ -3968,7 +4196,7 @@ async function modalSpSperren(spId){
     <div class="f"><label for="spSperrGrund">Grund</label><input type="text" id="spSperrGrund" placeholder="z. B. Hausmeister / Materiallager"></div>
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-danger btn-full" onclick="saveSpSperre('${sp.id}')"><i class="ti ti-lock"></i> Sperren</button>
-      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
     </div>`);
 }
 async function saveSpSperre(spId){
@@ -4002,7 +4230,7 @@ async function modalSpHistorie(spId){
   showModal(`
     <div class="m-title"><i class="ti ti-history"></i> Historie – Stellplatz ${sp.nr}</div>
     <div style="max-height:60vh;overflow-y:auto">${rows||'<p style="color:var(--ink-40)">Keine Einträge.</p>'}</div>
-    <button class="btn btn-full" style="margin-top:12px" onclick="closeModal()">Schließen</button>`);
+    <button class="btn btn-full" style="margin-top:12px" data-action-click="closeModal">Schließen</button>`);
 }
 
 /* Miete direkt ändern (ohne Schreiben, z. B. Korrektur/Neuvermietung) */
@@ -4015,7 +4243,7 @@ async function modalSpMiete(spId){
     <p style="font-size:11px;color:var(--ink-40)">Für eine formelle Erhöhung mit Schreiben an den Mieter bitte „Mieterhöhung" verwenden – dort werden Wirksamkeitsdatum und Historie vollständig dokumentiert.</p>
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="saveSpMiete('${sp.id}')"><i class="ti ti-check"></i> Speichern</button>
-      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
     </div>`);
 }
 async function saveSpMiete(spId){
@@ -4042,7 +4270,7 @@ async function modalNeuerStellplatz(objektId){
       <input type="text" inputmode="decimal" id="spNeuMiete" value="${String(TG_SP_MIETE_STANDARD)}"></div>
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="saveNeuerStellplatz('${objektId}')"><i class="ti ti-check"></i> Anlegen</button>
-      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
     </div>`);
 }
 async function saveNeuerStellplatz(objektId){
@@ -4212,7 +4440,7 @@ async function modalInteressentNeu(objektId, id){
 
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="saveInteressent('${id||''}')"><i class="ti ti-check"></i> Speichern</button>
-      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
     </div>`);
 }
 
@@ -4299,7 +4527,7 @@ async function modalInteressentDetail(id){
       <button class="btn btn-sm" onclick="modalInteressentNeu('${k.objektId||''}','${k.id}')"><i class="ti ti-pencil"></i> Bearbeiten</button>
       ${k.status!=='uebernommen'?`<button class="btn btn-sm btn-copper" onclick="interessentZuMieter('${k.id}')"><i class="ti ti-user-check"></i> Als Mieter übernehmen</button>`:''}
       ${k.status!=='uebernommen'?`<button class="btn btn-sm btn-copper" onclick="mvStartAusInteressent('${k.id}')"><i class="ti ti-file-text"></i> Mietvertrag erstellen</button>`:''}
-      <button class="btn btn-full" style="margin-top:4px" onclick="closeModal()">Schließen</button>
+      <button class="btn btn-full" style="margin-top:4px" data-action-click="closeModal">Schließen</button>
     </div>`);
 }
 
@@ -4704,7 +4932,7 @@ async function modalZaehlerstand(zaehlerId){
       <textarea spellcheck="true" lang="de" id="zsBemerkung" style="min-height:50px" placeholder="z. B. Zähler schwer ablesbar"></textarea></div>
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="saveZaehlerstand('${zaehlerId}')"><i class="ti ti-check"></i> Speichern</button>
-      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
     </div>`);
 }
 
@@ -4968,7 +5196,7 @@ async function modalZaehlerKategorieChart(objektId, art){
   showModal(`
     <div class="m-title"><i class="ti ${ZAEHLER_ICON[art]||'ti-gauge'}"></i> ${esc(label)} – alle Zähler im Vergleich</div>
     ${chart||'<div style="font-size:13px;color:var(--ink-40)">Noch nicht genug Ablesungen für ein Diagramm (je Zähler mindestens zwei nötig).</div>'}
-    <button class="btn btn-full" style="margin-top:12px" onclick="closeModal()">Schließen</button>`);
+    <button class="btn btn-full" style="margin-top:12px" data-action-click="closeModal">Schließen</button>`);
 }
 
 // Verlauf mit Verbrauchsdifferenzen (Monat/Jahr-Vergleich)
@@ -4992,7 +5220,7 @@ async function zeigeZaehlerVerlauf(zaehlerId){
       <td style="padding:6px 4px;font-size:12px;font-weight:600">${s.wert} ${z.einheit}</td>
       <td style="padding:6px 4px;font-size:12px">${diff}</td>
       <td style="padding:6px 4px;font-size:11px;color:var(--ink-40)">${proTag}</td>
-      <td style="padding:6px 4px;text-align:right">${s.foto?`<button class="btn btn-sm" onclick="openFoto('${s.id}','zaehlerstand')"><i class="ti ti-photo"></i></button>`:''}
+      <td style="padding:6px 4px;text-align:right">${s.foto?`<button class="btn btn-sm" data-action-click="openFoto" data-arg="${s.id}" data-arg2="zaehlerstand"><i class="ti ti-photo"></i></button>`:''}
         ${istVerwalter()?`<button class="btn btn-sm" onclick="modalZaehlerstandEdit('${s.id}','${zaehlerId}')"><i class="ti ti-pencil"></i></button>
         <button class="btn btn-sm btn-danger" onclick="delZaehlerstand('${s.id}','${zaehlerId}')"><i class="ti ti-trash"></i></button>`:''}</td>
     </tr>`;
@@ -5034,7 +5262,7 @@ async function zeigeZaehlerVerlauf(zaehlerId){
       </tr></thead>
       <tbody>${rows||'<tr><td colspan="5" style="padding:10px;text-align:center;color:var(--ink-40)">Keine Daten</td></tr>'}</tbody>
     </table></div>
-    <button class="btn btn-full" style="margin-top:12px" onclick="closeModal()">Schließen</button>`);
+    <button class="btn btn-full" style="margin-top:12px" data-action-click="closeModal">Schließen</button>`);
 }
 
 async function delZaehlerstand(id, zaehlerId){
@@ -5066,7 +5294,7 @@ async function modalZaehlerstandEdit(id, zaehlerId){
       <textarea spellcheck="true" lang="de" id="zseBemerkung" style="min-height:50px">${esc(st.bemerkung||'')}</textarea></div>
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="saveZaehlerstandEdit('${id}','${zaehlerId}')"><i class="ti ti-check"></i> Speichern</button>
-      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
     </div>`);
 }
 
@@ -5129,7 +5357,7 @@ async function modalNeuerZaehler(objektId, zaehlerId){
       ${versorger.length?'':'<div style="font-size:11px;color:var(--ink-40);margin-top:4px">Noch keine Versorger in diesem Objekt erfasst.</div>'}</div>
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="saveNeuerZaehler('${objektId}','${zaehlerId||''}')"><i class="ti ti-check"></i> Speichern</button>
-      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
     </div>
     ${isEdit?`<button class="btn btn-danger btn-full" style="margin-top:8px" onclick="delZaehler('${zaehlerId}','${objektId}')"><i class="ti ti-trash"></i> Zähler löschen</button>`:''}`);
 }
@@ -5394,7 +5622,7 @@ async function modalCryptoUnlock(onDoneName, ...args){
       <div id="cryptoErr" style="color:#C0392B;font-size:12px;margin-bottom:8px"></div>
       <div class="f-row">
         <button class="btn btn-copper btn-full" onclick="tryCryptoUnlock('${onDoneName}', ${JSON.stringify(args).slice(1,-1)})"><i class="ti ti-lock-open"></i> Entsperren</button>
-        <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+        <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
       </div>`);
   } else {
     showModal(`
@@ -5408,7 +5636,7 @@ async function modalCryptoUnlock(onDoneName, ...args){
       <div id="cryptoErr" style="color:#C0392B;font-size:12px;margin-bottom:8px"></div>
       <div class="f-row">
         <button class="btn btn-copper btn-full" onclick="trySetupCrypto('${onDoneName}', ${JSON.stringify(args).slice(1,-1)})"><i class="ti ti-check"></i> Einrichten</button>
-        <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+        <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
       </div>`);
   }
 }
@@ -5550,7 +5778,7 @@ async function modalVersorger(objektId, versorgerId){
     <div class="f"><label>Notizen</label><textarea spellcheck="true" lang="de" id="vNotiz" style="min-height:50px">${v.notiz||''}</textarea></div>
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="saveVersorger('${objektId}','${versorgerId||''}')"><i class="ti ti-check"></i> Speichern</button>
-      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
     </div>
     ${isEdit?`<button class="btn btn-danger btn-full" style="margin-top:8px" onclick="deleteVersorger('${versorgerId}','${objektId}')"><i class="ti ti-trash"></i> Versorger löschen</button>`:''}`);
 }
@@ -5738,7 +5966,7 @@ async function zeigeVersorgerDetail(versorgerId){
     <div id="versArchivBox" style="margin-top:12px"></div>
     <div class="f-row" style="margin-top:14px">
       <button class="btn btn-copper btn-full" onclick="modalVersorger('${v.objektId}','${v.id}')"><i class="ti ti-pencil"></i> Bearbeiten</button>
-      <button class="btn btn-full" onclick="closeModal()">Schließen</button>
+      <button class="btn btn-full" data-action-click="closeModal">Schließen</button>
     </div>`);
   await renderVersorgerArchiv(versorgerId);
 }
@@ -6622,7 +6850,7 @@ async function modalWohnungsQR(objektId){
   }
   showModal(`<div class="m-title"><i class="ti ti-qrcode"></i> Wohnungs-QR · ${esc(obj.name)}</div>
     ${body}
-    <button class="btn btn-full" style="margin-top:6px" onclick="closeModal()">Schließen</button>`);
+    <button class="btn btn-full" style="margin-top:6px" data-action-click="closeModal">Schließen</button>`);
 }
 
 async function wohnungsQrEtikett(objektId, weNr, modus){
@@ -6787,7 +7015,7 @@ async function modalWohnungsQrZipExport(){
       Pro Standort wird eine ZIP-Datei erzeugt. Darin je Wohneinheit (auch Leerstand) eine PDF mit einem QR-Code und Klartext (WE-Nummer, Objektname) – ohne sichtbare Webadresse.
     </div>
     ${zeilen||'<div class="empty" style="padding:14px 0"><p>Keine Standorte verfügbar.</p></div>'}
-    <button class="btn btn-full" style="margin-top:6px" onclick="closeModal()">Schließen</button>`);
+    <button class="btn btn-full" style="margin-top:6px" data-action-click="closeModal">Schließen</button>`);
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -6928,7 +7156,7 @@ async function oeffneSelbstauskuenfte(){
     <div id="saInboxBody" style="max-height:60vh;overflow:auto">
       <p style="font-size:13px;color:var(--ink-40)">Lade neue Selbstauskünfte …</p>
     </div>
-    <button class="btn btn-full" style="margin-top:12px" onclick="closeModal()">Schließen</button>`);
+    <button class="btn btn-full" style="margin-top:12px" data-action-click="closeModal">Schließen</button>`);
   const body=document.getElementById('saInboxBody');
   if(!key){
     body.innerHTML='<p style="font-size:13px;color:var(--red,#c0392b)">Kein Backend-Schlüssel hinterlegt. Bitte unter „System → Website-Backend" den Function-Key speichern.</p>';
@@ -7645,7 +7873,7 @@ async function druckeLagerortEtikett(ortId){
     <p style="font-size:13px;color:var(--ink-60);margin-bottom:12px">PDF (30×50 mm) für „${o.bezeichnung}".</p>
     <button class="btn btn-copper btn-full" style="margin-bottom:8px" onclick="closeModal();etikettPdfSpeichern('LAGERORT:${o.qrId}','${nummer}','${(o.bezeichnung||'').replace(/'/g,'')}','${(o.pfad||'').replace(/'/g,'')}','${nummer} · ${getLagerStandort(o.standort).label}')"><i class="ti ti-download"></i> Speichern (Download)</button>
     <button class="btn btn-full" style="margin-bottom:8px" onclick="closeModal();etikettPdfTeilen('LAGERORT:${o.qrId}','${nummer}','${(o.bezeichnung||'').replace(/'/g,'')}','${(o.pfad||'').replace(/'/g,'')}','${nummer} · ${getLagerStandort(o.standort).label}')"><i class="ti ti-share"></i> Teilen / an Drucker</button>
-    <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>`);
+    <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>`);
 }
 
 // Artikel-Etikett: QR mit Barcode/Artikel-ID, Dateiname = Inventarnummer
@@ -7659,7 +7887,7 @@ async function druckeArtikelEtikett(artikelId){
     <p style="font-size:13px;color:var(--ink-60);margin-bottom:12px">PDF (30×50 mm) für „${a.bezeichnung}".</p>
     <button class="btn btn-copper btn-full" style="margin-bottom:8px" onclick="closeModal();etikettPdfSpeichern('${code.replace(/'/g,'')}','${nummer}','${(a.bezeichnung||'').replace(/'/g,'')}','${nummer}','${getLagerStandort(a.standort).label}')"><i class="ti ti-download"></i> Speichern (Download)</button>
     <button class="btn btn-full" style="margin-bottom:8px" onclick="closeModal();etikettPdfTeilen('${code.replace(/'/g,'')}','${nummer}','${(a.bezeichnung||'').replace(/'/g,'')}','${nummer}','${getLagerStandort(a.standort).label}')"><i class="ti ti-share"></i> Teilen / an Drucker</button>
-    <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>`);
+    <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>`);
 }
 
 // Nächste fortlaufende Inventarnummer je Standort (z. B. DUS-0001)
@@ -7940,7 +8168,7 @@ async function renderZeiterfassung(){
     return;
   }
   let h=`<div class="s-hdr"><div class="s-title"><i class="ti ti-clock"></i> Zeiterfassung</div>
-    <button class="btn btn-sm" onclick="nav('urlaub')"><i class="ti ti-beach"></i> Urlaub</button>
+    <button class="btn btn-sm" data-action-click="nav" data-arg="urlaub"><i class="ti ti-beach"></i> Urlaub</button>
   </div>`;
 
   // ── Stempeluhr (alle Rollen, die erfassen) ──
@@ -8102,7 +8330,7 @@ async function renderTaetigkeitserfassung(el){
   const wocheLog=alle.filter(x=>new Date(x.zeit)>=montag);
 
   let h=`<div class="s-hdr"><div class="s-title"><i class="ti ti-clipboard-check"></i> Tätigkeitserfassung</div>
-    <button class="btn btn-sm" onclick="nav('urlaub')"><i class="ti ti-beach"></i> Urlaub</button>
+    <button class="btn btn-sm" data-action-click="nav" data-arg="urlaub"><i class="ti ti-beach"></i> Urlaub</button>
   </div>
   <div class="card" style="text-align:center;margin-bottom:14px">
     <p style="font-size:13px;color:var(--ink-60);margin-bottom:12px">QR-Code der Tätigkeit oder des Rundgang-Wegpunkts scannen. Es werden Datum und Uhrzeit gespeichert – es läuft keine Uhr.</p>
@@ -8174,7 +8402,7 @@ async function modalTaetigkeitManuell(){
       <input type="text" id="tmZiel" spellcheck="true" lang="de" placeholder="z. B. Wilmendyk 7"></div>
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="saveTaetigkeitManuell()"><i class="ti ti-check"></i> Speichern</button>
-      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
     </div>`);
   const sel=document.getElementById('tmKat');
   if(sel) sel.onchange=()=>{ const w=document.getElementById('tmSonstWrap'); if(w) w.style.display=sel.value==='__sonst'?'':'none'; };
@@ -8281,7 +8509,7 @@ async function modalTaetigkeitStart(){
     <div class="f"><label for="tsNotiz">Notiz (optional)</label><input type="text" id="tsNotiz" placeholder="z. B. Leuchtmittel 3. OG"></div>
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="tsStart()"><i class="ti ti-check"></i> Starten</button>
-      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
     </div>`);
   tsKatWechsel();
 }
@@ -8380,7 +8608,7 @@ async function modalSegmentBearbeiten(sId, segId){
     <div class="f"><label for="seNotiz">Notiz</label><input type="text" id="seNotiz" value="${(seg.notiz||'').replace(/"/g,'&quot;')}"></div>
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="saveSegment('${sId}','${segId}')"><i class="ti ti-check"></i> Speichern</button>
-      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
     </div>
     <button class="btn btn-danger btn-full" style="margin-top:8px" onclick="delSegment('${sId}','${segId}')"><i class="ti ti-trash"></i> Tätigkeit löschen</button>`);
 }
@@ -8450,7 +8678,7 @@ async function modalMitarbeiterTaetigkeiten(userId){
       </div>`).join('');
     }
   }
-  body+=`<button class="btn btn-full" style="margin-top:12px" onclick="closeModal()">Schließen</button>`;
+  body+=`<button class="btn btn-full" style="margin-top:12px" data-action-click="closeModal">Schließen</button>`;
   showModal(body);
 }
 
@@ -8543,7 +8771,7 @@ async function modalMitarbeiterZeit(userId){
       }
     }
   }
-  body+=`<button class="btn btn-full" style="margin-top:10px" onclick="closeModal()">Schließen</button>`;
+  body+=`<button class="btn btn-full" style="margin-top:10px" data-action-click="closeModal">Schließen</button>`;
   showModal(body);
 }
 
@@ -8660,7 +8888,7 @@ async function modalUrlaubAntrag(){
     <div id="urVorschau" style="font-size:13px;color:var(--ink-60);background:var(--ink-05);border-radius:8px;padding:8px 12px;margin-bottom:12px"></div>
     <div class="f-row">
       <button class="btn btn-copper btn-full" onclick="urlaubBeantragen()"><i class="ti ti-send"></i> Antrag senden</button>
-      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
     </div>`);
   urlaubVorschau();
 }
@@ -8763,7 +8991,7 @@ async function modalSitzungDetail(sId){
   showModal(`<div class="m-title"><i class="ti ti-clock"></i> ${s.datum} · ${fmtUhr(s.start)}–${s.ende?fmtUhr(s.ende):'läuft'}</div>
     <div style="font-size:13px;margin-bottom:8px">Gesamt: <strong>${fmtDauer(sitzungMinuten(s))}</strong></div>
     ${renderZeitleiste(s)||'<div style="font-size:12px;color:var(--ink-40)">Keine Tätigkeiten erfasst.</div>'}
-    <button class="btn btn-full" style="margin-top:10px" onclick="closeModal()">Schließen</button>`);
+    <button class="btn btn-full" style="margin-top:10px" data-action-click="closeModal">Schließen</button>`);
 }
 
 // Vergessene Sitzung: Endzeit nachtragen und beenden
@@ -8785,7 +9013,7 @@ async function modalSitzungNachtragen(sId){
     </div>
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="saveSitzungNachtrag('${sId}')"><i class="ti ti-check"></i> ${auto?'Speichern':'Beenden'}</button>
-      ${auto?'':`<button class="btn btn-full" onclick="closeModal()">Abbrechen</button>`}
+      ${auto?'':`<button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>`}
     </div>`);
 }
 async function saveSitzungNachtrag(sId){
@@ -8834,7 +9062,7 @@ async function modalTaetigkeitenVerwalten(){
     </div>
     <button class="btn btn-copper btn-full" style="margin-top:10px" onclick="modalTaetigkeitKatEdit(null)"><i class="ti ti-plus"></i> Neue Tätigkeit</button>
     <button class="btn btn-full" style="margin-top:6px" onclick="modalTaetigkeitSortieren()"><i class="ti ti-arrows-sort"></i> Meine Reihenfolge anpassen</button>
-    <button class="btn btn-full" style="margin-top:6px" onclick="closeModal()">Schließen</button>`);
+    <button class="btn btn-full" style="margin-top:6px" data-action-click="closeModal">Schließen</button>`);
 }
 
 // Persönliche Reihenfolge per Drag & Drop (Touch + Maus)
@@ -9002,7 +9230,7 @@ async function modalTaetigkeitQR(){
     </div>
     <button class="btn btn-copper btn-full" style="margin-bottom:8px" onclick="taetigkeitQrErstellen('speichern')"><i class="ti ti-download"></i> Speichern (Download)</button>
     <button class="btn btn-full" style="margin-bottom:8px" onclick="taetigkeitQrErstellen('teilen')"><i class="ti ti-share"></i> Teilen / an Drucker</button>
-    <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>`);
+    <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>`);
 }
 
 // Welche Tätigkeiten dürfen als QR gedruckt werden (man weiß, wohin man sie klebt)
@@ -9065,7 +9293,7 @@ async function modalTaetigkeitQRListe(){
       <div id="qrRgListe"></div>
     </div>
 
-    <button class="btn btn-full" onclick="closeModal()">Schließen</button>
+    <button class="btn btn-full" data-action-click="closeModal">Schließen</button>
   `);
   qrEinzelStandortAendern();
 }
@@ -9734,7 +9962,7 @@ async function modalZeitenBereinigen(){
     <label style="font-size:12px;color:var(--ink-60);display:block;margin-bottom:4px" for="bereinigStichtag">Stichtag (alles davor wird gelöscht)</label>
     <input type="date" id="bereinigStichtag" value="${heuteStr}" style="width:100%;padding:10px;border:1px solid var(--ink-20);border-radius:8px;margin-bottom:14px;font-size:15px">
     <button class="btn btn-danger btn-full" style="margin-bottom:8px" onclick="bereinigeZeitenAusfuehren()"><i class="ti ti-trash"></i> Jetzt löschen</button>
-    <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>`);
+    <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>`);
 }
 async function bereinigeZeitenAusfuehren(){
   const stichtag=document.getElementById('bereinigStichtag')?.value;
@@ -9833,7 +10061,7 @@ async function starteTaetigkeitVonQR(katId, objId){
     showModal(`<div class="m-title"><i class="ti ti-clock"></i> Nicht eingestempelt</div>
       <p style="font-size:13px;color:var(--ink-60);margin-bottom:12px">Du bist nicht eingestempelt. Jetzt einstempeln und „${kat?.name||katId}" am Objekt ${obj?.name||objId} starten?</p>
       <button class="btn btn-copper btn-full" style="margin-bottom:8px" onclick="closeModal();einstempelnUndStarten('${katId}','${objId}')"><i class="ti ti-player-play"></i> Einstempeln & starten</button>
-      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>`);
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>`);
     return;
   }
   await taetigkeitStarten(katId, objId);
@@ -9863,7 +10091,7 @@ async function rundgangWegpunktScan(lgId, nr, gesamt){
     showModal(`<div class="m-title"><i class="ti ti-clock"></i> Nicht eingestempelt</div>
       <p style="font-size:13px;color:var(--ink-60);margin-bottom:12px">Du bist nicht eingestempelt. Jetzt einstempeln und den Müllrundgang in ${esc(lgName)} starten (Wegpunkt ${nr}/${gesamt})?</p>
       <button class="btn btn-copper btn-full" style="margin-bottom:8px" onclick="closeModal();einstempelnUndRundgang('${lgId}',${nr},${gesamt})"><i class="ti ti-player-play"></i> Einstempeln & starten</button>
-      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>`);
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>`);
     return;
   }
   if(pauseAktiv(s)){ toast('Erst Pause beenden'); return; }
@@ -9961,7 +10189,7 @@ function rundgangStatusModal(seg, lgName, fertig){
     ${fertig?'':'<p style="font-size:12px;color:var(--ink-40);margin-bottom:12px">Den nächsten Wegpunkt anlaufen und dort den QR scannen.</p>'}
     ${fertig?'':'<button class="btn btn-copper btn-full" style="margin-bottom:6px" onclick="closeModal();scanTaetigkeitQR()"><i class="ti ti-qrcode"></i> Nächsten Wegpunkt scannen</button>'}
     ${fertig?'':`<button class="btn btn-full" style="margin-bottom:6px;border-color:var(--red,#C0392B);color:var(--red,#C0392B)" onclick="rundgangQrDefektDialog('${seg.id}','${esc(lgName)}')"><i class="ti ti-qrcode-off"></i> QR-Code defekt / Vandalismus</button>`}
-    <button class="btn btn-full" onclick="closeModal()">Schließen</button>`);
+    <button class="btn btn-full" data-action-click="closeModal">Schließen</button>`);
 }
 
 // QR-Code an einer Station ist defekt/zerstört → Defekt-Wegpunkt wählen
@@ -10019,7 +10247,7 @@ async function rundgangWegpunktDefekt(segId, lgName, nr){
     <p style="font-size:13px;color:var(--ink-60);margin-bottom:12px">Du kannst jetzt direkt ein Ersatz-Etikett für Wegpunkt ${nr} drucken und neu anbringen.</p>
     <button class="btn btn-copper btn-full" style="margin-bottom:6px" onclick="closeModal();druckeRundgangWegpunkt('${lgId}',${nr},${seg.wpGesamt||0})"><i class="ti ti-printer"></i> Ersatz-Etikett drucken</button>
     ${fertig?'':`<button class="btn btn-full" style="margin-bottom:6px" onclick="rundgangStatusModalById('${segId}','${esc(lgName)}')">Rundgang fortsetzen</button>`}
-    <button class="btn btn-full" onclick="closeModal()">Schließen</button>`);
+    <button class="btn btn-full" data-action-click="closeModal">Schließen</button>`);
 }
 
 function syncSoon(){ clearTimeout(window._syncTimer); window._syncTimer=setTimeout(()=>{ syncToOneDrive().then(()=>{ if(typeof syncDateibaum==='function') syncDateibaum(true); }); },3000); }
@@ -10075,7 +10303,7 @@ async function modalVentilliste(objektId){
     <div style="font-size:12px;color:var(--ink-60);margin-bottom:12px">${ventile.length} Ventil${ventile.length!==1?'e':''}</div>
     <button class="btn btn-copper btn-full" style="margin-bottom:12px" onclick="modalVentilNeu('${objektId}')"><i class="ti ti-plus"></i> Neues Ventil</button>
     <div id="ventilListe" style="max-height:55vh;overflow-y:auto">${liste}</div>
-    <button class="btn btn-full" style="margin-top:8px" onclick="closeModal()">Schließen</button>
+    <button class="btn btn-full" style="margin-top:8px" data-action-click="closeModal">Schließen</button>
   `);
 }
 
@@ -10185,7 +10413,7 @@ async function ventilPruefungStart(ventilId){
     <button class="btn btn-full" onclick="ventilFotoKamera()"><i class="ti ti-camera"></i> Foto aufnehmen (optional)</button>
     <button class="btn btn-full" style="margin-top:6px" onclick="document.getElementById('ventilFotoIn').click()"><i class="ti ti-photo"></i> Aus Galerie</button>
     <div id="ventilFotoVorschau" style="margin-top:8px"></div>
-    <button class="btn btn-full" style="margin-top:8px" onclick="closeModal()">Abbrechen</button>
+    <button class="btn btn-full" style="margin-top:8px" data-action-click="closeModal">Abbrechen</button>
   `);
 }
 function ventilFotoGewaehlt(input){
@@ -10248,7 +10476,7 @@ async function ventilPruefungSpeichern(ventilId, funktioniert){
   } else {
     showModal(`<div class="m-title"><i class="ti ti-alert-triangle" style="color:var(--red,#C0392B)"></i> Mangel angelegt</div>
       <p style="font-size:13px;color:var(--ink-60);margin-bottom:14px">Für „${esc(v.strang||'Strang')}" (${t.label}) wurde ein Mangel erfasst und in der Mängelliste hinterlegt.</p>
-      <button class="btn btn-full" onclick="closeModal()">Schließen</button>`);
+      <button class="btn btn-full" data-action-click="closeModal">Schließen</button>`);
   }
 }
 
@@ -10604,7 +10832,7 @@ async function renderLagerArtikelForm(a, artikelId){
 
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="saveLagerArtikel('${artikelId||''}')"><i class="ti ti-check"></i> Speichern</button>
-      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
     </div>
     ${isEdit?`<button class="btn btn-danger btn-full" style="margin-top:8px" onclick="deleteLagerArtikel('${artikelId}')"><i class="ti ti-trash"></i> Artikel löschen</button>`:''}`);
 }
@@ -10764,7 +10992,7 @@ async function zeigeLagerArtikel(artikelId){
   }
   showModal(`
     <div class="m-title"><i class="ti ${kat.icon}"></i> ${a.bezeichnung}</div>
-    ${a.foto?`<img src="${a.foto}" style="width:100%;border-radius:10px;margin-bottom:10px;cursor:pointer" onclick="openFoto('${a.id}','lager')" alt="Foto">`:''}
+    ${a.foto?`<img src="${a.foto}" style="width:100%;border-radius:10px;margin-bottom:10px;cursor:pointer" data-action-click="openFoto" data-arg="${a.id}" data-arg2="lager" alt="Foto">`:''}
     <div style="font-size:12px;color:var(--ink-40);margin-bottom:8px">${kat.label}${a.unterkategorie?' · '+a.unterkategorie:''}</div>
     ${warn?`<div style="background:#FDECEA;color:#C0392B;border-radius:8px;padding:8px 12px;margin-bottom:10px;font-size:13px"><i class="ti ti-alert-triangle"></i> Mindestbestand erreicht – nachbestellen${a.produktlink?' (Produktlink unten)':''}</div>`:''}
     ${zeile('Bestand', bestandTxt)}
@@ -10799,7 +11027,7 @@ async function zeigeLagerArtikel(artikelId){
     </div>
     <div class="f-row" style="margin-top:6px">
       <button class="btn btn-full" onclick="modalLagerArtikel('${a.id}')"><i class="ti ti-pencil"></i> Bearbeiten</button>
-      <button class="btn btn-full" onclick="closeModal()">Schließen</button>
+      <button class="btn btn-full" data-action-click="closeModal">Schließen</button>
     </div>`);
 }
 async function zeigeLagerNachbestellung(){
@@ -10891,7 +11119,7 @@ async function lagerBestandSchnell(id){
         </select></div>
       <div class="f-row" style="margin-top:12px">
         <button class="btn btn-copper btn-full" onclick="saveLagerBestandSchnell('${id}',true)"><i class="ti ti-check"></i> Speichern</button>
-        <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+        <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
       </div>`);
   } else {
     showModal(`
@@ -10902,7 +11130,7 @@ async function lagerBestandSchnell(id){
       </div>
       <div class="f-row" style="margin-top:12px">
         <button class="btn btn-copper btn-full" onclick="saveLagerBestandSchnell('${id}',false)"><i class="ti ti-check"></i> Speichern</button>
-        <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+        <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
       </div>`);
   }
 }
@@ -11101,7 +11329,7 @@ async function bcVerarbeite(wert){
           <strong>${kat?kat.name:katId}</strong><br>${zielName}
         </div>
         <p style="font-size:12px;color:var(--ink-40);margin-bottom:12px">Die Stempeluhr wird im nächsten Schritt aktiviert. Danach startet dieser Scan die Tätigkeit automatisch.</p>
-        <button class="btn btn-full" onclick="closeModal()">Schließen</button>`);
+        <button class="btn btn-full" data-action-click="closeModal">Schließen</button>`);
     }
     return;
   }
@@ -11119,14 +11347,14 @@ async function bcVerarbeite(wert){
         <div style="display:flex;align-items:center;gap:10px"><i class="ti ${kat.icon}" style="color:${kat.color}"></i>
         <div><div style="font-weight:600;font-size:13px">${a.bezeichnung}</div>
         <div style="font-size:11px;color:var(--ink-40)">${getLagerStandort(a.standort).label} · Bestand ${a.bestand??'–'}</div></div></div></div>`;}).join('')}
-      <button class="btn btn-full" style="margin-top:8px" onclick="closeModal()">Schließen</button>`);
+      <button class="btn btn-full" style="margin-top:8px" data-action-click="closeModal">Schließen</button>`);
   } else {
     // kein Treffer: anbieten, neuen Artikel mit dieser Barcode anzulegen
     showModal(`<div class="m-title"><i class="ti ti-scan-eye"></i> Kein Artikel gefunden</div>
       <p style="font-size:13px;color:var(--ink-60);margin-bottom:12px">Für den Barcode <strong>${wert}</strong> ist kein Artikel hinterlegt. Möchten Sie einen neuen Artikel mit dieser Nummer anlegen?</p>
       <div class="f-row">
         <button class="btn btn-copper btn-full" onclick="closeModal();neuerArtikelMitBarcode('${wert.replace(/'/g,'')}')"><i class="ti ti-plus"></i> Artikel anlegen</button>
-        <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+        <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
       </div>`);
   }
 }
@@ -11156,7 +11384,7 @@ async function startInventur(){
     <div style="text-align:center;font-size:12px;color:var(--ink-40);margin:12px 0 8px">— oder —</div>
     <button class="btn btn-full" onclick="inventurLagerortScannen()"><i class="ti ti-qrcode"></i> Lagerort-QR scannen</button>
     <button class="btn btn-full" style="margin-top:6px" onclick="inventurLagerortWaehlen()"><i class="ti ti-box"></i> Lagerort aus Liste wählen</button>
-    <button class="btn btn-full" style="margin-top:12px" onclick="closeModal()">Abbrechen</button>`);
+    <button class="btn btn-full" style="margin-top:12px" data-action-click="closeModal">Abbrechen</button>`);
 }
 
 // Lagerort-Inventur per QR-Scan
@@ -11344,7 +11572,7 @@ async function modalLagerEntnahme(artikelId, mangelId){
       <input type="text" id="entZweck" placeholder="z. B. Reparatur WE 3, Mindener Str. 23" value="${mangelId?'Mangel-Behebung':''}"></div>
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="saveLagerEntnahme('${artikelId}','${mangelId||''}')"><i class="ti ti-check"></i> Entnahme buchen</button>
-      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
     </div>`);
 }
 
@@ -11403,7 +11631,7 @@ async function modalLagerAnforderung(artikelId, mangelId){
     <div class="f"><label for="anfNotiz">Notiz (optional)</label><textarea spellcheck="true" lang="de" id="anfNotiz" style="min-height:44px"></textarea></div>
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="saveLagerAnforderung('${artikelId}','${mangelId||''}')"><i class="ti ti-check"></i> Anfordern</button>
-      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
     </div>`);
 }
 
@@ -11706,7 +11934,7 @@ async function modalSchluessel(objektId, weNr){
       <textarea id="skNotiz" spellcheck="true" lang="de" style="min-height:44px" placeholder="z. B. Schließanlage Nr., Sicherungskarte beim Eigentümer">${esc(w?.schluesselNotiz||'')}</textarea></div>
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="saveSchluessel('${objektId}','${esc(String(weNr))}')"><i class="ti ti-check"></i> Speichern</button>
-      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
     </div>`);
 }
 
@@ -11854,7 +12082,7 @@ async function modalGebaeudeStamm(objektId){
 
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="saveGebaeudeStamm('${objektId}')"><i class="ti ti-check"></i> Speichern</button>
-      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
     </div>`);
 }
 
@@ -11981,7 +12209,7 @@ async function modalVersicherungen(objektId){
     <div style="max-height:55vh;overflow-y:auto;padding-right:4px">${zeilen}</div>
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="modalVersicherungEdit('${objektId}','')"><i class="ti ti-plus"></i> Versicherung hinzufügen</button>
-      <button class="btn btn-full" onclick="closeModal()">Schließen</button>
+      <button class="btn btn-full" data-action-click="closeModal">Schließen</button>
     </div>`);
 }
 
@@ -12076,7 +12304,7 @@ async function modalSchadenMelden(mangelId, store='maengel'){
       </div>
       <div class="f-row">
         <button class="btn btn-copper btn-full" onclick="modalVersicherungen('${m.objektId}')"><i class="ti ti-plus"></i> Versicherung anlegen</button>
-        <button class="btn btn-full" onclick="closeModal()">Schließen</button>
+        <button class="btn btn-full" data-action-click="closeModal">Schließen</button>
       </div>`);
     return;
   }
@@ -12099,7 +12327,7 @@ async function modalSchadenMelden(mangelId, store='maengel'){
       <button class="btn btn-copper btn-full" onclick="schadenMailOeffnen('${mangelId}','${store}','${esc(mieterZeile)}')"><i class="ti ti-mail-forward"></i> E-Mail öffnen</button>
       <button class="btn btn-full" onclick="schadenMailKopieren('${mangelId}','${store}','${esc(mieterZeile)}')"><i class="ti ti-copy"></i> Text kopieren</button>
     </div>
-    <button class="btn btn-full" style="margin-top:8px" onclick="closeModal()">Abbrechen</button>`);
+    <button class="btn btn-full" style="margin-top:8px" data-action-click="closeModal">Abbrechen</button>`);
 }
 async function _schadenTextBauen(mangelId, store, mieterZeile){
   const m=await idbGet(store,mangelId).catch(()=>null);
@@ -12161,7 +12389,7 @@ async function schadenMailKopieren(mangelId, store, mieterZeile, _still){
     // Fallback: Textfeld zur manuellen Kopie
     showModal(`<div class="m-title"><i class="ti ti-copy"></i> Schadenmeldung</div>
       <textarea readonly style="width:100%;min-height:300px;font-size:12px;font-family:monospace" onclick="this.select()">${esc(text)}</textarea>
-      <button class="btn btn-full" style="margin-top:10px" onclick="closeModal()">Schließen</button>`);
+      <button class="btn btn-full" style="margin-top:10px" data-action-click="closeModal">Schließen</button>`);
   }
 }
 
@@ -13356,7 +13584,7 @@ async function mbVersandDialog(mbId){
     </div>
     <div style="display:flex;gap:8px;margin-top:8px">
       <button class="btn btn-sm" style="flex:1" onclick="mbVersandKopiere()"><i class="ti ti-copy"></i> Text kopieren</button>
-      <button class="btn btn-sm" style="flex:1" onclick="closeModal()">Schließen</button>
+      <button class="btn btn-sm" style="flex:1" data-action-click="closeModal">Schließen</button>
     </div>
   `);
 }
@@ -13499,7 +13727,7 @@ async function modalAddWartung(id){
   const titel = w ? 'Wartungsfrist bearbeiten' : 'Wartungsfrist anlegen';
   const selTyp = w?.typ || 'heizung';
   const html = `
-    <div class="modal-head"><h3>${titel}</h3><button class="modal-x" onclick="closeModal()" aria-label="Schließen">✕</button></div>
+    <div class="modal-head"><h3>${titel}</h3><button class="modal-x" data-action-click="closeModal" aria-label="Schließen">✕</button></div>
     <div class="f"><label for="wTyp">Art der Wartung</label>
       <select id="wTyp" onchange="wartungTypChange()">
         ${WARTUNG_TYPEN.map(t=>`<option value="${t.val}" ${t.val===selTyp?'selected':''}>${t.label}</option>`).join('')}
@@ -14141,7 +14369,7 @@ function modalMangelErledigen(id, store){
     <div id="erledigtFotoVorschau" style="margin-top:10px"></div>
     <div class="f-row" style="margin-top:14px">
       <button class="btn btn-full" style="background:var(--green,#2E7D52);color:#fff" onclick="mangelErledigenSpeichern('${id}','${store}')"><i class="ti ti-check"></i> Erledigt</button>
-      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
     </div>`);
 }
 function erledigtFotoGewaehlt(input){
@@ -14644,7 +14872,7 @@ async function renderDokumente(el, objektId, mieterId) {
             return `<button class="btn btn-sm" title="${frei?'Für Mieterportal freigegeben':'Nicht freigegeben'}${ueberschrieben?' (manuell gesetzt)':' (Typ-Standard)'} – tippen zum Umschalten" onclick="togglePortalFreigabe('${d.id}')" style="flex-shrink:0;${frei?'color:var(--success);border-color:var(--success)':'color:var(--ink-40)'}"><i class="ti ${frei?'ti-world-share':'ti-world-off'}"></i></button>`;
           })() : ''}
         <div style="display:flex;gap:5px;flex-shrink:0">
-          ${isImg?`<button class="btn btn-sm" onclick="openFoto('${d.id}','dok')"><i class="ti ti-eye"></i></button>`:''}
+          ${isImg?`<button class="btn btn-sm" data-action-click="openFoto" data-arg="${d.id}" data-arg2="dok"><i class="ti ti-eye"></i></button>`:''}
           ${isHtmlDok?`<button class="btn btn-sm" onclick="openArchivDok('${d.id}')" title="Öffnen / Drucken / Weiterleiten"><i class="ti ti-eye"></i></button>`:''}
           <button class="btn btn-sm" onclick="downloadDok('${d.id}')"><i class="ti ti-download"></i></button>
           <button class="btn btn-sm btn-danger" onclick="deleteDok('${d.id}')"><i class="ti ti-trash"></i></button>
@@ -14692,7 +14920,7 @@ async function showMieterDokumente(mieterId) {
     <div class="m-title"><i class="ti ti-paperclip"></i> Archiv & Dokumente – ${esc(m.mieter)}</div>
     <div id="mieterDokEl"></div>
     <div id="mieterODEl" style="margin-top:14px"></div>
-    <button class="btn btn-full" style="margin-top:10px" onclick="closeModal()">Schließen</button>`);
+    <button class="btn btn-full" style="margin-top:10px" data-action-click="closeModal">Schließen</button>`);
   await renderDokumente(document.getElementById('mieterDokEl'), m.objektId, mieterId);
   // OneDrive-Dateien dieser Wohnung (separater Block, nur Referenzen – keine Duplikate)
   await renderODArchivFuerWE(document.getElementById('mieterODEl'), obj?.gruppe, m.weNr);
@@ -14900,7 +15128,7 @@ function modalUploadDok(objektId, mieterId) {
       <button class="btn btn-copper btn-full" onclick="saveDok('${objektId}','${mieterId}')">
         <i class="ti ti-check"></i> Speichern
       </button>
-      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
     </div>`);
 
   document.getElementById('dokFile').addEventListener('change', function() {
@@ -14998,7 +15226,7 @@ async function modalAusweisLoeschen(){
     </div>`;
   }
   h += `<div style="display:flex;gap:8px;margin-top:14px">
-    <button class="btn" style="flex:1" onclick="closeModal()">Später</button>
+    <button class="btn" style="flex:1" data-action-click="closeModal">Später</button>
     <button class="btn btn-copper" style="flex:1" onclick="ausweisAlleLoeschen()"><i class="ti ti-trash"></i> Alle löschen (${kand.length})</button>
   </div>`;
   showModal(h);
@@ -15413,7 +15641,7 @@ const NKA_VORLAGEN = {
       {id:'gebvrs',          name:'Gebäudeversicherung',       schluessel:'wfl'},
       {id:'haftpflicht',     name:'Haftpflichtversicherung',   schluessel:'wfl'},
       {id:'hausreinigung',   name:'Hausreinigung',             schluessel:'we'},
-      {id:'strom_waschm',    name:'Strom Waschmaschine (3,50€/Pers/Mon.)', schluessel:'personen_fest', preisProPers: 3.50},
+      {id:'strom_waschm',    name:'Strom Waschmaschine (3,50€/Pers/Mon.)', schluessel:'personen_fest', preisProPers: 3.50, perMieterOptIn:true},
       {id:'heizung',         name:'Heizung (Einzeln)',         schluessel:'einzeln'},
     ]
   },
@@ -15429,7 +15657,7 @@ const NKA_VORLAGEN = {
       {id:'gebvrs',          name:'Gebäudeversicherung',       schluessel:'wfl'},
       {id:'haftpflicht',     name:'Haftpflichtversicherung',   schluessel:'wfl'},
       {id:'hausreinigung',   name:'Hausreinigung',             schluessel:'we'},
-      {id:'strom_waschm',    name:'Strom Waschmaschine (3,50€/Pers/Mon.)', schluessel:'personen_fest', preisProPers: 3.50},
+      {id:'strom_waschm',    name:'Strom Waschmaschine (3,50€/Pers/Mon.)', schluessel:'personen_fest', preisProPers: 3.50, perMieterOptIn:true},
       {id:'heizung',         name:'Heizung (Einzeln)',         schluessel:'einzeln'},
     ]
   },
@@ -15677,10 +15905,22 @@ function nkaSammlePositionen(){
     const mid=t.id.slice('nka_bem_'.length);
     if(t.value){ mieterFelder[mid]=mieterFelder[mid]||{}; mieterFelder[mid].bem=t.value; }
   });
+  // v294: Waschmaschine-Ankreuzfeld je Mieter (Checkbox statt Textwert)
+  document.querySelectorAll('input[id^="nka_wm_"]').forEach(cb=>{
+    const mid=cb.id.slice('nka_wm_'.length);
+    mieterFelder[mid]=mieterFelder[mid]||{}; mieterFelder[mid].wm=cb.checked;
+  });
   return {positionen, summen, custom, schl, mieterFelder};
 }
 
 async function nkaSavePositionen(objektId, von, bis){
+  // v294: Guard gegen Phantom-Speicherung - der 800ms-Debounce-Timer aus dem
+  // Auto-Speichern kann noch auslösen, NACHDEM das Formular im DOM bereits
+  // durch einen anderen Dialog ersetzt wurde (z.B. Abbrechen -> sofort einen
+  // Mieter geloescht/bearbeitet). Ohne diese Pruefung wuerde dann ein leerer
+  // Stand erfasst und der zuvor korrekt gespeicherte Entwurf ueberschrieben -
+  // das war die Ursache fuer "beim Abbrechen ist alles wieder weg".
+  if(!document.getElementById('nkaFormWrap')) return;
   von=von||document.getElementById('nkaVon')?.value;
   bis=bis||document.getElementById('nkaBis')?.value;
   if(!von||!bis) return;
@@ -15688,6 +15928,16 @@ async function nkaSavePositionen(objektId, von, bis){
   await idbPut('settings',{id:nkaPosKeyVB(objektId,von,bis), value:data, geaendert:nowIso()});
   clearTimeout(window._syncTimer);
   window._syncTimer=setTimeout(()=>syncToOneDrive(),3000);
+}
+
+// v294: Abbrechen sicherte den letzten Eingabe-Rest nicht sofort - der
+// 800ms-Debounce des Auto-Speicherns konnte durch den Klick auf "Abbrechen"
+// (und alles was direkt danach passiert) abgeschnitten werden. Jetzt wird vor
+// dem Schliessen sofort und synchron gespeichert, ohne auf den Timer zu warten.
+async function nkaAbbrechen(objektId){
+  clearTimeout(window._nkaSaveTimer);
+  try{ await nkaSavePositionen(objektId); }catch(e){}
+  closeModal();
 }
 
 // Altformat (flach: {kId:[{betrag,name}]}) ins Neuformat heben
@@ -15768,6 +16018,9 @@ async function nkaLoadPositionen(objektId){
     });
     const bem=document.getElementById('nka_bem_'+mid);
     if(bem && f.bem!=null) bem.value=f.bem;
+    // v294: Waschmaschine-Ankreuzfeld
+    const wm=document.getElementById('nka_wm_'+mid);
+    if(wm && f.wm!=null) wm.checked=!!f.wm;
   });
   if(ausVorjahr) toast('Werte aus dem Vorjahr übernommen – bitte prüfen');
 }
@@ -15998,6 +16251,14 @@ async function modalNKA(objektId) {
     we: aktiveM.length,
   };
 
+  // v294 (Nutzerbefund Mindener 23/25): Kostenarten mit perMieterOptIn (aktuell
+  // "Strom Waschmaschine") sind kein fester Umlage-Posten mehr, den ausnahmslos
+  // jeder Mieter mittraegt - nicht jede Wohnung hat ueberhaupt Zugang zum
+  // Waschkeller. Statt einer Zeile oben bei den Gesamtkosten erscheint darum je
+  // Mieter ein Ankreuzfeld direkt unter Kleinreparaturen; nur angehakte Mieter
+  // zahlen den Festbetrag (Standard: angehakt, damit sich am bisherigen
+  // Ergebnis nichts aendert, solange niemand das Haekchen entfernt).
+  const wmItem = vorlage.kosten.find(k=>k.perMieterOptIn);
   let kostenHTML = vorlage.kosten.map(k => {
     if (k.schluessel === 'einzeln') {
       // Heizung: je Mieter ein eigenes Feld
@@ -16027,12 +16288,17 @@ async function modalNKA(objektId) {
             <div class="f"><label for="nka_so_${m.id}">Sonstiges (€)</label>
               <input type="text" inputmode="decimal" id="nka_so_${m.id}" placeholder="0,00"></div>
           </div>
+          ${wmItem ? `<label style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--ink-60);margin:2px 0 4px;cursor:pointer">
+            <input type="checkbox" id="nka_wm_${m.id}" checked style="width:14px;height:14px">
+            ${esc(wmItem.name)}
+          </label>` : ''}
           <div class="f" style="margin-top:4px">
             <textarea spellcheck="true" lang="de" id="nka_bem_${m.id}" placeholder="Bemerkung für diesen Mieter (erscheint im Brief)..."
               style="width:100%;padding:6px 8px;border:1.5px solid var(--ink-10);border-radius:6px;font-size:12px;font-family:var(--font);resize:vertical;min-height:44px"></textarea>
           </div>
         </div>`;}).join('')}`;
     }
+    if (k.perMieterOptIn) return '';   // v294: erscheint stattdessen je Mieter, siehe wmItem oben
     if (k.schluessel==='personen_fest' || k.schluessel==='we_fest') {
       return nkaKostenZeile(k.id, k.name, k.schluessel, true);
     }
@@ -16084,7 +16350,7 @@ async function modalNKA(objektId) {
       <button class="btn btn-copper btn-full" onclick="erstelleNKA('${objektId}')">
         <i class="ti ti-file-type-pdf"></i> Abrechnung erstellen
       </button>
-      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-full" onclick="nkaAbbrechen('${objektId}')">Abbrechen</button>
     </div>`,
   );
   await populateNkaSigPick();
@@ -16281,6 +16547,12 @@ async function erstelleNKA(objektId, korrektur) {
       return true;
     });
     const krAuto = repsImZeitraum.reduce((s,r)=>s+(parseFloat(r.kosten)||0),0);
+    // v294: Waschmaschine - nur wenn für diesen Mieter angehakt (Checkbox
+    // existiert nur, wenn die Vorlage eine perMieterOptIn-Kostenart hat)
+    const wmCb = document.getElementById('nka_wm_'+m.id);
+    const wmChecked = wmCb ? wmCb.checked : false;
+    const wmItemDef = kostenDef.find(k=>k.perMieterOptIn);
+    const wmPersonen = personenMonate(m,von,bis);
     mieterExtras[m.id]={
       vz:   parseBetrag(document.getElementById('nka_vz_'+m.id)?.value)||(parseFloat(m.nk)||0),
       kr:   krManual + krAuto,
@@ -16289,6 +16561,8 @@ async function erstelleNKA(objektId, korrektur) {
       repsImZeitraum,
       so:   parseBetrag(document.getElementById('nka_so_'+m.id)?.value),
       bem:  document.getElementById('nka_bem_'+m.id)?.value||'',
+      wm:      (wmCb && wmChecked && wmItemDef) ? (wmItemDef.preisProPers||0)*wmPersonen : 0,
+      wmChecked, wmPersonen,
     };
   }
 
@@ -16313,6 +16587,7 @@ async function erstelleNKA(objektId, korrektur) {
   }
 
   function getAnteil(k, m) {
+    if(k.perMieterOptIn) return 0;   // v294: laeuft separat über mieterExtras[m.id].wm
     const verteilt = anteileFuerPosition(k);
     if(verteilt) return verteilt.get(m.id) || 0;
     const betrag   = kostenMap[k.id];
@@ -16354,7 +16629,7 @@ async function erstelleNKA(objektId, korrektur) {
     const vzJahres=vzSummeZeitraum(m, von, bis);
     let nkAnteil=0;
     kostenDef.forEach(k=>{nkAnteil+=getAnteil(k,m);});
-    const gesamt=nkAnteil+ex.kr+ex.so;
+    const gesamt=nkAnteil+ex.kr+ex.so+ex.wm;
     const diff=gesamt-vzJahres;
     const diffCol=diff>0?'#C0392B':'#2E7D52';
     const diffTxt=diff>0?`Nachz.: ${fmtEur(diff)}`:`Gutschr.: ${fmtEur(Math.abs(diff))}`;
@@ -16451,6 +16726,12 @@ async function erstelleNKA(objektId, korrektur) {
     }
     if(ex.krManual>0) posZeilen+=nkaZeile('Kleinreparaturen (manuell)','–','–','–','–','–',ex.krManual);
     if(ex.so>0) posZeilen+=nkaZeile('Sonstiges','–','–','–','–','–',ex.so);
+    // v294: Waschmaschine - eigene Zeile, Format wie zuvor bei personen_fest
+    // (Schluessel "Bes.", Anteil = Personenmonate, Preis = fester Satz).
+    if(ex.wm>0){
+      const wmDef=kostenDef.find(k=>k.perMieterOptIn);
+      posZeilen+=nkaZeile(wmDef?wmDef.name:'Strom Waschmaschine','Bes.','–','–',ex.wmPersonen,wmDef?.preisProPers||0,ex.wm);
+    }
 
     briefeHTML+=`
     <div class="pagebreak">
@@ -16815,6 +17096,59 @@ async function ladeLgMieter(lgId, von, bis){
 // Speicher-/Ladeschlüssel für Zwischenstände einer Liegenschaft
 function nkaLgPosKey(lgId, von, bis){ return 'nka_lg_'+lgId+'_'+(von||'')+'_'+(bis||''); }
 
+/* v296: Auto-Speichern der LIEGENSCHAFTS-NKA (Krefeld, Mönchengladbach).
+   nkaLgPosKey war seit Einführung definiert, wurde aber an keiner Stelle
+   aufgerufen - die Sammelabrechnung über alle Häuser einer Liegenschaft hatte
+   damit gar kein Zwischenspeichern: jeder Abbruch verwarf sämtliche Eingaben,
+   und das ist bei bis zu sieben Häusern deutlich mehr Arbeit als bei einem
+   einzelnen Haus. Aufbau bewusst identisch zur Einzelhaus-Variante
+   (nkaSammlePositionen/nkaSavePositionen/nkaLoadPositionen), damit beide Masken
+   dasselbe Verhalten zeigen und nicht getrennt gepflegt werden müssen. */
+function nkaLgSammlePositionen(){
+  const werte={};
+  document.querySelectorAll('#nkaLgFormWrap input, #nkaLgFormWrap textarea').forEach(el=>{
+    if(!el.id || el.id==='nkaLgVon' || el.id==='nkaLgBis') return;
+    if(el.type==='checkbox') werte[el.id]=el.checked;
+    else if(el.value!=='')   werte[el.id]=el.value;
+  });
+  return werte;
+}
+
+async function nkaLgSavePositionen(lgId, von, bis){
+  // Gleicher Schutz wie in der Einzelhaus-Maske (v294): der Debounce-Timer darf
+  // nicht gegen ein bereits ersetztes Formular laufen und den Stand leeren.
+  if(!document.getElementById('nkaLgFormWrap')) return;
+  von=von||document.getElementById('nkaLgVon')?.value;
+  bis=bis||document.getElementById('nkaLgBis')?.value;
+  if(!von||!bis) return;
+  await idbPut('settings',{id:nkaLgPosKey(lgId,von,bis), value:nkaLgSammlePositionen(), geaendert:nowIso()});
+  clearTimeout(window._syncTimer);
+  window._syncTimer=setTimeout(()=>syncToOneDrive(),3000);
+}
+
+async function nkaLgLoadPositionen(lgId, von, bis){
+  von=von||document.getElementById('nkaLgVon')?.value;
+  bis=bis||document.getElementById('nkaLgBis')?.value;
+  if(!von||!bis) return;
+  const rec=await idbGet('settings', nkaLgPosKey(lgId,von,bis));
+  const werte=rec&&rec.value;
+  if(!werte) return;
+  Object.keys(werte).forEach(id=>{
+    const el=document.getElementById(id);
+    if(!el) return;                       // Mieter kann zwischenzeitlich fehlen
+    if(el.type==='checkbox') el.checked=!!werte[id];
+    else                     el.value=werte[id];
+  });
+  nkaLgUpdateWohnmonate();
+}
+
+// Abbrechen sichert sofort, ohne auf den 800ms-Debounce zu warten (wie v294).
+async function nkaLgAbbrechen(lgId){
+  clearTimeout(window._nkaLgSaveTimer);
+  try{ await nkaLgSavePositionen(lgId); }catch(e){}
+  closeModal();
+}
+
 async function modalNKALiegenschaft(lgId){
   if (!istVerwalter()){ toast('Nur für Admins'); return; }
   const vorlage=getNKALgVorlage(lgId);
@@ -16904,13 +17238,20 @@ async function modalNKALiegenschaft(lgId){
     </div>
     <div class="f-row" style="margin-top:14px">
       <button class="btn btn-copper btn-full" onclick="erstelleNKALiegenschaft('${lgId}')"><i class="ti ti-file-type-pdf"></i> Abrechnung erstellen</button>
-      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-full" onclick="nkaLgAbbrechen('${lgId}')">Abbrechen</button>
     </div>`);
 
   window._nkaLgMieter=mieter;
   window._nkaLgId=lgId;
   await populateNkaLgSigPick();
   nkaLgUpdateWohnmonate();
+  // v296: gespeicherten Stand einlesen, danach Auto-Speichern scharfschalten
+  await nkaLgLoadPositionen(lgId, von0, bis0);
+  const lgWrap=document.getElementById('nkaLgFormWrap');
+  if(lgWrap) lgWrap.addEventListener('input', ()=>{
+    clearTimeout(window._nkaLgSaveTimer);
+    window._nkaLgSaveTimer=setTimeout(()=>nkaLgSavePositionen(lgId), 800);
+  });
 
   // Jahr → Zeitraum
   document.getElementById('nkaLgJahr').addEventListener('change', async e=>{
@@ -18174,6 +18515,13 @@ async function saveBriefkopf(key){
   await idbPut('settings',{id:'briefkopf_'+key, value:data, geaendert:nowIso()});
   clearTimeout(window._syncTimer);
   window._syncTimer=setTimeout(()=>syncToOneDrive(),2000);
+  /* v296 (Nutzerbefund A5, Mönchengladbach): die Eingaben wurden korrekt
+     gespeichert, der rote "unvollständig"-Hinweis blieb danach aber stehen -
+     es sah aus, als sei nichts angekommen. Ursache: die Einstellungsseite wurde
+     nicht neu gezeichnet, der Hinweis stammte noch vom Seitenaufbau. Direkt
+     darunter macht saveBriefkopfOverride() es seit v112 richtig; dasselbe hier. */
+  const bkEl=document.getElementById('briefkopfConfigEl');
+  if(bkEl) bkEl.innerHTML=renderBriefkopfConfig();
   toast('Briefkopf gespeichert ✓');
 }
 // v112: Briefkopf-Umleitung pro Gruppe speichern (leer = Standard).
@@ -18312,7 +18660,7 @@ async function modalWohnungHeizNk(objektId, weNr){
 
     <div class="f-row" style="margin-top:14px">
       <button class="btn btn-copper btn-full" onclick="saveWohnungHeizNk('${objektId}','${esc(String(weNr||''))}')"><i class="ti ti-check"></i> Speichern</button>
-      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
     </div>`);
   // Foto-Arbeitsspeicher des Modals aus dem Stamm vorbefüllen
   window._whFotos = Array.isArray(w.fotos) ? w.fotos.slice() : [];
@@ -18584,6 +18932,11 @@ function mvVertragHTML(d){
      + (d.vermieterVertreter ? ', vertreten durch ' + mvEsc(d.vermieterVertreter) : '') + '</p>';
   h += '<p>und <b>' + mvEsc(d.mieter1Name) + '</b>, geb. ' + mvLine(d.mieter1Gebdat,12) + ', derzeit wohnhaft ' + mvLine(d.mieter1Anschrift,30)
      + ' ' + mieter2 + mieterWeitere + ' – nachfolgend gemeinsam „Mieter" –</p>';
+  // v294 (Nutzerbefund): Telefon/E-Mail wurden im Editor erfasst und sogar in
+  // die Mieterakte zurueckgeschrieben, tauchten im gedruckten Vertrag aber nie
+  // auf. Liegen sie bereits vor, erscheinen sie hier; fehlen sie, steht eine
+  // Ausfuelllinie zum handschriftlichen Nachtragen bei der Unterschrift bereit.
+  h += '<p>Kontaktdaten des Mieters: Telefon ' + mvLine(d.telefon,18) + ' · E-Mail ' + mvLine(d.email,30) + '.</p>';
   h += '<p>wird folgender Mietvertrag geschlossen:</p>';
 
   // § 1
@@ -18751,8 +19104,11 @@ function mvVertragHTML(d){
    bleibt also nicht unbemerkt.
    Stand der Werte: 29.07.2026, v289, ohne manuellen Umbruch im Merkblatt. */
 const ANLAGE_DRUCKSEITEN = {
-  hausordnung: 3,   // § 1 bis § 10 samt Unterschriftszeile
-  merkblatt:   3,   // Regeln · Lueftungsregeln · Heizperiode
+  hausordnung: 3,   // § 1 bis § 10 samt Unterschriftszeile - v294: nochmals verdichtet
+                    // (9.5pt->9.0pt/1.24 probeweise), Seitenzahl blieb per Messung bei 3;
+                    // beim lesbareren 9.5pt/1.34-Stand belassen (kein Vorteil durch kleinere Schrift).
+  merkblatt:   2,   // v294: verdichtet (10pt/1.4 -> 9.6pt/1.32), per messen_mv_kontext.py
+                    // im Mietvertrags-Kontext nachgemessen: jetzt 2 statt 3 Seiten.
   dsgvo:        2,   // Haupttext + Unterschrift/Fusszeile
   sepa:         2,   // ausgefuelltes Mandat (Platzhalter waere 1 Seite)
 };
@@ -19261,7 +19617,7 @@ async function mvRenderGeneratorModal(){
 
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="mvErzeugen()"><i class="ti ti-file-download"></i> ${_istEdit?'PDF neu erzeugen &amp; Entwurf ersetzen':'PDF erzeugen &amp; beim Mieter ablegen'}</button>
-      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
     </div>`);
 
   setTimeout(()=>{ mvBerechneGesamt(); mvWarnKr(); mvOnHeizVarChange(); mvRenderSchluessel(); mvRenderGemeinschaft(); mvMpbVorbefuellen(); }, 50);
@@ -19590,6 +19946,7 @@ async function mvBaueRenderdaten(){
     mieter1Name: D.mieter1Name||'', mieter1Gebdat: D.mieter1Gebdat? fmtDate(D.mieter1Gebdat):'',
     mieter1Anschrift: D.mieter1Anschrift||'',
     mieter2Name: D.mieter2Name||'', mieterWeitere: D.mieterWeitere||'',
+    telefon: D.telefon||'', email: D.email||'',   // v294: bisher erfasst, aber nie gedruckt (Nutzerbefund)
     // § 1
     objektAnschrift: [obj?.name, obj?.ort].filter(Boolean).join(', '),
     weBezeichnung: D.weNr? ('Wohneinheit Nr. '+D.weNr):'die Wohnung',
@@ -20037,7 +20394,7 @@ async function modalMietbescheinigung(mieterId){
     <div class="f-row" style="margin-top:14px">
       <button class="btn btn-copper btn-full" onclick="erstelleMietbescheinigung('${mieterId}')">
         <i class="ti ti-file-type-pdf"></i> Bescheinigung erstellen</button>
-      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
     </div>`);
   mbRechneNK();
 }
@@ -20750,7 +21107,7 @@ async function modalKautionsabrechnung(mieterId){
     </div>
     <div style="font-size:11px;color:var(--ink-40);margin:4px 0 12px"><i class="ti ti-scale"></i> Abrechnung gem. § 551 BGB. Ein Einbehalt für eine noch nicht vorliegende Betriebskostenabrechnung ist gesondert auszuweisen. Die rechtliche Prüfung im Einzelfall bleibt vorbehalten.</div>
     <div style="display:flex;gap:8px;justify-content:flex-end">
-      <button class="btn" onclick="closeModal()">Abbrechen</button>
+      <button class="btn" data-action-click="closeModal">Abbrechen</button>
       <button class="btn btn-copper" onclick="erstelleKautionsEndabrechnung('${m.id}')"><i class="ti ti-printer"></i> Abrechnung erstellen</button>
     </div>`);
   kaAbzugRender();
@@ -20897,7 +21254,7 @@ async function kqVersandDialog(kqId){
     </div>
     <div style="display:flex;gap:8px;margin-top:8px">
       <button class="btn btn-sm" style="flex:1" onclick="kqVersandKopiere()"><i class="ti ti-copy"></i> Text kopieren</button>
-      <button class="btn btn-sm" style="flex:1" onclick="closeModal()">Schließen</button>
+      <button class="btn btn-sm" style="flex:1" data-action-click="closeModal">Schließen</button>
     </div>
   `);
 }
@@ -20938,7 +21295,7 @@ async function druckeWohnungsgeberBescheinigung(mieterId){
     <div id="wgbSigPick">${liste}</div>
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="wgbDruckStart('${mieterId}')"><i class="ti ti-printer"></i> Erstellen & Drucken</button>
-      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
     </div>`);
 }
 
@@ -21141,7 +21498,7 @@ async function renderNKAArchiv(el, objektId) {
     const fmtD = d => d ? new Date(d).toLocaleDateString('de-DE') : '–';
     const ergebnisChips = (nka.mieterErgebnisse||[]).map(mr=>{
       const col = mr.diff>0 ? 'var(--red)' : 'var(--green)';
-      const txt = mr.diff>0 ? '+'+fmtEur(mr.diff) : fmtEur(Math.abs(mr.diff));
+      const txt = fmtEur(Math.abs(mr.diff));   // v294: kein "+" mehr - Rot/Grün zeigt Nachzahlung/Guthaben bereits eindeutig
       return '<span style="background:var(--ink-05);border-radius:6px;padding:3px 8px;font-size:10px">WE '+mr.weNr+' <strong style="color:'+col+'">'+txt+'</strong></span>';
     }).join('');
 
@@ -21195,7 +21552,7 @@ async function modalNKAKorrektur(nkaId){
       <textarea spellcheck="true" lang="de" id="korrText" style="min-height:60px" placeholder="z. B. Korrigierte Heizkosten aufgrund nachträglich eingegangener Schlussrechnung."></textarea></div>
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="starteNKAKorrektur('${nkaId}')"><i class="ti ti-arrow-right"></i> Maske öffnen</button>
-      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
     </div>`);
 }
 
@@ -21473,7 +21830,7 @@ async function modalBrief(mieterId, objektId) {
       <button class="btn btn-copper btn-full" onclick="druckeBrief('${mieterId||''}','${objektId||''}')">
         <i class="ti ti-printer"></i> Brief drucken
       </button>
-      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
     </div>`);
 
   // Mieter-Daten für spätere Verwendung
@@ -21738,7 +22095,7 @@ async function modalAushang(objektId) {
       <button class="btn btn-copper btn-full" onclick="druckeAushang('${objektId}')">
         <i class="ti ti-printer"></i> Aushang drucken
       </button>
-      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
     </div>`);
 }
 
@@ -21903,7 +22260,7 @@ async function modalAddReparatur(mieterId, objektId) {
       <button class="btn btn-copper btn-full" onclick="saveReparatur()">
         <i class="ti ti-check"></i> Speichern
       </button>
-      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
     </div>`);
 
   // Extern-Toggle
@@ -22050,7 +22407,7 @@ async function modalGrundriss(objektId) {
     ${grundrisse.length
       ? grundrisse.map(g=>`<div style="margin-bottom:10px">
           <div style="font-size:13px;font-weight:600;margin-bottom:6px">${g.name}</div>
-          ${g.mimeType?.startsWith('image/')?`<img src="${fotoThumbQuelle(g.data||g.ref)}" style="width:100%;border-radius:8px;cursor:pointer" onclick="openFoto('${g.id}','dok')" alt="Foto">`
+          ${g.mimeType?.startsWith('image/')?`<img src="${fotoThumbQuelle(g.data||g.ref)}" style="width:100%;border-radius:8px;cursor:pointer" data-action-click="openFoto" data-arg="${g.id}" data-arg2="dok" alt="Foto">`
             :`<button class="btn btn-sm" onclick="downloadDok('${g.id}')"><i class="ti ti-download"></i> ${g.name} herunterladen</button>`}
           <div style="display:flex;gap:6px;margin-top:6px">
             <button class="btn btn-sm btn-danger" onclick="deleteDok('${g.id}');closeModal()"><i class="ti ti-trash"></i></button>
@@ -22060,7 +22417,7 @@ async function modalGrundriss(objektId) {
     <button class="btn btn-copper btn-full" style="margin-top:8px" onclick="closeModal();setTimeout(()=>{objTab('dokumente',null);modalUploadDok('${objektId}','');},300)">
       <i class="ti ti-upload"></i> Grundriss hochladen
     </button>
-    <button class="btn btn-full" style="margin-top:6px" onclick="closeModal()">Schließen</button>`);
+    <button class="btn btn-full" style="margin-top:6px" data-action-click="closeModal">Schließen</button>`);
 }
 
 
@@ -22087,7 +22444,7 @@ async function modalWohnungGrundriss(objektId, weNr){
       <div style="font-size:12px;font-weight:700;color:var(--ink-60);margin-bottom:6px"><i class="ti ti-map"></i> ${label}</div>
       <div>${plan
         ? (istBild
-            ? `<img src="${fotoThumbQuelle(plan.data||plan.ref)}" style="width:100%;border-radius:8px;cursor:pointer" onclick="openFoto('${planId}','dok')" alt="Grundriss">`
+            ? `<img src="${fotoThumbQuelle(plan.data||plan.ref)}" style="width:100%;border-radius:8px;cursor:pointer" data-action-click="openFoto" data-arg="${planId}" data-arg2="dok" alt="Grundriss">`
             : `<button class="btn btn-full" onclick="downloadDok('${planId}')"><i class="ti ti-file-type-pdf"></i> ${esc(plan.name||'Grundriss')} herunterladen</button>`)
         : `<div class="empty" style="padding:16px"><i class="ti ti-map-off"></i><p>Noch kein ${slot==='b'?'Grundriss der zweiten Ebene':'Grundriss'} hinterlegt.</p></div>`}
       </div>
@@ -22107,7 +22464,7 @@ async function modalWohnungGrundriss(objektId, weNr){
     ${slotHTML('a', planA, 'Grundriss')}
     ${zeigeB ? slotHTML('b', planB, '2. Ebene (Maisonette / Galerie)')
              : `<div style="font-size:11px;color:var(--ink-40);margin-bottom:10px"><i class="ti ti-info-circle"></i> Für Maisonette-Wohnungen lässt sich nach dem ersten Grundriss eine zweite Ebene ergänzen.</div>`}
-    <button class="btn btn-full" style="margin-top:4px" onclick="closeModal()">Schließen</button>`);
+    <button class="btn btn-full" style="margin-top:4px" data-action-click="closeModal">Schließen</button>`);
 }
 
 async function onWohnungGrundrissFile(objektId, weNr, slot){
@@ -22175,7 +22532,7 @@ async function modalWohnungsbilder(objektId, weNr){
     h+=`<div style="max-height:54vh;overflow-y:auto;padding-right:4px">`;
     bilder.forEach(b=>{
       h+=`<div style="margin-bottom:12px;border:1px solid var(--ink-10);border-radius:10px;overflow:hidden">
-        <img src="${fotoThumbQuelle(b.data||b.ref)}" style="width:100%;display:block;cursor:pointer" onclick="openFoto('${b.id}','dok')" alt="Foto">
+        <img src="${fotoThumbQuelle(b.data||b.ref)}" style="width:100%;display:block;cursor:pointer" data-action-click="openFoto" data-arg="${b.id}" data-arg2="dok" alt="Foto">
         <div style="padding:8px 10px">
           <div style="font-size:13px;color:var(--ink)">${b.beschreibung?esc(b.beschreibung):'<span style="color:#888780">Ohne Beschreibung</span>'}</div>
           <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">
@@ -22193,7 +22550,7 @@ async function modalWohnungsbilder(objektId, weNr){
     <button class="btn btn-copper btn-full" style="margin-top:10px" onclick="document.getElementById('wbFile').click()">
       <i class="ti ti-upload"></i> Bild hinzufügen
     </button>
-    <button class="btn btn-full" style="margin-top:6px" onclick="closeModal()">Schließen</button>`;
+    <button class="btn btn-full" style="margin-top:6px" data-action-click="closeModal">Schließen</button>`;
   showModal(h);
 }
 
@@ -22343,8 +22700,8 @@ async function showReparaturDetail(id) {
     ${r.extBetrag?`<div style="display:flex;justify-content:space-between;font-size:13px;font-weight:600;padding:6px 0;border-top:2px solid var(--ink-10)"><span>Externe Rechnung</span><span>${fmtEur(r.extBetrag)}</span></div>`:''}
     ${r.rechnung?`<div class="card-hdr" style="margin-top:10px;margin-bottom:6px"><i class="ti ti-file-invoice"></i> Rechnung</div>
       ${istFotoRef(r.rechnung)
-        ? `<img src="${fotoThumbQuelle(r.rechnung)}" style="width:100%;border-radius:8px;cursor:pointer;margin-bottom:8px" onclick="openFoto('${r.rechnung.odId}','odref')" onerror="this.style.display='none'" alt="Beleg">`
-        : `<img src="${r.rechnung}" style="width:100%;border-radius:8px;cursor:pointer;margin-bottom:8px" onclick="openFoto('${escAttr(r.rechnung)}','Rechnung ${escAttr(r.titel)}')" onerror="this.style.display='none'" alt="Beleg">`}`:''}
+        ? `<img src="${fotoThumbQuelle(r.rechnung)}" style="width:100%;border-radius:8px;cursor:pointer;margin-bottom:8px" data-action-click="openFoto" data-arg="${r.rechnung.odId}" data-arg2="odref" onerror="this.style.display='none'" alt="Beleg">`
+        : `<img src="${r.rechnung}" style="width:100%;border-radius:8px;cursor:pointer;margin-bottom:8px" data-action-click="openFoto" data-arg="${escAttr(r.rechnung)}" data-arg2="Rechnung ${escAttr(r.titel)}" onerror="this.style.display='none'" alt="Beleg">`}`:''}
     <div style="display:flex;gap:7px;flex-wrap:wrap;margin-top:10px">
       <button class="btn ${done?'':'btn-success'}" onclick="toggleReparatur('${id}');closeModal()">
         <i class="ti ti-${done?'rotate-ccw':'check'}"></i> ${done?'Wieder öffnen':'Erledigen'}
@@ -22491,7 +22848,7 @@ async function modalAddEinkauf(refId, refTyp, prefillArtikel, opts) {
       <button class="btn btn-copper btn-full" onclick="saveEinkauf()">
         <i class="ti ti-check"></i> Speichern
       </button>
-      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
     </div>`);
 }
 
@@ -22544,7 +22901,7 @@ async function modalEditEinkauf(id) {
       <button class="btn btn-copper btn-full" onclick="updateEinkauf('${id}')">
         <i class="ti ti-check"></i> Speichern
       </button>
-      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
     </div>`);
 }
 
@@ -22770,7 +23127,7 @@ async function modalMieterhoehung(mieterId) {
       <button class="btn btn-copper btn-full" onclick="saveMieterhoehung('${mieterId}')">
         <i class="ti ti-check"></i> Speichern & Schreiben drucken
       </button>
-      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
     </div>`);
   window._mhMieter = m; window._mhObj = obj;
   mhUpdateCockpit(mieterId);
@@ -23517,7 +23874,7 @@ async function kalDayClick(dateStr) {
     <button class="btn btn-copper btn-full" style="margin-top:10px" onclick="closeModal();modalAddTermin('${dateStr}')">
       <i class="ti ti-plus"></i> Neuer Termin an diesem Tag
     </button>
-    <button class="btn btn-full" style="margin-top:6px" onclick="closeModal()">Schließen</button>`);
+    <button class="btn btn-full" style="margin-top:6px" data-action-click="closeModal">Schließen</button>`);
 }
 
 async function modalAddTermin(prefillDate) {
@@ -23578,7 +23935,7 @@ async function modalAddTermin(prefillDate) {
       <button class="btn btn-copper btn-full" onclick="saveTermin()">
         <i class="ti ti-check"></i> Speichern
       </button>
-      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
     </div>`);
 }
 
@@ -23698,7 +24055,7 @@ async function modalEditTermin(id) {
     <div class="f"><label for="tNotiz">Notiz</label><textarea spellcheck="true" lang="de" id="tNotiz" style="min-height:60px">${t.notiz||''}</textarea></div>
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="updateTermin('${id}')"><i class="ti ti-check"></i> Speichern</button>
-      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
     </div>`);
 }
 
@@ -23776,7 +24133,7 @@ async function modalAddAufgabe(mieterId,objektId){
     <div style="font-size:11px;color:var(--ink-40);margin-top:2px">Ohne Zuweisung sehen Hausmeister diese Aufgabe nicht.</div></div>`:''}
     <div class="f-row">
       <button class="btn btn-copper btn-full" onclick="saveAufgabe()"><i class="ti ti-check"></i> Speichern</button>
-      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
     </div>`);
 }
 
@@ -24123,7 +24480,7 @@ async function modalAddMieter(objektId) {
       <button class="btn btn-copper btn-full" onclick="saveNewMieter('${objektId}')">
         <i class="ti ti-check"></i> Speichern
       </button>
-      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
     </div>`);
 }
 
@@ -24294,7 +24651,7 @@ async function modalEditMieter(id) {
       <button class="btn btn-copper btn-full" onclick="saveEditMieter('${id}')">
         <i class="ti ti-check"></i> Speichern
       </button>
-      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
     </div>`);
   vzHistInit(m); vzHistRender();
   mfInit(m); mfRender();
@@ -24443,7 +24800,7 @@ async function deleteMieterConfirm(id) {
       <i class="ti ti-trash"></i> Mieterdatensatz endgültig löschen
     </button>
     <div style="font-size:11px;color:var(--ink-40);margin:6px 0 12px 2px">Nur den Mieter löschen. Aufgaben, Mängel und Wohnungs-Stammdaten bleiben erhalten. Vorher wird automatisch eine lokale Sicherung angelegt.</div>
-    <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>`);
+    <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>`);
 }
 
 // Mieter aus der Wohnung lösen, ohne Daten zu verlieren: wird zum Vormieter,
@@ -24514,7 +24871,7 @@ async function modalVormieterAnlegen(mieterId){
       <textarea id="vmAdresse" spellcheck="true" lang="de" style="min-height:44px"></textarea></div>
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="saveVormieterAnlegen('${mieterId}')"><i class="ti ti-check"></i> Speichern</button>
-      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
     </div>`);
 }
 
@@ -24588,7 +24945,7 @@ async function modalLeerstandWE(objektId, weNr, vormieterId){
       <i class="ti ti-printer"></i> Aushang „Wohnung frei" erstellen
     </button>`:''}
     <div id="leerstandODEl" style="margin-top:12px"></div>
-    <button class="btn btn-full" style="margin-top:8px" onclick="closeModal()">Schließen</button>`);
+    <button class="btn btn-full" style="margin-top:8px" data-action-click="closeModal">Schließen</button>`);
   // OneDrive-Dateien dieser Wohnung auch im Leerstand sichtbar machen
   await renderODArchivFuerWE(document.getElementById('leerstandODEl'), obj?.gruppe, weNr);
 }
@@ -24769,7 +25126,7 @@ async function modalAushangErstellen(objektId, weNr, vormieterId){
 
     <div class="f-row" style="margin-top:14px">
       <button class="btn btn-copper btn-full" onclick="aushangErzeugen('${objektId}','${esc(String(weNr))}')"><i class="ti ti-printer"></i> Aushang erzeugen</button>
-      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
     </div>`);
 }
 
@@ -25162,7 +25519,7 @@ async function mieterReaktivieren(vormieterId){
         <i class="ti ti-check"></i> Jetzt reaktivieren
       </button>
     `}
-    <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>`);
+    <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>`);
 }
 
 async function mieterReaktivierenAusfuehren(vormieterId, nachmieterId, modus){
@@ -25276,7 +25633,7 @@ async function modalNeueAdresse(mieterId) {
       <textarea spellcheck="true" lang="de" id="vmAdresse" style="min-height:80px" placeholder="Straße Hausnr.&#10;PLZ Ort">${m.neueAdresse||''}</textarea></div>
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="saveNeueAdresse('${mieterId}')"><i class="ti ti-check"></i> Speichern</button>
-      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
     </div>`);
 }
 
@@ -25524,7 +25881,7 @@ async function modalKaution(mieterId){
 
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="saveKaution('${mieterId}')"><i class="ti ti-check"></i> Speichern</button>
-      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
     </div>`);
 
   kautionArtChange();
@@ -26178,7 +26535,7 @@ async function newProtokoll(){
     </div>
     <div class="f-row">
       <button class="btn btn-copper btn-full" onclick="startProt()"><i class="ti ti-arrow-right"></i> Starten</button>
-      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
     </div>`);
   await loadMieterForProt(myObj[0].id);
 }
@@ -27207,7 +27564,7 @@ async function viewProtokoll(id){
       <button class="btn btn-sm btn-copper" onclick="printProt('${id}')"><i class="ti ti-printer"></i> PDF / Drucken</button>
       ${!String(p.art||'').includes('Einzug')?`<button class="btn btn-sm" onclick="einzugAusAbnahme('${id}')"><i class="ti ti-arrow-down-circle"></i> Einzugsprotokoll erzeugen</button>`:''}
       ${istAdmin?`<button class="btn btn-sm" onclick="adminEditProtokoll('${id}')"><i class="ti ti-edit"></i> Ändern (Admin)</button>`:''}
-      <button class="btn btn-sm" onclick="closeModal()">Schließen</button>
+      <button class="btn btn-sm" data-action-click="closeModal">Schließen</button>
     </div>`);
 }
 
@@ -27754,19 +28111,19 @@ function anlageRahmen(titel, untertitel, innerHtml, fussSeiten, bodyClass){
   .foot{margin-top:16px;text-align:center;font-size:8pt;color:#999;border-top:1px solid #ddd;padding-top:4px}
   .pb{page-break-before:always}
   /* Kompaktmodus (Merkblatt) – damit es ausgewogen auf zwei Seiten passt */
-  body.mb-kompakt{font-size:10pt;line-height:1.4}
-  body.mb-kompakt h2{margin:9px 0 3px;font-size:11pt}
-  body.mb-kompakt p{margin:0 0 5px}
-  body.mb-kompakt li{margin:0 0 3px}
-  body.mb-kompakt .box{padding:8px 12px;margin:6px 0}
-  body.mb-kompakt .box p{margin:0 0 4px}
-  body.mb-kompakt .ampel .row{padding:5px 9px;margin-bottom:4px}
-  body.mb-kompakt .ziele{margin:7px 0}
-  body.mb-kompakt .ziele .z{padding:7px 4px}
-  body.mb-kompakt .thermo{margin:7px 0}
-  body.mb-kompakt .thermo .c{width:34px;height:34px;font-size:12pt}
-  body.mb-kompakt .sig{margin-top:16px}
-  body.mb-kompakt .sigrow{margin-top:22px}
+  body.mb-kompakt{font-size:9.6pt;line-height:1.32}
+  body.mb-kompakt h2{margin:7px 0 2px;font-size:10.5pt}
+  body.mb-kompakt p{margin:0 0 4px}
+  body.mb-kompakt li{margin:0 0 2px}
+  body.mb-kompakt .box{padding:6px 10px;margin:5px 0}
+  body.mb-kompakt .box p{margin:0 0 3px}
+  body.mb-kompakt .ampel .row{padding:4px 8px;margin-bottom:3px}
+  body.mb-kompakt .ziele{margin:5px 0}
+  body.mb-kompakt .ziele .z{padding:5px 4px}
+  body.mb-kompakt .thermo{margin:5px 0}
+  body.mb-kompakt .thermo .c{width:30px;height:30px;font-size:11pt}
+  body.mb-kompakt .sig{margin-top:8px}
+  body.mb-kompakt .sigrow{margin-top:14px}
   /* Hausordnung kompakt – auf 2 Seiten, ohne Textverlust */
   body.ho-kompakt{font-size:9.5pt;line-height:1.34}
   body.ho-kompakt h1{font-size:15pt}
@@ -28321,13 +28678,13 @@ async function renderSettings(){
   const istSysAdmin=istSystemAdmin();  // Nur echter Admin: System, Benutzer, Objekt-Anlage
   el.innerHTML=`
     <div class="settings-tabs">
-      <button class="st-tab active" data-tab="allgemein" onclick="switchSettingsTab('allgemein')"><i class="ti ti-adjustments"></i><span>Allgemein</span></button>
-      ${isAdmin?`<button class="st-tab" data-tab="objekte" onclick="switchSettingsTab('objekte')"><i class="ti ti-building"></i><span>Objekte</span></button>`:''}
-      ${isAdmin?`<button class="st-tab" data-tab="daten" onclick="switchSettingsTab('daten')"><i class="ti ti-database"></i><span>Daten</span></button>`:''}
-      ${isAdmin?`<button class="st-tab" data-tab="druck" onclick="switchSettingsTab('druck')"><i class="ti ti-printer"></i><span>Druckcenter</span></button>`:''}
-      ${istSysAdmin?`<button class="st-tab" data-tab="system" onclick="switchSettingsTab('system')"><i class="ti ti-settings"></i><span>System</span></button>`:''}
-      ${isAdmin?`<button class="st-tab" data-tab="zahlung" onclick="switchSettingsTab('zahlung')"><i class="ti ti-cash-banknote"></i><span>Fibu</span></button>`:''}
-      ${CU?.id==='u_admin'?`<button class="st-tab" data-tab="kontrolle" onclick="switchSettingsTab('kontrolle')"><i class="ti ti-shield-lock"></i><span>Kontrolle</span></button>`:''}
+      <button class="st-tab active" data-tab="allgemein" data-action-click="switchSettingsTab" data-arg="allgemein"><i class="ti ti-adjustments"></i><span>Allgemein</span></button>
+      ${isAdmin?`<button class="st-tab" data-tab="objekte" data-action-click="switchSettingsTab" data-arg="objekte"><i class="ti ti-building"></i><span>Objekte</span></button>`:''}
+      ${isAdmin?`<button class="st-tab" data-tab="daten" data-action-click="switchSettingsTab" data-arg="daten"><i class="ti ti-database"></i><span>Daten</span></button>`:''}
+      ${isAdmin?`<button class="st-tab" data-tab="druck" data-action-click="switchSettingsTab" data-arg="druck"><i class="ti ti-printer"></i><span>Druckcenter</span></button>`:''}
+      ${istSysAdmin?`<button class="st-tab" data-tab="system" data-action-click="switchSettingsTab" data-arg="system"><i class="ti ti-settings"></i><span>System</span></button>`:''}
+      ${isAdmin?`<button class="st-tab" data-tab="zahlung" data-action-click="switchSettingsTab" data-arg="zahlung"><i class="ti ti-cash-banknote"></i><span>Fibu</span></button>`:''}
+      ${CU?.id==='u_admin'?`<button class="st-tab" data-tab="kontrolle" data-action-click="switchSettingsTab" data-arg="kontrolle"><i class="ti ti-shield-lock"></i><span>Kontrolle</span></button>`:''}
     </div>
 
     <div class="settings-card" data-tab="allgemein">
@@ -28368,7 +28725,7 @@ async function renderSettings(){
       <p style="font-size:13px;color:var(--ink-40);margin-bottom:12px;line-height:1.6">
         Wiederkehrende Fristen wie Heizungswartung, Rauchmelder-Prüfung oder Legionellenuntersuchung verwalten. Fällige Termine erscheinen automatisch im Dashboard.
       </p>
-      <button class="btn btn-primary btn-full" onclick="nav('wartung')"><i class="ti ti-calendar-stats"></i> Wartungsfristen öffnen</button>
+      <button class="btn btn-primary btn-full" data-action-click="nav" data-arg="wartung"><i class="ti ti-calendar-stats"></i> Wartungsfristen öffnen</button>
     </div>
 
     ${isAdmin?`<div class="settings-card" data-tab="objekte">
@@ -28822,7 +29179,7 @@ async function modalSignaturLinie(){
         oninput="sigLinieUpdate(this.value)">
     </div>
     <div style="display:flex;gap:8px;margin-top:16px">
-      <button class="btn" style="flex:1" onclick="closeModal()">Abbrechen</button>
+      <button class="btn" style="flex:1" data-action-click="closeModal">Abbrechen</button>
       <button class="btn btn-copper" style="flex:1" onclick="sigLinieSpeichern()"><i class="ti ti-check"></i> Speichern</button>
     </div>
   `);
@@ -28984,7 +29341,7 @@ function modalSignaturZeichnen(){
     <div style="display:flex;gap:8px;margin-top:10px">
       <button class="btn btn-danger btn-sm" onclick="clearDrawSig()"><i class="ti ti-trash"></i> Löschen</button>
       <button class="btn btn-copper" style="flex:1" onclick="saveDrawSig()"><i class="ti ti-check"></i> Übernehmen</button>
-      <button class="btn" onclick="closeModal()">Abbrechen</button>
+      <button class="btn" data-action-click="closeModal">Abbrechen</button>
     </div>`);
   setTimeout(()=>initDrawSig(),60);
 }
@@ -29085,7 +29442,7 @@ async function modalAddUser(){
     <p style="font-size:11px;color:var(--ink-40);margin-bottom:12px">Für Teilzeit anpassen (z. B. 20). Mo–So frei einteilbar.</p>
     <div class="f-row">
       <button class="btn btn-copper btn-full" onclick="saveNewUser()"><i class="ti ti-check"></i> Speichern</button>
-      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
     </div>`);
 }
 
@@ -29138,7 +29495,7 @@ async function modalEditUser(id){
       <input type="number" id="euUrlaub" value="${u.urlaubProJahr!=null?u.urlaubProJahr:30}" min="0" max="40" step="1" inputmode="numeric"></div>
     <div class="f-row">
       <button class="btn btn-copper btn-full" onclick="saveEditUser('${id}')"><i class="ti ti-check"></i> Speichern</button>
-      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
     </div>`);
 }
 
@@ -29282,7 +29639,7 @@ async function syncKonfliktLoesen(logId){
     <button class="btn btn-full" style="margin-bottom:8px" onclick="syncKonfliktUebernehmen('${logId}','cloud')">
       <i class="ti ti-cloud"></i> Cloud-Stand übernehmen <span style="opacity:.7;font-size:11px">(gewinnt überall)</span>
     </button>
-    <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>`);
+    <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>`);
 }
 
 async function syncKonfliktUebernehmen(logId, wahl){
@@ -31106,7 +31463,7 @@ async function odBrowserOeffnen(gruppe, knoten, kategorie, gebaeude){
       <div style="margin:10px 0">${items}</div>
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px">
         <button class="btn btn-copper btn-sm" onclick="syncDateibaum(false)"><i class="ti ti-refresh"></i> Synchronisieren</button>
-        <button class="btn btn-sm" onclick="closeModal()">Schließen</button>
+        <button class="btn btn-sm" data-action-click="closeModal">Schließen</button>
       </div>`);
     return;
   }
@@ -31132,7 +31489,7 @@ async function odBrowserOeffnen(gruppe, knoten, kategorie, gebaeude){
       <div style="margin:10px 0;max-height:50vh;overflow:auto">${items}${altBtn}</div>
       <div style="display:flex;gap:8px;justify-content:space-between;margin-top:8px">
         <button class="btn btn-sm" onclick="odBrowserOeffnen()"><i class="ti ti-arrow-left"></i> Zurück</button>
-        <button class="btn btn-sm" onclick="closeModal()">Schließen</button>
+        <button class="btn btn-sm" data-action-click="closeModal">Schließen</button>
       </div>`);
     return;
   }
@@ -31153,7 +31510,7 @@ async function odBrowserOeffnen(gruppe, knoten, kategorie, gebaeude){
       <div style="margin:10px 0;max-height:50vh;overflow:auto">${items}</div>
       <div style="display:flex;gap:8px;justify-content:space-between;margin-top:8px">
         <button class="btn btn-sm" onclick="odBrowserOeffnen('${gruppe}')"><i class="ti ti-arrow-left"></i> Zurück</button>
-        <button class="btn btn-sm" onclick="closeModal()">Schließen</button>
+        <button class="btn btn-sm" data-action-click="closeModal">Schließen</button>
       </div>`);
     return;
   }
@@ -31187,7 +31544,7 @@ async function odBrowserOeffnen(gruppe, knoten, kategorie, gebaeude){
       <div style="margin:10px 0;max-height:50vh;overflow:auto">${items}${wurzelBtn}</div>
       <div style="display:flex;gap:8px;justify-content:space-between;margin-top:8px">
         <button class="btn btn-sm" onclick="odBrowserOeffnen('${gruppe}','','','${esc(gebaeude)}')"><i class="ti ti-arrow-left"></i> Zurück</button>
-        <button class="btn btn-sm" onclick="closeModal()">Schließen</button>
+        <button class="btn btn-sm" data-action-click="closeModal">Schließen</button>
       </div>`);
     return;
   }
@@ -31374,7 +31731,7 @@ function showSyncInfo(){
       <button class="btn btn-primary btn-full" onclick="msalLogin();closeModal()">
         <i class="ti ti-brand-windows"></i> Mit Microsoft anmelden
       </button>`}
-    <button class="btn btn-full" style="margin-top:8px" onclick="closeModal()">Schließen</button>`);
+    <button class="btn btn-full" style="margin-top:8px" data-action-click="closeModal">Schließen</button>`);
 };
 
 
@@ -31539,7 +31896,7 @@ async function modalBranchenbuch(id){
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="saveBranchenbuch('${id||''}')"><i class="ti ti-check"></i> Speichern</button>
       ${id?`<button class="btn btn-danger" onclick="deleteBranchenbuch('${id}')"><i class="ti ti-trash"></i></button>`:''}
-      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
     </div>`);
 }
 
@@ -31660,7 +32017,7 @@ async function modalBuchJournal(){
       Änderungen und Löschungen an Buchungen (GoBD-Grundsatz der Nachvollziehbarkeit). Einträge können nicht
       bearbeitet oder gelöscht werden. ${eintraege.length>max?`Angezeigt: die letzten ${max} von ${eintraege.length}.`:`${eintraege.length} Einträge.`}</div>
     <div style="max-height:56vh;overflow:auto">${rows||'<p style="color:var(--ink-40);font-size:13px">Noch keine Journaleinträge – sie entstehen ab jetzt bei jeder manuellen Buchungsänderung.</p>'}</div>
-    <button class="btn btn-full" style="margin-top:10px" onclick="closeModal()">Schließen</button>`);
+    <button class="btn btn-full" style="margin-top:10px" data-action-click="closeModal">Schließen</button>`);
 }
 function esc(v){
   if(v===null||v===undefined) return '';
@@ -32167,7 +32524,7 @@ async function modalEingangZuordnen(id){
     <div class="f-row" style="margin-top:12px">
       ${zugeordnet?`<button class="btn btn-danger" onclick="eingangZuordnungLoesen('${b.id}')"><i class="ti ti-x"></i> Zuordnung aufheben</button>`:''}
       <button class="btn btn-copper btn-full" onclick="eingangZuordnenSpeichern('${b.id}')"><i class="ti ti-check"></i> Speichern</button>
-      <button class="btn" onclick="closeModal()">Abbrechen</button>
+      <button class="btn" data-action-click="closeModal">Abbrechen</button>
     </div>`);
 }
 async function eingangZuordnenSpeichern(id){
@@ -32675,7 +33032,7 @@ async function nfModal(mieterId){
     ${liste.length?`<table style="width:100%;border-collapse:collapse"><tbody>${zeilen}</tbody></table>
       <div style="margin-top:10px;text-align:right;font-size:13px">Offen: <strong>${eur(nfOffenSumme(m))} &euro;</strong></div>`
       :'<p style="color:var(--ink-40);font-size:13px">Keine Nebenforderungen erfasst.</p>'}
-    <button class="btn btn-full" style="margin-top:12px" onclick="closeModal()">Schlie&szlig;en</button>`);
+    <button class="btn btn-full" style="margin-top:12px" data-action-click="closeModal">Schlie&szlig;en</button>`);
 }
 function zaMatch(buchungen, mieterListe, konto, spIdx){
   const objSet=konto?new Set(konto.objekte):null;
@@ -33177,7 +33534,7 @@ async function zaModalDuplikate(){
     showModal('<div class="m-title"><i class="ti ti-copy"></i> Doppelte Buchungen</div>'
       +'<p style="font-size:13px;color:var(--ink-60);margin:8px 0 14px">F\u00fcr '+esc(konto.label||'')
       +' wurden keine doppelten Buchungen gefunden (gleiches Datum, gleicher Betrag, gleiche Richtung und gleicher Zahlungspartner).</p>'
-      +'<button class="btn btn-full" onclick="closeModal()">Schlie\u00dfen</button>');
+      +'<button class="btn btn-full" data-action-click="closeModal">Schlie\u00dfen</button>');
     return;
   }
   const gesDub=dubs.reduce((a,g)=>a+(g.length-1),0);
@@ -33212,7 +33569,7 @@ async function zaModalDuplikate(){
   html+='<div style="font-size:11px;color:var(--ink-40);margin:4px 0 12px"><i class="ti ti-info-circle"></i> '
     +'Jede L\u00f6schung wird im GoBD-Journal protokolliert und geger\u00e4te\u00fcbergreifend synchronisiert. '
     +'Zwei echte, gleich hohe Zahlungen am selben Tag k\u00f6nnen hier ebenfalls erscheinen \u2013 bitte vor dem L\u00f6schen den Verwendungszweck pr\u00fcfen.</div>'
-    +'<button class="btn btn-full" onclick="closeModal()">Schlie\u00dfen</button>';
+    +'<button class="btn btn-full" data-action-click="closeModal">Schlie\u00dfen</button>';
   showModal(html);
 }
 
@@ -33238,7 +33595,7 @@ async function modalBarzahlung(){
     <div class="f"><label for="bzNotiz">Notiz (optional)</label><input type="text" id="bzNotiz" class="inp" placeholder="z. B. Miete Mai bar erhalten"></div>
     <div style="font-size:11px;color:var(--ink-40);margin:6px 0 12px"><i class="ti ti-info-circle"></i> Barzahlungen sind steuerpflichtige Einnahmen und werden in der Buchführung sowie im Excel-Export als „bar" ausgewiesen.</div>
     <div style="display:flex;gap:8px;justify-content:flex-end">
-      <button class="btn" onclick="closeModal()">Abbrechen</button>
+      <button class="btn" data-action-click="closeModal">Abbrechen</button>
       <button class="btn btn-primary" onclick="barzahlungSpeichern()">Speichern</button>
     </div>`);
 }
@@ -33400,7 +33757,7 @@ async function modalImportVerlauf(){
     <p style="font-size:12px;color:var(--ink-40);margin:0 0 12px">${esc(konto.label||'')}</p>
     ${rows}
     <div style="font-size:11px;color:var(--ink-40);margin:12px 0"><i class="ti ti-info-circle"></i> „Rückgängig“ entfernt alle mit diesem Import angelegten Buchungen – auch bereits kategorisierte. Der Import bleibt zur Nachvollziehbarkeit als „storniert“ protokolliert.</div>
-    <div style="display:flex;justify-content:flex-end"><button class="btn" onclick="closeModal()">Schließen</button></div>`);
+    <div style="display:flex;justify-content:flex-end"><button class="btn" data-action-click="closeModal">Schließen</button></div>`);
 }
 async function zaBatchRueckgaengig(batchId){
   const batch=await idbGet('buchungs_batches',batchId).catch(()=>null);
@@ -33510,7 +33867,7 @@ async function modalRegeln(){
     <h3 style="margin:0 0 4px"><i class="ti ti-bulb"></i> Gelernte Kategorie-Regeln${regeln.length?` (${regeln.length})`:''}</h3>
     <p style="font-size:12px;color:var(--ink-40);margin:0 0 12px">Diese Zuordnungen schlägt die App bei künftigen Buchungen automatisch vor – angewendet wird nur nach Ihrer Bestätigung.</p>
     ${rows}
-    <div style="display:flex;justify-content:flex-end;margin-top:12px"><button class="btn" onclick="closeModal()">Schließen</button></div>`);
+    <div style="display:flex;justify-content:flex-end;margin-top:12px"><button class="btn" data-action-click="closeModal">Schließen</button></div>`);
 }
 async function buchRegelLoeschen(i){
   const r=(window._regelListe||[])[i]; if(!r||!r.id) return;
@@ -34045,7 +34402,7 @@ async function modalLeistungszeitraum(id){
     ${rec.leistungQuelle&&rec.leistungQuelle!=='manuell'?`<div style="font-size:10px;color:var(--ink-40);margin-top:4px">Automatisch erkannt (Quelle: ${esc(rec.leistungQuelle)}) – Änderung wird als manuell gespeichert.</div>`:''}
     <button class="btn btn-copper btn-full" style="margin-top:10px" onclick="(async()=>{ if(await buchLeistungSetzen('${id}', document.getElementById('lzVon').value, document.getElementById('lzBis').value)){ closeModal(); await zaRenderVerlauf(); toast('Leistungszeitraum gespeichert ✓'); } })()"><i class="ti ti-check"></i> Speichern</button>
     ${rec.leistungVonISO?`<button class="btn btn-full" style="margin-top:8px" onclick="(async()=>{ if(await buchLeistungSetzen('${id}','','')){ closeModal(); await zaRenderVerlauf(); toast('Leistungszeitraum entfernt'); } })()"><i class="ti ti-eraser"></i> Entfernen (Zahlungsdatum verwenden)</button>`:''}
-    <button class="btn btn-full" style="margin-top:8px" onclick="closeModal()">Abbrechen</button>`);
+    <button class="btn btn-full" style="margin-top:8px" data-action-click="closeModal">Abbrechen</button>`);
 }
 
 /* ── v227 (F1 Schritt 2b): Kostenstelle (Gebäude/Gruppe) je Ausgabe zuordnen ── */
@@ -35236,7 +35593,7 @@ async function modalOffenePosten(reiter){
       <div style="margin-top:10px;font-size:13px;text-align:right">Summe R\u00fcckst\u00e4nde: <strong>${eur(gesamt)} \u20ac</strong></div>`
       : (datenAb ? `<p style="color:var(--green);font-size:14px"><i class="ti ti-circle-check"></i> Keine R\u00fcckst\u00e4nde \u2013 alle Mietkonten sind ausgeglichen.</p>` : `<p style="font-size:13px;color:var(--ink-60)"><i class="ti ti-info-circle"></i> Noch keine Zahlungseing\u00e4nge erfasst \u2013 eine R\u00fcckstandsberechnung ist erst nach Erfassung der Mietzahlungen m\u00f6glich.</p>`)}
     <div style="font-size:10px;color:var(--ink-40);margin-top:12px">Hinweis: Verzug tritt bei der Miete kalenderm\u00e4\u00dfig ohne Mahnung ein (\u00a7\u00a7 556b Abs. 1, 286 Abs. 2 Nr. 1 BGB). Bei k\u00fcndigungsrelevanten R\u00fcckst\u00e4nden anwaltliche Pr\u00fcfung empfohlen.</div>
-    <button class="btn btn-full" style="margin-top:12px" onclick="closeModal()">Schlie\u00dfen</button>`);
+    <button class="btn btn-full" style="margin-top:12px" data-action-click="closeModal">Schlie\u00dfen</button>`);
 }
 
 async function modalMahnung(mieterId){
@@ -35432,7 +35789,7 @@ async function modalAnlageV(){
       nachrichtliche Posten) als Excel – inkl. Einzelnachweis und Mieteinnahmen je Objekt.
       <strong>Keine Steuerberatung:</strong> AfA und §-82b-Verteilung sind mit dem Steuerberater zu ergänzen.</div>
     <button class="btn btn-copper btn-full" onclick="anlageVExport()"><i class="ti ti-file-spreadsheet"></i> Excel erzeugen</button>
-    <button class="btn btn-full" style="margin-top:8px" onclick="closeModal()">Abbrechen</button>`);
+    <button class="btn btn-full" style="margin-top:8px" data-action-click="closeModal">Abbrechen</button>`);
 }
 
 /* v291: Merkt sich, welche Gebaeude hinter einer Gruppen-Kostenstelle stehen.
@@ -36467,7 +36824,7 @@ async function modalAsAufstellung(einheitId){
     <p style="font-size:11px;color:var(--ink-40)">Rechnungen, die nur teilweise in den Zeitraum fallen, werden anteilig übernommen – bevorzugt anhand der Abschnitte auf der Rechnung, sonst tagesanteilig. Jede Zeile ist im Ausdruck nachvollziehbar.</p>
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="asAufstellungDrucken()"><i class="ti ti-printer"></i> Aufstellung erzeugen</button>
-      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
     </div>`);
 }
 
@@ -36873,7 +37230,7 @@ async function modalRechnungErfassen(rechnung){
 
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="rechnungSpeichern('${r.id||''}')"><i class="ti ti-check"></i> Speichern</button>
-      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
     </div>`);
 
   rechnZuordnungWechsel();
@@ -37573,7 +37930,7 @@ async function modalRechnungDetail(id){
     <button class="btn btn-full" style="margin-bottom:6px" onclick="rechnBezahltUmschalten('${r.id}')"><i class="ti ti-cash"></i> Als ${r.bezahlt?'offen':'bezahlt'} markieren</button>
     <button class="btn btn-full" style="margin-bottom:6px" onclick="closeModal();modalRechnungBearbeiten('${r.id}')"><i class="ti ti-pencil"></i> Bearbeiten</button>
     <button class="btn btn-full btn-danger" style="margin-bottom:6px" onclick="rechnungLoeschen('${r.id}')"><i class="ti ti-trash"></i> Löschen</button>
-    <button class="btn btn-full" onclick="closeModal()">Schließen</button>`);
+    <button class="btn btn-full" data-action-click="closeModal">Schließen</button>`);
 }
 
 // Rechnung per ID laden und Bearbeiten-Modal öffnen (vermeidet HTML-Attribut-Escaping)
@@ -37706,7 +38063,7 @@ async function modalPacklistenTermine(){
   showModal(`
     <div class="m-title"><i class="ti ti-backpack"></i> Packlisten anstehender Termine</div>
     <div style="max-height:60vh;overflow:auto">${body}</div>
-    <button class="btn btn-full" style="margin-top:12px" onclick="closeModal()">Schließen</button>`);
+    <button class="btn btn-full" style="margin-top:12px" data-action-click="closeModal">Schließen</button>`);
 }
 
 async function modalPackliste(terminId){
@@ -37736,7 +38093,7 @@ async function modalPackliste(terminId){
     </div>
 
     <div id="packListe" style="max-height:50vh;overflow-y:auto">${liste}</div>
-    <button class="btn btn-full" style="margin-top:10px" onclick="closeModal()">Schließen</button>
+    <button class="btn btn-full" style="margin-top:10px" data-action-click="closeModal">Schließen</button>
   `);
 }
 
@@ -38144,14 +38501,14 @@ async function showMangelDetail(id, store='maengel') {
     <div class="card-hdr" style="margin-bottom:8px"><i class="ti ti-photo"></i> Fotos (${m.fotos.length})</div>
     <div class="foto-gallery">
       ${m.fotos.map((f,i)=> istFotoRef(f)
-        ? `<div class="foto-item" onclick="openFoto('${f.odId}','odref')"><img src="${fotoThumbQuelle(f)}" loading="lazy" alt="Foto"></div>`
-        : `<div class="foto-item" onclick="openFoto('${escAttr(f)}','Foto ${i+1} – ${escAttr(m.titel)}')"><img src="${escAttr(f)}" loading="lazy" alt="Foto"></div>`).join('')}   // v243 (R27)
+        ? `<div class="foto-item" data-action-click="openFoto" data-arg="${f.odId}" data-arg2="odref"><img src="${fotoThumbQuelle(f)}" loading="lazy" alt="Foto"></div>`
+        : `<div class="foto-item" data-action-click="openFoto" data-arg="${escAttr(f)}" data-arg2="Foto ${i+1} – ${escAttr(m.titel)}"><img src="${escAttr(f)}" loading="lazy" alt="Foto"></div>`).join('')}   // v243 (R27)
     </div>` : ''}
 
     ${m.erledigtFoto ? `
     <div class="card-hdr" style="margin-bottom:8px"><i class="ti ti-circle-check" style="color:var(--green,#2E7D52)"></i> Erledigt-Nachweis${m.erledigtAm?' · '+fmtDate(m.erledigtAm):''}${m.erledigtVon?' · '+esc(m.erledigtVon):''}</div>
     <div class="foto-gallery" style="margin-bottom:12px">
-      <div class="foto-item" onclick="openFoto('${m.erledigtFoto}','Erledigt-Nachweis – ${esc(m.titel)}')"><img src="${m.erledigtFoto}" loading="lazy" alt="Foto"></div>
+      <div class="foto-item" data-action-click="openFoto" data-arg="${m.erledigtFoto}" data-arg2="Erledigt-Nachweis – ${esc(m.titel)}"><img src="${m.erledigtFoto}" loading="lazy" alt="Foto"></div>
     </div>` : ''}
 
     ${materialHTML}
@@ -38250,7 +38607,7 @@ async function editMangel(id, store) {
     </div>
     <div class="f-row">
       <button class="btn btn-copper btn-full" onclick="saveEditMangel('${id}','${store}')"><i class="ti ti-check"></i> Speichern</button>
-      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
     </div>`);
   window._emFotos = (m.fotos||[]).slice();
   renderEmFotoGrid();
@@ -38378,7 +38735,7 @@ async function editAufgabe(id) {
     <div class="f"><label for="ea_beschr">Beschreibung</label><textarea spellcheck="true" lang="de" id="ea_beschr">${a.beschreibung||''}</textarea></div>
     <div class="f-row">
       <button class="btn btn-copper btn-full" onclick="saveEditAufgabe('${id}')"><i class="ti ti-check"></i> Speichern</button>
-      <button class="btn btn-full" onclick="closeModal()">Abbrechen</button>
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
     </div>`);
 }
 
@@ -38861,12 +39218,12 @@ async function modalBackfill(){
     </p>
     <div id="bfStatus" style="font-size:12px;color:var(--ink-60);margin-bottom:10px"></div>
     <div class="m-actions">
-      <button class="btn" onclick="closeModal()">Schließen</button>
+      <button class="btn" data-action-click="closeModal">Schließen</button>
       <button class="btn" onclick="backfillAbbrechen()"><i class="ti ti-player-stop"></i> Abbrechen</button>
       <button class="btn btn-copper" id="bfStartBtn" onclick="this.disabled=true;backfillLauf()"><i class="ti ti-cloud-upload"></i> Jetzt auslagern</button>
     </div>`
     : `<p style="font-size:13px;color:var(--ink-60);line-height:1.55">Es liegen keine auslagerbaren Alt-Bilder mehr vor – der Bestand ist bereits vollständig nach OneDrive ausgelagert.</p>
-       <div class="m-actions"><button class="btn btn-copper" onclick="closeModal()">Schließen</button></div>`}`);
+       <div class="m-actions"><button class="btn btn-copper" data-action-click="closeModal">Schließen</button></div>`}`);
 }
 
 /* dual-format <img>-Tag: Alt-dataURL ODER ausgelagerte Referenz. Vorschau nutzt
