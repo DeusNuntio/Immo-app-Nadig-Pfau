@@ -1230,7 +1230,72 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=35;   // v242: +buch_journal (F4 GoBD)
-const APP_VERSION = '2026-08-02-v298';
+const APP_VERSION = '2026-08-02-v299';
+/* v299 (02.08.2026): MIETERPORTAL PRODUKTIV - Login, Schadensmeldung, Verzeichnis.
+   Bis v298 war das Portal auf der Website ein Demo: die Wohnungsliste stand als
+   Konstante WOHNUNGEN im oeffentlich ausgelieferten Quelltext, und der
+   Zugangscode wurde dem Browser im Klartext zurueckgegeben ("Demo-Code:
+   000000"). Da die Kennungen am Sicherungskasten kleben, haette sich damit
+   jeder Hausbesucher als beliebiger Mieter anmelden koennen.
+
+   1) TOTER PUSH-PFAD ENTDECKT UND REPARIERT. wohnungenExportPush() zeigte seit
+      seiner Einfuehrung auf BACKEND_BASIS + '/api/admin/wohnungen-import', also
+      auf die Domain api.nadigpfau.de und eine Route, die beide nie existiert
+      haben. Der Knopf meldete im Fehlerfall nur "Backend nicht erreichbar" und
+      sah dadurch aus wie ein Netzproblem. BACKEND_BASIS ist entfernt; alle
+      Backendaufrufe der App gehen jetzt an genau eine Basis-URL (BACKEND_AZURE).
+
+   2) sammleWohnungen() liefert das Format von portal-sync.js. Uebertragen
+      werden nur Kennung, Name, E-Mail, Objektbezeichnung, Adresse und Lage.
+      Flaeche, Zimmerzahl und Telefonnummer sind bewusst herausgefallen - sie
+      dienten nur dem Demo-Dashboard und sind fuer Login und Schadensmeldung
+      entbehrlich (Art. 5 Abs. 1 lit. c DSGVO). Miete, Kaution, Vertraege,
+      Bankdaten und Dokumente verlassen die App weiterhin nicht.
+
+   3) NEU portalWohnungEntfernen(kennung). Der Push ist ein Upsert und loescht
+      nichts. Bei Auszug muss die Wohnung aktiv entfernt werden; das Backend
+      raeumt dabei offene Sitzungen und Codes derselben Kennung mit weg - sonst
+      koennte sich ein ausgezogener Mieter mit laufender Sitzung weiter anmelden.
+
+   4) NEU portalEncKey (PORTAL_ENC_KEY). EIGENER Schluessel, NICHT SA_ENC_KEY:
+      Selbstauskuenfte (Bewerber) und Mieterstammdaten sind verschiedene
+      Verarbeitungszwecke, ein kompromittierter Schluessel soll nicht beide
+      Bestaende oeffnen. Aufgenommen in SETTINGS_GEHEIM, damit er weder in den
+      OneDrive-Sync noch in den Backup-Export geraet (R23-Regel).
+      portalEntschluessle() ist bewusst eine eigene Funktion und kein Parameter
+      an saEntschluessle - ein versehentlich vertauschter Schluessel soll nicht
+      durch eine Vorgabewert-Zuweisung entstehen koennen.
+
+   5) NEU oeffnePortalMeldungen() / portalMeldungenLaden(). Zeigt die Meldungen
+      aus /api/portal-meldung/inbox mit Kategorie, Dringlichkeit, Kennung, Text,
+      Rueckrufnummer, Zutrittshinweis und Fotos. Schlaegt die Entschluesselung
+      fehl (falscher Schluessel), wird die Meldung TROTZDEM angezeigt: Kennung,
+      Kategorie und Dringlichkeit stehen im Klartext, der Verwalter kann also
+      reagieren, statt vor einer leeren Liste zu stehen.
+      Fotolinks sind SAS-URLs mit 15 Minuten Gueltigkeit und werden bewusst
+      nicht zwischengespeichert - ein abgelaufener Link wird durch erneutes
+      Laden der Liste neu erzeugt.
+
+   6) portalMeldungStatus() prueft den HTTP-Status (v272/P8-A-Lehre: fetch wirft
+      nur bei Netzwerkfehlern, ein HTTP 500 kam frueher als Erfolg zurueck).
+
+   7) portalMeldungAlsMangel() uebernimmt eine Meldung in die interne
+      Mangelverwaltung ueber die BESTEHENDE Maske modalAddMangel - so gelten
+      Pflichtfelder, Nummernkreis und Sync unveraendert. Achtung beim Aendern:
+      die Signatur ist modalAddMangel(mieterId, objektId, type) und nimmt KEIN
+      Vorbefuellungs-Objekt entgegen; Titel und Beschreibung werden nach dem
+      Rendern in die Felder geschrieben. Der Mieterbezug bleibt bewusst leer -
+      ein automatisch gesetzter falscher Mieter waere schlimmer als ein leeres
+      Feld. mgSchwere kennt nur gering|mittel|schwerwiegend; ein nicht
+      existierender Wert wuerde das select still auf "Gering" zuruecksetzen,
+      aus einem Notfall wuerde damit eine Bagatelle.
+
+   Backend (neu, siehe KONZEPT_Mieterportal.md): portal-lib.js, portal-sync.js,
+   portal-code.js, portal-login.js, portal-meldung.js sowie interest.js und
+   inbox.js (Kontaktformular/Vormerkung - die Route /api/interest fehlte bisher
+   komplett, obwohl die Website sie seit Langem aufrief).
+   Neue App Setting erforderlich: PORTAL_ENC_KEY (32 Byte base64).
+   Keine Store-/DB-Aenderung; DB_VER bleibt 35. */
 /* v298 (02.08.2026): Vorschaubilder in den Protokollen fehlten (Nutzerbefund
    mit Screenshot: kaputtes Bildsymbol samt Alternativtext, der Klick oeffnete
    das Foto aber korrekt).
@@ -2652,6 +2717,10 @@ document.addEventListener('DOMContentLoaded', () => {
     'rechnungOcrErkennen',
     'renderLager',
     'requestNotificationPermission',
+    'oeffnePortalMeldungen',
+    'portalEncKeyLoeschen',
+    'portalEncKeySpeichern',
+    'portalEncKeyToggle',
     'saEncKeyLoeschen',
     'saEncKeySpeichern',
     'saEncKeyToggle',
@@ -7267,7 +7336,12 @@ async function modalWohnungsQrZipExport(){
    Sammelt belegte Wohneinheiten objektübergreifend und liefert sie
    im Format der Table "wohnungen". Nur portalrelevante Felder.
 ═══════════════════════════════════════════════════════════ */
-const BACKEND_BASIS = 'https://api.nadigpfau.de';
+/* v299: BACKEND_BASIS ('https://api.nadigpfau.de') ENTFERNT. Die Domain
+   existiert nicht; der einzige Aufrufer wohnungenExportPush() zeigte auf die
+   nie gebaute Route /api/admin/wohnungen-import und konnte folglich nie
+   funktionieren - der Fehlerpfad meldete lediglich "Backend nicht erreichbar".
+   Der Push laeuft jetzt ueber BACKEND_AZURE + /api/portal-sync (portal-sync.js).
+   Alle Backendaufrufe der App gehen damit an genau eine Basis-URL. */
 // Für Selbstauskunft/Posteingang wird die direkte Azure-URL verwendet (Website nutzt dieselbe).
 const BACKEND_AZURE = 'https://func-nadigpfau-g7fghseafmftemeq.westeurope-01.azurewebsites.net';
 
@@ -7282,28 +7356,29 @@ async function sammleWohnungen(){
     const key=objektId+'-WE'+we;
     if(!proSchluessel[key]) proSchluessel[key]={m,objektId,we,key};
   });
+  /* v299: Feldnamen an portal-sync.js angeglichen. Bis v298 lieferte diese
+     Funktion ein Table-Storage-Rohformat (partitionKey/rowKey/kontakt*) fuer
+     eine Route, die es nie gab. Uebertragen wird bewusst NUR, was Codeversand
+     und Portalanzeige brauchen - keine Flaeche, keine Zimmerzahl, keine
+     Telefonnummer, keine Betraege (Art. 5 Abs. 1 lit. c DSGVO). Flaeche/Zimmer
+     sind aus dem Portal-Datensatz herausgefallen: sie standen bisher nur im
+     Demo-Dashboard und sind fuer Login und Schadensmeldung entbehrlich. */
   return Object.values(proSchluessel).map(({m,objektId,we,key})=>{
     const obj=getObj(objektId)||{};
-    const adresse=[obj.name, 'WE '+we, obj.ort].filter(Boolean).join(', ');
     return {
-      partitionKey: objektId,
-      rowKey: key,
-      weNr: we,
-      adresse,
-      flaeche: m.flaeche||'',
-      zimmer: m.zimmer||'',
-      etage: m.etage||'',
-      kontaktName: m.mieter||m.name||'',
-      kontaktEmail: (m.email||'').trim(),
-      kontaktTelefon: (m.telefon||'').trim(),
-      aktiv: true
+      kennung: key,
+      name: (m.mieter||m.name||'').trim(),
+      email: (m.email||'').trim(),
+      objektName: obj.name||'',
+      adresse: [obj.name, obj.ort].filter(Boolean).join(', '),
+      lage: [m.etage||'', 'WE '+we].filter(Boolean).join(' · ')
     };
-  }).sort((a,b)=> a.rowKey<b.rowKey?-1:1);
+  }).sort((a,b)=> a.kennung<b.kennung?-1:1);
 }
 
 async function wohnungenExportInfo(){
   const liste=await sammleWohnungen();
-  const ohneMail=liste.filter(w=>!w.kontaktEmail).length;
+  const ohneMail=liste.filter(w=>!w.email).length;
   const el=document.getElementById('wohnungsExportInfo');
   if(el) el.innerHTML=`${liste.length} belegte Wohneinheit(en)`+(ohneMail?` · <span style="color:var(--amber-d,#9a6b00)">${ohneMail} ohne E-Mail (kein Zugangscode möglich)</span>`:'');
   return liste;
@@ -7319,7 +7394,7 @@ async function wohnungenExportJson(){
   a.href=url; a.download='wohnungen_export.json';
   document.body.appendChild(a); a.click();
   setTimeout(()=>{ document.body.removeChild(a); URL.revokeObjectURL(url); },1500);
-  const ohneMail=liste.filter(w=>!w.kontaktEmail).length;
+  const ohneMail=liste.filter(w=>!w.email).length;
   const st=document.getElementById('wohnungsExportStatus');
   if(st) st.innerHTML=`<div style="font-size:12px;color:var(--green)"><i class="ti ti-circle-check"></i> ${liste.length} Wohnungen exportiert.${ohneMail?` ${ohneMail} ohne E-Mail.`:''}</div>`;
   toast('Export gespeichert: wohnungen_export.json');
@@ -7335,23 +7410,46 @@ async function wohnungenExportPush(){
     toast('Kein Backend-Schlüssel hinterlegt');
     return;
   }
+  const ohneMailVorab=liste.filter(w=>!w.email).length;
   if(st) st.innerHTML=`<div style="font-size:12px;color:var(--ink-40)">Übertrage ${liste.length} Wohnungen …</div>`;
   try{
-    const res=await fetchMitTimeout(BACKEND_BASIS+'/api/admin/wohnungen-import',{
+    const res=await fetchMitTimeout(BACKEND_AZURE+'/api/portal-sync',{
       method:'POST',
       headers:{'Content-Type':'application/json','x-functions-key':key},
       body:JSON.stringify({ wohnungen:liste })
     });
     const j=await res.json().catch(()=>({}));
     if(res.ok && j.ok){
-      if(st) st.innerHTML=`<div style="font-size:12px;color:var(--green)"><i class="ti ti-circle-check"></i> ${j.uebernommen||liste.length} Wohnungen übertragen.</div>`;
-      toast('Backend aktualisiert');
+      /* Das Backend ueberspringt Datensaetze ohne gueltige E-Mail oder mit
+         unzulaessiger Kennung, statt den ganzen Lauf abzubrechen. Die Zahl
+         wird hier ausgewiesen - sonst bliebe unbemerkt, dass einzelne Mieter
+         keinen Zugangscode anfordern koennen. */
+      const uebersprungen=Number(j.uebersprungen||0);
+      st && (st.innerHTML=`<div style="font-size:12px;color:var(--green)"><i class="ti ti-circle-check"></i> ${j.uebernommen||0} Wohnungen übertragen.</div>`+
+        (uebersprungen?`<div style="font-size:12px;color:var(--amber-d,#9a6b00);margin-top:4px"><i class="ti ti-alert-triangle"></i> ${uebersprungen} übersprungen (fehlende oder ungültige E-Mail). Diese Mieter können keinen Zugangscode anfordern.</div>`:''));
+      toast('Portal-Verzeichnis aktualisiert');
     }else{
       if(st) st.innerHTML=`<div style="font-size:12px;color:var(--red,#c0392b)">Fehler ${res.status}. Übertragung nicht möglich.</div>`;
     }
   }catch(e){
     if(st) st.innerHTML=`<div style="font-size:12px;color:var(--red,#c0392b)">Backend nicht erreichbar. Bitte JSON exportieren und manuell importieren.</div>`;
   }
+}
+
+/* v299: Wohnung aus dem Portal-Verzeichnis entfernen (Auszug). Loescht im
+   Backend zugleich offene Sitzungen und Codes dieser Kennung - ohne diesen
+   Schritt koennte sich ein ausgezogener Mieter mit laufender Sitzung weiter
+   anmelden. Der Push oben ist ein Upsert und entfernt NICHTS von selbst. */
+async function portalWohnungEntfernen(kennung){
+  if(!kennung) return false;
+  const key=(await idbGet('settings','backendKey').catch(()=>null))?.value;
+  if(!key){ toast('Kein Backend-Schlüssel hinterlegt'); return false; }
+  try{
+    const res=await fetchMitTimeout(BACKEND_AZURE+'/api/portal-sync?id='+encodeURIComponent(kennung),{
+      method:'DELETE', headers:{'x-functions-key':key}
+    });
+    return !!(res && res.ok);
+  }catch(e){ return false; }
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -8015,6 +8113,226 @@ async function saEncKeyLoeschen(){
   if(st) st.innerHTML='<div style="font-size:12px;color:var(--ink-40)">Schlüssel entfernt.</div>';
   toast('Schlüssel entfernt');
 }
+
+/* ── Portal-Entschlüsselungs-Schlüssel (PORTAL_ENC_KEY) ──────────────
+   Bewusst NICHT derselbe Schluessel wie SA_ENC_KEY: Selbstauskuenfte
+   (Bewerber) und Mieterstammdaten sind verschiedene Verarbeitungszwecke.
+   Ein kompromittierter Schluessel soll nicht beide Bestaende oeffnen.
+   Wie saEncKey nur lokal, von Sync und Backup ausgenommen (SETTINGS_GEHEIM). */
+async function portalEncKeyHolen(){
+  const rec=await idbGet('settings','portalEncKey').catch(()=>null);
+  return rec && rec.value ? rec.value : '';
+}
+async function portalEncKeyLaden(){
+  const rec=await idbGet('settings','portalEncKey').catch(()=>null);
+  const inp=document.getElementById('portalEncKeyIn');
+  const del=document.getElementById('portalEncKeyDelBtn');
+  if(inp && rec?.value){ inp.value=rec.value; if(del) del.style.display=''; }
+  else if(del){ del.style.display='none'; }
+}
+function portalEncKeyToggle(){
+  const inp=document.getElementById('portalEncKeyIn');
+  const eye=document.getElementById('portalEncKeyEye');
+  if(!inp) return;
+  if(inp.type==='password'){ inp.type='text'; eye?.classList.replace('ti-eye','ti-eye-off'); }
+  else { inp.type='password'; eye?.classList.replace('ti-eye-off','ti-eye'); }
+}
+async function portalEncKeySpeichern(){
+  const val=(document.getElementById('portalEncKeyIn')?.value||'').trim();
+  const st=document.getElementById('portalEncKeyStatus');
+  if(!val){ if(st) st.innerHTML='<div style="font-size:12px;color:var(--ink-40)">Bitte einen Schlüssel eingeben.</div>'; return; }
+  try{ const bin=atob(val); if(bin.length!==32) throw 0; }
+  catch(e){ if(st) st.innerHTML='<div style="font-size:12px;color:var(--red,#c0392b)">Schlüssel muss 32 Byte (base64) sein.</div>'; return; }
+  await idbPut('settings', { id:'portalEncKey', value:val, geaendert:nowIso() });
+  const del=document.getElementById('portalEncKeyDelBtn'); if(del) del.style.display='';
+  if(st) st.innerHTML='<div style="font-size:12px;color:var(--green,#2E7D52)"><i class="ti ti-circle-check"></i> Schlüssel gespeichert (nur auf diesem Gerät).</div>';
+  toast('Portal-Schlüssel gespeichert');
+}
+async function portalEncKeyLoeschen(){
+  if(!confirm('Portal-Schlüssel wirklich von diesem Gerät entfernen?')) return;
+  await idbDelete('settings','portalEncKey').catch(()=>{});
+  const inp=document.getElementById('portalEncKeyIn'); if(inp) inp.value='';
+  const del=document.getElementById('portalEncKeyDelBtn'); if(del) del.style.display='none';
+  const st=document.getElementById('portalEncKeyStatus');
+  if(st) st.innerHTML='<div style="font-size:12px;color:var(--ink-40)">Schlüssel entfernt.</div>';
+  toast('Schlüssel entfernt');
+}
+
+/* Entschluesselt mit dem PORTAL-Schluessel. Formatgleich zu saEntschluessle
+   (v1:<iv>:<tag>:<cipher>), nur mit anderem Schluessel - deshalb bewusst eine
+   eigene Funktion statt eines Parameters an saEntschluessle: ein versehentlich
+   vertauschter Schluessel soll nicht durch eine Vorgabewert-Zuweisung entstehen. */
+async function portalEntschluessle(chiffre){
+  const keyB64=await portalEncKeyHolen();
+  if(!keyB64) throw new Error('Kein Portal-Schlüssel hinterlegt');
+  const teile=String(chiffre).split(':');
+  if(teile.length!==4 || teile[0]!=='v1') throw new Error('Unbekanntes Format');
+  const iv=_b64ToBytes(teile[1]);
+  const tag=_b64ToBytes(teile[2]);
+  const ct=_b64ToBytes(teile[3]);
+  const gesamt=new Uint8Array(ct.length+tag.length);
+  gesamt.set(ct,0); gesamt.set(tag,ct.length);
+  const keyBytes=_b64ToBytes(keyB64);
+  if(keyBytes.length!==32) throw new Error('Schlüssel muss 32 Byte (base64) sein');
+  const key=await crypto.subtle.importKey('raw',keyBytes,{name:'AES-GCM'},false,['decrypt']);
+  const klar=await crypto.subtle.decrypt({name:'AES-GCM',iv:iv,tagLength:128},key,gesamt);
+  return new TextDecoder().decode(klar);
+}
+/* ═══════════════════════════════════════════════════════════
+   v299: SCHADENSMELDUNGEN AUS DEM MIETERPORTAL
+   - Abruf ueber GET /api/portal-meldung/inbox (Function-Key)
+   - Beschreibung, Rueckrufnummer und Zutrittshinweise sind
+     AES-256-GCM-verschluesselt; entschluesselt wird lokal mit
+     settings->portalEncKey.
+   - Fotos kommen als kurzlebige SAS-Links (15 Minuten Gueltigkeit).
+     Sie werden NICHT zwischengespeichert: ein abgelaufener Link
+     wird durch erneutes Oeffnen der Liste neu erzeugt.
+   - Status: neu -> in_arbeit -> erledigt (POST .../status).
+   ═══════════════════════════════════════════════════════════ */
+const PM_KATEGORIE={heizung:'Heizung / Warmwasser',sanitaer:'Sanitär',elektro:'Elektrik',
+  fenster_tueren:'Fenster / Türen',feuchtigkeit:'Feuchtigkeit / Schimmel',
+  gemeinschaft:'Gemeinschaftsflächen',sonstiges:'Sonstiges'};
+const PM_STATUS={neu:'Neu',in_arbeit:'In Arbeit',erledigt:'Erledigt'};
+
+async function oeffnePortalMeldungen(){
+  if(!istVerwalter()){ toast('Nur für Verwalter'); return; }
+  showModal(`
+    <div class="m-title"><i class="ti ti-alert-triangle"></i> Schadensmeldungen (Mieterportal)</div>
+    <div id="pmBody" style="max-height:62vh;overflow:auto">
+      <p style="font-size:13px;color:var(--ink-40)">Lade Meldungen …</p>
+    </div>
+    <button class="btn btn-full" style="margin-top:12px" data-action-click="closeModal">Schließen</button>`);
+  await portalMeldungenLaden();
+}
+
+async function portalMeldungenLaden(alle){
+  const body=document.getElementById('pmBody');
+  if(!body) return;
+  const key=(await idbGet('settings','backendKey').catch(()=>null))?.value;
+  if(!key){
+    body.innerHTML='<p style="font-size:13px;color:var(--red,#c0392b)">Kein Backend-Schlüssel hinterlegt. Bitte unter „System → Website-Backend“ den Function-Key speichern.</p>';
+    return;
+  }
+  const encKey=await portalEncKeyHolen();
+  if(!encKey){
+    body.innerHTML='<p style="font-size:13px;color:var(--red,#c0392b)">Kein Portal-Schlüssel (PORTAL_ENC_KEY) hinterlegt. Ohne ihn lassen sich die Meldungstexte nicht lesen. Bitte unter „System → Website-Backend“ speichern.</p>';
+    return;
+  }
+  body.innerHTML='<p style="font-size:13px;color:var(--ink-40)">Lade Meldungen …</p>';
+  let liste=[];
+  try{
+    const res=await fetchMitTimeout(BACKEND_AZURE+'/api/portal-meldung/inbox'+(alle?'?alle=1':''),{ headers:{'x-functions-key':key} });
+    if(!res.ok){
+      body.innerHTML='<p style="font-size:13px;color:var(--red,#c0392b)">Abruf fehlgeschlagen ('+res.status+').</p>';
+      return;
+    }
+    liste=await res.json().catch(()=>[]);
+  }catch(e){
+    body.innerHTML='<p style="font-size:13px;color:var(--ink-40)">Backend nicht erreichbar.</p>';
+    return;
+  }
+
+  const kopf=`<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+      <button class="btn btn-sm${alle?'':' btn-primary'}" onclick="portalMeldungenLaden(false)">Offene</button>
+      <button class="btn btn-sm${alle?' btn-primary':''}" onclick="portalMeldungenLaden(true)">Alle</button>
+    </div>`;
+
+  if(!Array.isArray(liste)||!liste.length){
+    body.innerHTML=kopf+'<p style="font-size:13px;color:var(--ink-40)">Keine '+(alle?'':'offenen ')+'Meldungen.</p>';
+    return;
+  }
+
+  let html=kopf;
+  for(const e of liste){
+    let text='', tel='', zutritt='';
+    try{
+      const d=JSON.parse(await portalEntschluessle(e.daten));
+      text=d.beschreibung||''; tel=d.rueckrufTelefon||''; zutritt=d.zutritt||'';
+    }catch(err){
+      /* Entschluesselung schlaegt fehl, wenn der falsche Schluessel hinterlegt
+         ist. Die Meldung wird trotzdem angezeigt - Kennung, Kategorie und
+         Dringlichkeit stehen im Klartext, der Verwalter kann also reagieren. */
+      text='(Text nicht lesbar – falscher oder fehlender Portal-Schlüssel)';
+    }
+    const dt=e.zeitstempel?new Date(e.zeitstempel).toLocaleString('de-DE'):'';
+    const eilig=e.dringlichkeit==='notfall'?'<span style="background:#fdeaea;color:#c0392b;border-radius:6px;padding:2px 7px;font-size:11px;font-weight:600">NOTFALL</span>'
+      :(e.dringlichkeit==='dringend'?'<span style="background:#fdf0e3;color:#9a5a08;border-radius:6px;padding:2px 7px;font-size:11px;font-weight:600">dringend</span>':'');
+    const fotos=(e.fotos||[]).map((u,i)=>
+      `<a href="${esc(u)}" target="_blank" rel="noopener"><img src="${esc(u)}" alt="Foto ${i+1}" style="width:76px;height:76px;object-fit:cover;border-radius:8px;border:1px solid var(--line)"></a>`).join('');
+    html+=`<div style="border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:10px;background:var(--white)">
+      <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:flex-start">
+        <div><b>${esc(PM_KATEGORIE[e.kategorie]||'Meldung')}</b> ${eilig}<br>
+          <span style="font-size:12px;color:var(--ink-40)">${esc(e.objektName||'')} · ${esc(e.kennung||'')} · ${esc(dt)}</span></div>
+        <span style="font-size:11px;color:var(--ink-40)">${esc(PM_STATUS[e.status]||e.status||'')}</span>
+      </div>
+      <div style="font-size:13px;margin-top:8px;white-space:pre-wrap;line-height:1.5">${esc(text)}</div>
+      ${tel?`<div style="font-size:12px;color:var(--ink-60);margin-top:6px"><i class="ti ti-phone"></i> Rückruf: <a href="tel:${esc(tel)}">${esc(tel)}</a></div>`:''}
+      ${zutritt?`<div style="font-size:12px;color:var(--ink-60);margin-top:4px"><i class="ti ti-key"></i> ${esc(zutritt)}</div>`:''}
+      ${fotos?`<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px">${fotos}</div>
+        <div style="font-size:11px;color:var(--ink-40);margin-top:4px">Bildlinks sind 15 Minuten gültig – danach Liste neu laden.</div>`:''}
+      <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+        ${e.status!=='in_arbeit'?`<button class="btn btn-sm" onclick="portalMeldungStatus('${esc(e.id)}','in_arbeit')"><i class="ti ti-progress"></i> In Arbeit</button>`:''}
+        ${e.status!=='erledigt'?`<button class="btn btn-sm btn-primary" onclick="portalMeldungStatus('${esc(e.id)}','erledigt')"><i class="ti ti-check"></i> Erledigt</button>`:''}
+        <button class="btn btn-sm" onclick="portalMeldungAlsMangel('${esc(e.id)}')"><i class="ti ti-tool"></i> Als Mangel anlegen</button>
+      </div>
+    </div>`;
+    window._pmInbox=window._pmInbox||{};
+    window._pmInbox[e.id]={...e, _text:text};
+  }
+  body.innerHTML=html;
+}
+
+async function portalMeldungStatus(id,status){
+  const key=(await idbGet('settings','backendKey').catch(()=>null))?.value;
+  if(!key){ toast('Kein Backend-Schlüssel hinterlegt'); return; }
+  try{
+    const r=await fetchMitTimeout(BACKEND_AZURE+'/api/portal-meldung/status',{
+      method:'POST', headers:{'Content-Type':'application/json','x-functions-key':key},
+      body:JSON.stringify({ id, status })
+    });
+    /* v272-Lehre (P8-A): Status pruefen. fetch wirft nur bei Netzwerkfehlern -
+       ein HTTP 500 kam frueher als Erfolg zurueck. */
+    if(!r || !r.ok) throw new Error('HTTP '+(r?r.status:'ohne Antwort'));
+    toast(status==='erledigt'?'Als erledigt markiert ✓':'Status gesetzt ✓');
+    await portalMeldungenLaden(false);
+  }catch(e){
+    toast('Status konnte am Server nicht gespeichert werden – bitte erneut versuchen.', 5000);
+  }
+}
+
+/* Uebernimmt eine Portalmeldung in die interne Mangelverwaltung. Bewusst
+   ueber die bestehende Maske modalAddMangel statt eines eigenen Schreibpfads -
+   so gelten Pflichtfelder, Nummernkreis und Sync unveraendert. */
+async function portalMeldungAlsMangel(id){
+  const e=(window._pmInbox||{})[id];
+  if(!e){ toast('Meldung nicht gefunden'); return; }
+  const teile=String(e.kennung||'').split('-WE');
+  const objektId=teile[0]||'';
+  const weNr=teile[1]||'';
+  const titel=(PM_KATEGORIE[e.kategorie]||'Meldung')+' (Mieterportal)';
+  if(typeof modalAddMangel!=='function'){ toast('Mangelmaske nicht verfügbar'); return; }
+  try{ closeModal(); }catch(x){}
+  /* Signatur ist modalAddMangel(mieterId, objektId, type) - die Maske nimmt
+     KEIN Vorbefuellungs-Objekt entgegen. Objekt wird per Parameter vorgewaehlt,
+     Bezeichnung und Beschreibung werden danach in die gerenderten Felder
+     geschrieben. Der Mieterbezug bleibt bewusst dem Nutzer ueberlassen: das
+     Auswahlfeld wird erst durch mangelObjChange() befuellt, und ein automatisch
+     gesetzter falscher Mieter waere schlimmer als ein leeres Feld. */
+  setTimeout(async ()=>{
+    try{ await modalAddMangel(null, objektId); }catch(x){ toast('Mangelmaske konnte nicht geöffnet werden'); return; }
+    setTimeout(()=>{
+      const t=document.getElementById('mgTitel'); if(t) t.value=titel;
+      const b=document.getElementById('mgBeschr');
+      if(b) b.value=(e._text||'')+(weNr?'\n\n(Mieterportal, WE '+weNr+', Kennung '+(e.kennung||'')+')':'');
+      const sw=document.getElementById('mgSchwere');
+      /* Zulaessige Werte laut Maske: gering | mittel | schwerwiegend.
+         Ein nicht existierender Wert wuerde das select stillschweigend auf den
+         ersten Eintrag zuruecksetzen - aus einem Notfall wuerde "Gering". */
+      if(sw && (e.dringlichkeit==='notfall'||e.dringlichkeit==='dringend')) sw.value='schwerwiegend';
+    }, 60);
+  }, 80);
+}
+
 // Hilfsfunktion: Modal schließen, dann Aktion (z. B. Posteingang öffnen)
 function closeAllModalsThen(fn){ try{ closeModal(); }catch(e){} setTimeout(()=>{ try{ fn&&fn(); }catch(e){} }, 60); }
 
@@ -9835,7 +10153,7 @@ function nowIso(){ return new Date().toISOString(); }
    unbegrenzt „in Arbeit" zu lassen. Wird in den Backend-/OneDrive-Pfaden genutzt. */
 /* ── v180 (Review H2): settings-Datensätze, die als Geheimnis gelten und das
    Gerät nie verlassen dürfen (kein Sync-Push, kein Backup-Export). ── */
-const SETTINGS_GEHEIM = ['backendKey','saEncKey'];
+const SETTINGS_GEHEIM = ['backendKey','saEncKey','portalEncKey'];   // v299: +portalEncKey (R23)
 async function fetchMitTimeout(url, opts={}, ms=15000){
   const ac=new AbortController();
   const t=setTimeout(()=>ac.abort(), ms);
@@ -29078,6 +29396,23 @@ async function renderSettings(){
       <div id="saEncKeyStatus" style="margin-top:10px"></div>
 
       <hr style="border:none;border-top:1px solid var(--line);margin:16px 0">
+      <div class="card-hdr" style="font-size:14px"><i class="ti ti-alert-triangle"></i> Mieterportal – Schadensmeldungen</div>
+      <p style="font-size:13px;color:var(--ink-40);margin:8px 0 12px;line-height:1.6">
+        Schadensmeldungen aus dem Mieterportal werden serverseitig verschlüsselt und nur hier entschlüsselt. Hinterlegen Sie denselben Schlüssel wie in der Azure-Einstellung <code>PORTAL_ENC_KEY</code> (32 Byte, base64). Dieser ist <strong>nicht</strong> derselbe wie SA_ENC_KEY. Wird nur lokal auf diesem Gerät gespeichert und ist von Sync und Backup-Export ausgenommen.
+      </p>
+      <label style="font-size:12px;color:var(--ink-40);display:block;margin-bottom:4px">Portal-Schlüssel (PORTAL_ENC_KEY)</label>
+      <div style="display:flex;gap:8px;align-items:center">
+        <input type="password" id="portalEncKeyIn" placeholder="base64-Schlüssel einfügen …" style="flex:1;min-width:0" autocomplete="off">
+        <button class="btn btn-sm" type="button" data-action-click="portalEncKeyToggle" title="Anzeigen/Verbergen"><i class="ti ti-eye" id="portalEncKeyEye"></i></button>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+        <button class="btn btn-primary" data-action-click="portalEncKeySpeichern"><i class="ti ti-device-floppy"></i> Speichern</button>
+        <button class="btn btn-danger btn-sm" id="portalEncKeyDelBtn" data-action-click="portalEncKeyLoeschen" style="display:none"><i class="ti ti-trash"></i> Entfernen</button>
+        <button class="btn" onclick="closeAllModalsThen(oeffnePortalMeldungen)"><i class="ti ti-alert-triangle"></i> Meldungen öffnen</button>
+      </div>
+      <div id="portalEncKeyStatus" style="margin-top:10px"></div>
+
+      <hr style="border:none;border-top:1px solid var(--line);margin:16px 0">
       <div class="card-hdr" style="font-size:14px"><i class="ti ti-send"></i> Selbstauskunft-Link senden</div>
       <p style="font-size:13px;color:var(--ink-40);margin:8px 0 12px;line-height:1.6">
         Sendet einem Interessenten einen persönlichen Link zur vollständigen Selbstauskunft (gültig 7 Tage). E-Mail-Adresse manuell eingeben oder einen Interessenten auswählen.
@@ -29272,7 +29607,7 @@ async function renderSettings(){
   if(isAdmin){ const pfEl=document.getElementById('portalFreigabeEl'); if(pfEl) pfEl.innerHTML=await renderPortalFreigabe(); }
   if(isAdmin){ const ssEl=document.getElementById('syncSchutzEl'); if(ssEl) ssEl.innerHTML=await renderSyncSchutz(); }
   if(isAdmin){ try{ await wohnungenExportInfo(); }catch(e){} }
-  if(isAdmin){ try{ await backendKeyLaden(); }catch(e){} try{ await saEncKeyLaden(); }catch(e){} try{ await saTokInteressentBefuellen(); }catch(e){} }
+  if(isAdmin){ try{ await backendKeyLaden(); }catch(e){} try{ await saEncKeyLaden(); }catch(e){} try{ await portalEncKeyLaden(); }catch(e){} try{ await saTokInteressentBefuellen(); }catch(e){} }
   await renderMeineSignatur();
   speicherInfoLaden().catch(()=>{});   // v195: Speicherbelegung/Persistenz anzeigen
   // v196: Sync-Profil-Auswahl vorbelegen
