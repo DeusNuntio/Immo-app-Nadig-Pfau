@@ -1230,7 +1230,17 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=35;   // v242: +buch_journal (F4 GoBD)
-const APP_VERSION = '2026-08-02-v299';
+const APP_VERSION = '2026-08-03-v300';
+/* v300 (03.08.2026): E-Mail-Auswahl je Wohneinheit korrigiert (Gerätetest-Befund).
+   Beim ersten echten Push meldete die App "25 Wohnungen uebertragen, 90
+   uebersprungen". Ein Teil davon ist echter Datenmangel (Krefeld hat noch
+   keine Adressen), ein Teil war jedoch hausgemacht: sammleWohnungen() nahm
+   pro WE die ERSTE Person. Bei Paaren steht die E-Mail oft nur bei einer der
+   beiden - stand sie bei der zweiten, fiel die Wohnung heraus, obwohl eine
+   Adresse vorhanden war. Jetzt gewinnt die Person mit E-Mail.
+   WICHTIG: Diese Korrektur muss VOR der geplanten Adresserfassung live sein,
+   sonst werden frisch erfasste Adressen weiterhin still verworfen.
+   Keine Store-/DB-Aenderung; DB_VER bleibt 35. */
 /* v299 (02.08.2026): MIETERPORTAL PRODUKTIV - Login, Schadensmeldung, Verzeichnis.
    Bis v298 war das Portal auf der Website ein Demo: die Wohnungsliste stand als
    Konstante WOHNUNGEN im oeffentlich ausgelieferten Quelltext, und der
@@ -2687,6 +2697,7 @@ document.addEventListener('DOMContentLoaded', () => {
     'modalTaetigkeitSortieren',
     'modalTaetigkeitStart',
     'modalTaetigkeitenVerwalten',
+    'modalSerienbriefEigentuemerwechsel',
     'modalUrlaubAntrag',
     'modalWohnungsQrZipExport',
     'modalZeitenBereinigen',
@@ -2762,6 +2773,8 @@ document.addEventListener('DOMContentLoaded', () => {
     'ventilFotoKamera',
     'vzHistAdd',
     'whGrundrissEntfernen',
+    'serienbriefEigentuemerwechsel',
+    'wohnungenAdressenHolen',
     'wohnungenExportJson',
     'wohnungenExportPush',
     'zaExportBuchungen',
@@ -7115,9 +7128,89 @@ async function etikettPdfTeilen(qrText, dateiname, zeile1, zeile2, zeile3){
    bestehenden Etikettendruck (30×50 mm / Niimbot). KEIN neuer Store.
 ═══════════════════════════════════════════════════════════ */
 const PORTAL_BASIS = 'https://nadigpfau.de/';
-function wohnungsKennung(objektId, weNr){ return objektId+'-WE'+String(weNr).trim(); }
+/* v301: kanonisch GROSS. Table-Storage-RowKeys sind case-sensitiv; die App
+   pushte "inr181-WE5", portal-code/portal-login suchten "INR181-WE5" - es gab
+   nie einen Treffer, die Function antwortete auftragsgemaess ok:true, und es
+   kam nie eine Mail an. Die Website normalisiert seit v301 identisch, alte
+   Aufkleber mit Kleinschreibung funktionieren deshalb weiter. */
+function wohnungsKennung(objektId, weNr){ return (objektId+'-WE'+String(weNr).trim()).toUpperCase(); }
 function wohnungsPortalUrl(objektId, weNr){
   return PORTAL_BASIS+'?wohnung='+encodeURIComponent(wohnungsKennung(objektId, weNr));
+}
+
+/* ── REGISTRIERSCHLÜSSEL (v301) ─────────────────────────────
+   Acht Zeichen aus dem Crockford-Alphabet (ohne I, L, O, U - die werden auf
+   Papier verwechselt). Der Schluessel steht NUR im postalischen Anschreiben
+   und legitimiert die Selbstregistrierung im Portal: wer ihn hat, hatte
+   Zugriff auf den Briefkasten dieser Wohnung. Der Aufkleber am Sicherungs-
+   kasten traegt ihn bewusst NICHT - sonst koennte jeder Besucher die
+   Kontaktdaten einer fremden Wohnung aendern.
+   Normalisierung und Alphabet muessen mit portal-lib.js (normRegCode) und der
+   Website identisch bleiben. */
+const REG_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+const REG_LAENGE = 8;
+
+function regCodeErzeugen(){
+  const bytes = new Uint8Array(REG_LAENGE);
+  crypto.getRandomValues(bytes);
+  let out = '';
+  for(let i=0;i<REG_LAENGE;i++) out += REG_ALPHABET[bytes[i] % REG_ALPHABET.length];
+  return out;
+}
+function regCodeFormat(c){
+  const t = String(c||'');
+  return t.length===8 ? t.slice(0,4)+'-'+t.slice(4) : t;
+}
+function regCodeGueltig(c){
+  const t = String(c||'').toUpperCase();
+  if(t.length!==REG_LAENGE) return false;
+  for(const z of t) if(REG_ALPHABET.indexOf(z)<0) return false;
+  return true;
+}
+/* Schluessel je Mieter einmal erzeugen und behalten - sonst entwertet jeder
+   Nachdruck die bereits verschickten Briefe. Neu erzeugen nur, wenn keiner da
+   ist oder er nicht mehr dem Format entspricht. */
+async function mieterRegCode(m, neuErzeugen){
+  if(!neuErzeugen && regCodeGueltig(m.portalRegCode)) return m.portalRegCode;
+  const code = regCodeErzeugen();
+  m.portalRegCode = code;
+  m.portalRegCodeStand = new Date().toISOString();
+  await idbPut('mieter', m);
+  return code;
+}
+
+/* ── EPC-GIROCODE (v301) ────────────────────────────────────
+   Aufbau nach EPC069-12 Version 002: elf Zeilen in fester Reihenfolge. Die
+   beiden leeren Zeilen (Zweck und strukturierte Referenz) muessen stehen
+   bleiben, sonst rutscht der Verwendungszweck in das falsche Feld.
+   Der Empfaengername muss exakt dem Kontoinhaber entsprechen - seit Oktober
+   2025 gleicht die Bank des Zahlers ihn ab (Verification of Payee) und warnt
+   bei Abweichung. */
+function epcNutzlast({empfaenger, iban, bic, betrag, zweck}){
+  const name = String(empfaenger||'').slice(0,70);
+  const konto = String(iban||'').replace(/\s+/g,'').toUpperCase();
+  const text = String(zweck||'').slice(0,140);
+  if(!name || !konto) return '';
+  const summe = Number(betrag)>0 ? 'EUR'+Number(betrag).toFixed(2) : '';
+  return ['BCD','002','1','SCT', String(bic||'').replace(/\s+/g,'').toUpperCase(),
+          name, konto, summe, '', '', text].join('\n');
+}
+
+/* Verwendungszweck im Format der Sammellastschrift:
+     WE 5 - Miete 550,00 EUR + NKV 162,50 EUR + TG 12 - 45,00 EUR
+     TG 25, 26, 32 - Miete 135,00 EUR        (Mieter ohne Wohnung)
+   Der laengste reale Fall hat 100 Zeichen und bleibt unter der EPC-Grenze. */
+function zweckMiete(weNr, miete, nkv, plaetze){
+  const eur = b => Number(b||0).toLocaleString('de-DE',{minimumFractionDigits:2, maximumFractionDigits:2})+' EUR';
+  const sp = Array.isArray(plaetze) ? plaetze.filter(x=>x&&x.nr) : [];
+  if(weNr){
+    let t = 'WE '+String(weNr).trim()+' - Miete '+eur(miete)+' + NKV '+eur(nkv);
+    sp.forEach(x=>{ t += ' + TG '+String(x.nr).trim()+' - '+eur(x.miete); });
+    return t.slice(0,140);
+  }
+  if(!sp.length) return '';
+  const summe = sp.reduce((a,x)=>a+Number(x.miete||0),0);
+  return ('TG '+sp.map(x=>String(x.nr).trim()).join(', ')+' - Miete '+eur(summe)).slice(0,140);
 }
 
 async function modalWohnungsQR(objektId){
@@ -7347,14 +7440,24 @@ const BACKEND_AZURE = 'https://func-nadigpfau-g7fghseafmftemeq.westeurope-01.azu
 
 async function sammleWohnungen(){
   const alle=(await idbGetAll('mieter')).filter(m=>!m._vormieter && !m._zukuenftig && !m.leerstand);
-  // pro Objekt+WE genau ein Eintrag (erste belegte Person)
+  /* Pro Objekt+WE genau ein Eintrag.
+     v300: Bis v299 wurde schlicht die ERSTE Person je Wohneinheit genommen.
+     Bei Paaren ist die E-Mail-Adresse aber haeufig nur bei einer der beiden
+     Personen hinterlegt - stand sie bei der zweiten, fiel die ganze Wohnung
+     beim Push als "uebersprungen (fehlende E-Mail)" heraus, obwohl eine
+     Adresse vorhanden war. Jetzt gewinnt die Person MIT E-Mail; bei
+     Gleichstand bleibt es bei der ersten (unveraendertes Verhalten). */
   const proSchluessel={};
   alle.forEach(m=>{
     const objektId=String(m.objektId||'').trim();
     const we=String(m.weNr||'').trim();
     if(!objektId||!we||we==='undefined') return;
-    const key=objektId+'-WE'+we;
-    if(!proSchluessel[key]) proSchluessel[key]={m,objektId,we,key};
+    const key=wohnungsKennung(objektId, we);   // v301: eine einzige Kennungsquelle
+    const bisher=proSchluessel[key];
+    if(!bisher){ proSchluessel[key]={m,objektId,we,key}; return; }
+    const hatMail=!!String(m.email||'').trim();
+    const bisherMail=!!String(bisher.m.email||'').trim();
+    if(hatMail && !bisherMail) proSchluessel[key]={m,objektId,we,key};
   });
   /* v299: Feldnamen an portal-sync.js angeglichen. Bis v298 lieferte diese
      Funktion ein Table-Storage-Rohformat (partitionKey/rowKey/kontakt*) fuer
@@ -7367,6 +7470,11 @@ async function sammleWohnungen(){
     const obj=getObj(objektId)||{};
     return {
       kennung: key,
+      /* v301: Der Registrierschluessel wird MITGESCHICKT, aber nur, wenn in der
+         App bereits einer erzeugt wurde (also ein Anschreiben gedruckt ist).
+         Das Backend speichert davon nur Salt und Hash; der Klartext bleibt
+         hier, weil ihn allein der Briefdruck braucht. */
+      regCode: regCodeGueltig(m.portalRegCode) ? m.portalRegCode : '',
       name: (m.mieter||m.name||'').trim(),
       email: (m.email||'').trim(),
       objektName: obj.name||'',
@@ -20557,6 +20665,9 @@ async function mvBaueRenderdaten(){
     sepaGlaeubigerId: gs.sepaGlaeubigerId||'',
     sepaEmpfaenger: gs.ktoInhaber || bk.name || '',
     sepaEmpfaengerAnschrift: gs.sepaGlaeubigerAnschrift || [bk.strasse, bk.ort].filter(Boolean).join(', '),
+    /* v301: Anschrift des Zahlungspflichtigen vordrucken statt abschreiben
+       lassen - sie ist die Wohnungsanschrift und uns bekannt. */
+    sepaZahlerAnschrift: obj ? [obj.name, obj.ort].filter(Boolean).join(', ') : '',
     sepaMandatsreferenz: mvMandatsreferenz(D),
   };
 }
@@ -22535,18 +22646,7 @@ async function druckeBrief(mieterId, objektId) {
   // festen mm-Spaltenbreiten im Kopf – das war die Ursache der leeren Seite auf
   // Samsung. Der zweispaltige Briefkopf wird über eine TABELLE gelöst, die in
   // jedem Druckkontext zuverlässig rendert.
-  const logoSvg = `<svg width="220" height="80" viewBox="0 0 1000 200" xmlns="http://www.w3.org/2000/svg">
-    <line x1="50" y1="104" x2="50" y2="64" stroke="#0C447C" stroke-width="3.2" stroke-linecap="round" opacity="0.95"/>
-    <line x1="50" y1="64" x2="73" y2="104" stroke="#0C447C" stroke-width="3.2" stroke-linecap="round" opacity="0.95"/>
-    <line x1="73" y1="64" x2="73" y2="104" stroke="#0C447C" stroke-width="3.2" stroke-linecap="round" opacity="0.95"/>
-    <line x1="80" y1="64" x2="80" y2="104" stroke="#185FA5" stroke-width="3.2" stroke-linecap="round"/>
-    <path d="M 80,64 Q 105,64 105,74 Q 105,84 80,84" fill="none" stroke="#185FA5" stroke-width="3.2" stroke-linecap="round"/>
-    <ellipse cx="97" cy="74" rx="7" ry="8.5" fill="#85B7EB" opacity="0.9"/>
-    <ellipse cx="97" cy="74" rx="3.5" ry="4.2" fill="white" opacity="0.95"/>
-    <ellipse cx="97" cy="73.5" rx="1.6" ry="2" fill="#185FA5"/>
-    <text x="160" y="130" font-family="Georgia,serif" font-size="56px" fill="#0C447C">NADIG PFAU</text>
-    <text x="160" y="165" font-family="Arial,sans-serif" font-size="12px" letter-spacing="1.4px" fill="#888780">HAUSVERWALTUNG</text>
-  </svg>`;
+  const logoSvg = briefLogoSvg();
   const absRueck = `${abs.name||''}${abs.strasse?' · '+abs.strasse:''}${abs.ort?' · '+abs.ort:''}`;
 
   // Gewählte Unterschrift(en) laden (wie NKA)
@@ -22623,6 +22723,448 @@ async function druckeBrief(mieterId, objektId) {
       html: einzelHtml,
     });
   }
+}
+
+/* ═══════════════════════════════════════════════════════════
+   SERIENBRIEF EIGENTÜMERWECHSEL (v301)
+
+   Erzeugt je belegter Wohneinheit ein Anschreiben mit neuer Bankverbindung,
+   GiroCode, Portal-QR samt Registrierschlüssel und den hinterlegten
+   Unterschriften; jeder Brief wird zusätzlich beim Mieter archiviert.
+
+   Warum ein eigener Generator und nicht der Fließtext-Briefdruck: Das
+   Anschreiben braucht zwei QR-Codes, eine Betragstabelle und je Mieter
+   unterschiedliche Beträge und Schlüssel - das lässt sich in einem
+   Freitextfeld nicht abbilden.
+   ═══════════════════════════════════════════════════════════ */
+
+/* Logo einmal an einer Stelle. Bis v300 lag es als Vorlage in druckeBrief;
+   ein zweites Vorkommen wäre die übliche Doppelpflege gewesen. */
+function briefLogoSvg(){
+  return `<svg width="220" height="80" viewBox="0 0 1000 200" xmlns="http://www.w3.org/2000/svg">
+    <line x1="50" y1="104" x2="50" y2="64" stroke="#0C447C" stroke-width="3.2" stroke-linecap="round" opacity="0.95"/>
+    <line x1="50" y1="64" x2="73" y2="104" stroke="#0C447C" stroke-width="3.2" stroke-linecap="round" opacity="0.95"/>
+    <line x1="73" y1="64" x2="73" y2="104" stroke="#0C447C" stroke-width="3.2" stroke-linecap="round" opacity="0.95"/>
+    <line x1="80" y1="64" x2="80" y2="104" stroke="#185FA5" stroke-width="3.2" stroke-linecap="round"/>
+    <path d="M 80,64 Q 105,64 105,74 Q 105,84 80,84" fill="none" stroke="#185FA5" stroke-width="3.2" stroke-linecap="round"/>
+    <ellipse cx="97" cy="74" rx="7" ry="8.5" fill="#85B7EB" opacity="0.9"/>
+    <ellipse cx="97" cy="74" rx="3.5" ry="4.2" fill="white" opacity="0.95"/>
+    <ellipse cx="97" cy="73.5" rx="1.6" ry="2" fill="#185FA5"/>
+    <text x="160" y="130" font-family="Georgia,serif" font-size="56px" fill="#0C447C">NADIG PFAU</text>
+    <text x="160" y="165" font-family="Arial,sans-serif" font-size="12px" letter-spacing="1.4px" fill="#888780">HAUSVERWALTUNG</text>
+  </svg>`;
+}
+
+/* Rücklauffrist: Druckdatum + 21 Tage, höchstens bis zum Monatsende, und nie
+   auf einen Samstag, Sonntag oder NRW-Feiertag - dann wird auf den Werktag
+   davor vorgezogen. 14 Tage wären für einen Papierrücklauf zu knapp. */
+function ewRuecklauffrist(startStr){
+  const start = new Date((startStr||today())+'T00:00:00');
+  let ziel = new Date(start.getTime() + 21*24*3600*1000);
+  const monatsende = new Date(start.getFullYear(), start.getMonth()+1, 0);
+  if(ziel > monatsende) ziel = monatsende;
+  for(let i=0;i<10;i++){
+    const t = ymd(ziel);
+    if(!istWochenende(t) && !istFreierTag(t)) break;
+    ziel = new Date(ziel.getTime() - 24*3600*1000);
+  }
+  return ymd(ziel);
+}
+
+/* Zahlbeginn: erster Monatserster mit mindestens 14 Tagen Vorlauf - der Mieter
+   muss seinen Dauerauftrag noch ändern können, bevor die nächste Miete fällig
+   wird. */
+function ewZahlbeginn(startStr){
+  const start = new Date((startStr||today())+'T00:00:00');
+  let ziel = new Date(start.getFullYear(), start.getMonth()+1, 1);
+  if((ziel - start) < 14*24*3600*1000) ziel = new Date(start.getFullYear(), start.getMonth()+2, 1);
+  return ymd(ziel);
+}
+
+/* QR als Data-URL für den Druck. Bewusst grosszügig dimensioniert: der
+   GiroCode ist ein dichter Code (Version 8), unter 30 mm Kantenlänge scheitern
+   Banking-Apps reihenweise. QRENC setzt eine Ruhezone von vier Modulen. */
+function ewQrBild(text, px){
+  try{ return qrDataUrl(text, px||420); }
+  catch(e){ console.warn('ewQrBild:', e); return ''; }
+}
+
+async function modalSerienbriefEigentuemerwechsel(){
+  if(!istVerwalter()){ toast('Nur für Admins'); return; }
+  const gruppen = DASH_GRUPPEN.map(g=>`<option value="${g.id}">${esc(g.label)}</option>`).join('');
+  showModal(`
+    <div class="m-title"><i class="ti ti-mail-forward"></i> Serienbrief Eigentümerwechsel</div>
+    <div class="f"><label for="ewGruppe">Objektgruppe</label>
+      <select id="ewGruppe">${gruppen}</select></div>
+    <div class="f"><label for="ewDatum">Briefdatum</label>
+      <input type="date" id="ewDatum" value="${today()}"></div>
+    <div class="f"><label>Anlagen je Brief</label>
+      <label style="font-size:12px;display:block"><input type="checkbox" id="ewAnlRueck" checked> Rückantwort (Kontaktdaten, bis drei Personen)</label>
+      <label style="font-size:12px;display:block"><input type="checkbox" id="ewAnlSepa" checked> SEPA-Lastschriftmandat</label>
+      <label style="font-size:12px;display:block"><input type="checkbox" id="ewAnlDs" checked> Datenschutzhinweis (Art. 13 DSGVO)</label>
+      <label style="font-size:12px;display:block"><input type="checkbox" id="ewAnlHo"> Hausordnung</label>
+    </div>
+    <div class="f"><label style="font-size:12px"><input type="checkbox" id="ewNeueCodes"> Registrierschlüssel neu erzeugen</label>
+      <div style="font-size:11px;color:var(--ink-40);margin-top:2px">Nur ankreuzen, wenn bereits verschickte Briefe entwertet werden sollen. Bereits erzeugte Schlüssel bleiben sonst erhalten, damit Nachdrucke gültig bleiben.</div></div>
+    <div id="ewInfo" style="font-size:12px;color:var(--ink-40);margin-top:8px"></div>
+    <div class="m-actions">
+      <button class="btn ghost" data-action-click="closeModal">Abbrechen</button>
+      <button class="btn" data-action-click="serienbriefEigentuemerwechsel">Briefe erzeugen</button>
+    </div>`);
+}
+
+async function serienbriefEigentuemerwechsel(){
+  const gruppeId = document.getElementById('ewGruppe')?.value;
+  const datum    = document.getElementById('ewDatum')?.value || today();
+  const neueCodes= !!document.getElementById('ewNeueCodes')?.checked;
+  const gruppe   = DASH_GRUPPEN.find(g=>g.id===gruppeId);
+  if(!gruppe){ toast('Bitte Objektgruppe wählen'); return; }
+
+  const info = document.getElementById('ewInfo');
+  if(info) info.textContent = 'Briefe werden erzeugt …';
+
+  const alleMieter = (await idbGetAll('mieter'))
+    .filter(m => m && !m._vormieter && !m._zukuenftig && !m.leerstand && !m._tgMieter)
+    .filter(m => gruppe.objektIds.includes(String(m.objektId||'')));
+  if(!alleMieter.length){ toast('Keine belegten Wohnungen in dieser Gruppe'); if(info) info.textContent=''; return; }
+
+  const sigListe = await briefGewaehlteSignaturen();
+  const frist    = ewRuecklauffrist(datum);
+  const zahlAb   = ewZahlbeginn(datum);
+  const fmtD     = d => new Date(d+'T00:00:00').toLocaleDateString('de-DE');
+  const anl = {
+    rueck: !!document.getElementById('ewAnlRueck')?.checked,
+    sepa:  !!document.getElementById('ewAnlSepa')?.checked,
+    dsgvo: !!document.getElementById('ewAnlDs')?.checked,
+    hausordnung: !!document.getElementById('ewAnlHo')?.checked,
+  };
+
+  const seiten = [];
+  const ohneKonto = [], ohneGlaeubigerId = [];
+  for(const m of alleMieter){
+    const seite = await ewSeiteFuer(m, {datum, frist, zahlAb, sigListe, neueCodes, fmtD});
+    if(!seite){ ohneKonto.push(m.mieter||m.name||m.id); continue; }
+    const anhang = await ewAnlagenFuer(m, anl, {frist, fmtD});
+    if(anl.sepa && !anhang.mitSepa) ohneGlaeubigerId.push(m.mieter||m.name||m.id);
+    seiten.push({m, html: seite + anhang.html});
+  }
+  if(!seiten.length){
+    toast('Kein Brief erzeugt – fehlen die Kontodaten im Gebäudestamm?');
+    if(info) info.textContent='';
+    return;
+  }
+
+  /* Die Anlagen bringen eigenes CSS mit (anlageRahmen). mvSammleAnlagenStyles
+     scopet es auf .anlage-vt, damit es den Brieftext nicht verändert - dieselbe
+     Mechanik wie im Mietvertrag. */
+  const anlagenStyle = (anl.sepa || anl.dsgvo || anl.hausordnung)
+    ? mvSammleAnlagenStyles({sepa:anl.sepa, dsgvo:anl.dsgvo, hausordnung:anl.hausordnung})
+    : '';
+  const kopf = `<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8"><title>Eigentümerwechsel – Anschreiben</title>${ewStil()}${anlagenStyle}</head><body>`;
+  const auto = ewAutoPrint();
+  druckHTML(kopf + seiten.map(x=>x.html).join('') + auto + '</body></html>');
+
+  /* Jeden Brief einzeln archivieren - im Streitfall muss nachweisbar sein,
+     welcher Mieter welche Bankverbindung und welchen Schlüssel bekommen hat
+     (§ 259 BGB, und für die Portalregistrierung ebenso). */
+  for(const x of seiten){
+    await archiviereMieterDokument({
+      mieterId: x.m.id, objektId: x.m.objektId,
+      typ: 'brief',
+      name: `Eigentümerwechsel – neue Bankverbindung (${fmtD(datum)})`,
+      html: kopf + x.html + auto + '</body></html>',
+    }).catch(e=>console.warn('Archivierung:', e));
+  }
+
+  if(info){
+    info.innerHTML = `<span style="color:var(--green)"><i class="ti ti-circle-check"></i> ${seiten.length} Brief(e) erzeugt und archiviert.</span>`
+      + (ohneKonto.length ? `<div style="color:var(--amber-d,#9a6b00);margin-top:6px"><i class="ti ti-alert-triangle"></i> Ohne Kontodaten übersprungen: ${esc(ohneKonto.join(', '))}</div>` : '')
+      + (ohneGlaeubigerId.length ? `<div style="color:var(--amber-d,#9a6b00);margin-top:6px"><i class="ti ti-alert-triangle"></i> Ohne SEPA-Mandat (keine Gläubiger-ID im Gebäudestamm): ${esc(ohneGlaeubigerId.join(', '))}</div>` : '')
+      + `<div style="margin-top:6px">Danach bitte „Portal-Verzeichnis übertragen“ ausführen – erst dann sind die Registrierschlüssel im Backend gültig.</div>`;
+  }
+  toast(seiten.length+' Brief(e) erzeugt');
+}
+
+/* Eine Briefseite. Rückgabe null, wenn die Kontodaten des Gebäudes fehlen -
+   ein Anschreiben ohne IBAN wäre schlimmer als keines. */
+async function ewSeiteFuer(m, opt){
+  const obj = getObj(m.objektId) || {};
+  const bk  = getBriefkopf(m.objektId) || {};
+  const gs  = (await idbGet('objekt_stamm', m.objektId).catch(()=>null)) || {};
+
+  const empfaenger = gs.ktoInhaber || '';
+  const iban       = String(gs.ktoIban||'').replace(/\s+/g,'');
+  if(!empfaenger || !iban) return null;
+
+  const plaetze = (await stellplaetzeVonMieter(m.id)).map(sp=>({nr:sp.nr, miete:Number(sp.miete||0)}));
+  const kalt  = Number(m.miete||0);
+  const nk    = Number(m.nk||0);
+  const spSum = plaetze.reduce((a,x)=>a+Number(x.miete||0),0);
+  const summe = kalt + nk + spSum;
+  const zweck = zweckMiete(m.weNr, kalt, nk, plaetze);
+
+  const giro = epcNutzlast({
+    empfaenger, iban, bic: gs.ktoBic||'', betrag: summe, zweck
+  });
+  const giroBild = giro ? ewQrBild(giro, 460) : '';
+
+  const kennung = wohnungsKennung(m.objektId, m.weNr);
+  const code    = await mieterRegCode(m, opt.neueCodes);
+  const portalUrl = PORTAL_BASIS+'?wohnung='+encodeURIComponent(kennung)+'#r='+encodeURIComponent(code);
+  const portalBild = ewQrBild(portalUrl, 400);
+
+  const sigHTML = (opt.sigListe||[]).map(sg=>`<span class="ew-sig">
+      <img src="${sg.signatur}" alt="Unterschrift"><span>${esc(sg.name)}</span></span>`).join('');
+
+  /* Der Hausmeister-Briefkasten steht nur in Krefeld zur Verfügung. */
+  const istKrefeld = /krefeld/i.test(String(obj.ort||''));
+  const rueckgabe = istKrefeld
+    ? 'in den Briefkasten unseres Hausmeisters, Herrn Dirk Nicolay, Inrather Straße 181, ein'
+    : 'an die oben genannte Anschrift';
+
+  return `<div class="ew-seite">
+    <table class="ew-kopf"><tr>
+      <td class="ew-l">${briefLogoSvg()}</td>
+      <td class="ew-r">${bk.strasse?esc(bk.strasse)+'<br>':''}${bk.ort?esc(bk.ort)+'<br>':''}${bk.tel?'Tel. '+esc(bk.tel)+'<br>':''}${bk.email?esc(bk.email):''}</td>
+    </tr></table>
+    <div class="ew-abs">${esc([bk.name, bk.strasse, bk.ort].filter(Boolean).join(' · '))}</div>
+    <div class="ew-anschrift"><strong>${esc(adressVollNamenVertrag(m))}</strong><br>${esc(obj.name||'')}<br>${esc(obj.ort||'')}</div>
+    <div class="ew-datum">${esc(String(bk.ort||'').replace(/^\d+\s*/,''))}, ${esc(opt.fmtD(opt.datum))}</div>
+
+    <div class="ew-betreff">Eigentümerwechsel – neue Bankverbindung und Ihr Mieterportal</div>
+    <div class="ew-anrede">${esc(anredeMitKomma(getAnredeVertragNachname(m)))}</div>
+
+    <p>wir, ${esc(empfaenger)}, haben Ihr Wohnhaus übernommen und verwalten es künftig selbst. Sie haben damit direkte Ansprechpartner und kurze Wege.</p>
+    <p>Für Ihr Mietverhältnis ändert sich nichts: Ihr Mietvertrag besteht mit allen Rechten und Pflichten unverändert fort (§ 566 Abs. 1 BGB), eine geleistete Kaution ist kraft Gesetzes auf uns übergegangen (§ 566a BGB). Miete, Vorauszahlungen und alle übrigen Vereinbarungen bleiben unverändert; ein neuer Mietvertrag ist nicht erforderlich. Einen Nachweis über den Eigentumsübergang legen wir Ihnen auf Wunsch vor.</p>
+
+    <div class="ew-h2">Neue Bankverbindung – bitte Dauerauftrag anpassen</div>
+    <p>Bitte überweisen Sie die Miete ab dem ${esc(opt.fmtD(opt.zahlAb))} ausschließlich auf dieses Konto:</p>
+    <table class="ew-kasten"><tr>
+      <td>
+        <table class="ew-daten">
+          <tr><td>Empfänger</td><td>${esc(empfaenger)}</td></tr>
+          <tr><td>IBAN</td><td><b>${esc(ibanFormatiert(iban))}</b></td></tr>
+          ${gs.ktoBank?`<tr><td>Bank</td><td>${esc(gs.ktoBank)}</td></tr>`:''}
+          <tr><td>Verwendungszweck</td><td>${esc(zweck)}</td></tr>
+          <tr><td>Monatlich</td><td><b>${fmtEur(summe)}</b></td></tr>
+        </table>
+      </td>
+      <td class="ew-qr">${giroBild?`<img src="${giroBild}" alt="GiroCode"><span>Überweisung scannen</span>`:''}</td>
+    </tr></table>
+    <p class="ew-klein">Mit der Banking-App scannen: Empfänger, IBAN, Betrag und Verwendungszweck werden übernommen; die meisten Apps bieten an, die Überweisung als Dauerauftrag zu speichern. Zahlen Sie bisher per Lastschrift, senden Sie bitte das beiliegende SEPA-Mandat unterschrieben zurück.</p>
+
+    <div class="ew-h2">Ihr Mieterportal – bitte einmalig E-Mail-Adresse hinterlegen</div>
+    <table class="ew-kasten"><tr>
+      <td class="ew-qr">${portalBild?`<img src="${portalBild}" alt="Portal-QR"><span>Wohnung ${esc(String(m.weNr||''))}</span><span class="ew-schluessel">Schlüssel: ${esc(regCodeFormat(code))}</span>`:''}</td>
+      <td>
+        <p>Code mit der Handykamera scannen und die Kontaktdaten aller erwachsenen Mieter eintragen – bis zu drei Personen. Ohne Handy: ${esc(String(PORTAL_BASIS).replace(/^https?:\/\//,'').replace(/\/$/,''))} aufrufen, Wohnung ${esc(String(m.weNr||''))} und den Schlüssel eingeben, oder die beiliegende Rückantwort ausfüllen.</p>
+        <p>Der Code dient zunächst allein der Erfassung Ihrer Kontaktdaten. Das Mieterportal selbst – Nebenkostenabrechnung, Rundschreiben, Grundrisse, Dokumente und die Mängelmeldung – öffnen wir schrittweise; wir informieren Sie, sobald es so weit ist.</p>
+      </td>
+    </tr></table>
+    <p class="ew-klein">Warum wir Ihre E-Mail-Adresse brauchen: Wir müssen Ihnen monatlich Ihren Heiz- und Warmwasserverbrauch mitteilen (§ 6a HeizkostenV). Digital bekommen Sie diese Übersicht über das A+S-Portal; ohne E-Mail-Adresse müssen wir sie jeden Monat drucken und zustellen – die Kosten der Verbrauchsinformation sind umlagefähige Betriebskosten und belasten Ihre Abrechnung.</p>
+    <p class="ew-klein">Wichtige Schreiben – Betriebskostenabrechnung, Mieterhöhung, Kündigung – erhalten Sie unabhängig davon weiterhin per Post. Den beiliegenden Aufkleber kleben Sie nach der Anmeldung innen an Ihren Sicherungskasten; er enthält keinen Schlüssel.</p>
+
+    <p>Lieber auf Papier? Dann füllen Sie bitte die beiliegende Rückantwort aus und werfen sie bis zum ${esc(opt.fmtD(opt.frist))} ${rueckgabe}. Hausordnung und Datenschutzhinweise liegen zu Ihrer Information bei.</p>
+    <p>Wir freuen uns auf eine gute Zusammenarbeit.</p>
+    <div class="ew-gruss">Mit freundlichen Grüßen</div>
+    ${sigHTML?`<div class="ew-sigzeile">${sigHTML}</div>`:'<div class="ew-sigluft"></div>'}
+    <div class="ew-anlagen">Anlagen: Rückantwort · SEPA-Lastschriftmandat · Datenschutzhinweise · Hausordnung · QR-Aufkleber</div>
+  </div>`;
+}
+
+/* Anlagenseiten je Mieter. Rückgabe {html, mitSepa} - die Zahl der wirklich
+   erzeugten Mandate wird gemeldet, weil ein Mandat ohne Gläubiger-ID nicht
+   erzeugt wird (v285-Regel: lieber keines als eines mit falscher Kennung). */
+async function ewAnlagenFuer(m, anl, opt){
+  let html = '', mitSepa = false;
+  if(anl.rueck) html += ewRueckantwortSeite(m, opt);
+
+  const einbetten = (voll) => {
+    const klasse = mvAnlageBodyClass(voll);
+    return '<div class="ew-anlage anlage-vt' + (klasse?' '+klasse:'') + '">'
+         + mvAnlageInnerBody(voll) + '</div>';
+  };
+
+  if(anl.sepa){
+    const gs = (await idbGet('objekt_stamm', m.objektId).catch(()=>null)) || {};
+    const bk = getBriefkopf(m.objektId) || {};
+    const obj = getObj(m.objektId) || {};
+    if(String(gs.sepaGlaeubigerId||'').trim()){
+      html += einbetten(anlageSepaHtml({
+        sepaEmpfaenger: gs.ktoInhaber || bk.name || '',
+        sepaEmpfaengerAnschrift: gs.sepaGlaeubigerAnschrift || [bk.strasse, bk.ort].filter(Boolean).join(', '),
+        sepaGlaeubigerId: gs.sepaGlaeubigerId,
+        sepaMandatsreferenz: mvMandatsreferenz({objektId:m.objektId, weNr:m.weNr}),
+        sepaZahlerAnschrift: [obj.name, obj.ort].filter(Boolean).join(', '),
+      }, false));
+      mitSepa = true;
+    }
+  }
+  /* Datenschutzhinweis OHNE Unterschriftszeile: Bestandsmieter sollen ihn zur
+     Kenntnis nehmen, nicht unterschreiben - eine Unterschrift sähe nach
+     Einwilligung aus, und die wäre jederzeit widerruflich. */
+  if(anl.dsgvo) html += einbetten(anlageDatenschutzHtml(m.objektId, m.weNr, false, {ohneUnterschrift:true}));
+  if(anl.hausordnung) html += einbetten(anlageHausordnungHtml(m.objektId, m.weNr, false));
+  return {html, mitSepa};
+}
+
+/* Rückantwort auf Papier. Kästchen statt Linien: auf einer Linie schreibt
+   jeder anders, und ein falsch gelesenes Zeichen in der E-Mail-Adresse
+   bedeutet, dass die Zugangsmail nie ankommt. */
+function ewKaesten(anzahl){
+  return '<div class="ew-kaesten">' + '<span></span>'.repeat(anzahl) + '</div>';
+}
+
+function ewRueckantwortSeite(m, opt){
+  const obj = getObj(m.objektId) || {};
+  const bk  = getBriefkopf(m.objektId) || {};
+  const person = (nr, zusatz) => `
+    <div class="ew-person">
+      <div class="ew-persontitel">Person ${nr}${zusatz?` <span>${esc(zusatz)}</span>`:''}</div>
+      <div class="ew-feldlabel">Vor- und Nachname</div><div class="ew-linie"></div>
+      <div class="ew-feldlabel">E-Mail (bitte in Druckbuchstaben, Fortsetzung in der zweiten Zeile)</div>
+      ${ewKaesten(28)}${ewKaesten(28)}
+      <div class="ew-feldlabel">Telefon</div>${ewKaesten(28)}
+    </div>`;
+
+  return `<div class="ew-seite ew-rueck">
+    <table class="ew-kopf"><tr>
+      <td class="ew-l">${briefLogoSvg()}</td>
+      <td class="ew-r">${bk.strasse?esc(bk.strasse)+'<br>':''}${bk.ort?esc(bk.ort)+'<br>':''}${bk.tel?'Tel. '+esc(bk.tel)+'<br>':''}${bk.email?esc(bk.email):''}</td>
+    </tr></table>
+    <div class="ew-h1">RÜCKANTWORT</div>
+    <div class="ew-klein">${esc(obj.name||'')} · Wohnung ${esc(String(m.weNr||''))} · ${esc(m.mieter||m.name||'')}</div>
+    <p class="ew-klein">Bitte bis zum ${esc(opt.fmtD(opt.frist))} zurückgeben. Bitte in DRUCKBUCHSTABEN ausfüllen – ein einziges falsch gelesenes Zeichen genügt, und die E-Mail erreicht Sie nicht.</p>
+    <div class="ew-h2">Kontaktdaten der Mieter</div>
+    <p class="ew-klein">Bitte tragen Sie alle erwachsenen Personen ein, die in der Wohnung wohnen. Jede Person mit E-Mail-Adresse erhält die monatliche Heizkostenübersicht und später den eigenen Portalzugang.</p>
+    ${person(1,'')}
+    ${person(2,'(falls eine weitere Person in der Wohnung wohnt)')}
+    ${person(3,'(falls eine dritte Person in der Wohnung wohnt)')}
+    <p style="margin-top:3mm">Bevorzugter Kontaktweg: &nbsp;&nbsp;☐ E-Mail &nbsp;&nbsp;&nbsp;☐ Telefon &nbsp;&nbsp;&nbsp;☐ Post</p>
+    <p>☐&nbsp;&nbsp;Ich habe die Datenschutzhinweise und die Hausordnung erhalten.</p>
+    <p>☐&nbsp;&nbsp;Ich wünsche die monatliche Heizkostenübersicht weiterhin per Post.</p>
+    <div class="ew-feldlabel" style="margin-top:3mm">Mitteilung</div><div class="ew-linie ew-linie-hoch"></div>
+    <table class="ew-untersch"><tr>
+      <td><div class="ew-linie"></div><span>Ort, Datum</span></td>
+      <td><div class="ew-linie"></div><span>Unterschrift</span></td>
+    </tr></table>
+    <p class="ew-mini">Ihre Angaben verarbeiten wir zur Durchführung des Mietverhältnisses (Art. 6 Abs. 1 lit. b DSGVO) und zur Erfüllung unserer Pflichten aus der Heizkostenverordnung (Art. 6 Abs. 1 lit. c DSGVO). Einzelheiten in den beiliegenden Datenschutzhinweisen.</p>
+  </div>`;
+}
+
+/* IBAN in Vierergruppen - so wird sie beim Abtippen deutlich seltener falsch
+   gelesen als in einem 22-stelligen Block. */
+function ibanFormatiert(iban){
+  return String(iban||'').replace(/\s+/g,'').replace(/(.{4})/g,'$1 ').trim();
+}
+
+function ewStil(){
+  return `<style>
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{font-family:Arial,sans-serif;font-size:10.5pt;color:#111;padding:12mm 18mm;max-width:210mm;line-height:1.42}
+    .ew-seite{page-break-after:always}
+    .ew-seite:last-child{page-break-after:auto}
+    .ew-kopf{width:100%;border-collapse:collapse}
+    .ew-kopf td{vertical-align:top;padding:0}
+    .ew-kopf .ew-l{width:58%}
+    .ew-kopf .ew-r{width:42%;text-align:right;font-size:8pt;color:#555}
+    .ew-abs{font-size:6.5pt;color:#777;border-bottom:1px solid #ccc;padding-bottom:1mm;margin:6mm 0 2mm}
+    .ew-anschrift{font-size:10.5pt;line-height:1.4;min-height:18mm}
+    .ew-datum{text-align:right;font-size:10pt;color:#333;margin:3mm 0 5mm}
+    .ew-betreff{font-weight:700;font-size:11.5pt;color:#0C447C;margin-bottom:3mm}
+    .ew-anrede{margin-bottom:2.5mm}
+    p{margin:0 0 2.5mm;text-align:left}
+    .ew-h2{font-weight:700;font-size:11pt;color:#0C447C;margin:4mm 0 2mm}
+    .ew-kasten{width:100%;border-collapse:collapse;background:#F4F6F9;margin:1mm 0}
+    .ew-kasten>tbody>tr>td{vertical-align:middle;padding:2.5mm 3mm}
+    .ew-daten{border-collapse:collapse;font-size:10pt}
+    .ew-daten td{padding:0.8mm 0;vertical-align:top}
+    .ew-daten td:first-child{color:#666;width:32mm;padding-right:3mm}
+    .ew-qr{width:38mm;text-align:center}
+    .ew-qr img{width:32mm;height:32mm;display:block;margin:0 auto 1mm}
+    .ew-qr span{display:block;font-size:7.5pt;color:#666}
+    .ew-qr .ew-schluessel{font-weight:700;font-size:9pt;color:#111}
+    .ew-klein{font-size:8pt;color:#666;margin-bottom:2mm}
+    .ew-gruss{margin:2mm 0 0}
+    .ew-sigzeile{margin:1mm 0 0}
+    .ew-sig{display:inline-block;margin-right:14mm;vertical-align:bottom}
+    .ew-sig img{max-height:52px;display:block;margin-bottom:0.5mm}
+    .ew-sig span{font-size:9pt}
+    .ew-sigluft{height:14mm}
+    .ew-anlagen{font-size:7.5pt;color:#777;margin-top:3mm}
+    .ew-h1{font-weight:700;font-size:14pt;color:#0C447C;margin:3mm 0 1mm}
+    .ew-rueck .ew-h2{margin:3mm 0 1mm}
+    .ew-feldlabel{font-size:8pt;color:#666;margin:2mm 0 0.6mm}
+    .ew-linie{border-bottom:1px solid #999;height:6mm}
+    .ew-linie-hoch{height:14mm}
+    .ew-person{border:1px solid #dde3ea;border-radius:2mm;padding:2mm 3mm;margin:2mm 0}
+    .ew-persontitel{font-weight:700;color:#0C447C;font-size:10pt}
+    .ew-persontitel span{font-weight:400;color:#666;font-size:8.5pt}
+    /* 28 Felder auf der Satzbreite ergeben rund 6 mm je Kästchen - die Breite,
+       in der Erwachsene ohne Mühe Druckbuchstaben setzen. */
+    .ew-kaesten{display:flex;gap:0.6mm;margin-bottom:1.2mm}
+    .ew-kaesten span{flex:1;height:6.2mm;border:1px solid #9AA5B1;border-radius:0.5mm}
+    .ew-untersch{width:100%;border-collapse:collapse;margin-top:8mm}
+    .ew-untersch td{width:50%;padding-right:8mm;vertical-align:bottom}
+    .ew-untersch span{font-size:8pt;color:#666}
+    .ew-mini{font-size:7.5pt;color:#777;margin-top:3mm}
+    /* Jede eingebettete Anlage beginnt auf einer neuen Seite. */
+    .ew-anlage{page-break-before:always;page-break-after:always}
+    @page{margin:0;size:A4}
+    @media print{body{padding:12mm 18mm;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+  </style>`;
+}
+
+function ewAutoPrint(){
+  return '<scr'+'ipt>(function(){var p=function(){setTimeout(function(){window.focus();window.print();},500);};'
+       + 'if(document.readyState===\'complete\'){p();}else{window.addEventListener(\'load\',p);}})();</scr'+'ipt>';
+}
+
+/* ── ADRESSEN AUS DEM PORTAL ZURÜCKHOLEN (v301) ──────────────
+   Mieter tragen ihre Kontaktdaten selbst im Portal ein. Ohne diesen Weg müsste
+   jede Registrierung von Hand aus dem Posteingang abgetippt werden - und beim
+   nächsten Verzeichnis-Push würde die App ihren eigenen leeren Stand wieder
+   hochschieben. Übernommene Adressen gewinnen danach als 'app'-Adresse. */
+async function wohnungenAdressenHolen(){
+  const st = document.getElementById('wohnungsExportStatus');
+  const key=(await idbGet('settings','backendKey').catch(()=>null))?.value;
+  if(!key){ toast('Kein Backend-Schlüssel hinterlegt'); return; }
+  if(st) st.innerHTML = '<div style="font-size:12px;color:var(--ink-40)">Frage Portal ab …</div>';
+  let daten;
+  try{
+    const res = await fetchMitTimeout(BACKEND_AZURE+'/api/portal-sync?nur=mieter',
+      { method:'GET', headers:{'x-functions-key':key} });
+    daten = await res.json();
+    if(!res.ok || !daten.ok) throw new Error('Status '+res.status);
+  }catch(e){
+    if(st) st.innerHTML = '<div style="font-size:12px;color:var(--red,#c0392b)">Portal nicht erreichbar.</div>';
+    return;
+  }
+
+  const alle = await idbGetAll('mieter');
+  let uebernommen=0, unbekannt=[], schonDa=0;
+  for(const w of (daten.wohnungen||[])){
+    if(!w.email) continue;
+    const treffer = alle.filter(m => m && !m._vormieter && !m._zukuenftig && !m.leerstand
+      && wohnungsKennung(m.objektId, m.weNr) === String(w.kennung||'').toUpperCase());
+    if(!treffer.length){ unbekannt.push(w.kennung); continue; }
+    /* Nur die erste Person der Wohnung bekommt die führende Adresse - die
+       übrigen stehen im Posteingang und werden dort zugeordnet. Eine bereits
+       gepflegte, abweichende Adresse wird NICHT überschrieben: sie könnte die
+       vertraglich vereinbarte sein. */
+    const m = treffer[0];
+    if(String(m.email||'').trim().toLowerCase() === String(w.email).trim().toLowerCase()){ schonDa++; continue; }
+    if(String(m.email||'').trim()){ unbekannt.push(w.kennung+' (abweichende Adresse bereits gepflegt)'); continue; }
+    m.email = String(w.email).trim();
+    await idbPut('mieter', m);
+    uebernommen++;
+  }
+  if(st){
+    st.innerHTML = `<div style="font-size:12px;color:var(--green)"><i class="ti ti-circle-check"></i> ${uebernommen} Adresse(n) übernommen, ${schonDa} bereits aktuell.</div>`
+      + (unbekannt.length?`<div style="font-size:12px;color:var(--amber-d,#9a6b00);margin-top:4px"><i class="ti ti-alert-triangle"></i> Nicht zugeordnet: ${esc(unbekannt.join(', '))}</div>`:'')
+      + ((daten.verwaisteRowkeys||[]).length?`<div style="font-size:12px;color:var(--amber-d,#9a6b00);margin-top:4px">Veraltete Einträge im Portal (Kleinschreibung): ${esc(daten.verwaisteRowkeys.join(', '))}</div>`:'');
+  }
+  toast(uebernommen+' Adresse(n) übernommen');
 }
 
 // ── Aushang ──────────────────────────────────────────────────
@@ -28715,6 +29257,13 @@ function anlageRahmen(titel, untertitel, innerHtml, fussSeiten, bodyClass){
   .sepa-wert{font-weight:700}
   .sepa-leer{display:inline-block;border-bottom:1px solid #555;height:14px;vertical-align:bottom}
   .sepa-b1{min-width:120px}.sepa-b2{min-width:160px}.sepa-b3{min-width:220px}.sepa-b4{min-width:300px}
+  /* v301: Einzelbuchstabenfelder. Kaestchenmasse in Millimetern, weil das
+     Mandat ausschliesslich gedruckt ausgefuellt wird - 5,2 mm ist die Breite,
+     die auf Bankvordrucken ueblich ist und in die Erwachsene ohne Muehe
+     Druckbuchstaben setzen. 30 Kaestchen passen in die Satzbreite. */
+  .sepa-kaesten{display:flex;flex-wrap:nowrap;gap:0.7mm;margin-top:1mm}
+  .sepa-kasten{width:5.2mm;height:6.4mm;border:1px solid #555;border-radius:0.6mm;flex:none}
+  .sepa-vorgedruckt{font-weight:700;padding:1mm 0 0}
   .sepa-hinweis{font-size:7.5pt;color:#777;margin-top:2px}
   .sepa-text{margin:10px 0;text-align:justify}
   .sepa-text p{margin:0 0 6px}
@@ -28917,6 +29466,11 @@ function anlageSepaHtml(daten, autoDruck){
   const feld = (wert, breite) => wert
     ? '<span class="sepa-wert">' + esc(wert) + '</span>'
     : '<span class="sepa-leer sepa-b' + (breite>=300?'4':breite>=200?'3':breite>=160?'2':'1') + '"></span>';
+  /* Einzelbuchstabenfelder fuer alles, was der Kontoinhaber selbst eintraegt.
+     Anzahl je Feld bewusst knapp gehalten - zu viele Kaestchen verleiten dazu,
+     die Zeile zu fuellen statt sauber abzusetzen. */
+  const kaesten = (anzahl) => '<div class="sepa-kaesten">' +
+    Array.from({length: anzahl}, () => '<span class="sepa-kasten"></span>').join('') + '</div>';
   const zeile = (deLabel, enLabel, inhalt, hinweis) => `
     <div class="sepa-zeile">
       <div class="sepa-label">${esc(deLabel)}${enLabel?' <span class="sepa-en">/ '+esc(enLabel)+'</span>':''}</div>
@@ -28952,15 +29506,22 @@ function anlageSepaHtml(daten, autoDruck){
           <span class="sepa-abstand"><span class="sepa-box">☐</span> Einmalige Zahlung <span class="sepa-en">/ One-off payment</span></span>
         </div>
       </div>
-      ${zeile('Name des Zahlungspflichtigen (Kontoinhaber)','Debtor name', feld('', 300))}
-      ${zeile('Anschrift des Zahlungspflichtigen (Kontoinhaber)','Debtor address', feld('', 300),
-              'Angabe freigestellt. / Optional information.')}
-      ${zeile('IBAN des Zahlungspflichtigen (max. 34 Stellen)','IBAN of the debtor', feld('', 300))}
-      ${zeile('BIC (8 oder 11 Stellen)','BIC', feld('', 200),
+      ${zeile('Name des Zahlungspflichtigen (Kontoinhaber)','Debtor name', kaesten(30),
+              'Nur ausfüllen, wenn der Kontoinhaber nicht mit dem Mieter übereinstimmt. / Only if the account holder differs from the tenant.')}
+      ${zeile('Anschrift des Zahlungspflichtigen (Kontoinhaber)','Debtor address',
+              (d.sepaZahlerAnschrift
+                ? '<div class="sepa-vorgedruckt">' + esc(d.sepaZahlerAnschrift) + '</div>'
+                : kaesten(30)),
+              d.sepaZahlerAnschrift
+                ? 'Abweichende Anschrift bitte formlos daneben eintragen. / Please note a different address alongside.'
+                : 'Angabe freigestellt. / Optional information.')}
+      ${zeile('IBAN des Zahlungspflichtigen','IBAN of the debtor', kaesten(22))}
+      ${zeile('BIC (8 oder 11 Stellen)','BIC', kaesten(11),
               'Die Angabe des BIC kann entfallen, wenn der Zahlungsdienstleister des Zahlungspflichtigen in einem EU-/EWR-Mitgliedsstaat ansässig ist. / The BIC is optional when the debtor bank is located in a EEA SEPA country.')}
+      ${zeile('Kreditinstitut','Name of the debtor bank', kaesten(30))}
       <div class="sepa-zeile sepa-zwei">
-        <div><div class="sepa-label">Ort <span class="sepa-en">/ Location</span></div>${feld('', 160)}</div>
-        <div><div class="sepa-label">Datum (TT.MM.JJJJ) <span class="sepa-en">/ Date</span></div>${feld('', 160)}</div>
+        <div><div class="sepa-label">Ort <span class="sepa-en">/ Location</span></div>${kaesten(18)}</div>
+        <div><div class="sepa-label">Datum (TT.MM.JJJJ) <span class="sepa-en">/ Date</span></div>${kaesten(8)}</div>
       </div>
     </div>
 
@@ -28974,7 +29535,8 @@ function anlageSepaHtml(daten, autoDruck){
 }
 
 // ── DATENSCHUTZHINWEIS (Art. 13 DSGVO) ────────────────────
-function anlageDatenschutzHtml(objektId, weNr, autoDruck){
+function anlageDatenschutzHtml(objektId, weNr, autoDruck, opt){
+  const ohneUnterschrift = !!(opt && opt.ohneUnterschrift);
   const bk = objektId ? getBriefkopf(objektId) : null;
   const verantwortlich = (bk && (bk.absender||bk.name)) ? (bk.absender||bk.name) : 'Hausverwaltung Nadig / Pfau';
   const anschrift = (bk && bk.strasse) ? [bk.strasse, bk.ort].filter(Boolean).join(', ') : VERWALTER_ANSCHRIFT;
@@ -28991,17 +29553,24 @@ function anlageDatenschutzHtml(objektId, weNr, autoDruck){
     <h2>3. Kategorien verarbeiteter Daten</h2>
     <p>Verarbeitet werden insbesondere Ihre Stammdaten (Name, Anschrift, Geburtsdatum, Kontaktdaten), Vertrags- und Abrechnungsdaten, Bankverbindung im Rahmen des SEPA-Lastschriftverfahrens sowie Daten, die im Verlauf des Mietverhältnisses anfallen (z. B. Zählerstände, Korrespondenz, Übergabeprotokolle).</p>
     <h2>4. Empfänger</h2>
-    <p>Eine Weitergabe Ihrer Daten erfolgt nur, soweit dies zur Durchführung des Mietverhältnisses erforderlich oder gesetzlich vorgeschrieben ist – etwa an Versorgungs- und Abrechnungsunternehmen, beauftragte Handwerker und Dienstleister, Behörden sowie an Steuerberater. Eine Übermittlung in Drittländer außerhalb der EU/des EWR findet nicht statt.</p>
-    <h2>5. Speicherdauer</h2>
+    <p>Eine Weitergabe Ihrer Daten erfolgt nur, soweit dies zur Durchführung des Mietverhältnisses erforderlich oder gesetzlich vorgeschrieben ist – etwa an Versorgungs- und Abrechnungsunternehmen, beauftragte Handwerker und Dienstleister, Behörden sowie an Steuerberater.</p>
+    <p>Für Betrieb und Speicherung unserer Verwaltungssoftware setzen wir technische Dienstleister als Auftragsverarbeiter nach Art. 28 DSGVO ein (Microsoft Ireland Operations Ltd. für Cloudspeicher und Serverbetrieb; Rechenzentren in der Europäischen Union).</p>
+    <h2>5. Übermittlung in Drittländer</h2>
+    <p>Zur automatischen Auslesung von Zählerfotos und Rechnungsbelegen nutzen wir einen KI-gestützten Texterkennungsdienst der Anthropic PBC, San Francisco, USA. Dabei werden die jeweilige Aufnahme und die daraus gelesenen Angaben in die USA übermittelt. Grundlage sind ein Auftragsverarbeitungsvertrag sowie die Standardvertragsklauseln der EU-Kommission (Art. 46 Abs. 2 lit. c DSGVO), ergänzt um eine Abschätzung der Risiken der Übermittlung. Nach den Bedingungen des Anbieters werden die übermittelten Inhalte nicht zum Training von Modellen verwendet und nur vorübergehend gespeichert. Eine darüber hinausgehende Übermittlung in Drittländer findet nicht statt.</p>
+    <h2>6. Speicherdauer</h2>
     <p>Wir speichern Ihre Daten für die Dauer des Mietverhältnisses und darüber hinaus, solange gesetzliche Aufbewahrungspflichten bestehen oder Ansprüche aus dem Mietverhältnis geltend gemacht werden können. Nach Ablauf dieser Fristen werden die Daten gelöscht.</p>
-    <h2>6. Ihre Rechte</h2>
+    <h2>7. Mieterportal</h2>
+    <p>Wenn Sie sich für unser Mieterportal registrieren, verarbeiten wir zusätzlich Ihre E-Mail-Adresse und – falls angegeben – Ihre Telefonnummer, um Ihnen Zugangscodes, Abrechnungen und Mitteilungen bereitzustellen (Art. 6 Abs. 1 lit. b DSGVO). Melden Sie über das Portal einen Mangel, verarbeiten wir Ihre Beschreibung und die hochgeladenen Fotos, um die Instandsetzung zu veranlassen. Die Nutzung des Portals ist freiwillig; ohne Registrierung erhalten Sie alle Unterlagen weiterhin auf dem Postweg.</p>
+    <h2>8. Keine automatisierte Entscheidungsfindung</h2>
+    <p>Eine automatisierte Entscheidungsfindung einschließlich Profiling nach Art. 22 DSGVO findet nicht statt. Die eingesetzte Texterkennung liest Belege und Zählerstände lediglich aus; jede Entscheidung über Ihr Mietverhältnis treffen wir selbst.</p>
+    <h2>9. Ihre Rechte</h2>
     <p>Sie haben das Recht auf Auskunft (Art. 15 DSGVO), Berichtigung (Art. 16), Löschung (Art. 17), Einschränkung der Verarbeitung (Art. 18), Datenübertragbarkeit (Art. 20) sowie ein Widerspruchsrecht (Art. 21 DSGVO). Sie können sich zudem bei einer Datenschutz-Aufsichtsbehörde beschweren (Art. 77 DSGVO); zuständig ist die Landesbeauftragte für Datenschutz und Informationsfreiheit Nordrhein-Westfalen.</p>
-    <h2>7. Bereitstellungspflicht</h2>
+    <h2>10. Bereitstellungspflicht</h2>
     <p>Die Bereitstellung der zur Vertragsdurchführung erforderlichen Daten ist für den Abschluss und die Durchführung des Mietvertrages notwendig. Ohne diese Daten kann das Mietverhältnis nicht begründet oder durchgeführt werden.</p>
-    <div class="sig">
+    ${ohneUnterschrift ? '' : `<div class="sig">
       <p class="anerk">Der Mieter bestätigt mit seiner Unterschrift, diesen Datenschutzhinweis erhalten zu haben.</p>
       <div class="sigrow"><div class="sigline">Ort, Datum</div><div class="sigline">Mieter</div></div>
-    </div>
+    </div>`}
     <div class="foot">Hausverwaltung Nadig / Pfau · Datenschutzhinweis nach Art. 13 DSGVO</div>
     ${autoDruck?anlageAutoDruck():''}`;
   return anlageRahmen('Datenschutzhinweis', '', inner, null, 'ds-kompakt');
@@ -29332,7 +29901,20 @@ async function renderSettings(){
       <div id="wohnungsExportInfo" style="font-size:12px;color:var(--ink-40);margin-bottom:10px"></div>
       <button class="btn btn-primary btn-full" style="margin-bottom:8px" data-action-click="wohnungenExportJson"><i class="ti ti-download"></i> Als JSON speichern</button>
       <button class="btn btn-full" data-action-click="wohnungenExportPush"><i class="ti ti-cloud-up"></i> Direkt ans Backend senden</button>
+      <button class="btn btn-full" style="margin-top:8px" data-action-click="wohnungenAdressenHolen"><i class="ti ti-cloud-down"></i> Neue Adressen aus dem Portal übernehmen</button>
       <div id="wohnungsExportStatus" style="margin-top:10px"></div>
+    </div>`:''}
+
+    ${istSysAdmin?`<div class="settings-card" data-tab="daten">
+      <div class="card-hdr"><i class="ti ti-mail-forward"></i> Serienbrief Eigentümerwechsel</div>
+      <p style="font-size:13px;color:var(--ink-40);margin-bottom:12px;line-height:1.6">
+        Erzeugt je belegter Wohneinheit ein Anschreiben mit neuer Bankverbindung, GiroCode
+        (Betrag und Verwendungszweck vorausgefüllt) und Portal-QR mit persönlichem
+        Registrierschlüssel. Jeder Brief wird beim Mieter archiviert.
+        <strong>Danach unbedingt „Direkt ans Backend senden“ ausführen</strong> – erst damit
+        werden die gedruckten Registrierschlüssel im Portal gültig.
+      </p>
+      <button class="btn btn-primary btn-full" data-action-click="modalSerienbriefEigentuemerwechsel"><i class="ti ti-printer"></i> Briefe erstellen</button>
     </div>`:''}
 
     ${istSysAdmin?`<div class="settings-card" data-tab="system">
