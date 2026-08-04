@@ -1230,7 +1230,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=35;   // v242: +buch_journal (F4 GoBD)
-const APP_VERSION = '2026-08-04-v308';
+const APP_VERSION = '2026-08-04-v309';
 /* v300 (03.08.2026): E-Mail-Auswahl je Wohneinheit korrigiert (Gerätetest-Befund).
    Beim ersten echten Push meldete die App "25 Wohnungen uebertragen, 90
    uebersprungen". Ein Teil davon ist echter Datenmangel (Krefeld hat noch
@@ -7186,6 +7186,30 @@ async function mieterRegCode(m, neuErzeugen){
    Der Empfaengername muss exakt dem Kontoinhaber entsprechen - seit Oktober
    2025 gleicht die Bank des Zahlers ihn ab (Verification of Payee) und warnt
    bei Abweichung. */
+/* v309: Einheitliche Telefondarstellung im Eigentuemerwechsel-Brief:
+   +49 / 177 250 97 10. Die Teilnehmernummer wird von rechts in Zweiergruppen
+   zerlegt, der Rest bleibt vorn - das ergibt bei 7 Stellen "250 97 10" und bei
+   8 Stellen "21 37 00 40". Bewusst NUR fuer dieses Schreiben verwendet: die
+   Regel unterstellt eine dreistellige Vorwahl (Mobilfunk) und wuerde bei
+   Festnetznummern mit abweichender Vorwahllaenge falsch gruppieren. Laesst
+   sich die Nummer nicht sicher zerlegen, wird sie unveraendert ausgegeben. */
+function telAnzeige(roh){
+  const orig = String(roh==null?'':roh).trim();
+  let d = orig.replace(/[^\d+]/g,'');
+  if(d.startsWith('+'))      d = d.slice(1);
+  else if(d.startsWith('00')) d = d.slice(2);
+  else if(d.startsWith('0'))  d = '49'+d.slice(1);
+  if(!/^49\d{9,12}$/.test(d)) return orig;
+  const vorwahl = d.slice(2,5);
+  let rest = d.slice(5);
+  const grp = [];
+  /* > 3, damit ein dreistelliger Rest vorn geschlossen bleibt: 2509710 wird
+     zu "250 97 10" und nicht zu "2 50 97 10". */
+  while(rest.length > 3){ grp.unshift(rest.slice(-2)); rest = rest.slice(0,-2); }
+  if(rest) grp.unshift(rest);
+  return '+49 / '+vorwahl+' '+grp.join(' ');
+}
+
 function epcNutzlast({empfaenger, iban, bic, betrag, zweck}){
   const name = String(empfaenger||'').slice(0,70);
   const konto = String(iban||'').replace(/\s+/g,'').toUpperCase();
@@ -22978,7 +23002,7 @@ async function ewSeiteFuer(m, opt){
   return `<div class="ew-seite">
     <table class="ew-kopf"><tr>
       <td class="ew-l">${briefLogoSvg()}</td>
-      <td class="ew-r">${bk.strasse?esc(bk.strasse)+'<br>':''}${bk.ort?esc(bk.ort)+'<br>':''}${bk.tel?'Tel. '+esc(bk.tel)+'<br>':''}${bk.email?esc(bk.email):''}</td>
+      <td class="ew-r">${bk.strasse?esc(bk.strasse)+'<br>':''}${bk.ort?esc(bk.ort)+'<br>':''}${bk.tel?'Tel. '+esc(telAnzeige(bk.tel))+'<br>':''}${bk.email?esc(bk.email):''}</td>
     </tr></table>
     <div class="ew-abs">${esc([bk.name, bk.strasse, bk.ort].filter(Boolean).join(' · '))}</div>
     <div class="ew-anschrift"><strong>${esc(adressVollNamenVertrag(m))}</strong><br>${esc(obj.name||'')}<br>${esc(obj.ort||'')}</div>
@@ -23004,7 +23028,7 @@ async function ewSeiteFuer(m, opt){
       </td>
       <td class="ew-qr">${giroBild?`<img src="${giroBild}" alt="GiroCode"><span>Überweisung scannen</span>`:''}</td>
     </tr></table>
-    <p class="ew-klein">Mit der Banking-App scannen: Empfänger, IBAN, Betrag und Verwendungszweck werden übernommen; die meisten Apps bieten an, die Überweisung als Dauerauftrag zu speichern. Zahlen Sie bisher per Lastschrift, senden Sie bitte das beiliegende SEPA-Mandat unterschrieben zurück.</p>
+    <p class="ew-klein">Mit der Banking-App scannen: Empfänger, IBAN, Betrag und Verwendungszweck werden übernommen; die meisten Apps bieten an, die Überweisung als Dauerauftrag zu speichern.</p>
 
     <div class="ew-h2">Ihr Mieterportal – bitte einmalig E-Mail-Adresse hinterlegen</div>
     <table class="ew-kasten"><tr>
@@ -23015,7 +23039,7 @@ async function ewSeiteFuer(m, opt){
       </td>
     </tr></table>
     <p class="ew-klein">Warum wir Ihre E-Mail-Adresse brauchen: Wir müssen Ihnen monatlich Ihren Heiz- und Warmwasserverbrauch mitteilen (§ 6a HeizkostenV). Digital bekommen Sie diese Übersicht über das A+S-Portal; ohne E-Mail-Adresse müssen wir sie jeden Monat drucken und zustellen – die Kosten der Verbrauchsinformation sind umlagefähige Betriebskosten und belasten Ihre Abrechnung.</p>
-    <p class="ew-klein">Wichtige Schreiben – Betriebskostenabrechnung, Mieterhöhung, Kündigung – erhalten Sie unabhängig davon weiterhin per Post. Den beiliegenden Aufkleber kleben Sie nach der Anmeldung innen an Ihren Sicherungskasten; er enthält keinen Schlüssel.</p>
+    <p class="ew-klein">Wichtige Schreiben – Betriebskostenabrechnung, Mieterhöhung, Kündigung – erhalten Sie unabhängig davon weiterhin per Post.</p>
 
     <div class="ew-umbruch"></div>
     <div class="ew-fortsetzung">${esc(adressVollNamenVertrag(m))} · ${esc(obj.name||'')} · Wohnung ${esc(String(m.weNr||''))} · Seite 2</div>
@@ -23033,17 +23057,17 @@ async function ewSeiteFuer(m, opt){
     <div class="ew-h2">Ihre Ansprechpartner</div>
     <table class="ew-kasten"><tr><td>
       <table class="ew-daten">
-        <tr><td>Verwaltung</td><td><b>${esc(empfaenger)}</b>${bk.strasse?'<br>'+esc(bk.strasse):''}${bk.ort?', '+esc(bk.ort):''}${bk.tel?'<br>Telefon '+esc(bk.tel):''}${bk.email?'<br>'+esc(bk.email):''}</td></tr>
-        ${istKrefeld?`<tr><td>Hausmeister</td><td><b>Herr Dirk Nicolay</b><br>Wilmendyk 11, 47803 Krefeld<br>Telefon +49 176 21370040</td></tr>`:''}
+        <tr><td>Verwaltung</td><td><b>${esc(empfaenger)}</b>${bk.strasse?'<br>'+esc(bk.strasse):''}${bk.ort?', '+esc(bk.ort):''}${bk.tel?'<br>Telefon '+esc(telAnzeige(bk.tel)):''}${bk.email?'<br>'+esc(bk.email):''}</td></tr>
+        ${istKrefeld?`<tr><td>Hausmeister</td><td><b>Herr Dirk Nicolay</b><br>Wilmendyk 11, 47803 Krefeld<br>Telefon +49 / 176 21 37 00 40</td></tr>`:''}
       </table>
     </td></tr></table>
-    <p class="ew-klein">Mängel und Störungen melden Sie bitte bis zur Freischaltung des Mieterportals per E-Mail oder telefonisch bei der Verwaltung. Bei Gefahr im Verzug – etwa Wasseraustritt, Gasgeruch oder Stromausfall im ganzen Haus – verständigen Sie zuerst die zuständigen Notdienste (Feuerwehr 112, Netzbetreiber) und anschließend uns.</p>
+    <p class="ew-klein">Telefonisch erreichen Sie uns von 9:00 bis 17:00 Uhr. Außerhalb dieser Zeiten schreiben Sie uns bitte über WhatsApp unter derselben Nummer. Mängel und Störungen melden Sie bis zur Freischaltung des Mieterportals per E-Mail, telefonisch oder über WhatsApp. Im Notfall – etwa Feuer, Wasserrohrbruch, Gasgeruch oder Stromausfall im ganzen Haus – erreichen Sie uns auch außerhalb dieser Zeiten telefonisch. Besteht Gefahr für Personen, wählen Sie bitte zuerst den Notruf 112.</p>
 
     <div class="ew-h2">Was jetzt zu tun ist</div>
     <ol class="ew-liste ew-schritte">
-      <li><b>Dauerauftrag anpassen</b> – ab dem ${esc(opt.fmtD(opt.zahlAb))} auf die oben genannte Bankverbindung. Am schnellsten geht es, indem Sie den linken QR-Code mit Ihrer Banking-App scannen. Zahlen Sie bisher per Lastschrift, senden Sie stattdessen das beiliegende SEPA-Mandat unterschrieben zurück.</li>
-      <li><b>Kontaktdaten hinterlegen</b> – rechten QR-Code scannen oder die beiliegende Rückantwort ausfüllen.</li>
-      <li><b>Aufkleber anbringen</b> – nach der Anmeldung innen an den Sicherungskasten; so finden Sie den Zugang später wieder.</li>
+      <li><b>Dauerauftrag anpassen</b> – ab dem ${esc(opt.fmtD(opt.zahlAb))} auf die oben genannte Bankverbindung. Am schnellsten geht es, indem Sie den QR-Code im Kasten „Neue Bankverbindung“ auf Seite 1 mit Ihrer Banking-App scannen. Zahlen Sie bisher per Lastschrift, senden Sie stattdessen das beiliegende SEPA-Mandat unterschrieben zurück.</li>
+      <li><b>Kontaktdaten hinterlegen</b> – QR-Code im Kasten „Ihr Mieterportal“ auf Seite 1 scannen oder die beiliegende Rückantwort ausfüllen.</li>
+      <li><b>Aufkleber anbringen</b> – nach der Anmeldung innen an den Sicherungskasten; er enthält keinen Schlüssel und hilft Ihnen, den Zugang später wiederzufinden.</li>
     </ol>
 
     <p>Lieber auf Papier? ${rueckgabeSatz} Hausordnung und Datenschutzhinweise liegen zu Ihrer Information bei.</p>
@@ -23112,7 +23136,7 @@ function ewRueckantwortSeite(m, opt){
   return `<div class="ew-seite ew-rueck">
     <table class="ew-kopf"><tr>
       <td class="ew-l">${briefLogoSvg()}</td>
-      <td class="ew-r">${bk.strasse?esc(bk.strasse)+'<br>':''}${bk.ort?esc(bk.ort)+'<br>':''}${bk.tel?'Tel. '+esc(bk.tel)+'<br>':''}${bk.email?esc(bk.email):''}</td>
+      <td class="ew-r">${bk.strasse?esc(bk.strasse)+'<br>':''}${bk.ort?esc(bk.ort)+'<br>':''}${bk.tel?'Tel. '+esc(telAnzeige(bk.tel))+'<br>':''}${bk.email?esc(bk.email):''}</td>
     </tr></table>
     <div class="ew-h1">RÜCKANTWORT</div>
     <div class="ew-klein">${esc(obj.name||'')} · Wohnung ${esc(String(m.weNr||''))} · ${esc(m.mieter||m.name||'')}</div>
@@ -23195,23 +23219,25 @@ function ewStil(){
     .ew-schritte{counter-reset:ewschritt}
     .ew-schritte li{padding-left:6mm;text-indent:-6mm;counter-increment:ewschritt;margin-bottom:1.8mm}
     .ew-schritte li:before{content:counter(ewschritt) ". ";font-weight:700;color:#0C447C}
-    .ew-h1{font-weight:700;font-size:14pt;color:#0C447C;margin:3mm 0 1mm}
-    .ew-rueck .ew-h2{margin:3mm 0 1mm}
-    .ew-feldlabel{font-size:8pt;color:#666;margin:1.4mm 0 0.5mm}
-    .ew-linie{border-bottom:1px solid #999;height:5.4mm}
-    .ew-linie-hoch{height:11mm}
+    .ew-h1{font-weight:700;font-size:14pt;color:#0C447C;margin:2mm 0 1mm}
+    .ew-rueck .ew-h2{margin:2.5mm 0 1mm}
+    /* v309: Die Rueckantwort lief trotz v302 noch mit der Unterschriftszeile
+       auf ein zweites Blatt. Zweite Stufe: rund 24 mm ueber alle Feldmasse. */
+    .ew-feldlabel{font-size:8pt;color:#666;margin:1mm 0 0.4mm}
+    .ew-linie{border-bottom:1px solid #999;height:5mm}
+    .ew-linie-hoch{height:9mm}
     /* v302: Die Rueckantwort lief mit drei Personenblöcken knapp auf eine
        zweite Seite (Unterschriftszeile allein auf Blatt 2). Blockhoehen um
        gut 15 mm verdichtet; Kaestchen bleiben mit 5,8 mm gut beschreibbar.
        Der Block wird zusaetzlich gegen einen Umbruch geschuetzt. */
-    .ew-person{border:1px solid #dde3ea;border-radius:2mm;padding:1.6mm 3mm;margin:1.6mm 0;page-break-inside:avoid;break-inside:avoid}
+    .ew-person{border:1px solid #dde3ea;border-radius:2mm;padding:1.2mm 3mm;margin:1.2mm 0;page-break-inside:avoid;break-inside:avoid}
     .ew-persontitel{font-weight:700;color:#0C447C;font-size:10pt}
     .ew-persontitel span{font-weight:400;color:#666;font-size:8.5pt}
     /* 28 Felder auf der Satzbreite ergeben rund 6 mm je Kästchen - die Breite,
        in der Erwachsene ohne Mühe Druckbuchstaben setzen. */
-    .ew-kaesten{display:flex;gap:0.6mm;margin-bottom:1mm}
-    .ew-kaesten span{flex:1;min-width:0;height:5.8mm;border:1px solid #9AA5B1;border-radius:0.5mm}
-    .ew-untersch{width:100%;border-collapse:collapse;margin-top:6mm}
+    .ew-kaesten{display:flex;gap:0.6mm;margin-bottom:0.7mm}
+    .ew-kaesten span{flex:1;min-width:0;height:5.2mm;border:1px solid #9AA5B1;border-radius:0.5mm}
+    .ew-untersch{width:100%;border-collapse:collapse;margin-top:4mm}
     .ew-untersch td{width:50%;padding-right:8mm;vertical-align:bottom}
     .ew-untersch span{font-size:8pt;color:#666}
     .ew-mini{font-size:7.5pt;color:#777;margin-top:3mm}
@@ -29342,18 +29368,20 @@ function anlageRahmen(titel, untertitel, innerHtml, fussSeiten, bodyClass){
   body.mb-kompakt .sig{margin-top:8px}
   body.mb-kompakt .sigrow{margin-top:14px}
   /* Hausordnung kompakt – auf 2 Seiten, ohne Textverlust */
-  body.ho-kompakt{font-size:9.5pt;line-height:1.34}
+  /* v309: Seit der Umstellung auf @page-Raender (v302) haben die Folgeseiten
+     28 mm weniger Nutzhoehe; die Hausordnung wuchs dadurch auf drei Blaetter. */
+  body.ho-kompakt{font-size:9.5pt;line-height:1.28}
   body.ho-kompakt h1{font-size:15pt}
   body.ho-kompakt .sub{margin-bottom:9px}
   body.ho-kompakt .meta{margin-bottom:8px;padding:5px 9px}
-  body.ho-kompakt h2{margin:7px 0 2px;font-size:10.5pt;padding-bottom:2px}
-  body.ho-kompakt p{margin:0 0 4px}
+  body.ho-kompakt h2{margin:5px 0 2px;font-size:10.5pt;padding-bottom:2px}
+  body.ho-kompakt p{margin:0 0 3px}
   body.ho-kompakt ul{margin:0 0 5px 0}
-  body.ho-kompakt li{margin:0 0 2px 0}
-  body.ho-kompakt .sig{margin-top:12px}
-  body.ho-kompakt .sig .anerk{margin-bottom:12px}
-  body.ho-kompakt .sigrow{margin-top:24px}
-  body.ho-kompakt .foot{margin-top:10px}
+  body.ho-kompakt li{margin:0 0 1px 0}
+  body.ho-kompakt .sig{margin-top:8px}
+  body.ho-kompakt .sig .anerk{margin-bottom:8px}
+  body.ho-kompakt .sigrow{margin-top:16px}
+  body.ho-kompakt .foot{margin-top:7px}
   /* SEPA-Mandat (v285) – Formularfelder mit Ausfuelllinien */
   /* v303: Das Mandat lief in der eingebetteten Fassung (Satzhoehe 269 mm)
      um wenige Millimeter auf ein zweites Blatt - Unterschriftszeile allein
