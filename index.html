@@ -1230,7 +1230,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=35;   // v242: +buch_journal (F4 GoBD)
-const APP_VERSION = '2026-08-04-v309';
+const APP_VERSION = '2026-08-04-v311';
 /* v300 (03.08.2026): E-Mail-Auswahl je Wohneinheit korrigiert (Gerätetest-Befund).
    Beim ersten echten Push meldete die App "25 Wohnungen uebertragen, 90
    uebersprungen". Ein Teil davon ist echter Datenmangel (Krefeld hat noch
@@ -22492,6 +22492,31 @@ function getAnredeVertragNachname(m){
 }
 
 // Volle Namen der Vertragspartner für das Anschriftenfeld (je Zeile eine Person)
+/* v311: Anschriftfeld nach DIN 5008 fuer den Eigentuemerwechsel-Brief.
+   adressVollNamenVertrag() liefert die Verwaltungsform "Herr Ferfers, Michael" -
+   im Anschriftfeld eines Anschreibens wirkt das behoerdlich und ist zudem
+   grammatisch falsch (Anschrift steht im Akkusativ: "Herrn"). Hier daher
+   "Herrn Michael Ferfers". Bewusst eine eigene Funktion, damit Mietvertrag,
+   Briefeditor und Aushaenge unveraendert bleiben.
+   Nur bei genau einem Komma wird gedreht - "Dr. Meier, Anna" ergibt "Anna
+   Dr. Meier" waere falsch, kommt in den Daten aber nicht vor; mehrdeutige
+   Schreibweisen bleiben unveraendert stehen. */
+function adressPostalischEW(m){
+  const vp = vertragspartnerVon(m);
+  const zeile = p => {
+    const roh = String(p.name||'').trim();
+    if(!roh) return '';
+    const t = roh.split(',');
+    const name = (t.length===2 && t[0].trim() && t[1].trim())
+      ? (t[1].trim()+' '+t[0].trim()) : roh;
+    const anr = p.anrede==='Frau' ? 'Frau ' : p.anrede==='Divers' ? '' : 'Herrn ';
+    return (anr+name).trim();
+  };
+  const namen = vp.map(zeile).filter(Boolean);
+  if(!namen.length) return esc(m.mieter||'');
+  return namen.map(esc).join('<br>');
+}
+
 function adressVollNamenVertrag(m){
   const vp = vertragspartnerVon(m);
   const zeile = p => {
@@ -22842,7 +22867,6 @@ async function modalSerienbriefEigentuemerwechsel(){
       <label style="font-size:12px;display:block"><input type="checkbox" id="ewAnlRueck" checked> Rückantwort (Kontaktdaten, bis drei Personen)</label>
       <label style="font-size:12px;display:block"><input type="checkbox" id="ewAnlSepa" checked> SEPA-Lastschriftmandat</label>
       <label style="font-size:12px;display:block"><input type="checkbox" id="ewAnlDs" checked> Datenschutzhinweis (Art. 13 DSGVO)</label>
-      <label style="font-size:12px;display:block"><input type="checkbox" id="ewAnlHo"> Hausordnung</label>
     </div>
     <div class="f"><label style="font-size:12px"><input type="checkbox" id="ewNeueCodes"> Registrierschlüssel neu erzeugen</label>
       <div style="font-size:11px;color:var(--ink-40);margin-top:2px">Nur ankreuzen, wenn bereits verschickte Briefe entwertet werden sollen. Bereits erzeugte Schlüssel bleiben sonst erhalten, damit Nachdrucke gültig bleiben.</div></div>
@@ -22904,15 +22928,22 @@ async function serienbriefEigentuemerwechsel(){
     rueck: !!document.getElementById('ewAnlRueck')?.checked,
     sepa:  !!document.getElementById('ewAnlSepa')?.checked,
     dsgvo: !!document.getElementById('ewAnlDs')?.checked,
-    hausordnung: !!document.getElementById('ewAnlHo')?.checked,
+    /* v311: Die Hausordnung geht bei einem Eigentuemerwechsel NICHT mit.
+       Sie bezeichnet sich in § 1 als Bestandteil des Mietvertrages und endet
+       mit einer Anerkennungsunterschrift. Der Erwerber tritt nach § 566 BGB in
+       den BESTEHENDEN Vertrag ein und kann keinen neuen Vertragsbestandteil
+       einseitig einfuehren - das widerspraeche auch der Zusage im Brief, dass
+       sich am Mietverhaeltnis nichts aendert. Fuer Neuvertraege bleibt sie im
+       Mietvertrags-Generator erhalten. */
+    hausordnung: false,
   };
 
   const seiten = [];
   const ohneKonto = [], ohneGlaeubigerId = [];
   for(const m of alleMieter){
-    const seite = await ewSeiteFuer(m, {datum, frist, zahlAb, sigListe, neueCodes, fmtD});
+    const seite = await ewSeiteFuer(m, {datum, frist, zahlAb, sigListe, neueCodes, fmtD, anl});
     if(!seite){ ohneKonto.push(m.mieter||m.name||m.id); continue; }
-    const anhang = await ewAnlagenFuer(m, anl, {frist, fmtD});
+    const anhang = await ewAnlagenFuer(m, anl, {frist, fmtD, anl});
     if(anl.sepa && !anhang.mitSepa) ohneGlaeubigerId.push(m.mieter||m.name||m.id);
     seiten.push({m, html: seite + anhang.html});
   }
@@ -22995,6 +23026,21 @@ async function ewSeiteFuer(m, opt){
   const perPost = postanschrift
     ? ` Sie können sie stattdessen auch in einem verschlossenen Umschlag an uns senden: ${esc(postanschrift)}.`
     : '';
+  /* Die Aufzaehlung der Anlagen folgt der Auswahl im Dialog - sonst nennt der
+     Brief Unterlagen, die nicht im Umschlag liegen. */
+  const anl = opt.anl || {};
+  const anlagenListe = [
+    anl.rueck && 'Rückantwort',
+    anl.sepa  && 'SEPA-Lastschriftmandat',
+    anl.dsgvo && 'Datenschutzhinweise',
+    anl.hausordnung && 'Hausordnung',
+    'QR-Aufkleber'
+  ].filter(Boolean);
+  const beiliegend = anl.dsgvo
+    ? (anl.hausordnung ? ' Hausordnung und Datenschutzhinweise liegen zu Ihrer Information bei.'
+                       : ' Die Datenschutzhinweise liegen zu Ihrer Information bei.')
+    : '';
+
   const rueckgabeSatz = istKrefeld
     ? `Dann füllen Sie bitte die beiliegende Rückantwort aus und werfen sie bis zum ${esc(opt.fmtD(opt.frist))} in den Briefkasten unseres Hausmeisters, Inrather Straße 181, ein.${perPost}`
     : `Dann füllen Sie bitte die beiliegende Rückantwort aus und senden sie bis zum ${esc(opt.fmtD(opt.frist))} in einem verschlossenen Umschlag an uns${postanschrift?': '+esc(postanschrift):''}.`;
@@ -23005,7 +23051,7 @@ async function ewSeiteFuer(m, opt){
       <td class="ew-r">${bk.strasse?esc(bk.strasse)+'<br>':''}${bk.ort?esc(bk.ort)+'<br>':''}${bk.tel?'Tel. '+esc(telAnzeige(bk.tel))+'<br>':''}${bk.email?esc(bk.email):''}</td>
     </tr></table>
     <div class="ew-abs">${esc([bk.name, bk.strasse, bk.ort].filter(Boolean).join(' · '))}</div>
-    <div class="ew-anschrift"><strong>${esc(adressVollNamenVertrag(m))}</strong><br>${esc(obj.name||'')}<br>${esc(obj.ort||'')}</div>
+    <div class="ew-anschrift"><strong>${adressPostalischEW(m)}</strong><br>${esc(obj.name||'')}<br>${esc(obj.ort||'')}</div>
     <div class="ew-datum">${esc(String(bk.ort||'').replace(/^\d+\s*/,''))}, ${esc(opt.fmtD(opt.datum))}</div>
 
     <div class="ew-betreff">Eigentümerwechsel – neue Bankverbindung und Ihr Mieterportal</div>
@@ -23039,10 +23085,9 @@ async function ewSeiteFuer(m, opt){
       </td>
     </tr></table>
     <p class="ew-klein">Warum wir Ihre E-Mail-Adresse brauchen: Wir müssen Ihnen monatlich Ihren Heiz- und Warmwasserverbrauch mitteilen (§ 6a HeizkostenV). Digital bekommen Sie diese Übersicht über das A+S-Portal; ohne E-Mail-Adresse müssen wir sie jeden Monat drucken und zustellen – die Kosten der Verbrauchsinformation sind umlagefähige Betriebskosten und belasten Ihre Abrechnung.</p>
-    <p class="ew-klein">Wichtige Schreiben – Betriebskostenabrechnung, Mieterhöhung, Kündigung – erhalten Sie unabhängig davon weiterhin per Post.</p>
 
     <div class="ew-umbruch"></div>
-    <div class="ew-fortsetzung">${esc(adressVollNamenVertrag(m))} · ${esc(obj.name||'')} · Wohnung ${esc(String(m.weNr||''))} · Seite 2</div>
+    <div class="ew-fortsetzung">${adressPostalischEW(m)} · ${esc(obj.name||'')} · Wohnung ${esc(String(m.weNr||''))} · Seite 2</div>
 
     <div class="ew-h2">Was sich für Sie nicht ändert</div>
     <ul class="ew-liste">
@@ -23069,12 +23114,13 @@ async function ewSeiteFuer(m, opt){
       <li><b>Kontaktdaten hinterlegen</b> – QR-Code im Kasten „Ihr Mieterportal“ auf Seite 1 scannen oder die beiliegende Rückantwort ausfüllen.</li>
       <li><b>Aufkleber anbringen</b> – nach der Anmeldung innen an den Sicherungskasten; er enthält keinen Schlüssel und hilft Ihnen, den Zugang später wiederzufinden.</li>
     </ol>
+    <p class="ew-klein">Wichtige Schreiben – Betriebskostenabrechnung, Mieterhöhung, Kündigung – erhalten Sie unabhängig davon weiterhin per Post.</p>
 
-    <p>Lieber auf Papier? ${rueckgabeSatz} Hausordnung und Datenschutzhinweise liegen zu Ihrer Information bei.</p>
+    <p>Lieber auf Papier? ${rueckgabeSatz}${beiliegend}</p>
     <p>Für Rückfragen stehen wir Ihnen gern zur Verfügung. Wir freuen uns auf eine gute Zusammenarbeit.</p>
     <div class="ew-gruss">Mit freundlichen Grüßen</div>
     ${sigHTML?`<div class="ew-sigzeile">${sigHTML}</div>`:'<div class="ew-sigluft"></div>'}
-    <div class="ew-anlagen">Anlagen: Rückantwort · SEPA-Lastschriftmandat · Datenschutzhinweise · Hausordnung · QR-Aufkleber</div>
+    <div class="ew-anlagen">Anlagen: ${esc(anlagenListe.join(' · '))}</div>
   </div>`;
 }
 
@@ -23139,17 +23185,16 @@ function ewRueckantwortSeite(m, opt){
       <td class="ew-r">${bk.strasse?esc(bk.strasse)+'<br>':''}${bk.ort?esc(bk.ort)+'<br>':''}${bk.tel?'Tel. '+esc(telAnzeige(bk.tel))+'<br>':''}${bk.email?esc(bk.email):''}</td>
     </tr></table>
     <div class="ew-h1">RÜCKANTWORT</div>
-    <div class="ew-klein">${esc(obj.name||'')} · Wohnung ${esc(String(m.weNr||''))} · ${esc(m.mieter||m.name||'')}</div>
-    <p class="ew-klein">Bitte bis zum ${esc(opt.fmtD(opt.frist))} zurückgeben. Bitte in DRUCKBUCHSTABEN ausfüllen – ein einziges falsch gelesenes Zeichen genügt, und die E-Mail erreicht Sie nicht.</p>
+    <div class="ew-klein">${esc(obj.name||'')} · Wohnung ${esc(String(m.weNr||''))} · ${esc(m.mieter||m.name||'')} · bitte bis zum ${esc(opt.fmtD(opt.frist))} zurückgeben</div>
     <div class="ew-h2">Kontaktdaten der Mieter</div>
-    <p class="ew-klein">Bitte tragen Sie alle erwachsenen Personen ein, die in der Wohnung wohnen. Jede Person mit E-Mail-Adresse erhält die monatliche Heizkostenübersicht und später den eigenen Portalzugang.</p>
+    <p class="ew-klein">Bitte tragen Sie alle erwachsenen Personen ein, die in der Wohnung wohnen, und füllen Sie in DRUCKBUCHSTABEN aus – ein einziges falsch gelesenes Zeichen genügt, und die E-Mail erreicht Sie nicht. Jede Person mit E-Mail-Adresse erhält die monatliche Heizkostenübersicht und später den eigenen Portalzugang.</p>
     ${person(1,'')}
     ${person(2,'(falls eine weitere Person in der Wohnung wohnt)')}
     ${person(3,'(falls eine dritte Person in der Wohnung wohnt)')}
-    <p style="margin-top:3mm">Bevorzugter Kontaktweg: &nbsp;&nbsp;☐ E-Mail &nbsp;&nbsp;&nbsp;☐ Telefon &nbsp;&nbsp;&nbsp;☐ Post</p>
-    <p>☐&nbsp;&nbsp;Ich habe die Datenschutzhinweise und die Hausordnung erhalten.</p>
+    <p style="margin-top:2mm">Bevorzugter Kontaktweg: &nbsp;&nbsp;☐ E-Mail &nbsp;&nbsp;&nbsp;☐ Telefon &nbsp;&nbsp;&nbsp;☐ Post</p>
+    ${(opt.anl||{}).dsgvo?`<p>☐&nbsp;&nbsp;Ich habe die Datenschutzhinweise${(opt.anl||{}).hausordnung?' und die Hausordnung':''} erhalten.</p>`:''}
     <p>☐&nbsp;&nbsp;Ich wünsche die monatliche Heizkostenübersicht weiterhin per Post.</p>
-    <div class="ew-feldlabel" style="margin-top:3mm">Mitteilung</div><div class="ew-linie ew-linie-hoch"></div>
+    <div class="ew-feldlabel" style="margin-top:2mm">Mitteilung</div><div class="ew-linie ew-linie-hoch"></div>
     <table class="ew-untersch"><tr>
       <td><div class="ew-linie"></div><span>Ort, Datum</span></td>
       <td><div class="ew-linie"></div><span>Unterschrift</span></td>
@@ -23219,25 +23264,25 @@ function ewStil(){
     .ew-schritte{counter-reset:ewschritt}
     .ew-schritte li{padding-left:6mm;text-indent:-6mm;counter-increment:ewschritt;margin-bottom:1.8mm}
     .ew-schritte li:before{content:counter(ewschritt) ". ";font-weight:700;color:#0C447C}
-    .ew-h1{font-weight:700;font-size:14pt;color:#0C447C;margin:2mm 0 1mm}
+    .ew-h1{font-weight:700;font-size:14pt;color:#0C447C;margin:1.5mm 0 0.8mm}
     .ew-rueck .ew-h2{margin:2.5mm 0 1mm}
     /* v309: Die Rueckantwort lief trotz v302 noch mit der Unterschriftszeile
        auf ein zweites Blatt. Zweite Stufe: rund 24 mm ueber alle Feldmasse. */
-    .ew-feldlabel{font-size:8pt;color:#666;margin:1mm 0 0.4mm}
-    .ew-linie{border-bottom:1px solid #999;height:5mm}
-    .ew-linie-hoch{height:9mm}
+    .ew-feldlabel{font-size:8pt;color:#666;margin:0.8mm 0 0.3mm}
+    .ew-linie{border-bottom:1px solid #999;height:4.5mm}
+    .ew-linie-hoch{height:7mm}
     /* v302: Die Rueckantwort lief mit drei Personenblöcken knapp auf eine
        zweite Seite (Unterschriftszeile allein auf Blatt 2). Blockhoehen um
        gut 15 mm verdichtet; Kaestchen bleiben mit 5,8 mm gut beschreibbar.
        Der Block wird zusaetzlich gegen einen Umbruch geschuetzt. */
-    .ew-person{border:1px solid #dde3ea;border-radius:2mm;padding:1.2mm 3mm;margin:1.2mm 0;page-break-inside:avoid;break-inside:avoid}
+    .ew-person{border:1px solid #dde3ea;border-radius:2mm;padding:1mm 2.5mm;margin:1mm 0;page-break-inside:avoid;break-inside:avoid}
     .ew-persontitel{font-weight:700;color:#0C447C;font-size:10pt}
     .ew-persontitel span{font-weight:400;color:#666;font-size:8.5pt}
     /* 28 Felder auf der Satzbreite ergeben rund 6 mm je Kästchen - die Breite,
        in der Erwachsene ohne Mühe Druckbuchstaben setzen. */
     .ew-kaesten{display:flex;gap:0.6mm;margin-bottom:0.7mm}
-    .ew-kaesten span{flex:1;min-width:0;height:5.2mm;border:1px solid #9AA5B1;border-radius:0.5mm}
-    .ew-untersch{width:100%;border-collapse:collapse;margin-top:4mm}
+    .ew-kaesten span{flex:1;min-width:0;height:4.8mm;border:1px solid #9AA5B1;border-radius:0.5mm}
+    .ew-untersch{width:100%;border-collapse:collapse;margin-top:3mm}
     .ew-untersch td{width:50%;padding-right:8mm;vertical-align:bottom}
     .ew-untersch span{font-size:8pt;color:#666}
     .ew-mini{font-size:7.5pt;color:#777;margin-top:3mm}
