@@ -1230,7 +1230,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=35;   // v242: +buch_journal (F4 GoBD)
-const APP_VERSION = '2026-08-03-v301';
+const APP_VERSION = '2026-08-04-v308';
 /* v300 (03.08.2026): E-Mail-Auswahl je Wohneinheit korrigiert (Gerätetest-Befund).
    Beim ersten echten Push meldete die App "25 Wohnungen uebertragen, 90
    uebersprungen". Ein Teil davon ist echter Datenmangel (Krefeld hat noch
@@ -7196,21 +7196,37 @@ function epcNutzlast({empfaenger, iban, bic, betrag, zweck}){
           name, konto, summe, '', '', text].join('\n');
 }
 
-/* Verwendungszweck im Format der Sammellastschrift:
-     WE 5 - Miete 550,00 EUR + NKV 162,50 EUR + TG 12 - 45,00 EUR
-     TG 25, 26, 32 - Miete 135,00 EUR        (Mieter ohne Wohnung)
-   Der laengste reale Fall hat 100 Zeichen und bleibt unter der EPC-Grenze. */
-function zweckMiete(weNr, miete, nkv, plaetze){
-  const eur = b => Number(b||0).toLocaleString('de-DE',{minimumFractionDigits:2, maximumFractionDigits:2})+' EUR';
-  const sp = Array.isArray(plaetze) ? plaetze.filter(x=>x&&x.nr) : [];
-  if(weNr){
-    let t = 'WE '+String(weNr).trim()+' - Miete '+eur(miete)+' + NKV '+eur(nkv);
-    sp.forEach(x=>{ t += ' + TG '+String(x.nr).trim()+' - '+eur(x.miete); });
-    return t.slice(0,140);
-  }
-  if(!sp.length) return '';
-  const summe = sp.reduce((a,x)=>a+Number(x.miete||0),0);
-  return ('TG '+sp.map(x=>String(x.nr).trim()).join(', ')+' - Miete '+eur(summe)).slice(0,140);
+/* Verwendungszweck im maschinell auswertbaren FiBu-Format (v303):
+     INR181-WE10 / KM 325,00 EUR / NKV 110,00 EUR / TG10 45,00 EUR
+     INR181-TG25 / TG25 45,00 EUR / TG26 45,00 EUR   (Mieter ohne Wohnung)
+   Der Kopf ist identisch mit der SEPA-Mandatsreferenz (mvMandatsreferenz),
+   damit sich Lastschrift und Ueberweisung im Kontoauszug auf denselben
+   Schluessel abgleichen lassen.
+
+   Zeichenvorrat bewusst eingeschraenkt: Fuer die Verwendungszweckangabe gilt
+   der SEPA-Basiszeichensatz (a-z A-Z 0-9 und  / - ? : ( ) . , ' +  sowie
+   Leerzeichen). Senkrechter Strich und Eurozeichen gehoeren NICHT dazu - sie
+   werden von Banken je nach System ersetzt, gestrichen oder fuehren zur
+   Rueckweisung des Auftrags. Deshalb Trenner "/" und Waehrung als "EUR".
+   Ein "/" am Anfang oder Ende sowie ein doppeltes "//" sind unzulaessig und
+   entstehen im Aufbau unten nicht.
+   Laengengrenze 140 Zeichen (EPC069-12 Feld 10); der laengste reale Fall
+   (Wohnung mit drei Stellplaetzen) liegt bei rund 90 Zeichen. */
+function zweckMiete(objektId, weNr, miete, nkv, plaetze){
+  const roh  = t => String(t==null?'':t).trim().toUpperCase().replace(/[^A-Z0-9]/g,'');
+  const eur  = b => Number(b||0).toLocaleString('de-DE',{minimumFractionDigits:2, maximumFractionDigits:2})+' EUR';
+  const sp   = Array.isArray(plaetze) ? plaetze.filter(x=>x&&x.nr) : [];
+  const haus = roh(objektId).slice(0,10);
+  const we   = roh(weNr);
+  const tgs  = sp.map(x=>({nr: roh(x.nr), miete: x.miete})).filter(x=>x.nr);
+  const kennung = [haus, we ? 'WE'+we : (tgs.length ? 'TG'+tgs[0].nr : '')].filter(Boolean).join('-');
+
+  const teile = [];
+  if(kennung) teile.push(kennung);
+  if(we){ teile.push('KM '+eur(miete)); teile.push('NKV '+eur(nkv)); }
+  tgs.forEach(x => teile.push('TG'+x.nr+' '+eur(x.miete)));
+  if(!we && !tgs.length) return '';
+  return teile.join(' / ').slice(0,140).replace(/\s*\/\s*$/,'');
 }
 
 async function modalWohnungsQR(objektId){
@@ -22806,11 +22822,27 @@ async function modalSerienbriefEigentuemerwechsel(){
     </div>
     <div class="f"><label style="font-size:12px"><input type="checkbox" id="ewNeueCodes"> Registrierschlüssel neu erzeugen</label>
       <div style="font-size:11px;color:var(--ink-40);margin-top:2px">Nur ankreuzen, wenn bereits verschickte Briefe entwertet werden sollen. Bereits erzeugte Schlüssel bleiben sonst erhalten, damit Nachdrucke gültig bleiben.</div></div>
+    <div class="f"><label>Unterschriften (bis zwei)</label>
+      <div id="briefSigPick"></div></div>
     <div id="ewInfo" style="font-size:12px;color:var(--ink-40);margin-top:8px"></div>
     <div class="m-actions">
       <button class="btn ghost" data-action-click="closeModal">Abbrechen</button>
       <button class="btn" data-action-click="serienbriefEigentuemerwechsel">Briefe erzeugen</button>
     </div>`);
+
+  /* v303: Der Serienbrief hatte keinen Unterschriften-Picker. briefGewaehlte-
+     Signaturen() liest window._briefSigUserIds, das ausschliesslich das
+     Einzelbrief-Modal fuellt - wurde dieses in der Sitzung nicht geoeffnet,
+     blieb die Liste leer und alle Briefe wurden ohne Unterschriftsbild
+     gedruckt. Beim Eigentuemerwechsel unterschreiben beide Eigentuemer, daher
+     sind hier standardmaessig alle hinterlegten Admin-Unterschriften (max. 2)
+     vorausgewaehlt. */
+  window._briefSigUserIds = [];
+  try{
+    const admins = (await idbGetAll('users')).filter(u => u && u.role==='admin' && u.signatur);
+    window._briefSigUserIds = admins.slice(0,2).map(u => u.id);
+  }catch(e){ console.warn('Unterschriften laden:', e); }
+  populateBriefSigPick();
 }
 
 async function serienbriefEigentuemerwechsel(){
@@ -22827,6 +22859,18 @@ async function serienbriefEigentuemerwechsel(){
     .filter(m => m && !m._vormieter && !m._zukuenftig && !m.leerstand && !m._tgMieter)
     .filter(m => gruppe.objektIds.includes(String(m.objektId||'')));
   if(!alleMieter.length){ toast('Keine belegten Wohnungen in dieser Gruppe'); if(info) info.textContent=''; return; }
+
+  /* v302: idbGetAll liefert Schluesselreihenfolge, nicht Hausreihenfolge - der
+     Stapel begann dadurch mitten im Haus (zuletzt bei WE 10). Sortiert wird
+     nach der Gebaeudereihenfolge der Objektgruppe und darin numerisch nach
+     Wohnungsnummer, damit der Ausdruck haus- und stockwerksweise sortiert aus
+     dem Drucker kommt und beim Verteilen nicht neu geordnet werden muss. */
+  const weZahl = v => { const t = String(v==null?'':v).match(/\d+/); return t ? parseInt(t[0],10) : 9999; };
+  alleMieter.sort((a,b) =>
+       gruppe.objektIds.indexOf(String(a.objektId||'')) - gruppe.objektIds.indexOf(String(b.objektId||''))
+    || weZahl(a.weNr) - weZahl(b.weNr)
+    || String(a.weNr||'').localeCompare(String(b.weNr||''), 'de')
+    || String(a.mieter||a.name||'').localeCompare(String(b.mieter||b.name||''), 'de'));
 
   const sigListe = await briefGewaehlteSignaturen();
   const frist    = ewRuecklauffrist(datum);
@@ -22901,7 +22945,7 @@ async function ewSeiteFuer(m, opt){
   const nk    = Number(m.nk||0);
   const spSum = plaetze.reduce((a,x)=>a+Number(x.miete||0),0);
   const summe = kalt + nk + spSum;
-  const zweck = zweckMiete(m.weNr, kalt, nk, plaetze);
+  const zweck = zweckMiete(m.objektId, m.weNr, kalt, nk, plaetze);
 
   const giro = epcNutzlast({
     empfaenger, iban, bic: gs.ktoBic||'', betrag: summe, zweck
@@ -22916,11 +22960,20 @@ async function ewSeiteFuer(m, opt){
   const sigHTML = (opt.sigListe||[]).map(sg=>`<span class="ew-sig">
       <img src="${sg.signatur}" alt="Unterschrift"><span>${esc(sg.name)}</span></span>`).join('');
 
-  /* Der Hausmeister-Briefkasten steht nur in Krefeld zur Verfügung. */
+  /* Der Hausmeister-Briefkasten steht nur in Krefeld zur Verfügung.
+     v307: Zusaetzlich immer der Postweg an die Verwaltung. Die Rueckantwort
+     traegt Namen, E-Mail, Telefon und Unterschrift aller erwachsenen Bewohner -
+     wer diese Angaben nicht ueber den Hausmeister laufen lassen moechte, muss
+     einen direkten Weg zum Verantwortlichen haben. Die Privatanschrift des
+     Hausmeisters steht bewusst NICHT als Rueckgabeweg im Brief. */
   const istKrefeld = /krefeld/i.test(String(obj.ort||''));
-  const rueckgabe = istKrefeld
-    ? 'in den Briefkasten unseres Hausmeisters, Herrn Dirk Nicolay, Inrather Straße 181, ein'
-    : 'an die oben genannte Anschrift';
+  const postanschrift = [bk.name, bk.strasse, bk.ort].filter(Boolean).join(', ');
+  const perPost = postanschrift
+    ? ` Sie können sie stattdessen auch in einem verschlossenen Umschlag an uns senden: ${esc(postanschrift)}.`
+    : '';
+  const rueckgabeSatz = istKrefeld
+    ? `Dann füllen Sie bitte die beiliegende Rückantwort aus und werfen sie bis zum ${esc(opt.fmtD(opt.frist))} in den Briefkasten unseres Hausmeisters, Inrather Straße 181, ein.${perPost}`
+    : `Dann füllen Sie bitte die beiliegende Rückantwort aus und senden sie bis zum ${esc(opt.fmtD(opt.frist))} in einem verschlossenen Umschlag an uns${postanschrift?': '+esc(postanschrift):''}.`;
 
   return `<div class="ew-seite">
     <table class="ew-kopf"><tr>
@@ -22964,8 +23017,37 @@ async function ewSeiteFuer(m, opt){
     <p class="ew-klein">Warum wir Ihre E-Mail-Adresse brauchen: Wir müssen Ihnen monatlich Ihren Heiz- und Warmwasserverbrauch mitteilen (§ 6a HeizkostenV). Digital bekommen Sie diese Übersicht über das A+S-Portal; ohne E-Mail-Adresse müssen wir sie jeden Monat drucken und zustellen – die Kosten der Verbrauchsinformation sind umlagefähige Betriebskosten und belasten Ihre Abrechnung.</p>
     <p class="ew-klein">Wichtige Schreiben – Betriebskostenabrechnung, Mieterhöhung, Kündigung – erhalten Sie unabhängig davon weiterhin per Post. Den beiliegenden Aufkleber kleben Sie nach der Anmeldung innen an Ihren Sicherungskasten; er enthält keinen Schlüssel.</p>
 
-    <p>Lieber auf Papier? Dann füllen Sie bitte die beiliegende Rückantwort aus und werfen sie bis zum ${esc(opt.fmtD(opt.frist))} ${rueckgabe}. Hausordnung und Datenschutzhinweise liegen zu Ihrer Information bei.</p>
-    <p>Wir freuen uns auf eine gute Zusammenarbeit.</p>
+    <div class="ew-umbruch"></div>
+    <div class="ew-fortsetzung">${esc(adressVollNamenVertrag(m))} · ${esc(obj.name||'')} · Wohnung ${esc(String(m.weNr||''))} · Seite 2</div>
+
+    <div class="ew-h2">Was sich für Sie nicht ändert</div>
+    <ul class="ew-liste">
+      <li><b>Ihr Mietvertrag</b> gilt unverändert weiter – Sie müssen nichts neu unterschreiben (§ 566 Abs. 1 BGB).</li>
+      <li><b>Miethöhe und Vorauszahlungen</b> bleiben gleich. Diese Umstellung ist keine Mieterhöhung.</li>
+      <li><b>Ihre Kaution</b> ist kraft Gesetzes auf uns übergegangen (§ 566a BGB); sie bleibt in voller Höhe zu Ihren Gunsten bestehen und wird weiterhin getrennt von unserem Vermögen angelegt (§ 551 Abs. 3 BGB).</li>
+      <li><b>Kündigungsfristen</b> und alle sonstigen Vereinbarungen aus Ihrem Mietvertrag gelten unverändert fort.</li>
+      <li><b>Die laufende Betriebskostenabrechnung</b> wird ordnungsgemäß fortgeführt; über den Ablauf informieren wir Sie rechtzeitig.</li>
+      <li><b>Ihre Wohnung</b> und deren Ausstattung sind von der Übernahme nicht berührt. Offene Mängel gehen mit über und werden weiter bearbeitet.</li>
+    </ul>
+
+    <div class="ew-h2">Ihre Ansprechpartner</div>
+    <table class="ew-kasten"><tr><td>
+      <table class="ew-daten">
+        <tr><td>Verwaltung</td><td><b>${esc(empfaenger)}</b>${bk.strasse?'<br>'+esc(bk.strasse):''}${bk.ort?', '+esc(bk.ort):''}${bk.tel?'<br>Telefon '+esc(bk.tel):''}${bk.email?'<br>'+esc(bk.email):''}</td></tr>
+        ${istKrefeld?`<tr><td>Hausmeister</td><td><b>Herr Dirk Nicolay</b><br>Wilmendyk 11, 47803 Krefeld<br>Telefon +49 176 21370040</td></tr>`:''}
+      </table>
+    </td></tr></table>
+    <p class="ew-klein">Mängel und Störungen melden Sie bitte bis zur Freischaltung des Mieterportals per E-Mail oder telefonisch bei der Verwaltung. Bei Gefahr im Verzug – etwa Wasseraustritt, Gasgeruch oder Stromausfall im ganzen Haus – verständigen Sie zuerst die zuständigen Notdienste (Feuerwehr 112, Netzbetreiber) und anschließend uns.</p>
+
+    <div class="ew-h2">Was jetzt zu tun ist</div>
+    <ol class="ew-liste ew-schritte">
+      <li><b>Dauerauftrag anpassen</b> – ab dem ${esc(opt.fmtD(opt.zahlAb))} auf die oben genannte Bankverbindung. Am schnellsten geht es, indem Sie den linken QR-Code mit Ihrer Banking-App scannen. Zahlen Sie bisher per Lastschrift, senden Sie stattdessen das beiliegende SEPA-Mandat unterschrieben zurück.</li>
+      <li><b>Kontaktdaten hinterlegen</b> – rechten QR-Code scannen oder die beiliegende Rückantwort ausfüllen.</li>
+      <li><b>Aufkleber anbringen</b> – nach der Anmeldung innen an den Sicherungskasten; so finden Sie den Zugang später wieder.</li>
+    </ol>
+
+    <p>Lieber auf Papier? ${rueckgabeSatz} Hausordnung und Datenschutzhinweise liegen zu Ihrer Information bei.</p>
+    <p>Für Rückfragen stehen wir Ihnen gern zur Verfügung. Wir freuen uns auf eine gute Zusammenarbeit.</p>
     <div class="ew-gruss">Mit freundlichen Grüßen</div>
     ${sigHTML?`<div class="ew-sigzeile">${sigHTML}</div>`:'<div class="ew-sigluft"></div>'}
     <div class="ew-anlagen">Anlagen: Rückantwort · SEPA-Lastschriftmandat · Datenschutzhinweise · Hausordnung · QR-Aufkleber</div>
@@ -23061,9 +23143,17 @@ function ibanFormatiert(iban){
 function ewStil(){
   return `<style>
     *{margin:0;padding:0;box-sizing:border-box}
-    body{font-family:Arial,sans-serif;font-size:10.5pt;color:#111;padding:12mm 18mm;max-width:210mm;line-height:1.42}
+    /* v302: Der Rand lag frueher als body-padding vor - Polsterung wirkt beim
+       Druck nur am Anfang und am Ende des Blocks, jede Folgeseite begann daher
+       ohne Kopf- und Fussrand direkt an der Blattkante (im nicht bedruckbaren
+       Bereich vieler Drucker). Der Rand gehoert in @page. */
+    body{font-family:Arial,sans-serif;font-size:10.5pt;color:#111;padding:0;line-height:1.42}
     .ew-seite{page-break-after:always}
-    .ew-seite:last-child{page-break-after:auto}
+    /* v308: :last-child griff nie - ewAutoPrint() haengt einen <script>-Knoten
+       als letztes Kind an den Body, damit war KEIN Seiten-Div je last-child und
+       jeder Brief endete mit einem leeren Blatt. :last-of-type prueft nur unter
+       den Div-Geschwistern und trifft daher das tatsaechlich letzte Blatt. */
+    .ew-seite:last-of-type{page-break-after:auto}
     .ew-kopf{width:100%;border-collapse:collapse}
     .ew-kopf td{vertical-align:top;padding:0}
     .ew-kopf .ew-l{width:58%}
@@ -23092,26 +23182,46 @@ function ewStil(){
     .ew-sig span{font-size:9pt}
     .ew-sigluft{height:14mm}
     .ew-anlagen{font-size:7.5pt;color:#777;margin-top:3mm}
+    /* v304: Der Brief ist bewusst zweiseitig. Der Umbruch wird gesetzt statt
+       dem Zufall des Textflusses ueberlassen - sonst wandert er mit jeder
+       Namenslaenge und jedem zusaetzlichen Stellplatz. Seite 2 traegt eine
+       Fortsetzungszeile mit Empfaenger und Wohnung, damit bei getrennt
+       liegenden Blaettern die Zuordnung eindeutig bleibt. */
+    .ew-umbruch{page-break-before:always;break-before:page;height:0}
+    .ew-fortsetzung{font-size:7.5pt;color:#777;border-bottom:1px solid #ccc;padding-bottom:1mm;margin-bottom:4mm}
+    .ew-liste{margin:0 0 2.5mm;padding-left:0;list-style:none}
+    .ew-liste li{margin:0 0 1.4mm;padding-left:4.5mm;text-indent:-4.5mm;page-break-inside:avoid;break-inside:avoid}
+    .ew-liste li:before{content:"– ";color:#0C447C}
+    .ew-schritte{counter-reset:ewschritt}
+    .ew-schritte li{padding-left:6mm;text-indent:-6mm;counter-increment:ewschritt;margin-bottom:1.8mm}
+    .ew-schritte li:before{content:counter(ewschritt) ". ";font-weight:700;color:#0C447C}
     .ew-h1{font-weight:700;font-size:14pt;color:#0C447C;margin:3mm 0 1mm}
     .ew-rueck .ew-h2{margin:3mm 0 1mm}
-    .ew-feldlabel{font-size:8pt;color:#666;margin:2mm 0 0.6mm}
-    .ew-linie{border-bottom:1px solid #999;height:6mm}
-    .ew-linie-hoch{height:14mm}
-    .ew-person{border:1px solid #dde3ea;border-radius:2mm;padding:2mm 3mm;margin:2mm 0}
+    .ew-feldlabel{font-size:8pt;color:#666;margin:1.4mm 0 0.5mm}
+    .ew-linie{border-bottom:1px solid #999;height:5.4mm}
+    .ew-linie-hoch{height:11mm}
+    /* v302: Die Rueckantwort lief mit drei Personenblöcken knapp auf eine
+       zweite Seite (Unterschriftszeile allein auf Blatt 2). Blockhoehen um
+       gut 15 mm verdichtet; Kaestchen bleiben mit 5,8 mm gut beschreibbar.
+       Der Block wird zusaetzlich gegen einen Umbruch geschuetzt. */
+    .ew-person{border:1px solid #dde3ea;border-radius:2mm;padding:1.6mm 3mm;margin:1.6mm 0;page-break-inside:avoid;break-inside:avoid}
     .ew-persontitel{font-weight:700;color:#0C447C;font-size:10pt}
     .ew-persontitel span{font-weight:400;color:#666;font-size:8.5pt}
     /* 28 Felder auf der Satzbreite ergeben rund 6 mm je Kästchen - die Breite,
        in der Erwachsene ohne Mühe Druckbuchstaben setzen. */
-    .ew-kaesten{display:flex;gap:0.6mm;margin-bottom:1.2mm}
-    .ew-kaesten span{flex:1;height:6.2mm;border:1px solid #9AA5B1;border-radius:0.5mm}
-    .ew-untersch{width:100%;border-collapse:collapse;margin-top:8mm}
+    .ew-kaesten{display:flex;gap:0.6mm;margin-bottom:1mm}
+    .ew-kaesten span{flex:1;min-width:0;height:5.8mm;border:1px solid #9AA5B1;border-radius:0.5mm}
+    .ew-untersch{width:100%;border-collapse:collapse;margin-top:6mm}
     .ew-untersch td{width:50%;padding-right:8mm;vertical-align:bottom}
     .ew-untersch span{font-size:8pt;color:#666}
     .ew-mini{font-size:7.5pt;color:#777;margin-top:3mm}
     /* Jede eingebettete Anlage beginnt auf einer neuen Seite. */
     .ew-anlage{page-break-before:always;page-break-after:always}
-    @page{margin:0;size:A4}
-    @media print{body{padding:12mm 18mm;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+    /* v302: break-after auf dem letzten Element erzeugt in Chrome ein leeres
+       Schlussblatt - beim Stapeldruck ein Blatt je Brief. */
+    .ew-anlage:last-of-type{page-break-after:auto}
+    @page{size:A4;margin:14mm 18mm}
+    @media print{body{padding:0;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
   </style>`;
 }
 
@@ -29245,11 +29355,15 @@ function anlageRahmen(titel, untertitel, innerHtml, fussSeiten, bodyClass){
   body.ho-kompakt .sigrow{margin-top:24px}
   body.ho-kompakt .foot{margin-top:10px}
   /* SEPA-Mandat (v285) – Formularfelder mit Ausfuelllinien */
-  body.sepa-kompakt{font-size:9.5pt;line-height:1.35}
+  /* v303: Das Mandat lief in der eingebetteten Fassung (Satzhoehe 269 mm)
+     um wenige Millimeter auf ein zweites Blatt - Unterschriftszeile allein
+     auf Seite 2. Zeilen- und Blockabstaende um zusammen rund 25 mm
+     verdichtet; Schriftgroessen der Pflichttexte bleiben unveraendert. */
+  body.sepa-kompakt{font-size:9.5pt;line-height:1.3}
   body.sepa-kompakt h1{font-size:15pt;margin-bottom:0}
-  body.sepa-kompakt .sub{margin-bottom:10px;font-style:normal;font-size:10pt;color:#555}
-  .sepa-block{border:1px solid #cbd5e1;border-radius:6px;padding:9px 11px;margin:9px 0;page-break-inside:avoid}
-  .sepa-zeile{margin-bottom:9px}
+  body.sepa-kompakt .sub{margin-bottom:7px;font-style:normal;font-size:10pt;color:#555}
+  .sepa-block{border:1px solid #cbd5e1;border-radius:6px;padding:7px 10px;margin:7px 0;page-break-inside:avoid}
+  .sepa-zeile{margin-bottom:6px}
   .sepa-zeile:last-child{margin-bottom:0}
   .sepa-label{font-weight:700;font-size:8.5pt;color:#0c447c;margin-bottom:2px}
   .sepa-en{font-weight:400;color:#777;font-style:italic}
@@ -29261,22 +29375,28 @@ function anlageRahmen(titel, untertitel, innerHtml, fussSeiten, bodyClass){
      Mandat ausschliesslich gedruckt ausgefuellt wird - 5,2 mm ist die Breite,
      die auf Bankvordrucken ueblich ist und in die Erwachsene ohne Muehe
      Druckbuchstaben setzen. 30 Kaestchen passen in die Satzbreite. */
-  .sepa-kaesten{display:flex;flex-wrap:nowrap;gap:0.7mm;margin-top:1mm}
-  .sepa-kasten{width:5.2mm;height:6.4mm;border:1px solid #555;border-radius:0.6mm;flex:none}
+  .sepa-kaesten{display:flex;flex-wrap:nowrap;gap:0.7mm;margin-top:1mm;width:100%}
+  /* v302: feste 5,2 mm ergaben bei 30 Feldern 176,3 mm Gesamtbreite und liefen
+     damit ueber den Satzspiegel (174 mm minus Rahmenpolsterung = rund 168 mm)
+     hinaus - die letzten Kaestchen standen ausserhalb des Rahmens. Die Felder
+     schrumpfen jetzt bis zur verfuegbaren Breite und bleiben nach oben bei
+     5,2 mm gedeckelt, damit kurze Zeilen unveraendert aussehen. */
+  .sepa-kasten{flex:1 1 0;min-width:0;max-width:5.2mm;height:6mm;border:1px solid #555;border-radius:0.6mm}
   .sepa-vorgedruckt{font-weight:700;padding:1mm 0 0}
-  .sepa-hinweis{font-size:7.5pt;color:#777;margin-top:2px}
-  .sepa-text{margin:10px 0;text-align:justify}
-  .sepa-text p{margin:0 0 6px}
-  .sepa-en-text{font-size:8.5pt;color:#555}
+  .sepa-hinweis{font-size:7pt;color:#777;margin-top:1px;line-height:1.25}
+  .sepa-text{margin:7px 0;text-align:justify}
+  .sepa-text p{margin:0 0 4px}
+  .sepa-en-text{font-size:8pt;color:#555;line-height:1.25}
   .sepa-art{font-size:9.5pt}
   .sepa-kreuz{font-size:12pt;vertical-align:-1px}
   .sepa-box{font-size:12pt;vertical-align:-1px;color:#666}
   .sepa-abstand{margin-left:26px}
   .sepa-zwei{display:flex;gap:30px}
   .sepa-zwei>div{flex:1}
-  body.sepa-kompakt .sig{margin-top:14px}
-  body.sepa-kompakt .sig .anerk{margin-bottom:14px;font-size:8.5pt}
-  body.sepa-kompakt .sigrow{margin-top:26px}
+  body.sepa-kompakt .sig{margin-top:9px}
+  body.sepa-kompakt .sig .anerk{margin-bottom:9px;font-size:8.5pt}
+  body.sepa-kompakt .sigrow{margin-top:20px}
+  body.sepa-kompakt .foot{margin-top:8px}
   /* Datenschutz kompakt – auf 1 Seite */
   body.ds-kompakt{font-size:9pt;line-height:1.32}
   body.ds-kompakt h1{font-size:14pt}
