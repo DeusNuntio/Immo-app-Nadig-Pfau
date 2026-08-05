@@ -1230,7 +1230,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=35;   // v242: +buch_journal (F4 GoBD)
-const APP_VERSION = '2026-08-05-v317';
+const APP_VERSION = '2026-08-05-v318';
 /* v300 (03.08.2026): E-Mail-Auswahl je Wohneinheit korrigiert (Gerätetest-Befund).
    Beim ersten echten Push meldete die App "25 Wohnungen uebertragen, 90
    uebersprungen". Ein Teil davon ist echter Datenmangel (Krefeld hat noch
@@ -22922,8 +22922,14 @@ async function druckeBrief(mieterId, objektId) {
 
 /* Logo einmal an einer Stelle. Bis v300 lag es als Vorlage in druckeBrief;
    ein zweites Vorkommen wäre die übliche Doppelpflege gewesen. */
-function briefLogoSvg(){
-  return `<svg width="220" height="80" viewBox="0 0 1000 200" xmlns="http://www.w3.org/2000/svg">
+/* v318: Breite als Parameter. Der Fliesstext-Briefdruck (druckeBrief) behaelt
+   die bisherigen 220 px; der Eigentuemerwechsel-Brief bekommt ein groesseres
+   Logo. Hoehe proportional zur viewBox (1000:200 = 5:1) - bis v317 stand hier
+   height="80" bei width="220", das SVG wurde darin auf 44 px eingepasst und
+   36 px blieben Luft. */
+function briefLogoSvg(breite){
+  const b = Number(breite) || 220;
+  return `<svg width="${b}" height="${Math.round(b/5)}" viewBox="0 0 1000 200" xmlns="http://www.w3.org/2000/svg">
     <line x1="50" y1="104" x2="50" y2="64" stroke="#0C447C" stroke-width="3.2" stroke-linecap="round" opacity="0.95"/>
     <line x1="50" y1="64" x2="73" y2="104" stroke="#0C447C" stroke-width="3.2" stroke-linecap="round" opacity="0.95"/>
     <line x1="73" y1="64" x2="73" y2="104" stroke="#0C447C" stroke-width="3.2" stroke-linecap="round" opacity="0.95"/>
@@ -23209,10 +23215,10 @@ async function ewSeiteFuer(m, opt){
 
   return `<div class="ew-seite">
     <table class="ew-kopf"><tr>
-      <td class="ew-l">${briefLogoSvg()}</td>
+      <td class="ew-l">${briefLogoSvg(300)}</td>
       <td class="ew-r">${bk.strasse?esc(bk.strasse)+'<br>':''}${bk.ort?esc(bk.ort)+'<br>':''}${bk.tel?'Tel. '+esc(telAnzeige(bk.tel))+'<br>':''}${bk.email?esc(bk.email):''}</td>
     </tr></table>
-    <div class="ew-abs">${esc([bk.name, bk.strasse, bk.ort].filter(Boolean).join(' · '))}</div>
+    <div class="ew-abs">${esc(ewAbsenderKurz(bk))}</div>
     <div class="ew-anschrift"><strong>${adressPostalischEW(m)}</strong><br>${esc(obj.name||'')}<br>${esc(obj.ort||'')}</div>
     <div class="ew-datum">${esc(String(bk.ort||'').replace(/^\d+\s*/,''))}, ${esc(opt.fmtD(opt.datum))}</div>
 
@@ -23262,6 +23268,11 @@ async function ewSeiteFuer(m, opt){
       <li><b>Kündigungsfristen</b> und alle sonstigen Vereinbarungen aus Ihrem Mietvertrag gelten unverändert fort.</li>
       <li><b>Die laufende Betriebskostenabrechnung</b> wird ordnungsgemäß fortgeführt; über den Ablauf informieren wir Sie rechtzeitig.</li>
       <li><b>Ihre Wohnung</b> und deren Ausstattung sind von der Übernahme nicht berührt. Offene Mängel gehen mit über und werden weiter bearbeitet.</li>
+      <!-- v318: Hinweis auf eine mögliche Anpassung der Vorauszahlung. Bewusst
+           als Gesprächsangebot formuliert, nicht als Erhöhungsverlangen: eine
+           einseitige Anpassung nach § 560 Abs. 4 BGB setzt eine eigene
+           Abrechnung voraus, die bei uns noch nicht vorliegt. -->
+      <li><b>Hatten Sie zuletzt eine Nachzahlung?</b> Dann sprechen Sie uns gern an. Wir passen die monatliche Vorauszahlung gemeinsam mit Ihnen an, damit die nächste Betriebskostenabrechnung nicht wieder zu einer größeren Nachforderung führt.</li>
     </ul>
 
     <div class="ew-h2">Ihre Ansprechpartner</div>
@@ -23335,18 +23346,28 @@ function ewKaesten(anzahl){
 function ewRueckantwortSeite(m, opt){
   const obj = getObj(m.objektId) || {};
   const bk  = getBriefkopf(m.objektId) || {};
-  const person = (nr, zusatz) => `
+  /* v318: Die Hauptmieter stehen im Vertrag und werden vorgedruckt - Person 1
+     und, bei mehreren Vertragspartnern, Person 2. Weitere Zeilen bleiben leer
+     fuer erwachsene Mitbewohner ohne Vertragsstellung. */
+  const partner = (typeof vertragspartnerVon==='function' ? vertragspartnerVon(m) : []) || [];
+  const person = (nr, zusatz) => {
+    const t = partner[nr-1] ? ewNameTeile(partner[nr-1]) : {vor:'', nach:''};
+    return `
     <div class="ew-person">
       <div class="ew-persontitel">Person ${nr}${zusatz?` <span>${esc(zusatz)}</span>`:''}</div>
-      <div class="ew-feldlabel">Vor- und Nachname</div><div class="ew-linie"></div>
+      <table class="ew-namen"><tr>
+        <td><div class="ew-feldlabel">Vorname</div><div class="ew-linie-name">${esc(t.vor)}</div></td>
+        <td><div class="ew-feldlabel">Nachname</div><div class="ew-linie-name">${esc(t.nach)}</div></td>
+      </tr></table>
       <div class="ew-feldlabel">E-Mail (bitte in Druckbuchstaben, Fortsetzung in der zweiten Zeile)</div>
       ${ewKaesten(28)}${ewKaesten(28)}
       <div class="ew-feldlabel">Telefon</div>${ewKaesten(28)}
     </div>`;
+  };
 
   return `<div class="ew-seite ew-rueck">
     <table class="ew-kopf"><tr>
-      <td class="ew-l">${briefLogoSvg()}</td>
+      <td class="ew-l">${briefLogoSvg(300)}</td>
       <td class="ew-r">${bk.strasse?esc(bk.strasse)+'<br>':''}${bk.ort?esc(bk.ort)+'<br>':''}${bk.tel?'Tel. '+esc(telAnzeige(bk.tel))+'<br>':''}${bk.email?esc(bk.email):''}</td>
     </tr></table>
     <div class="ew-h1">RÜCKANTWORT</div>
@@ -23406,12 +23427,24 @@ function ewStil(){
        jeder Brief endete mit einem leeren Blatt. :last-of-type prueft nur unter
        den Div-Geschwistern und trifft daher das tatsaechlich letzte Blatt. */
     .ew-seite:last-of-type{page-break-after:auto}
-    .ew-kopf{width:100%;border-collapse:collapse}
+    /* v318: Der Kopf bekommt eine FESTE Hoehe. Bis v317 ergab sich die Lage
+       des Anschriftfeldes aus dem Textfluss - mit dem groesseren Logo waere es
+       nach unten gewandert und aus dem Umschlagfenster gelaufen.
+       Rechnung fuer DL 110x220 mit DIN-680-Fenster (90x45 mm, 20 mm von links,
+       15 mm von unten) bei Zickzackfalz in drei Teile zu je 99 mm:
+       das Fenster zeigt vom obersten Drittel den Bereich 44-89 mm ab
+       Blattoberkante. Das Anschriftfeld nach DIN 5008 Form B liegt bei
+       45-85 mm und passt damit vollstaendig hinein.
+       14 mm Seitenrand oben + 31 mm Kopf = Beginn der Ruecksendeangabe bei
+       genau 45 mm. Die Angaben duerfen daher NICHT mehr veraendert werden,
+       ohne die Fensterlage neu zu rechnen. */
+    .ew-kopf{width:100%;border-collapse:collapse;height:31mm}
     .ew-kopf td{vertical-align:top;padding:0}
     .ew-kopf .ew-l{width:58%}
     .ew-kopf .ew-r{width:42%;text-align:right;font-size:8pt;color:#555}
-    .ew-abs{font-size:6.5pt;color:#777;border-bottom:1px solid #ccc;padding-bottom:1mm;margin:6mm 0 2mm}
-    .ew-anschrift{font-size:10.5pt;line-height:1.4;min-height:18mm}
+    /* 7 pt statt 6,5 pt: Mindestgroesse der Post fuer die Ruecksendeangabe. */
+    .ew-abs{font-size:7pt;color:#777;border-bottom:1px solid #ccc;padding-bottom:1mm;margin:0 0 2mm;width:85mm}
+    .ew-anschrift{font-size:10.5pt;line-height:1.4;min-height:18mm;width:85mm}
     .ew-datum{text-align:right;font-size:10pt;color:#333;margin:3mm 0 5mm}
     .ew-betreff{font-weight:700;font-size:11.5pt;color:#0C447C;margin-bottom:3mm}
     .ew-anrede{margin-bottom:2.5mm}
@@ -23438,7 +23471,10 @@ function ewStil(){
        Jetzt einmal je Dokument als Hintergrundbild (siehe ewSigStil), im Brief
        steht nur noch die Klasse. print-color-adjust muss hier ausdruecklich
        stehen: Hintergrundbilder werden im Druck sonst weggelassen. */
-    .ew-sigbild{display:block;height:38px;width:45mm;margin-bottom:0.5mm;
+    /* v318: 38 -> 64 px Hoehe. Die Unterschriften waren im Ausdruck kaum als
+       solche erkennbar. Zwei Bilder a 58 mm plus 14 mm Abstand bleiben
+       innerhalb der Satzbreite von 172 mm. */
+    .ew-sigbild{display:block;height:64px;width:58mm;margin-bottom:0.5mm;
       background-repeat:no-repeat;background-position:left bottom;background-size:contain;
       -webkit-print-color-adjust:exact;print-color-adjust:exact}
     .ew-sigluft{height:12mm}
@@ -23462,6 +23498,13 @@ function ewStil(){
        auf ein zweites Blatt. Zweite Stufe: rund 24 mm ueber alle Feldmasse. */
     .ew-feldlabel{font-size:8pt;color:#666;margin:0.8mm 0 0.3mm}
     .ew-linie{border-bottom:1px solid #999;height:4.5mm}
+    /* v318: Vorname und Nachname teilen sich EINE Zeile - kein zusaetzlicher
+       Umbruch, die Rueckantwort bleibt einseitig. */
+    .ew-namen{width:100%;border-collapse:collapse}
+    .ew-namen td{padding:0;vertical-align:bottom}
+    .ew-namen td:first-child{padding-right:4mm}
+    .ew-linie-name{border-bottom:1px solid #999;min-height:4.5mm;font-size:9.5pt;
+      font-weight:700;line-height:1.2;padding-bottom:0.3mm}
     .ew-linie-hoch{height:7mm}
     /* v302: Die Rueckantwort lief mit drei Personenblöcken knapp auf eine
        zweite Seite (Unterschriftszeile allein auf Blatt 2). Blockhoehen um
@@ -23483,13 +23526,37 @@ function ewStil(){
     /* v302: break-after auf dem letzten Element erzeugt in Chrome ein leeres
        Schlussblatt - beim Stapeldruck ein Blatt je Brief. */
     .ew-anlage:last-of-type{page-break-after:auto}
-    @page{size:A4;margin:14mm 18mm}
+    /* v318: linker Rand 18 -> 20 mm (DIN 5008). Im Fensterumschlag fehlten
+       sonst die ersten Zeichen jeder Anschriftzeile. */
+    @page{size:A4;margin:14mm 18mm 14mm 20mm}
     @media print{body{padding:0;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
   </style>`;
 }
 
 /* Bilddefinition der gewaehlten Unterschriften - einmal je Druckdokument.
    Die Reihenfolge muss zu den Klassen ew-sig0/ew-sig1 in ewSeiteFuer passen. */
+/* v318: Die Rueckendeangabe im Anschriftfeld trug bisher die vollen
+   Vornamen beider Eigentuemer ("Hausverwaltung Alexander-Roland Nadig und
+   Anna-Alexandra Pfau · ...") und lief damit deutlich ueber die 85 mm des
+   DIN-5008-Anschriftfeldes hinaus - im DL-Fenster war sie angeschnitten.
+   Firmierung kurz, Anschrift weiter aus dem Briefkopf, damit abweichende
+   Briefkopfgruppen (z. B. Amboßstr. 10) ihre eigene Adresse behalten. */
+const EW_ABSENDER_KURZ = 'Hausverwaltung Nadig Pfau';
+function ewAbsenderKurz(bk){
+  return [EW_ABSENDER_KURZ, (bk||{}).strasse, (bk||{}).ort].filter(Boolean).join(' · ');
+}
+
+/* Vertragspartnernamen liegen als "Nachname, Vorname" vor (siehe
+   adressPostalischEW). Ohne Komma laesst sich nicht sicher trennen - dann
+   steht alles im Nachnamenfeld, was beim Ausfuellformular unschaedlich ist. */
+function ewNameTeile(p){
+  const roh = String((p||{}).name||'').trim();
+  const t = roh.split(',');
+  return (t.length===2 && t[0].trim() && t[1].trim())
+    ? {nach: t[0].trim(), vor: t[1].trim()}
+    : {nach: roh, vor: ''};
+}
+
 function ewSigStil(sigListe){
   const regeln = (sigListe||[]).map((sg,i) =>
     `.ew-sig${i}{background-image:url("${sg.signatur}")}`).join('\n    ');
@@ -29655,6 +29722,10 @@ function anlageRahmen(titel, untertitel, innerHtml, fussSeiten, bodyClass){
      schrumpfen jetzt bis zur verfuegbaren Breite und bleiben nach oben bei
      5,2 mm gedeckelt, damit kurze Zeilen unveraendert aussehen. */
   .sepa-kasten{flex:1 1 0;min-width:0;max-width:5.2mm;height:6mm;border:1px solid #555;border-radius:0.6mm}
+  /* v318: Fuer die Namensfelder ohne Deckelung - die Kaestchen sollen bis an
+     den rechten Satzrand laufen, damit eine Korrektur genug Platz hat. */
+  .sepa-kaesten-voll .sepa-kasten{max-width:none}
+  .sepa-teilfeld{font-size:7.5pt;color:#666;margin:1.2mm 0 0}
   .sepa-vorgedruckt{font-weight:700;padding:1mm 0 0}
   .sepa-hinweis{font-size:7pt;color:#777;margin-top:1px;line-height:1.25}
   .sepa-text{margin:7px 0;text-align:justify}
@@ -29864,6 +29935,9 @@ function anlageSepaHtml(daten, autoDruck){
      die Zeile zu fuellen statt sauber abzusetzen. */
   const kaesten = (anzahl) => '<div class="sepa-kaesten">' +
     Array.from({length: anzahl}, () => '<span class="sepa-kasten"></span>').join('') + '</div>';
+  /* v318: gleiche Kaestchen, aber ueber die volle Satzbreite verteilt. */
+  const kaestenVoll = (anzahl) => '<div class="sepa-kaesten sepa-kaesten-voll">' +
+    Array.from({length: anzahl}, () => '<span class="sepa-kasten"></span>').join('') + '</div>';
   const zeile = (deLabel, enLabel, inhalt, hinweis) => `
     <div class="sepa-zeile">
       <div class="sepa-label">${esc(deLabel)}${enLabel?' <span class="sepa-en">/ '+esc(enLabel)+'</span>':''}</div>
@@ -29900,11 +29974,16 @@ function anlageSepaHtml(daten, autoDruck){
         </div>
       </div>
       ${zeile('Name des Zahlungspflichtigen (Kontoinhaber)','Debtor name',
-              (d.sepaZahlerName
-                ? '<div class="sepa-vorgedruckt">' + esc(d.sepaZahlerName) + '</div>'
-                : kaesten(30)),
+              (d.sepaZahlerName ? '<div class="sepa-vorgedruckt">' + esc(d.sepaZahlerName) + '</div>' : '')
+              /* v318: Der vorgedruckte Mietername bleibt stehen, darunter
+                 Kaestchen fuer Nachname und Vorname. Bis v317 stand nur der
+                 Name da und eine abweichende Kontoinhaberin musste ihn
+                 danebenkritzeln - bei einem Mandat, das die Bank pruefen
+                 koennen muss, zu wenig Platz. */
+              + '<div class="sepa-teilfeld">Nachname</div>' + kaestenVoll(26)
+              + '<div class="sepa-teilfeld">Vorname</div>' + kaestenVoll(26),
               d.sepaZahlerName
-                ? 'Weicht der Kontoinhaber vom Mieter ab, bitte hier korrigieren. / Please correct if the account holder differs from the tenant.'
+                ? 'Nur ausfüllen, wenn der Kontoinhaber vom vorgedruckten Namen abweicht. / Only if the account holder differs from the name shown above.'
                 : 'Nur ausfüllen, wenn der Kontoinhaber nicht mit dem Mieter übereinstimmt. / Only if the account holder differs from the tenant.')}
       ${zeile('Anschrift des Zahlungspflichtigen (Kontoinhaber)','Debtor address',
               (d.sepaZahlerAnschrift
