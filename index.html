@@ -1230,7 +1230,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=35;   // v242: +buch_journal (F4 GoBD)
-const APP_VERSION = '2026-08-04-v315';
+const APP_VERSION = '2026-08-05-v316';
 /* v300 (03.08.2026): E-Mail-Auswahl je Wohneinheit korrigiert (Gerätetest-Befund).
    Beim ersten echten Push meldete die App "25 Wohnungen uebertragen, 90
    uebersprungen". Ein Teil davon ist echter Datenmangel (Krefeld hat noch
@@ -22959,7 +22959,9 @@ async function modalSerienbriefEigentuemerwechsel(){
       <label style="font-size:12px;display:block"><input type="checkbox" id="ewAnlSepa" checked> SEPA-Lastschriftmandat</label>
       <label style="font-size:12px;display:block"><input type="checkbox" id="ewAnlDs" checked> Datenschutzhinweis (Art. 13 DSGVO)</label>
     </div>
-    <div class="f"><label style="font-size:12px"><input type="checkbox" id="ewNeueCodes"> Registrierschlüssel neu erzeugen</label>
+    <div class="f"><label style="font-size:12px"><input type="checkbox" id="ewGleicheIban"> IBAN bleibt unverändert – nur der Empfänger ist neu</label>
+      <div style="font-size:11px;color:var(--ink-40);margin:2px 0 8px">Nur ankreuzen, wenn die Kontonummer des Gebäudes tatsächlich dieselbe geblieben ist. Der Brief weist dann ausdrücklich darauf hin, dass im Dauerauftrag nur der Empfängername zu ändern ist.</div>
+      <label style="font-size:12px"><input type="checkbox" id="ewNeueCodes"> Registrierschlüssel neu erzeugen</label>
       <div style="font-size:11px;color:var(--ink-40);margin-top:2px">Nur ankreuzen, wenn bereits verschickte Briefe entwertet werden sollen. Bereits erzeugte Schlüssel bleiben sonst erhalten, damit Nachdrucke gültig bleiben.</div></div>
     <div class="f"><label>Unterschriften (bis zwei)</label>
       <div id="briefSigPick"></div></div>
@@ -22988,6 +22990,7 @@ async function serienbriefEigentuemerwechsel(){
   const gruppeId = document.getElementById('ewGruppe')?.value;
   const datum    = document.getElementById('ewDatum')?.value || today();
   const neueCodes= !!document.getElementById('ewNeueCodes')?.checked;
+  const gleicheIban = !!document.getElementById('ewGleicheIban')?.checked;
   const gruppe   = DASH_GRUPPEN.find(g=>g.id===gruppeId);
   if(!gruppe){ toast('Bitte Objektgruppe wählen'); return; }
 
@@ -23032,7 +23035,7 @@ async function serienbriefEigentuemerwechsel(){
   const seiten = [];
   const ohneKonto = [], ohneGlaeubigerId = [];
   for(const m of alleMieter){
-    const seite = await ewSeiteFuer(m, {datum, frist, zahlAb, sigListe, neueCodes, fmtD, anl});
+    const seite = await ewSeiteFuer(m, {datum, frist, zahlAb, sigListe, neueCodes, fmtD, anl, gleicheIban});
     if(!seite){ ohneKonto.push(m.mieter||m.name||m.id); continue; }
     const anhang = await ewAnlagenFuer(m, anl, {frist, fmtD, anl});
     if(anl.sepa && !anhang.mitSepa) ohneGlaeubigerId.push(m.mieter||m.name||m.id);
@@ -23146,20 +23149,23 @@ async function ewSeiteFuer(m, opt){
     <div class="ew-datum">${esc(String(bk.ort||'').replace(/^\d+\s*/,''))}, ${esc(opt.fmtD(opt.datum))}</div>
 
     <div class="ew-betreff">Eigentümerwechsel – neue Bankverbindung und Ihr Mieterportal</div>
+    <div class="ew-objekt">Ihre Wohnung: <b>${esc(obj.name||'')}${obj.ort?', '+esc(obj.ort):''} &middot; Wohnung <span class="ew-mono">${esc(String(m.weNr||''))}</span></b>${m.etage?' &middot; '+esc(String(m.etage)):''}</div>
     <div class="ew-anrede">${esc(anredeMitKomma(getAnredeVertragNachname(m)))}</div>
 
     <p>wir, ${esc(empfaenger)}, haben Ihr Wohnhaus übernommen und verwalten es künftig selbst. Sie haben damit direkte Ansprechpartner und kurze Wege.</p>
     <p>Für Ihr Mietverhältnis ändert sich nichts: Ihr Mietvertrag besteht mit allen Rechten und Pflichten unverändert fort (§ 566 Abs. 1 BGB), eine geleistete Kaution ist kraft Gesetzes auf uns übergegangen (§ 566a BGB). Miete, Vorauszahlungen und alle übrigen Vereinbarungen bleiben unverändert; ein neuer Mietvertrag ist nicht erforderlich. Einen Nachweis über den Eigentumsübergang legen wir Ihnen auf Wunsch vor.</p>
 
-    <div class="ew-h2">Neue Bankverbindung – bitte Dauerauftrag anpassen</div>
-    <p>Bitte überweisen Sie die Miete ab dem ${esc(opt.fmtD(opt.zahlAb))} ausschließlich auf dieses Konto:</p>
+    <div class="ew-h2">${opt.gleicheIban?'Bankverbindung – bitte Empfänger im Dauerauftrag ändern':'Neue Bankverbindung – bitte Dauerauftrag anpassen'}</div>
+    ${opt.gleicheIban
+      ? `<p><b>Die Kontonummer (IBAN) bleibt unverändert.</b> Geändert hat sich nur der Empfänger. Bitte tragen Sie in Ihrem Dauerauftrag ab dem ${esc(opt.fmtD(opt.zahlAb))} den unten genannten Empfängernamen und den neuen Verwendungszweck ein; die IBAN müssen Sie nicht ändern.</p>`
+      : `<p>Bitte überweisen Sie die Miete ab dem ${esc(opt.fmtD(opt.zahlAb))} ausschließlich auf dieses Konto:</p>`}
     <table class="ew-kasten"><tr>
       <td>
         <table class="ew-daten">
           <tr><td>Empfänger</td><td>${esc(empfaenger)}</td></tr>
-          <tr><td>IBAN</td><td><b>${esc(ibanFormatiert(iban))}</b></td></tr>
+          <tr><td>IBAN</td><td><b class="ew-mono">${esc(ibanFormatiert(iban))}</b></td></tr>
           ${gs.ktoBank?`<tr><td>Bank</td><td>${esc(gs.ktoBank)}</td></tr>`:''}
-          <tr><td>Verwendungszweck</td><td>${esc(zweck)}</td></tr>
+          <tr><td>Verwendungszweck</td><td><span class="ew-mono">${esc(zweck)}</span></td></tr>
           <tr><td>Monatlich</td><td><b>${fmtEur(summe)}</b></td></tr>
         </table>
       </td>
@@ -23169,7 +23175,7 @@ async function ewSeiteFuer(m, opt){
 
     <div class="ew-h2">Ihr Mieterportal – bitte einmalig E-Mail-Adresse hinterlegen</div>
     <table class="ew-kasten"><tr>
-      <td class="ew-qr">${portalBild?`<img src="${portalBild}" alt="Portal-QR"><span>Wohnung ${esc(String(m.weNr||''))}</span><span class="ew-schluessel">Schlüssel: ${esc(regCodeFormat(code))}</span>`:''}</td>
+      <td class="ew-qr">${portalBild?`<img src="${portalBild}" alt="Portal-QR"><span class="ew-wohnung">Wohnung <span class="ew-mono">${esc(String(m.weNr||''))}</span></span><span class="ew-schluessel">Schlüssel: <span class="ew-mono">${esc(regCodeFormat(code))}</span></span>`:''}</td>
       <td>
         <p>Code mit der Handykamera scannen und die Kontaktdaten aller erwachsenen Mieter eintragen – bis zu drei Personen. Ohne Handy: ${esc(String(PORTAL_BASIS).replace(/^https?:\/\//,'').replace(/\/$/,''))} aufrufen, Wohnung ${esc(String(m.weNr||''))} und den Schlüssel eingeben, oder die beiliegende Rückantwort ausfüllen.</p>
         <p>Der Code dient zunächst allein der Erfassung Ihrer Kontaktdaten. Das Mieterportal selbst – Nebenkostenabrechnung, Rundschreiben, Grundrisse, Dokumente und die Mängelmeldung – öffnen wir schrittweise; wir informieren Sie, sobald es so weit ist.</p>
@@ -23197,7 +23203,7 @@ async function ewSeiteFuer(m, opt){
         ${istKrefeld?`<tr><td>Hausmeister</td><td><b>Herr Dirk Nicolay</b><br>Wilmendyk 11, 47803 Krefeld<br>Telefon +49 / 176 21 37 00 40</td></tr>`:''}
       </table>
     </td></tr></table>
-    <p class="ew-klein">Telefonisch erreichen Sie uns von 9:00 bis 17:00 Uhr. Außerhalb dieser Zeiten schreiben Sie uns bitte über WhatsApp unter derselben Nummer. Mängel und Störungen melden Sie bis zur Freischaltung des Mieterportals per E-Mail, telefonisch oder über WhatsApp. Im Notfall – etwa Feuer, Wasserrohrbruch, Gasgeruch oder Stromausfall im ganzen Haus – erreichen Sie uns auch außerhalb dieser Zeiten telefonisch. Besteht Gefahr für Personen, wählen Sie bitte zuerst den Notruf 112. Wichtige Schreiben – Betriebskostenabrechnung, Mieterhöhung, Kündigung – erhalten Sie unabhängig davon weiterhin per Post.</p>
+    <p class="ew-klein">Telefonisch erreichen Sie uns von 9:00 bis 17:00 Uhr. Außerhalb dieser Zeiten schreiben Sie uns bitte über WhatsApp unter derselben Nummer. Mängel und Störungen melden Sie bis zur Freischaltung des Mieterportals per E-Mail, telefonisch oder über WhatsApp. <span class="ew-notfall">Im Notfall – etwa Feuer, Wasserrohrbruch, Gasgeruch oder Stromausfall im ganzen Haus – erreichen Sie uns auch außerhalb dieser Zeiten telefonisch. Besteht Gefahr für Personen, wählen Sie bitte zuerst den Notruf 112.</span> Wichtige Schreiben – Betriebskostenabrechnung, Mieterhöhung, Kündigung – erhalten Sie unabhängig davon weiterhin per Post.</p>
 
     <div class="ew-h2">Was jetzt zu tun ist</div>
     <ol class="ew-liste ew-schritte">
@@ -23237,6 +23243,7 @@ async function ewAnlagenFuer(m, anl, opt){
         sepaEmpfaengerAnschrift: gs.sepaGlaeubigerAnschrift || [bk.strasse, bk.ort].filter(Boolean).join(', '),
         sepaGlaeubigerId: gs.sepaGlaeubigerId,
         sepaMandatsreferenz: mvMandatsreferenz({objektId:m.objektId, weNr:m.weNr}),
+        sepaZahlerName: (m.mieter || m.name || ''),
         sepaZahlerAnschrift: [obj.name, obj.ort].filter(Boolean).join(', '),
       }, false));
       mitSepa = true;
@@ -23306,7 +23313,25 @@ function ewStil(){
        Druck nur am Anfang und am Ende des Blocks, jede Folgeseite begann daher
        ohne Kopf- und Fussrand direkt an der Blattkante (im nicht bedruckbaren
        Bereich vieler Drucker). Der Rand gehoert in @page. */
-    body{font-family:Arial,sans-serif;font-size:10.5pt;color:#111;padding:0;line-height:1.42}
+    /* v316 (Befund 2, Nutzer-Zoom auf "I"/"l"): Die Schrift stand nur auf
+       'body'. Der In-Page-Druck (_druckJetzt) leitet body-Selektoren auf
+       #printRoot um - diese Regel wurde dabei NICHT erfasst, weil ihr ein
+       CSS-Kommentar vorausgeht und der Umschreib-Regex nur nach '{', '}', ','
+       oder Zeilenanfang sucht. Folge: Anschreiben und Anlagen liefen mit
+       unterschiedlichen Schriften. Deshalb zusaetzlich auf die Seitencontainer.
+       Groesse 10,5 -> 9,9 pt und Zeilenabstand 1,42 -> 1,36 (Befund 1). */
+    body,.ew-seite{font-family:Arial,Helvetica,sans-serif}
+    body,.ew-seite{font-size:9.9pt;color:#111;padding:0;line-height:1.36}
+    /* Kritische Zeichenfolgen in Festbreitenschrift. In proportionalen
+       Groteskschriften sind Gross-I, Klein-l und die Ziffer 1 derselbe
+       senkrechte Strich - beim Abtippen von IBAN, Verwendungszweck oder
+       Zugangsschluessel ist das ein reales Fehlerrisiko, nicht Kosmetik. */
+    .ew-mono{font-family:"DM Mono",ui-monospace,"SFMono-Regular",Consolas,"Liberation Mono","Courier New",monospace;letter-spacing:.2px}
+    /* Befund 3: Viele Mieter kennen ihre Wohnungsnummer nicht. */
+    .ew-objekt{font-size:10pt;background:#F4F6F9;border-left:3px solid #0C447C;padding:1.6mm 3mm;margin:0 0 3mm}
+    .ew-wohnung{font-size:9.5pt!important;color:#111!important;font-weight:700}
+    /* Befund 4: Notfallweg muss beim Ueberfliegen ins Auge springen. */
+    .ew-notfall{color:#B3261E;font-weight:700}
     .ew-seite{page-break-after:always}
     /* v308: :last-child griff nie - ewAutoPrint() haengt einen <script>-Knoten
        als letztes Kind an den Body, damit war KEIN Seiten-Div je last-child und
@@ -23322,10 +23347,10 @@ function ewStil(){
     .ew-datum{text-align:right;font-size:10pt;color:#333;margin:3mm 0 5mm}
     .ew-betreff{font-weight:700;font-size:11.5pt;color:#0C447C;margin-bottom:3mm}
     .ew-anrede{margin-bottom:2.5mm}
-    p{margin:0 0 2.5mm;text-align:left}
+    p{margin:0 0 2mm;text-align:left}
     /* v312: Auf Seite 2 stehen drei Zwischenüberschriften; die Anlagenzeile
        fiel unter den Satzspiegel. Abstände dort gestrafft. */
-    .ew-h2{font-weight:700;font-size:11pt;color:#0C447C;margin:3.5mm 0 1.5mm}
+    .ew-h2{font-weight:700;font-size:10.5pt;color:#0C447C;margin:2.6mm 0 1.2mm}
     .ew-kasten{width:100%;border-collapse:collapse;background:#F4F6F9;margin:1mm 0}
     .ew-kasten>tbody>tr>td{vertical-align:middle;padding:2.5mm 3mm}
     .ew-daten{border-collapse:collapse;font-size:10pt}
@@ -23339,9 +23364,9 @@ function ewStil(){
     .ew-gruss{margin:1.5mm 0 0}
     .ew-sigzeile{margin:1mm 0 0}
     .ew-sig{display:inline-block;margin-right:14mm;vertical-align:bottom}
-    .ew-sig img{max-height:44px;display:block;margin-bottom:0.5mm}
+    .ew-sig img{max-height:38px;display:block;margin-bottom:0.5mm}
     .ew-sig span{font-size:9pt}
-    .ew-sigluft{height:14mm}
+    .ew-sigluft{height:12mm}
     .ew-anlagen{font-size:7.5pt;color:#777;margin-top:1.5mm}
     /* v304: Der Brief ist bewusst zweiseitig. Der Umbruch wird gesetzt statt
        dem Zufall des Textflusses ueberlassen - sonst wandert er mit jeder
@@ -23351,10 +23376,10 @@ function ewStil(){
     .ew-umbruch{page-break-before:always;break-before:page;height:0}
     .ew-fortsetzung{font-size:7.5pt;color:#777;border-bottom:1px solid #ccc;padding-bottom:1mm;margin-bottom:4mm}
     .ew-liste{margin:0 0 2.5mm;padding-left:0;list-style:none}
-    .ew-liste li{margin:0 0 1.2mm;padding-left:4.5mm;text-indent:-4.5mm;page-break-inside:avoid;break-inside:avoid}
+    .ew-liste li{margin:0 0 0.9mm;padding-left:4.5mm;text-indent:-4.5mm;page-break-inside:avoid;break-inside:avoid}
     .ew-liste li:before{content:"– ";color:#0C447C}
     .ew-schritte{counter-reset:ewschritt}
-    .ew-schritte li{padding-left:6mm;text-indent:-6mm;counter-increment:ewschritt;margin-bottom:1.8mm}
+    .ew-schritte li{padding-left:6mm;text-indent:-6mm;counter-increment:ewschritt;margin-bottom:1.3mm}
     .ew-schritte li:before{content:counter(ewschritt) ". ";font-weight:700;color:#0C447C}
     .ew-h1{font-weight:700;font-size:14pt;color:#0C447C;margin:1.5mm 0 0.8mm}
     .ew-rueck .ew-h2{margin:2.5mm 0 1mm}
@@ -29791,8 +29816,13 @@ function anlageSepaHtml(daten, autoDruck){
           <span class="sepa-abstand"><span class="sepa-box">☐</span> Einmalige Zahlung <span class="sepa-en">/ One-off payment</span></span>
         </div>
       </div>
-      ${zeile('Name des Zahlungspflichtigen (Kontoinhaber)','Debtor name', kaesten(30),
-              'Nur ausfüllen, wenn der Kontoinhaber nicht mit dem Mieter übereinstimmt. / Only if the account holder differs from the tenant.')}
+      ${zeile('Name des Zahlungspflichtigen (Kontoinhaber)','Debtor name',
+              (d.sepaZahlerName
+                ? '<div class="sepa-vorgedruckt">' + esc(d.sepaZahlerName) + '</div>'
+                : kaesten(30)),
+              d.sepaZahlerName
+                ? 'Weicht der Kontoinhaber vom Mieter ab, bitte hier korrigieren. / Please correct if the account holder differs from the tenant.'
+                : 'Nur ausfüllen, wenn der Kontoinhaber nicht mit dem Mieter übereinstimmt. / Only if the account holder differs from the tenant.')}
       ${zeile('Anschrift des Zahlungspflichtigen (Kontoinhaber)','Debtor address',
               (d.sepaZahlerAnschrift
                 ? '<div class="sepa-vorgedruckt">' + esc(d.sepaZahlerAnschrift) + '</div>'
