@@ -1230,7 +1230,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=35;   // v242: +buch_journal (F4 GoBD)
-const APP_VERSION = '2026-08-05-v318';
+const APP_VERSION = '2026-08-05-v321';
 /* v300 (03.08.2026): E-Mail-Auswahl je Wohneinheit korrigiert (Gerätetest-Befund).
    Beim ersten echten Push meldete die App "25 Wohnungen uebertragen, 90
    uebersprungen". Ein Teil davon ist echter Datenmangel (Krefeld hat noch
@@ -15970,7 +15970,7 @@ async function modalAusweisLoeschen(){
 
 async function ausweisLoeschen(id){
   if(!confirm('Diese Ausweiskopie unwiderruflich löschen?')) return;
-  await deleteMitTombstone('dokumente', id);
+  await dokVollstaendigLoeschen(id);
   clearTimeout(window._syncTimer);
   window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
   toast('Ausweiskopie gelöscht ✓');
@@ -15981,7 +15981,7 @@ async function ausweisAlleLoeschen(){
   const kand = await ausweisLoeschKandidaten();
   if(!kand.length){ closeModal(); return; }
   if(!confirm(kand.length + ' Ausweiskopie(n) unwiderruflich löschen?')) return;
-  for(const k of kand){ await deleteMitTombstone('dokumente', k.dok.id); }
+  for(const k of kand){ await dokVollstaendigLoeschen(k.dok.id); }
   clearTimeout(window._syncTimer);
   window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
   toast(kand.length + ' Ausweiskopie(n) gelöscht ✓');
@@ -16029,7 +16029,37 @@ async function dokAuslagernRef(dok, dataUrl, weNr){
   }catch(e){ console.warn('dokAuslagernRef:', e); return null; }
 }
 
-// Anzeigbare Quelle eines Dokuments (dataURL ODER kurzlebiger OneDrive-Link).
+/* v321: Bis v320 entfernte KEIN Loeschpfad die ausgelagerte OneDrive-Datei -
+   deleteMitTombstone loeschte nur den Datensatz. Ebenso vergab
+   dokAuslagernRef bei jedem erneuten Hochladen einen neuen Dateinamen
+   (basis + uid()), waehrend der Datensatz seine feste ID behielt: die alte
+   Datei blieb liegen. Beides zusammen hinterliess Dateien mit Mieterdaten,
+   auf die kein Datensatz mehr zeigt und die in der App unsichtbar sind -
+   ein Problem fuer Art. 5 Abs. 1 lit. e und Art. 17 DSGVO, nicht nur fuer
+   den Speicherplatz.
+   Bewusst tolerant: schlaegt die OneDrive-Loeschung fehl (offline, Datei
+   bereits von Hand entfernt), wird nur protokolliert. Der Datensatz muss
+   trotzdem verschwinden duerfen - sonst blockiert eine fehlende
+   Netzverbindung das Loeschen in der App. Uebrig bleibende Dateien findet
+   der Abgleich unter Einstellungen. */
+async function dokRefLoeschen(dok){
+  try{
+    const ref = dok && dok.ref;
+    if(!istFotoRef(ref)) return false;
+    await odGraph('/me/drive/items/'+encodeURIComponent(ref.odId), {method:'DELETE'});
+    return true;
+  }catch(e){ console.warn('OneDrive-Datei nicht gelöscht:', e); return false; }
+}
+
+/* Datensatz UND ausgelagerte Datei entfernen. Ersetzt die blossen
+   deleteMitTombstone-Aufrufe auf dem dokumente-Store. */
+async function dokVollstaendigLoeschen(dokId){
+  const dok = await idbGet('dokumente', dokId).catch(()=>null);
+  if(dok) await dokRefLoeschen(dok);
+  await deleteMitTombstone('dokumente', dokId);
+}
+
+/* Anzeigbare Quelle eines Dokuments (dataURL ODER kurzlebiger OneDrive-Link).
 async function dokQuelle(d){
   if(!d) return '';
   if(d.data) return d.data;
@@ -16117,7 +16147,7 @@ async function dokTeilen(id) {
 
 async function deleteDok(id) {
   if (!confirm('Dokument wirklich löschen?')) return;
-  await deleteMitTombstone('dokumente', id);
+  await dokVollstaendigLoeschen(id);
   clearTimeout(window._syncTimer);
   window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
   toast('Dokument gelöscht');
@@ -23000,6 +23030,8 @@ async function modalSerienbriefEigentuemerwechsel(){
     <div id="ewInfo" style="font-size:12px;color:var(--ink-40);margin-top:8px"></div>
     <div class="m-actions">
       <button class="btn ghost" data-action-click="closeModal">Abbrechen</button>
+      <button class="btn ghost" data-action-click="ewArchivStapelLaden"><i class="ti ti-archive"></i> Bereits erzeugte laden</button>
+      <button class="btn ghost" data-action-click="ewAufraeumenAnzeigen"><i class="ti ti-trash"></i> Aufräumen</button>
       <button class="btn" data-action-click="serienbriefEigentuemerwechsel">Briefe erzeugen</button>
     </div>`);
 
@@ -23091,6 +23123,9 @@ async function serienbriefEigentuemerwechsel(){
     ? mvSammleAnlagenStyles({sepa:anl.sepa, dsgvo:anl.dsgvo, hausordnung:anl.hausordnung})
     : '';
   const kopf = `<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8"><title>Eigentümerwechsel – Anschreiben</title>${ewStil()}${anlagenStyle}${ewSigStil(sigListe)}</head><body>`;
+  /* v319: identischer Kopf, zusaetzlich mit Schriften - nur fuer die
+     Druckstapel, nicht fuer das Archiv. */
+  const kopfDruck = kopf.replace('</head>', ewSchriftStil() + '</head>');
   const auto = ewAutoPrint();
 
   /* v317: Bis v316 lief die gesamte Objektgruppe in EIN Druckdokument. Bei 12
@@ -23108,7 +23143,7 @@ async function serienbriefEigentuemerwechsel(){
   }
   _ewDrucke.forEach(h => {
     h.anzahl = h.seiten.length;
-    h.html   = kopf + h.seiten.map(x=>x.html).join('') + auto + '</body></html>';
+    h.html   = kopfDruck + h.seiten.map(x=>x.html).join('') + auto + '</body></html>';
     delete h.seiten;
   });
 
@@ -23142,6 +23177,155 @@ async function serienbriefEigentuemerwechsel(){
    nur im Speicher: der Inhalt ist bereits beim Mieter archiviert, eine zweite
    Ablage waere Doppelhaltung derselben Daten. */
 let _ewDrucke = [];
+
+/* Kennzeichnung der archivierten Eigentuemerwechsel-Briefe. Bewusst ueber den
+   Namen und nicht ueber ein neues Feld: archiviereMieterDokument hat eine
+   feste Signatur, die an mehreren Stellen genutzt wird. */
+const EW_ARCHIV_PRAEFIX = 'Eigentümerwechsel – neue Bankverbindung';
+
+/* Setzt die Haus-Stapel aus den archivierten Einzelbriefen neu zusammen.
+   Damit ueberlebt der Druckstapel den Neustart der App, ohne dass die Briefe
+   ein zweites Mal gespeichert werden muessten - jeder Brief liegt bereits
+   beim Mieter im Dokumente-Tab. */
+async function ewStapelAusArchiv(){
+  const alle = await idbGetAll('dokumente');
+  const briefe = (alle||[]).filter(d =>
+    d && d.typ === 'brief' && d.istHtml && String(d.name||'').startsWith(EW_ARCHIV_PRAEFIX));
+  if(!briefe.length) return [];
+
+  /* Nur den juengsten Lauf anbieten. Aeltere Laeufe enthalten ueberholte
+     Registrierschluessel und duerfen nicht versehentlich verschickt werden. */
+  const laufVon = d => (String(d.name||'').match(/\(([\d.]+)\)\s*$/)||[])[1] || '';
+  const laeufe = [...new Set(briefe.map(laufVon))].sort((a,b) =>
+    a.split('.').reverse().join('') < b.split('.').reverse().join('') ? 1 : -1);
+  const lauf = laeufe[0];
+  const ausLauf = briefe.filter(d => laufVon(d) === lauf)
+                        .sort((a,b) => (a.erstellt||0) - (b.erstellt||0));
+
+  const koerper = d => {
+    try{
+      const roh = decodeURIComponent(String(d.data||'').replace(/^data:text\/html;charset=utf-8,/, ''));
+      const m = roh.match(/<body[^>]*>([\s\S]*)<\/body>/i);
+      /* Auto-Druck-Skripte der Einzeldokumente entfernen - sonst loest jeder
+         Brief im Stapel einen eigenen Druckdialog aus. */
+      return (m ? m[1] : '').replace(/<script[\s\S]*?<\/script>/gi, '');
+    }catch(e){ console.warn('ewStapelAusArchiv, Dokument übersprungen:', e); return ''; }
+  };
+  /* Wie koerper() abgesichert: eine einzelne beschaedigte Data-URL darf nicht
+     den ganzen Stapel verhindern - decodeURIComponent wirft bei defekten
+     Prozentfolgen einen URIError. */
+  const kopfVon = d => {
+    try{
+      const roh = decodeURIComponent(String(d.data||'').replace(/^data:text\/html;charset=utf-8,/, ''));
+      const m = roh.match(/^([\s\S]*?<\/head>)/i);
+      return m ? m[1] : '';
+    }catch(e){ console.warn('ewStapelAusArchiv, Kopf übersprungen:', e); return ''; }
+  };
+
+  const stapel = [];
+  for(const d of ausLauf){
+    const oid = String(d.objektId||'');
+    let haus = stapel.find(h => h.objektId === oid);
+    if(!haus){
+      stapel.push(haus = {objektId:oid, name:(getObj(oid)||{}).name||oid, kopf:kopfVon(d), teile:[]});
+    }
+    const k = koerper(d);
+    if(k) haus.teile.push(k);
+  }
+  return stapel.filter(h => h.teile.length && h.kopf).map(h => ({
+    objektId: h.objektId, name: h.name, anzahl: h.teile.length, lauf,
+    html: h.kopf.replace('</head>', ewSchriftStil() + '</head>')
+        + '<body>' + h.teile.join('') + ewAutoPrint() + '</body></html>',
+  }));
+}
+
+/* Alle archivierten Eigentuemerwechsel-Briefe nach Erzeugungslauf gruppiert.
+   Gemeinsame Grundlage fuer das Nachdrucken und das Aufraeumen. */
+async function ewLaeufeUebersicht(){
+  const alle = await idbGetAll('dokumente');
+  const briefe = (alle||[]).filter(d =>
+    d && d.typ === 'brief' && String(d.name||'').startsWith(EW_ARCHIV_PRAEFIX));
+  const nachLauf = new Map();
+  for(const d of briefe){
+    const lauf = (String(d.name||'').match(/\(([\d.]+)\)\s*$/)||[])[1] || 'ohne Datum';
+    if(!nachLauf.has(lauf)) nachLauf.set(lauf, {lauf, ids:[], mieter:new Set(), neuest:0});
+    const e = nachLauf.get(lauf);
+    e.ids.push(d.id);
+    if(d.mieterId) e.mieter.add(d.mieterId);
+    if((d.erstellt||0) > e.neuest) e.neuest = d.erstellt||0;
+  }
+  return [...nachLauf.values()].sort((a,b) => b.neuest - a.neuest);
+}
+
+/* Testlaeufe entfernen. Beim Ausprobieren des Serienbriefs sammeln sich die
+   Briefe beim Mieter an - hier lagen nach einem Nachmittag 26 Stueck bei
+   einer einzigen Wohnung. Loeschung ueber deleteMitTombstone, damit sie sich
+   auf die anderen Geraete fortpflanzt und nicht beim naechsten Sync
+   wiederaufersteht. */
+async function ewLaufLoeschen(lauf){
+  const laeufe = await ewLaeufeUebersicht();
+  const treffer = laeufe.filter(l => lauf === '__alt__' ? l.lauf !== laeufe[0].lauf : l.lauf === lauf);
+  const anzahl = treffer.reduce((a,l)=>a+l.ids.length, 0);
+  if(!anzahl){ toast('Nichts zu löschen'); return; }
+  const was = lauf === '__alt__'
+    ? `alle ${anzahl} Briefe aus ${treffer.length} älteren Läufen`
+    : `alle ${anzahl} Briefe vom ${lauf}`;
+  if(!confirm(`${was} endgültig löschen?\n\nDie Briefe verschwinden bei allen betroffenen Mietern und auf allen Geräten. Bereits verschickte Papierbriefe bleiben davon unberührt.`)) return;
+  let n = 0;
+  for(const l of treffer){
+    for(const id of l.ids){
+      await dokVollstaendigLoeschen(id).catch(e=>console.warn('Löschen:', e));
+      n++;
+    }
+  }
+  toast(n+' Brief(e) gelöscht');
+  await ewAufraeumenAnzeigen();
+}
+registerActions({ ewLaufLoeschen });
+
+async function ewAufraeumenAnzeigen(){
+  const info = document.getElementById('ewInfo');
+  if(!info) return;
+  try{
+    const laeufe = await ewLaeufeUebersicht();
+    if(!laeufe.length){ info.innerHTML = '<span style="color:var(--ink-40)">Keine archivierten Eigentümerwechsel-Briefe vorhanden.</span>'; return; }
+    const gesamt = laeufe.reduce((a,l)=>a+l.ids.length, 0);
+    const alt = gesamt - laeufe[0].ids.length;
+    info.innerHTML = `<div style="font-weight:600;margin-bottom:4px">${gesamt} archivierte Brief(e) in ${laeufe.length} Lauf/Läufen</div>`
+      + laeufe.map((l,i) =>
+          `<div style="display:flex;align-items:center;gap:8px;margin-top:4px">`
+          + `<span style="flex:1">${esc(l.lauf)}${i===0?' <b>(jüngster)</b>':''} – ${l.ids.length} Brief(e), ${l.mieter.size} Mieter</span>`
+          + `<button class="btn btn-sm btn-danger" data-action-click="ewLaufLoeschen" data-arg="${esc(l.lauf)}"><i class="ti ti-trash"></i></button></div>`).join('')
+      + (alt ? `<button class="btn btn-full btn-danger" style="margin-top:8px" data-action-click="ewLaufLoeschen" data-arg="__alt__">`
+             + `<i class="ti ti-trash"></i> Alle ${alt} Briefe außer dem jüngsten Lauf löschen</button>` : '');
+  }catch(e){
+    console.warn('ewAufraeumenAnzeigen:', e);
+    toast('Archiv konnte nicht gelesen werden');
+  }
+}
+registerActions({ ewAufraeumenAnzeigen });
+
+async function ewArchivStapelLaden(){
+  const info = document.getElementById('ewInfo');
+  try{
+    const stapel = await ewStapelAusArchiv();
+    if(!stapel.length){ toast('Keine archivierten Briefe gefunden'); return; }
+    _ewDrucke = stapel;
+    const gesamt = stapel.reduce((a,h)=>a+h.anzahl, 0);
+    if(info){
+      info.innerHTML = `<span style="color:var(--green)"><i class="ti ti-archive"></i> ${gesamt} archivierte(r) Brief(e) vom ${esc(stapel[0].lauf||'')} geladen.</span>`
+        + `<div style="margin-top:8px;font-size:13px;color:var(--ink-40)">Aus dem Archiv zusammengestellt – es werden keine neuen Briefe erzeugt und keine Schlüssel geändert.</div>`
+        + stapel.map((h,i) =>
+            `<button class="btn btn-full" style="margin-top:6px" data-action-click="ewDruckeHaus" data-arg="${i}" data-argnum="1">`
+            + `<i class="ti ti-printer"></i> ${esc(h.name)} – ${h.anzahl} Brief(e) drucken</button>`).join('');
+    }
+    toast(gesamt+' Brief(e) aus dem Archiv geladen');
+  }catch(e){
+    console.warn('ewArchivStapelLaden:', e);
+    toast('Archiv konnte nicht gelesen werden');
+  }
+}
+registerActions({ ewArchivStapelLaden });
 
 function ewDruckeHaus(idx){
   const h = _ewDrucke[Number(idx)];
@@ -23443,7 +23627,11 @@ function ewStil(){
     .ew-kopf .ew-l{width:58%}
     .ew-kopf .ew-r{width:42%;text-align:right;font-size:8pt;color:#555}
     /* 7 pt statt 6,5 pt: Mindestgroesse der Post fuer die Ruecksendeangabe. */
-    .ew-abs{font-size:7pt;color:#777;border-bottom:1px solid #ccc;padding-bottom:1mm;margin:0 0 2mm;width:85mm}
+    /* v319: Die Linie laeuft ueber die volle Satzbreite (optisch der Trenner
+       zum Briefkopf), der TEXT muss dagegen in die 85 mm des Anschriftfeldes
+       passen - bei 7 pt sind das rund 100 Zeichen. ewAbsenderKurz haelt das
+       ein; bei laengeren Briefkopfadressen dort pruefen. */
+    .ew-abs{font-size:7pt;color:#777;border-bottom:1px solid #ccc;padding-bottom:1mm;margin:0 0 2mm;white-space:nowrap;overflow:hidden}
     .ew-anschrift{font-size:10.5pt;line-height:1.4;min-height:18mm;width:85mm}
     .ew-datum{text-align:right;font-size:10pt;color:#333;margin:3mm 0 5mm}
     .ew-betreff{font-weight:700;font-size:11.5pt;color:#0C447C;margin-bottom:3mm}
@@ -23555,6 +23743,30 @@ function ewNameTeile(p){
   return (t.length===2 && t[0].trim() && t[1].trim())
     ? {nach: t[0].trim(), vor: t[1].trim()}
     : {nach: roh, vor: ''};
+}
+
+/* v319: Die Schriften DM Sans und DM Mono sind als @font-face in der
+   index.html der App eingebettet. Beim Druck aus der App greift das
+   Druckdokument darauf zu, weil es im selben Dokument liegt (#printRoot).
+   Wird das HTML dagegen geteilt und ausserhalb der App geoeffnet, fehlen die
+   Schriften: der Browser ersetzt sie durch breiter laufende Systemschriften,
+   der Satz waechst um etwa eine Zeile je Absatz und Seite 1 verliert unten die
+   Fussnote. Deshalb bekommt jedes eigenstaendige Druckdokument die Schriften
+   mit - rund 132 kB, einmal je Haus, nicht je Brief.
+   Bewusst NICHT im Archivdokument (siehe archiviereMieterDokument-Aufruf):
+   dort laegen die 132 kB je Mieter in immo_daten.json, bei 116 Einheiten
+   ueber 15 MB. Archivierte Briefe werden ohnehin in der App geoeffnet. */
+function ewSchriftStil(){
+  try{
+    let regeln = '';
+    for(const el of document.querySelectorAll('style')){
+      const txt = el.textContent || '';
+      for(const m of txt.matchAll(/@font-face\s*\{[^}]*\}/g)){
+        if(/DM\s+(Sans|Mono)/.test(m[0])) regeln += m[0] + '\n';
+      }
+    }
+    return regeln ? '<style>' + regeln + '</style>' : '';
+  }catch(e){ console.warn('ewSchriftStil:', e); return ''; }
 }
 
 function ewSigStil(sigListe){
@@ -24033,6 +24245,12 @@ async function onWohnungGrundrissFile(objektId, weNr, slot){
       data:e.target.result, mimeType:file.type, size:file.size,
       erstellt:now(), geaendert:now(), ersteller:CU?.name||'',
     };
+    /* v321: Der Datensatz hat eine feste ID und wird ueberschrieben, die
+       OneDrive-Datei bekaeme aber einen neuen Namen. Alte Datei zuerst weg,
+       sonst bleibt bei jedem Austausch eine Leiche zurueck (beim Test lagen
+       fuenf Fassungen desselben Grundrisses im WE-Ordner). */
+    const vorher = await idbGet('dokumente', dok.id).catch(()=>null);
+    if(vorher) await dokRefLoeschen(vorher);
     // v177: nach OneDrive auslagern; Fehler ⇒ data bleibt inline (Fallback)
     const odRef = await dokAuslagernRef(dok, e.target.result, weNr);
     if(odRef){ dok.ref = odRef; delete dok.data; }
@@ -24048,7 +24266,7 @@ async function onWohnungGrundrissFile(objektId, weNr, slot){
 async function deleteWohnungGrundriss(objektId, weNr, slot){
   slot = slot==='b' ? 'b' : 'a';
   if(!confirm(slot==='b'?'Grundriss der zweiten Ebene löschen?':'Grundriss dieser Wohnung löschen?')) return;
-  await deleteMitTombstone('dokumente', wohnungGrundrissId(objektId,weNr,slot));
+  await dokVollstaendigLoeschen(wohnungGrundrissId(objektId,weNr,slot));
   clearTimeout(window._syncTimer);
   window._syncTimer=setTimeout(()=>syncToOneDrive(),3000);
   toast('Grundriss gelöscht');
@@ -24162,7 +24380,7 @@ async function saveWohnungsbildBeschr(objektId, weNr, bildId){
 
 async function deleteWohnungsbild(objektId, weNr, bildId){
   if(!confirm('Dieses Bild löschen?')) return;
-  await deleteMitTombstone('dokumente', bildId);
+  await dokVollstaendigLoeschen(bildId);
   clearTimeout(window._syncTimer);
   window._syncTimer=setTimeout(()=>syncToOneDrive(),3000);
   toast('Bild gelöscht');
@@ -30548,8 +30766,10 @@ async function renderSettings(){
         <button class="btn" data-action-click="mieterAlleVcardExport"><i class="ti ti-address-book"></i> Mieter als Telefonkontakte (.vcf)</button>
         <button class="btn" onclick="document.getElementById('importBackupIn').click()"><i class="ti ti-upload"></i> Backup importieren</button>
         <button class="btn" data-action-click="modalBackfill"><i class="ti ti-cloud-upload"></i> Alt-Fotos auslagern</button>
+        <button class="btn" data-action-click="odVerwaisteAnzeigen"><i class="ti ti-file-search"></i> Verwaiste OneDrive-Dateien suchen</button>
         <button class="btn btn-danger" data-action-click="confirmReset"><i class="ti ti-trash"></i> Zurücksetzen</button>
       </div>
+      <div id="odVerwaistEl" style="font-size:12px;margin-top:12px"></div>
       <input type="file" id="importBackupIn" accept=".json" style="display:none" onchange="importBackup(this)">
     </div>`:''}
 
@@ -32797,6 +33017,128 @@ async function odBaumAnlegen(){
   }
   return stand.length;
 }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   VERWAISTE ONEDRIVE-DATEIEN (v321)
+   Bis v320 entfernte kein Loeschpfad die ausgelagerte Datei, und jeder
+   erneute Upload vergab einen neuen Dateinamen. In den Objektordnern liegen
+   daher Dateien mit Mieterdaten, auf die kein Datensatz mehr zeigt.
+   ABLAUF BEWUSST ZWEISTUFIG: erst suchen und anzeigen, loeschen nur nach
+   ausdruecklicher Freigabe. Grund: Dateien, die von Hand in einen
+   Objektordner gelegt wurden, kennt die App nicht und wuerde sie als
+   verwaist melden. Diese Entscheidung darf keine Automatik treffen.
+═══════════════════════════════════════════════════════════════════════ */
+
+/* Jede odId einsammeln, die IRGENDWO in der Datenbank referenziert wird -
+   store- und feldunabhaengig, rekursiv. Eine Referenz zu uebersehen hiesse,
+   eine benutzte Datei zu loeschen; deshalb hier bewusst grob und
+   vollstaendig statt gezielt nach bekannten Feldern zu suchen. */
+async function odBenutzteIds(){
+  const ids = new Set();
+  const sammle = v => {
+    if(!v || typeof v !== 'object') return;
+    if(Array.isArray(v)){ v.forEach(sammle); return; }
+    if(v.odId) ids.add(String(v.odId));
+    if(v.odItemId) ids.add(String(v.odItemId));   // od_dateien
+    for(const k in v) sammle(v[k]);
+  };
+  for(const store of STORES_ALLE){
+    const alle = await idbGetAll(store).catch(()=>[]);
+    (alle||[]).forEach(sammle);
+  }
+  return ids;
+}
+
+/* Durchsucht ausschliesslich die Kategorieordner unter OD_BASE. Der
+   Wurzelordner NadigPfau, immo_daten.json und der backup-Ordner werden
+   nicht angefasst. */
+async function odVerwaisteSuchen(aufFortschritt){
+  const benutzt = await odBenutzteIds();
+  const gefunden = [];
+  const jetzt = Date.now();
+  const ordner = [];
+
+  /* Ordnerliste ueber odGebaeudeListe/alleWeVonObjekt aufbauen - dieselben
+     Funktionen, mit denen syncDateibaum den Baum ANLEGT. Eigene Logik waere
+     hier gefaehrlich: leerstehende Wohnungen haben keinen Mietereintrag,
+     ihre Ordner existieren aber und wuerden sonst nie durchsucht. */
+  const mAlle = await idbGetAll('mieter').catch(()=>[]);
+  for(const st of (typeof odStandorte==='function' ? odStandorte() : [])){
+    for(const g of await odGebaeudeListe(st, mAlle)){
+      const basis = odKnotenPfad(st.ordner, 'Allgemein', g.geb);
+      for(const k of OD_KATEGORIEN_ALLG) ordner.push(`${basis}/${odSafeName(k)}`);
+      for(const we of g.wes){
+        const wePfad = odKnotenPfad(st.ordner, 'WE '+odSafeName(we), g.geb);
+        for(const k of OD_KATEGORIEN_WE) ordner.push(`${wePfad}/${odSafeName(k)}`);
+      }
+    }
+  }
+
+  let i = 0;
+  for(const pfad of ordner){
+    i++;
+    if(aufFortschritt) aufFortschritt(i, ordner.length, pfad);
+    const dateien = await odListFiles(pfad).catch(()=>[]);
+    for(const f of dateien){
+      if(benutzt.has(String(f.id))) continue;
+      /* Frisch Hochgeladenes ausnehmen: waehrend eines laufenden Uploads
+         existiert die Datei bereits, der Datensatz aber noch nicht. */
+      const alter = jetzt - new Date(f.lastModifiedDateTime||0).getTime();
+      if(alter < 24*3600*1000) continue;
+      gefunden.push({id:f.id, name:f.name, pfad, size:f.size||0, datum:f.lastModifiedDateTime||''});
+    }
+  }
+  return gefunden;
+}
+
+let _odVerwaist = [];
+
+async function odVerwaisteAnzeigen(){
+  const el = document.getElementById('odVerwaistEl');
+  if(!el) return;
+  el.innerHTML = '<span style="color:var(--ink-40)">Ordner werden gelesen …</span>';
+  try{
+    _odVerwaist = await odVerwaisteSuchen((i,n,p) => {
+      el.innerHTML = `<span style="color:var(--ink-40)">Ordner ${i} von ${n} …</span>`;
+    });
+    if(!_odVerwaist.length){
+      el.innerHTML = '<span style="color:var(--green)"><i class="ti ti-circle-check"></i> Keine verwaisten Dateien gefunden.</span>';
+      return;
+    }
+    const mb = _odVerwaist.reduce((a,f)=>a+f.size, 0) / 1048576;
+    el.innerHTML = `<div style="font-weight:600;margin-bottom:6px">${_odVerwaist.length} verwaiste Datei(en), zusammen ${mb.toFixed(1)} MB</div>`
+      + `<div style="font-size:11px;color:var(--ink-40);margin-bottom:8px">Auf diese Dateien zeigt kein Datensatz der App. Von Hand in OneDrive abgelegte Dateien erscheinen hier ebenfalls – bitte vor dem Löschen durchsehen.</div>`
+      + `<div style="max-height:260px;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:6px">`
+      + _odVerwaist.map(f =>
+          `<div style="font-size:11px;padding:3px 0;border-bottom:1px solid var(--line)">`
+          + `<div style="font-weight:600">${esc(f.name)}</div>`
+          + `<div style="color:var(--ink-40)">${esc(f.pfad)} · ${(f.size/1024).toFixed(0)} KB · ${esc(String(f.datum).slice(0,10))}</div></div>`).join('')
+      + `</div>`
+      + `<button class="btn btn-full btn-danger" style="margin-top:8px" data-action-click="odVerwaisteLoeschen">`
+      + `<i class="ti ti-trash"></i> Diese ${_odVerwaist.length} Datei(en) in OneDrive löschen</button>`;
+  }catch(e){
+    console.warn('odVerwaisteSuchen:', e);
+    el.innerHTML = '<span style="color:var(--red)">Ordner konnten nicht gelesen werden: '+esc(e.message||'')+'</span>';
+  }
+}
+registerActions({ odVerwaisteAnzeigen });
+
+async function odVerwaisteLoeschen(){
+  if(!_odVerwaist.length){ toast('Bitte zuerst suchen'); return; }
+  if(!confirm(`${_odVerwaist.length} Datei(en) endgültig in OneDrive löschen?\n\nDie Dateien landen im OneDrive-Papierkorb und lassen sich von dort noch wiederherstellen.`)) return;
+  const el = document.getElementById('odVerwaistEl');
+  let ok = 0, fehler = 0;
+  for(let i = 0; i < _odVerwaist.length; i++){
+    const f = _odVerwaist[i];
+    if(el) el.innerHTML = `<span style="color:var(--ink-40)">Lösche ${i+1} von ${_odVerwaist.length} …</span>`;
+    try{ await odGraph('/me/drive/items/'+encodeURIComponent(f.id), {method:'DELETE'}); ok++; }
+    catch(e){ console.warn('Löschen fehlgeschlagen:', f.name, e); fehler++; }
+  }
+  _odVerwaist = [];
+  if(el) el.innerHTML = `<span style="color:var(--green)"><i class="ti ti-circle-check"></i> ${ok} Datei(en) gelöscht${fehler?`, ${fehler} fehlgeschlagen`:''}.</span>`;
+  toast(ok+' Datei(en) gelöscht');
+}
+registerActions({ odVerwaisteLoeschen });
 
 /* Alle Dateien (nicht Ordner) eines OneDrive-Ordners auflisten. */
 async function odListFiles(pfad){
