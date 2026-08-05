@@ -1230,7 +1230,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=35;   // v242: +buch_journal (F4 GoBD)
-const APP_VERSION = '2026-08-04-v311';
+const APP_VERSION = '2026-08-04-v315';
 /* v300 (03.08.2026): E-Mail-Auswahl je Wohneinheit korrigiert (Gerätetest-Befund).
    Beim ersten echten Push meldete die App "25 Wohnungen uebertragen, 90
    uebersprungen". Ein Teil davon ist echter Datenmangel (Krefeld hat noch
@@ -16383,7 +16383,13 @@ const NKA_VORLAGEN = {
       {id:'grundsteuer',     name:'Grundsteuer',                schluessel:'wfl'},
       {id:'gebvrs',          name:'Gebäudeversicherung',        schluessel:'wfl'},
       {id:'haftpflicht',     name:'Haftpflichtversicherung',    schluessel:'monate'},
-      {id:'hausreinigung',   name:'Hausreinigung',              schluessel:'besonders'},
+      /* v315: gleichgezogen mit der liegenschaftsweiten MG-Abrechnung.
+         Vorher 'Hausreinigung' mit Schluessel 'besonders' - dabei wurde der
+         eingegebene Betrag jedem Mieter in voller Hoehe zugeordnet statt
+         verteilt. Die ID bleibt 'hausreinigung', damit bereits gespeicherte
+         Betraege erhalten bleiben; ACHTUNG: aeltere Abrechnungen rechnen beim
+         erneuten Oeffnen mit dem neuen Schluessel. */
+      {id:'hausreinigung',   name:'Treppenhausreinigung',       schluessel:'etage'},
       {id:'vorgarten',       name:'Vorgartenpflege',            schluessel:'we'},
       {id:'heizung',         name:'Heizung (Einzeln)',          schluessel:'einzeln'},
     ]
@@ -16514,8 +16520,39 @@ const NKA_SCHL_OPTS=[
   {val:'wfl',      label:'Wohnfläche'},
   {val:'we',       label:'Wohneinheiten'},
   {val:'monate',   label:'Monate'},
+  {val:'etage',    label:'Etage (je Etage gleich)'},
   {val:'besonders',label:'Direkt (bes. Berechnung)'},
 ];
+
+/* v313: Verteilerschluessel "Etage" - fuer Treppenhausreinigung.
+   Die Kosten werden zuerst gleichmaessig auf die Etagen verteilt und innerhalb
+   einer Etage gleichmaessig auf die dort liegenden Wohnungen; zeitanteilig
+   ueber die Wohnmonate wie bei allen uebrigen Schluesseln. Das Erdgeschoss
+   zaehlt als vollwertige Etage mit.
+   Die Etage stammt aus dem Freitextfeld "Etage / Lage" des Mieters und wird
+   mit denselben Hilfsfunktionen wie die Mietbescheinigung ausgewertet.
+   Wohnungen ohne erkennbare Etage bleiben unberuecksichtigt - ihr Anteil wird
+   NICHT auf die uebrigen Mieter umgelegt, sondern verbleibt beim Vermieter.
+   Dasselbe gilt fuer eine vollstaendig leerstehende Etage: Leerstandsrisiko
+   traegt der Vermieter, nicht die Mieterschaft (st. Rspr. zu § 556a BGB). */
+function nkaEtageKey(m){
+  const txt = String(m && (m.etage||m.lage) || '').trim();
+  if(!txt) return null;
+  const g = mbEtageGrundlage(txt);
+  let et = null;
+  if(g==='Erdgeschoss')       et = 0;
+  else if(g==='Dachgeschoss') et = 99;
+  else {
+    const z = mbEtageZahl(txt);
+    et = (z!=null) ? z : (g==='Obergeschoss' ? 1 : null);
+  }
+  if(et==null) return null;
+  /* v314: Das Gebaeude gehoert in den Schluessel. In der liegenschaftsweiten
+     Abrechnung (Kyffhaeuser 28/30/32) wuerden sonst die Erdgeschosse aller
+     drei Haeuser zu EINER Etage verschmelzen und die Treppenhauskosten falsch
+     zusammengefasst - jedes Haus hat sein eigenes Treppenhaus. */
+  return String(m && m.objektId || '') + '#' + et;
+}
 function nkaSchlInfoText(schl){
   const d=window._nkaDivisoren||{p:0,f:0,we:0};
   const f2=x=>x.toFixed(2).replace('.',',');
@@ -16523,6 +16560,7 @@ function nkaSchlInfoText(schl){
     case 'personen':      return 'Schlüssel: '+d.p+' Pers. = '+(d.p*12)+' Personenmonate';
     case 'wfl':           return 'Schlüssel: '+f2(d.f)+' m² = '+f2(d.f*12)+' m²-Monate';
     case 'we': case 'monate': return 'Schlüssel: '+d.we+' WE = '+(d.we*12)+' Monate';
+    case 'etage':         return 'Zuerst gleichmäßig auf die Etagen, dann auf die Wohnungen der Etage';
     case 'personen_fest': return 'Festpreis je Person ('+d.p+' Pers. gesamt)';
     case 'we_fest':       return 'Festpreis je Wohneinheit';
     case 'besonders':     return 'Betrag wird 1:1 übernommen';
@@ -17288,6 +17326,29 @@ async function erstelleNKA(objektId, korrektur) {
       case 'wfl':      divisor = gesamtWFL;      wertVon = m=>flaechenMonate(m,von,bis); break;
       case 'we':       divisor = gesamtWE;       wertVon = m=>weMonate(m,von,bis);       break;
       case 'monate':   divisor = gesamtMonate;   wertVon = m=>weMonate(m,von,bis);       break;
+      case 'etage': {
+        /* Gewicht je Mieter = (eigene Wohnmonate / Wohnmonate seiner Etage) / Etagenzahl.
+           Die Summe aller Gewichte ist 1, solange jede Etage belegt ist; der
+           Divisor ist deshalb 1 und der Betrag wird vollstaendig verteilt. */
+        const etagenAlle = new Set();
+        const monateJeEtage = new Map();
+        mieter.forEach(mm=>{
+          const e = nkaEtageKey(mm);
+          if(e==null) return;
+          etagenAlle.add(e);
+          monateJeEtage.set(e, (monateJeEtage.get(e)||0) + weMonate(mm,von,bis));
+        });
+        const anzEtagen = etagenAlle.size;
+        divisor = anzEtagen > 0 ? 1 : 0;
+        wertVon = mm => {
+          const e = nkaEtageKey(mm);
+          if(e==null || !anzEtagen) return 0;
+          const summe = monateJeEtage.get(e) || 0;
+          if(!(summe > 0)) return 0;
+          return (weMonate(mm,von,bis) / summe) / anzEtagen;
+        };
+        break;
+      }
       default: _anteilCache.set(k.id, null); return null;
     }
     const verteilung = nkaCentVerteilung(
@@ -17323,7 +17384,7 @@ async function erstelleNKA(objektId, korrektur) {
     if(!b||b===0) return;
     const sl=k.schluessel==='personen'?'Personen':k.schluessel==='wfl'?'Wohnfläche':
       k.schluessel==='we'||k.schluessel==='we_fest'?'WE':k.schluessel==='monate'?'Monate':
-      k.schluessel==='personen_fest'?'Personen':k.schluessel==='besonders'?'bes. Berechn.':'';
+      k.schluessel==='personen_fest'?'Personen':k.schluessel==='etage'?'Etage':k.schluessel==='besonders'?'bes. Berechn.':'';
     kostenZeilen+=`<tr><td style="padding:3px 8px;border:1px solid #dde;font-size:10px">${k.name}</td>
       <td style="padding:3px 8px;border:1px solid #dde;font-size:10px">${sl}</td>
       <td style="padding:3px 8px;border:1px solid #dde;font-size:10px;text-align:right;font-weight:600">${fmtEur(b)}</td></tr>`;
@@ -17421,7 +17482,7 @@ async function erstelleNKA(objektId, korrektur) {
         case 'besonders':     geteilt='-';anteil='-';preis='-';kosten=b;break;
         default:              kosten=getAnteil(k,m);geteilt='-';anteil='-';preis='-';
       }
-      posZeilen+=nkaZeile(k.name,k.schluessel==='personen'?'Personen':k.schluessel==='wfl'?'WFL':k.schluessel==='we'||k.schluessel==='we_fest'?'WE':k.schluessel==='monate'?'Monate':'Bes.',
+      posZeilen+=nkaZeile(k.name,k.schluessel==='personen'?'Personen':k.schluessel==='wfl'?'WFL':k.schluessel==='we'||k.schluessel==='we_fest'?'WE':k.schluessel==='monate'?'Monate':k.schluessel==='etage'?'Etage':'Bes.',
         typeof geteilt==='number'?geteilt.toFixed(2):geteilt,
         b,
         typeof anteil==='number'?anteil:anteil,
@@ -17773,6 +17834,11 @@ const NKA_LG_VORLAGEN = {
       {id:'gebvrs',         name:'Gebäudeversicherung',           schluessel:'wfl'},
       {id:'haftpflicht',    name:'Haftpflichtversicherung',       schluessel:'wfl'},
       {id:'vorgarten',      name:'Vorgartenpflege',               schluessel:'wfl'},
+      /* v314: fehlte bisher in der liegenschaftsweiten MG-Abrechnung, obwohl
+         sie in der Einzelabrechnung je Haus enthalten ist. Verteilung nach
+         Etage: jedes Haus hat ein eigenes Treppenhaus, die Kosten einer Etage
+         teilen sich die Wohnungen dieser Etage (§ 2 Nr. 9 BetrKV). */
+      {id:'treppenhaus',    name:'Treppenhausreinigung',          schluessel:'etage'},
       {id:'heizung',        name:'Heiz-Warmwasserkosten',         schluessel:'einzeln'},
     ],
   },
@@ -17908,6 +17974,7 @@ async function modalNKALiegenschaft(lgId){
       hint=`<div style="font-size:10px;color:var(--ink-40)">Verteilung nur ${grp?.label} (Fläche)</div>`;
     } else if(k.schluessel==='wfl'){ hint='<div style="font-size:10px;color:var(--ink-40)">Verteilung nach Fläche (alle)</div>'; }
     else if(k.schluessel==='personen'){ hint='<div style="font-size:10px;color:var(--ink-40)">Verteilung nach Personen (alle)</div>'; }
+    else if(k.schluessel==='etage'){ hint='<div style="font-size:10px;color:var(--ink-40)">Verteilung je Etage, getrennt nach Gebäude</div>'; }
     return `<div class="f"><label for="nkaLg_${k.id}">${k.name} (€)</label>
       <input type="text" inputmode="decimal" id="nkaLg_${k.id}" placeholder="0,00">${hint}</div>`;
   }).join('');
@@ -18272,6 +18339,30 @@ async function erstelleNKALiegenschaft(lgId, korrektur){
           wert: krefeldGruppeVonObjekt(m.objektId)===k.gruppe ? flaechenMonate(m,von,bis) : 0
         }));
         break;
+      case 'etage': {
+        /* Wie in der Einzelabrechnung: zuerst gleichmaessig auf die Etagen,
+           dann auf die Wohnungen der Etage - hier je Gebaeude getrennt. */
+        const etagenAlle = new Set();
+        const monateJeEtage = new Map();
+        mieter.forEach(mm=>{
+          const e = nkaEtageKey(mm);
+          if(e==null) return;
+          etagenAlle.add(e);
+          monateJeEtage.set(e, (monateJeEtage.get(e)||0) + weMonate(mm,von,bis));
+        });
+        const anzEtagen = etagenAlle.size;
+        divisor = anzEtagen > 0 ? 1 : 0;
+        teilnehmer = mieter.map(mm=>{
+          const e = nkaEtageKey(mm);
+          const summe = (e!=null) ? (monateJeEtage.get(e)||0) : 0;
+          return {
+            id: mm.id,
+            wert: (e!=null && anzEtagen && summe>0)
+              ? (weMonate(mm,von,bis)/summe)/anzEtagen : 0
+          };
+        });
+        break;
+      }
       default: _anteilCacheLg.set(key, null); return null;
     }
     const verteilung = nkaCentVerteilung(kostenMap[k.id], divisor, teilnehmer);
@@ -18298,7 +18389,7 @@ async function erstelleNKALiegenschaft(lgId, korrektur){
   vorlage.kosten.forEach(k=>{
     if(k.schluessel==='einzeln') return;
     const b=kostenMap[k.id]; if(!b) return;
-    const sl=k.schluessel==='personen'?'Personen':k.schluessel==='wfl_gruppe'?('Fläche '+(KREFELD_GRUPPEN[k.gruppe]?.label||'')):'Wohnfläche';
+    const sl=k.schluessel==='personen'?'Personen':k.schluessel==='etage'?'Etage':k.schluessel==='wfl_gruppe'?('Fläche '+(KREFELD_GRUPPEN[k.gruppe]?.label||'')):'Wohnfläche';
     kostenZeilen+=`<tr><td style="padding:3px 8px;border:1px solid #dde;font-size:10px">${k.name}</td>
       <td style="padding:3px 8px;border:1px solid #dde;font-size:10px">${sl}</td>
       <td style="padding:3px 8px;border:1px solid #dde;font-size:10px;text-align:right;font-weight:600">${fmtEur(b)}</td></tr>`;
@@ -23106,7 +23197,7 @@ async function ewSeiteFuer(m, opt){
         ${istKrefeld?`<tr><td>Hausmeister</td><td><b>Herr Dirk Nicolay</b><br>Wilmendyk 11, 47803 Krefeld<br>Telefon +49 / 176 21 37 00 40</td></tr>`:''}
       </table>
     </td></tr></table>
-    <p class="ew-klein">Telefonisch erreichen Sie uns von 9:00 bis 17:00 Uhr. Außerhalb dieser Zeiten schreiben Sie uns bitte über WhatsApp unter derselben Nummer. Mängel und Störungen melden Sie bis zur Freischaltung des Mieterportals per E-Mail, telefonisch oder über WhatsApp. Im Notfall – etwa Feuer, Wasserrohrbruch, Gasgeruch oder Stromausfall im ganzen Haus – erreichen Sie uns auch außerhalb dieser Zeiten telefonisch. Besteht Gefahr für Personen, wählen Sie bitte zuerst den Notruf 112.</p>
+    <p class="ew-klein">Telefonisch erreichen Sie uns von 9:00 bis 17:00 Uhr. Außerhalb dieser Zeiten schreiben Sie uns bitte über WhatsApp unter derselben Nummer. Mängel und Störungen melden Sie bis zur Freischaltung des Mieterportals per E-Mail, telefonisch oder über WhatsApp. Im Notfall – etwa Feuer, Wasserrohrbruch, Gasgeruch oder Stromausfall im ganzen Haus – erreichen Sie uns auch außerhalb dieser Zeiten telefonisch. Besteht Gefahr für Personen, wählen Sie bitte zuerst den Notruf 112. Wichtige Schreiben – Betriebskostenabrechnung, Mieterhöhung, Kündigung – erhalten Sie unabhängig davon weiterhin per Post.</p>
 
     <div class="ew-h2">Was jetzt zu tun ist</div>
     <ol class="ew-liste ew-schritte">
@@ -23114,7 +23205,6 @@ async function ewSeiteFuer(m, opt){
       <li><b>Kontaktdaten hinterlegen</b> – QR-Code im Kasten „Ihr Mieterportal“ auf Seite 1 scannen oder die beiliegende Rückantwort ausfüllen.</li>
       <li><b>Aufkleber anbringen</b> – nach der Anmeldung innen an den Sicherungskasten; er enthält keinen Schlüssel und hilft Ihnen, den Zugang später wiederzufinden.</li>
     </ol>
-    <p class="ew-klein">Wichtige Schreiben – Betriebskostenabrechnung, Mieterhöhung, Kündigung – erhalten Sie unabhängig davon weiterhin per Post.</p>
 
     <p>Lieber auf Papier? ${rueckgabeSatz}${beiliegend}</p>
     <p>Für Rückfragen stehen wir Ihnen gern zur Verfügung. Wir freuen uns auf eine gute Zusammenarbeit.</p>
@@ -23233,7 +23323,9 @@ function ewStil(){
     .ew-betreff{font-weight:700;font-size:11.5pt;color:#0C447C;margin-bottom:3mm}
     .ew-anrede{margin-bottom:2.5mm}
     p{margin:0 0 2.5mm;text-align:left}
-    .ew-h2{font-weight:700;font-size:11pt;color:#0C447C;margin:4mm 0 2mm}
+    /* v312: Auf Seite 2 stehen drei Zwischenüberschriften; die Anlagenzeile
+       fiel unter den Satzspiegel. Abstände dort gestrafft. */
+    .ew-h2{font-weight:700;font-size:11pt;color:#0C447C;margin:3.5mm 0 1.5mm}
     .ew-kasten{width:100%;border-collapse:collapse;background:#F4F6F9;margin:1mm 0}
     .ew-kasten>tbody>tr>td{vertical-align:middle;padding:2.5mm 3mm}
     .ew-daten{border-collapse:collapse;font-size:10pt}
@@ -23244,13 +23336,13 @@ function ewStil(){
     .ew-qr span{display:block;font-size:7.5pt;color:#666}
     .ew-qr .ew-schluessel{font-weight:700;font-size:9pt;color:#111}
     .ew-klein{font-size:8pt;color:#666;margin-bottom:2mm}
-    .ew-gruss{margin:2mm 0 0}
+    .ew-gruss{margin:1.5mm 0 0}
     .ew-sigzeile{margin:1mm 0 0}
     .ew-sig{display:inline-block;margin-right:14mm;vertical-align:bottom}
-    .ew-sig img{max-height:52px;display:block;margin-bottom:0.5mm}
+    .ew-sig img{max-height:44px;display:block;margin-bottom:0.5mm}
     .ew-sig span{font-size:9pt}
     .ew-sigluft{height:14mm}
-    .ew-anlagen{font-size:7.5pt;color:#777;margin-top:3mm}
+    .ew-anlagen{font-size:7.5pt;color:#777;margin-top:1.5mm}
     /* v304: Der Brief ist bewusst zweiseitig. Der Umbruch wird gesetzt statt
        dem Zufall des Textflusses ueberlassen - sonst wandert er mit jeder
        Namenslaenge und jedem zusaetzlichen Stellplatz. Seite 2 traegt eine
@@ -23259,7 +23351,7 @@ function ewStil(){
     .ew-umbruch{page-break-before:always;break-before:page;height:0}
     .ew-fortsetzung{font-size:7.5pt;color:#777;border-bottom:1px solid #ccc;padding-bottom:1mm;margin-bottom:4mm}
     .ew-liste{margin:0 0 2.5mm;padding-left:0;list-style:none}
-    .ew-liste li{margin:0 0 1.4mm;padding-left:4.5mm;text-indent:-4.5mm;page-break-inside:avoid;break-inside:avoid}
+    .ew-liste li{margin:0 0 1.2mm;padding-left:4.5mm;text-indent:-4.5mm;page-break-inside:avoid;break-inside:avoid}
     .ew-liste li:before{content:"– ";color:#0C447C}
     .ew-schritte{counter-reset:ewschritt}
     .ew-schritte li{padding-left:6mm;text-indent:-6mm;counter-increment:ewschritt;margin-bottom:1.8mm}
