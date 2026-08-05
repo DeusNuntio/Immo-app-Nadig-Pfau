@@ -1230,7 +1230,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=35;   // v242: +buch_journal (F4 GoBD)
-const APP_VERSION = '2026-08-05-v321';
+const APP_VERSION = '2026-08-05-v322';
 /* v300 (03.08.2026): E-Mail-Auswahl je Wohneinheit korrigiert (Gerätetest-Befund).
    Beim ersten echten Push meldete die App "25 Wohnungen uebertragen, 90
    uebersprungen". Ein Teil davon ist echter Datenmangel (Krefeld hat noch
@@ -33029,24 +33029,39 @@ async function odBaumAnlegen(){
    verwaist melden. Diese Entscheidung darf keine Automatik treffen.
 ═══════════════════════════════════════════════════════════════════════ */
 
-/* Jede odId einsammeln, die IRGENDWO in der Datenbank referenziert wird -
-   store- und feldunabhaengig, rekursiv. Eine Referenz zu uebersehen hiesse,
-   eine benutzte Datei zu loeschen; deshalb hier bewusst grob und
-   vollstaendig statt gezielt nach bekannten Feldern zu suchen. */
+/* Jede odId einsammeln, auf die ein FACHDATENSATZ verweist - store- und
+   feldunabhaengig, rekursiv.
+   v322: Der Store 'od_dateien' ist hier ausdruecklich ausgenommen. Er ist ein
+   SPIEGEL des OneDrive-Ordners: syncDateibaum legt fuer jede vorgefundene
+   Datei einen Record mit odItemId an. Wertet man den als Benutzung, gilt jede
+   Datei als benutzt und der Abgleich findet grundsaetzlich nichts - genau das
+   ist in v321 passiert. Benutzung heisst: ein Foto, Dokument, Protokoll oder
+   Beleg traegt eine Referenz {ref:true, odId}. */
+const OD_SPIEGEL_STORES = ['od_dateien'];
+
 async function odBenutzteIds(){
   const ids = new Set();
   const sammle = v => {
     if(!v || typeof v !== 'object') return;
     if(Array.isArray(v)){ v.forEach(sammle); return; }
-    if(v.odId) ids.add(String(v.odId));
-    if(v.odItemId) ids.add(String(v.odItemId));   // od_dateien
+    if(v.ref === true && v.odId) ids.add(String(v.odId));
     for(const k in v) sammle(v[k]);
   };
   for(const store of STORES_ALLE){
+    if(OD_SPIEGEL_STORES.includes(store)) continue;
     const alle = await idbGetAll(store).catch(()=>[]);
     (alle||[]).forEach(sammle);
   }
   return ids;
+}
+
+/* Von der App ausgelagerte Datei? dokAuslagernRef haengt an den Namen stets
+   '_' + uid() + Endung, uid() = 'id_' + 13-stelliger Zeitstempel + '_' +
+   fuenf Zeichen aus [a-z0-9]. Nur solche Dateien kommen als verwaist in
+   Frage - haendisch in einen Objektordner gelegte Dateien haben dieses
+   Muster nicht und bleiben unangetastet. */
+function odIstAppDatei(name){
+  return /_id_\d{13}_[a-z0-9]{1,5}(\.[A-Za-z0-9]+)?$/.test(String(name||''));
 }
 
 /* Durchsucht ausschliesslich die Kategorieordner unter OD_BASE. Der
@@ -33081,6 +33096,7 @@ async function odVerwaisteSuchen(aufFortschritt){
     const dateien = await odListFiles(pfad).catch(()=>[]);
     for(const f of dateien){
       if(benutzt.has(String(f.id))) continue;
+      if(!odIstAppDatei(f.name)) continue;   // v322: nur von der App erzeugte Dateien
       /* Frisch Hochgeladenes ausnehmen: waehrend eines laufenden Uploads
          existiert die Datei bereits, der Datensatz aber noch nicht. */
       const alter = jetzt - new Date(f.lastModifiedDateTime||0).getTime();
@@ -33107,7 +33123,7 @@ async function odVerwaisteAnzeigen(){
     }
     const mb = _odVerwaist.reduce((a,f)=>a+f.size, 0) / 1048576;
     el.innerHTML = `<div style="font-weight:600;margin-bottom:6px">${_odVerwaist.length} verwaiste Datei(en), zusammen ${mb.toFixed(1)} MB</div>`
-      + `<div style="font-size:11px;color:var(--ink-40);margin-bottom:8px">Auf diese Dateien zeigt kein Datensatz der App. Von Hand in OneDrive abgelegte Dateien erscheinen hier ebenfalls – bitte vor dem Löschen durchsehen.</div>`
+      + `<div style="font-size:11px;color:var(--ink-40);margin-bottom:8px">Von der App erzeugte Dateien, auf die kein Datensatz mehr zeigt – Reste ersetzter oder gelöschter Dokumente. Von Hand abgelegte Dateien erscheinen hier nicht. Bitte trotzdem vor dem Löschen durchsehen.</div>`
       + `<div style="max-height:260px;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:6px">`
       + _odVerwaist.map(f =>
           `<div style="font-size:11px;padding:3px 0;border-bottom:1px solid var(--line)">`
@@ -33131,10 +33147,23 @@ async function odVerwaisteLoeschen(){
   for(let i = 0; i < _odVerwaist.length; i++){
     const f = _odVerwaist[i];
     if(el) el.innerHTML = `<span style="color:var(--ink-40)">Lösche ${i+1} von ${_odVerwaist.length} …</span>`;
-    try{ await odGraph('/me/drive/items/'+encodeURIComponent(f.id), {method:'DELETE'}); ok++; }
+    try{
+      await odGraph('/me/drive/items/'+encodeURIComponent(f.id), {method:'DELETE'});
+      /* v322: Der Spiegel-Record in od_dateien speist die Dateiliste beim
+         Mieter. Ohne dieses Entwerten bliebe die geloeschte Datei dort
+         sichtbar, bis der naechste Dateisync sie als fehlend erkennt. */
+      const spiegel = (await idbGetAll('od_dateien').catch(()=>[]))
+        .filter(r => r && String(r.odItemId) === String(f.id) && !r.geloescht);
+      for(const r of spiegel){
+        r.geloescht = true; r._blobB64 = undefined; r.pendingUpload = false;
+        await idbPut('od_dateien', r).catch(e=>console.warn('Spiegel-Record:', e));
+      }
+      ok++;
+    }
     catch(e){ console.warn('Löschen fehlgeschlagen:', f.name, e); fehler++; }
   }
   _odVerwaist = [];
+  if(ok) syncSoon();
   if(el) el.innerHTML = `<span style="color:var(--green)"><i class="ti ti-circle-check"></i> ${ok} Datei(en) gelöscht${fehler?`, ${fehler} fehlgeschlagen`:''}.</span>`;
   toast(ok+' Datei(en) gelöscht');
 }
