@@ -1230,7 +1230,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=35;   // v242: +buch_journal (F4 GoBD)
-const APP_VERSION = '2026-08-05-v316';
+const APP_VERSION = '2026-08-05-v317';
 /* v300 (03.08.2026): E-Mail-Auswahl je Wohneinheit korrigiert (Gerätetest-Befund).
    Beim ersten echten Push meldete die App "25 Wohnungen uebertragen, 90
    uebersprungen". Ein Teil davon ist echter Datenmangel (Krefeld hat noch
@@ -6726,7 +6726,33 @@ var QRENC=(function(){
   function placeFmt(m,size,mask){var fmt=(1<<3)|mask,d=fmt<<10,g=0x537;for(var i=14;i>=10;i--){if((d>>>i)&1)d^=(g<<(i-10));}var bits=((fmt<<10)|(d&0x3ff))^0x5412;function fb(i){return(bits>>>i)&1;}m[8][0]=fb(14);m[8][1]=fb(13);m[8][2]=fb(12);m[8][3]=fb(11);m[8][4]=fb(10);m[8][5]=fb(9);m[8][7]=fb(8);m[8][8]=fb(7);m[7][8]=fb(6);m[5][8]=fb(5);m[4][8]=fb(4);m[3][8]=fb(3);m[2][8]=fb(2);m[1][8]=fb(1);m[0][8]=fb(0);m[size-1][8]=fb(14);m[size-2][8]=fb(13);m[size-3][8]=fb(12);m[size-4][8]=fb(11);m[size-5][8]=fb(10);m[size-6][8]=fb(9);m[size-7][8]=fb(8);m[8][size-8]=fb(7);m[8][size-7]=fb(6);m[8][size-6]=fb(5);m[8][size-5]=fb(4);m[8][size-4]=fb(3);m[8][size-3]=fb(2);m[8][size-2]=fb(1);m[8][size-1]=fb(0);}
   function penalty(m,size){var p=0,r,c;for(r=0;r<size;r++){var run=1;for(c=1;c<size;c++){if(m[r][c]===m[r][c-1])run++;else{if(run>=5)p+=3+(run-5);run=1;}}if(run>=5)p+=3+(run-5);}for(c=0;c<size;c++){var rn=1;for(r=1;r<size;r++){if(m[r][c]===m[r-1][c])rn++;else{if(rn>=5)p+=3+(rn-5);rn=1;}}if(rn>=5)p+=3+(rn-5);}for(r=0;r<size-1;r++)for(c=0;c<size-1;c++){var v=m[r][c];if(v===m[r][c+1]&&v===m[r+1][c]&&v===m[r+1][c+1])p+=3;}return p;}
   function make(text){var version=chooseVer(encBytes(text).length);if(!version)throw new Error('Text zu lang für QR');var db=dataBits(text,version),size=version*4+17,best=null,bestP=Infinity;for(var mask=0;mask<8;mask++){var base=buildMat(version,db),mm=[];for(var r=0;r<size;r++)mm[r]=base.m[r].slice();for(var r2=0;r2<size;r2++)for(var c2=0;c2<size;c2++){if(!base.res[r2][c2]&&maskFn(mask,r2,c2))mm[r2][c2]^=1;}placeFmt(mm,size,mask);var p=penalty(mm,size);if(p<bestP){bestP=p;best=mm;}}return{modules:best,size:size};}
-  function svg(text,px){var q=make(text),n=q.size,quiet=4,total=n+quiet*2,scale=(px||300)/total,rects='';for(var r=0;r<n;r++)for(var c=0;c<n;c++){if(q.modules[r][c]===1)rects+='<rect x="'+((c+quiet)*scale).toFixed(2)+'" y="'+((r+quiet)*scale).toFixed(2)+'" width="'+scale.toFixed(2)+'" height="'+scale.toFixed(2)+'"/>';}return '<svg xmlns="http://www.w3.org/2000/svg" width="'+(px||300)+'" height="'+(px||300)+'" viewBox="0 0 '+(px||300)+' '+(px||300)+'"><rect width="100%" height="100%" fill="#fff"/><g fill="#000">'+rects+'</g></svg>';}
+  /* v317: Bis v316 entstand je dunklem Modul ein eigenes <rect> mit vier
+     Attributen auf zwei Nachkommastellen - rund 75 Zeichen pro Modul. Ein
+     GiroCode hat je nach Textlaenge 2000-5000 dunkle Module, ein einzelner
+     QR-Code wuchs damit auf ueber 50 kB base64. Beim Serienbrief lagen 24
+     davon in einem Dokument (1,36 MB von 2,45 MB), was Druckvorschau und
+     Print-Spooler auf ein leeres Blatt laufen liess.
+     Jetzt: viewBox im Modulraster (ganze Zahlen, keine Nachkommastellen) und
+     ein einziger <path>, der waagerecht zusammenhaengende Module als einen
+     Zug ausgibt. Identische Grafik, rund 5 % der bisherigen Groesse.
+     shape-rendering="crispEdges" verhindert Kantenglaettung, die beim
+     Modulraster sonst graue Saeume und damit Lesefehler erzeugen kann. */
+  function svg(text,px){
+    var q=make(text),n=q.size,quiet=4,total=n+quiet*2,d='',r,c,start;
+    for(r=0;r<n;r++){
+      c=0;
+      while(c<n){
+        if(q.modules[r][c]===1){
+          start=c;
+          while(c<n && q.modules[r][c]===1) c++;
+          d+='M'+(start+quiet)+' '+(r+quiet)+'h'+(c-start)+'v1h-'+(c-start)+'z';
+        } else c++;
+      }
+    }
+    var w=px||300;
+    return '<svg xmlns="http://www.w3.org/2000/svg" width="'+w+'" height="'+w+'" viewBox="0 0 '+total+' '+total+'" shape-rendering="crispEdges">'
+         + '<rect width="'+total+'" height="'+total+'" fill="#fff"/><path fill="#000" d="'+d+'"/></svg>';
+  }
   return {svg:svg, make:make};
 })();
 
@@ -23033,12 +23059,17 @@ async function serienbriefEigentuemerwechsel(){
   };
 
   const seiten = [];
-  const ohneKonto = [], ohneGlaeubigerId = [];
+  /* v317: Beide Angaben haengen am Gebaeudestamm, nicht am Mieter. Die
+     bisherige Meldung listete Mieternamen und liess offen, welcher
+     Gebaeudestamm zu ergaenzen ist - bei 60 uebersprungenen Namen unbrauchbar.
+     Set, damit jedes Haus nur einmal erscheint. */
+  const ohneKonto = new Set(), ohneGlaeubigerId = new Set();
+  const objName = oid => (getObj(oid)||{}).name || String(oid||'');
   for(const m of alleMieter){
     const seite = await ewSeiteFuer(m, {datum, frist, zahlAb, sigListe, neueCodes, fmtD, anl, gleicheIban});
-    if(!seite){ ohneKonto.push(m.mieter||m.name||m.id); continue; }
+    if(!seite){ ohneKonto.add(objName(m.objektId)); continue; }
     const anhang = await ewAnlagenFuer(m, anl, {frist, fmtD, anl});
-    if(anl.sepa && !anhang.mitSepa) ohneGlaeubigerId.push(m.mieter||m.name||m.id);
+    if(anl.sepa && !anhang.mitSepa) ohneGlaeubigerId.add(objName(m.objektId));
     seiten.push({m, html: seite + anhang.html});
   }
   if(!seiten.length){
@@ -23053,9 +23084,27 @@ async function serienbriefEigentuemerwechsel(){
   const anlagenStyle = (anl.sepa || anl.dsgvo || anl.hausordnung)
     ? mvSammleAnlagenStyles({sepa:anl.sepa, dsgvo:anl.dsgvo, hausordnung:anl.hausordnung})
     : '';
-  const kopf = `<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8"><title>Eigentümerwechsel – Anschreiben</title>${ewStil()}${anlagenStyle}</head><body>`;
+  const kopf = `<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8"><title>Eigentümerwechsel – Anschreiben</title>${ewStil()}${anlagenStyle}${ewSigStil(sigListe)}</head><body>`;
   const auto = ewAutoPrint();
-  druckHTML(kopf + seiten.map(x=>x.html).join('') + auto + '</body></html>');
+
+  /* v317: Bis v316 lief die gesamte Objektgruppe in EIN Druckdokument. Bei 12
+     Briefen waren das bereits 2,45 MB; Druckvorschau und Print-Spooler gaben
+     ein leeres Blatt aus. Ab jetzt ein Dokument je Gebaeude - das ist auch
+     beim Verteilen praktischer, weil der Stapel hausweise aus dem Drucker
+     kommt. Die Reihenfolge folgt der Gebaeudereihenfolge der Objektgruppe
+     (Sortierung oben), nicht der Schluesselreihenfolge von idbGetAll. */
+  _ewDrucke = [];
+  for(const x of seiten){
+    const oid = String(x.m.objektId||'');
+    let haus = _ewDrucke.find(h => h.objektId === oid);
+    if(!haus){ haus = {objektId:oid, name:objName(oid), seiten:[]}; _ewDrucke.push(haus); }
+    haus.seiten.push(x);
+  }
+  _ewDrucke.forEach(h => {
+    h.anzahl = h.seiten.length;
+    h.html   = kopf + h.seiten.map(x=>x.html).join('') + auto + '</body></html>';
+    delete h.seiten;
+  });
 
   /* Jeden Brief einzeln archivieren - im Streitfall muss nachweisbar sein,
      welcher Mieter welche Bankverbindung und welchen Schlüssel bekommen hat
@@ -23070,13 +23119,30 @@ async function serienbriefEigentuemerwechsel(){
   }
 
   if(info){
+    const knoepfe = _ewDrucke.map((h,i) =>
+      `<button class="btn btn-full" style="margin-top:6px" data-action-click="ewDruckeHaus" data-arg="${i}" data-argnum="1">`
+      + `<i class="ti ti-printer"></i> ${esc(h.name)} – ${h.anzahl} Brief(e) drucken</button>`).join('');
     info.innerHTML = `<span style="color:var(--green)"><i class="ti ti-circle-check"></i> ${seiten.length} Brief(e) erzeugt und archiviert.</span>`
-      + (ohneKonto.length ? `<div style="color:var(--amber-d,#9a6b00);margin-top:6px"><i class="ti ti-alert-triangle"></i> Ohne Kontodaten übersprungen: ${esc(ohneKonto.join(', '))}</div>` : '')
-      + (ohneGlaeubigerId.length ? `<div style="color:var(--amber-d,#9a6b00);margin-top:6px"><i class="ti ti-alert-triangle"></i> Ohne SEPA-Mandat (keine Gläubiger-ID im Gebäudestamm): ${esc(ohneGlaeubigerId.join(', '))}</div>` : '')
-      + `<div style="margin-top:6px">Danach bitte „Portal-Verzeichnis übertragen“ ausführen – erst dann sind die Registrierschlüssel im Backend gültig.</div>`;
+      + `<div style="margin-top:8px;font-size:13px;color:var(--ink-40)">Jedes Gebäude wird einzeln gedruckt – ein Sammeldokument über die ganze Gruppe wird zu groß und ergibt ein leeres Blatt.</div>`
+      + knoepfe
+      + (ohneKonto.size ? `<div style="color:var(--amber-d,#9a6b00);margin-top:8px"><i class="ti ti-alert-triangle"></i> Kein Kontoinhaber oder keine IBAN im Gebäudestamm – übersprungen: ${esc([...ohneKonto].join(', '))}</div>` : '')
+      + (ohneGlaeubigerId.size ? `<div style="color:var(--amber-d,#9a6b00);margin-top:6px"><i class="ti ti-alert-triangle"></i> Ohne SEPA-Mandat (keine Gläubiger-ID im Gebäudestamm): ${esc([...ohneGlaeubigerId].join(', '))}</div>` : '')
+      + `<div style="margin-top:8px">Danach bitte „Portal-Verzeichnis übertragen“ ausführen – erst dann sind die Registrierschlüssel im Backend gültig.</div>`;
   }
-  toast(seiten.length+' Brief(e) erzeugt');
+  toast(seiten.length+' Brief(e) in '+_ewDrucke.length+' Gebäude(n) erzeugt');
 }
+
+/* Fertige Druckdokumente der letzten Erzeugung, je Gebaeude eines. Bewusst
+   nur im Speicher: der Inhalt ist bereits beim Mieter archiviert, eine zweite
+   Ablage waere Doppelhaltung derselben Daten. */
+let _ewDrucke = [];
+
+function ewDruckeHaus(idx){
+  const h = _ewDrucke[Number(idx)];
+  if(!h || !h.html){ toast('Bitte die Briefe zuerst erzeugen'); return; }
+  druckHTML(h.html, 'Eigentümerwechsel – '+h.name);
+}
+registerActions({ ewDruckeHaus });
 
 /* Eine Briefseite. Rückgabe null, wenn die Kontodaten des Gebäudes fehlen -
    ein Anschreiben ohne IBAN wäre schlimmer als keines. */
@@ -23106,8 +23172,10 @@ async function ewSeiteFuer(m, opt){
   const portalUrl = PORTAL_BASIS+'?wohnung='+encodeURIComponent(kennung)+'#r='+encodeURIComponent(code);
   const portalBild = ewQrBild(portalUrl, 400);
 
-  const sigHTML = (opt.sigListe||[]).map(sg=>`<span class="ew-sig">
-      <img src="${sg.signatur}" alt="Unterschrift"><span>${esc(sg.name)}</span></span>`).join('');
+  /* v317: kein eigenes <img> je Brief mehr - das Bild steht einmal im
+     Dokumentkopf (ewSigStil), hier nur die Klassenreferenz. */
+  const sigHTML = (opt.sigListe||[]).map((sg,i)=>`<span class="ew-sig">
+      <span class="ew-sigbild ew-sig${i}" role="img" aria-label="Unterschrift"></span><span>${esc(sg.name)}</span></span>`).join('');
 
   /* Der Hausmeister-Briefkasten steht nur in Krefeld zur Verfügung.
      v307: Zusaetzlich immer der Postweg an die Verwaltung. Die Rueckantwort
@@ -23364,8 +23432,15 @@ function ewStil(){
     .ew-gruss{margin:1.5mm 0 0}
     .ew-sigzeile{margin:1mm 0 0}
     .ew-sig{display:inline-block;margin-right:14mm;vertical-align:bottom}
-    .ew-sig img{max-height:38px;display:block;margin-bottom:0.5mm}
     .ew-sig span{font-size:9pt}
+    /* v317: Die Unterschriften lagen als base64-PNG in jedem einzelnen Brief -
+       bei 12 Briefen 24 vollstaendige Kopien derselben zwei Bilder (0,71 MB).
+       Jetzt einmal je Dokument als Hintergrundbild (siehe ewSigStil), im Brief
+       steht nur noch die Klasse. print-color-adjust muss hier ausdruecklich
+       stehen: Hintergrundbilder werden im Druck sonst weggelassen. */
+    .ew-sigbild{display:block;height:38px;width:45mm;margin-bottom:0.5mm;
+      background-repeat:no-repeat;background-position:left bottom;background-size:contain;
+      -webkit-print-color-adjust:exact;print-color-adjust:exact}
     .ew-sigluft{height:12mm}
     .ew-anlagen{font-size:7.5pt;color:#777;margin-top:1.5mm}
     /* v304: Der Brief ist bewusst zweiseitig. Der Umbruch wird gesetzt statt
@@ -23411,6 +23486,14 @@ function ewStil(){
     @page{size:A4;margin:14mm 18mm}
     @media print{body{padding:0;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
   </style>`;
+}
+
+/* Bilddefinition der gewaehlten Unterschriften - einmal je Druckdokument.
+   Die Reihenfolge muss zu den Klassen ew-sig0/ew-sig1 in ewSeiteFuer passen. */
+function ewSigStil(sigListe){
+  const regeln = (sigListe||[]).map((sg,i) =>
+    `.ew-sig${i}{background-image:url("${sg.signatur}")}`).join('\n    ');
+  return regeln ? `<style>\n    ${regeln}\n  </style>` : '';
 }
 
 function ewAutoPrint(){
