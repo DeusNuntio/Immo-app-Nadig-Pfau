@@ -1176,6 +1176,7 @@ body.printing-active #printRoot{display:block!important}
               users/mieter/tg/settings)
      index – Sekundärindizes beim createObjectStore
 ═══════════════════════════════════════════════════════════════════════ */
+
 const STORE_DEFS = {
   users:               { sync:true, merge:false },
   mieter:              { sync:true, merge:false, index:['objektId','weNr'] },
@@ -1230,7 +1231,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=35;   // v242: +buch_journal (F4 GoBD)
-const APP_VERSION = '2026-08-05-v322';
+const APP_VERSION = '2026-08-06-v323';
 /* v300 (03.08.2026): E-Mail-Auswahl je Wohneinheit korrigiert (Gerätetest-Befund).
    Beim ersten echten Push meldete die App "25 Wohnungen uebertragen, 90
    uebersprungen". Ein Teil davon ist echter Datenmangel (Krefeld hat noch
@@ -3386,6 +3387,9 @@ async function initApp(){
   // v196 (A3): Geraete-Sync-Profil laden - bestimmt, welche Daten dieses Geraet synchronisiert
   try{ const pr=await idbGet('settings','syncProfil'); if(pr?.value==='hm') SYNC_PROFIL='hm'; }catch(e){}
   await migriereBenutzernamenVoll().catch(e=>console.warn('Namensmigration:', e));
+  // v323: Bestandsreparaturen als Kleinreparatur kennzeichnen (siehe
+  // ausstattungMigration) - muss VOR der ersten NKA-Berechnung gelaufen sein.
+  await ausstattungMigration();
   // v225 (F1): Objekt-Nachzuordnung der Bestandsbuchungen – genau einmal.
   try{
     const done=await idbGet('settings','objektMigrationV225');
@@ -13610,9 +13614,13 @@ async function renderObjAufgaben(el){
 async function renderObjMaengel(el){
   await ladeMieterWeCache();
   const maengel=await idbGetAll('maengel','objektId',currentObjId);
-  const reps=(await idbGetAll('reparaturen','objektId',currentObjId)).map(r=>({...r,istReparatur:true,_altStore:true}));
+  /* v323: Austausch-Eintraege sind kein offener Vorgang - sie gehoeren in die
+     Ausstattungshistorie, nicht in die Mangelliste. */
+  const reps=(await idbGetAll('reparaturen','objektId',currentObjId))
+    .filter(r=>r.type!=='austausch').map(r=>({...r,istReparatur:true,_altStore:true}));
   let h=`<div class="s-hdr">
     <button class="btn btn-sm btn-copper" onclick="modalAddMangel(null,'${currentObjId}')"><i class="ti ti-plus"></i> Mangel / Reparatur</button>
+    <button class="btn btn-sm" data-action-click="modalAusstattungObjekt" data-arg="${currentObjId}"><i class="ti ti-tools"></i> Ausstattung aller Wohnungen</button>
   </div>`;
   if(!maengel.length&&!reps.length){h+='<div class="empty"><i class="ti ti-mood-smile"></i><p>Keine Mängel oder Reparaturen</p></div>';}
   else{
@@ -14065,6 +14073,7 @@ ${nurTg?'':`
     ${istVerwalter()?`<button class="btn btn-sm" onclick="modalWohnungHeizNk('${m.objektId}','${esc(String(m.weNr||''))}')"><i class="ti ti-home-cog"></i> Wohnungsinfos</button>`:''}
     <button class="btn btn-sm" onclick="modalWohnungGrundriss('${m.objektId}','${esc(String(m.weNr||''))}')"><i class="ti ti-map"></i> Grundriss</button>
     <button class="btn btn-sm" onclick="modalWohnungsbilder('${m.objektId}','${esc(String(m.weNr||''))}')"><i class="ti ti-photo-scan"></i> Bilder</button>
+    <button class="btn btn-sm" data-action-click="modalAusstattung" data-arg="${m.objektId}" data-arg2="${esc(String(m.weNr||''))}"><i class="ti ti-tools"></i> Ausstattung</button>
     ${istVerwalter()?`<button class="btn btn-sm" onclick="modalSchluessel('${m.objektId}','${esc(String(m.weNr||''))}')"><i class="ti ti-key"></i> Schlüssel</button>`:''}
     ${(istVerwalter() && !m._vormieter && (m.leerstand || m.auszug || m.auszugISO))?`<button class="btn btn-sm" style="border-color:var(--copper);color:var(--copper-d)" onclick="modalAushangErstellen('${m.objektId}','${esc(String(m.weNr||''))}','${m.id}')"><i class="ti ti-printer"></i> Aushang „Wohnung frei“</button>`:''}`;
     const gVerwaltung = `
@@ -14593,7 +14602,9 @@ async function renderAufgaben(){
 
   const aufgaben=(await idbGetAll('aufgaben')).filter(a=>istAllgemein(a.objektId)||myIds.includes(a.objektId)).filter(aufgabeSichtbarFuerUser).filter(passFilterAuf);
   const maengelRaw=(await idbGetAll('maengel')).filter(m=>myIds.includes(m.objektId)).filter(passFilter);
-  const altReps=(await idbGetAll('reparaturen')).filter(r=>myIds.includes(r.objektId)).filter(passFilter).map(r=>({...r,istReparatur:true,_altStore:true}));
+  const altReps=(await idbGetAll('reparaturen')).filter(r=>myIds.includes(r.objektId))
+    .filter(r=>r.type!=='austausch')   // v323: nicht in der Aufgabenliste
+    .filter(passFilter).map(r=>({...r,istReparatur:true,_altStore:true}));
   const maengel=[...maengelRaw,...altReps];
   const el=document.getElementById('page-aufgaben');
 
@@ -17342,7 +17353,16 @@ async function erstelleNKA(objektId, korrektur) {
     // Manuelle KR aus Formular
     let krManual = parseBetrag(document.getElementById('nka_kr_'+m.id)?.value);
     // Automatische KR aus Reparaturen im Zeitraum
+    /* v323: Bis v322 lief JEDE mieterbezogene Reparatur mit Kosten in die
+       Kleinreparatur-Position - unabhaengig davon, ob sie ueberhaupt unter die
+       Klausel faellt. Ab jetzt zaehlt nur, was ausdruecklich als
+       Kleinreparatur angehakt wurde (§ 535 Abs. 1 S. 2 BGB: Instandhaltung ist
+       Vermietersache; die Klausel ist die eng auszulegende Ausnahme).
+       Bestandsdaten hat die Migration ausstattungMigration() auf
+       kleinreparatur:true gesetzt, damit sich an bereits erstellten
+       Abrechnungen nichts aendert. */
     const repsImZeitraum = alleReps.filter(r=>{
+      if (r.kleinreparatur !== true) return false;
       if (r.mieterId !== m.id) return false;
       if (!r.datum) return false;
       const rd = new Date(r.datum);
@@ -18356,7 +18376,9 @@ async function erstelleNKALiegenschaft(lgId, korrektur){
   const mieterExtras={};
   for(const m of mieter){
     const krManual=parseBetrag(document.getElementById('nkaLg_kr_'+m.id)?.value);
+    /* v323: siehe erstelleNKA - nur angehakte Kleinreparaturen. */
     const repsImZeitraum=alleReps.filter(r=>{
+      if (r.kleinreparatur !== true) return false;
       if(r.mieterId!==m.id||!r.datum) return false;
       const rd=new Date(r.datum);
       if(vonDate&&rd<vonDate) return false;
@@ -24191,6 +24213,444 @@ async function modalGrundriss(objektId) {
 function wohnungGrundrissId(objektId, weNr, slot){
   const base = 'plan_'+objektId+'_we'+String(weNr).replace(/\W/g,'');
   return (slot==='b') ? base+'_b' : base;
+}
+
+/* ═══ AUSSTATTUNGSHISTORIE – ANZEIGE UND ERFASSUNG (v323) ══════════════ */
+
+/* Alle Austausch-Eintraege einer Wohnung, juengster zuerst. */
+async function ausstattungFuerWohnung(objektId, weNr){
+  const alle = await idbGetAll('reparaturen','objektId',objektId).catch(()=>[]);
+  return alle.filter(r => r.type==='austausch' && String(r.weNr||'')===String(weNr||''))
+             .sort((a,b) => String(b.datum||'').localeCompare(String(a.datum||'')));
+}
+
+/* Die App hat keinen globalen Datumsformatierer fuer ISO->de; das Muster
+   split/reverse/join wird an mehreren Stellen einzeln verwendet. */
+function ausstattungDatum(iso){
+  const t = String(iso||'').slice(0,10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(t) ? t.split('-').reverse().join('.') : '';
+}
+
+/* Alter in Jahren/Monaten - die eigentliche Frage bei dieser Liste. */
+function ausstattungAlter(datum){
+  if(!datum) return '';
+  const d = new Date(datum); if(isNaN(d)) return '';
+  const monate = Math.max(0, Math.round((Date.now() - d.getTime()) / (30.44*24*3600*1000)));
+  if(monate < 1)  return 'neu';
+  if(monate < 12) return monate + ' Mon.';
+  const j = Math.floor(monate/12), m = monate % 12;
+  return j + ' J.' + (m ? ' ' + m + ' Mon.' : '');
+}
+
+function ausstattungKrChip(r){
+  if(r.kleinreparatur === true)
+    return '<span class="chip" style="background:var(--amber-l,#fdf3e0);color:var(--amber-d,#9a6b00)">Kleinreparatur</span>';
+  return '';
+}
+
+async function modalAusstattung(objektId, weNr){
+  const liste = await ausstattungFuerWohnung(objektId, weNr);
+  const obj   = getObj(objektId) || {};
+  const zeilen = liste.map(r => {
+    const alter = ausstattungAlter(r.datum);
+    const gw    = r.gewaehrleistungBis && r.gewaehrleistungBis >= today()
+      ? `<span class="chip" style="background:var(--green-l,#e8f5e9);color:var(--green-d,#2e6b32)">Gewährleistung bis ${esc(ausstattungDatum(r.gewaehrleistungBis))}</span>` : '';
+    const fotos = (r.fotos||[]).length
+      ? `<span style="color:var(--ink-40)"><i class="ti ti-photo"></i> ${(r.fotos||[]).length}</span>` : '';
+    return `<div class="card" style="padding:8px;margin-bottom:6px">
+      <div style="display:flex;align-items:baseline;gap:8px">
+        <b style="flex:1">${esc(r.gegenstand||r.titel||'–')}</b>
+        <span style="font-size:12px;color:var(--ink-40)">${esc(ausstattungDatum(r.datum))}${alter?' · '+esc(alter):''}</span>
+      </div>
+      <div style="font-size:12px;color:var(--ink-40);margin-top:2px">
+        ${r.kosten?esc(fmtEur(r.kosten))+' · ':''}${r.handwerker?esc(r.handwerker)+' · ':''}${fotos}
+      </div>
+      ${r.beschreibung?`<div style="font-size:12px;margin-top:3px">${esc(r.beschreibung)}</div>`:''}
+      <div style="margin-top:4px;display:flex;gap:4px;align-items:center;flex-wrap:wrap">
+        ${ausstattungKrChip(r)}${gw}
+        <span style="flex:1"></span>
+        <button class="btn btn-sm" data-action-click="modalAusstattungEdit" data-arg="${esc(r.id)}"><i class="ti ti-pencil"></i></button>
+      </div>
+    </div>`;
+  }).join('');
+
+  showModal(`
+    <div class="m-title"><i class="ti ti-tools"></i> Ausstattung – ${esc(obj.name||'')} · Wohnung ${esc(String(weNr||''))}</div>
+    <div style="font-size:12px;color:var(--ink-40);margin-bottom:8px">
+      Bleibt bei Mieterwechsel bei der Wohnung.
+    </div>
+    <button class="btn btn-full btn-copper" data-action-click="modalAusstattungNeu"
+      data-arg="${esc(objektId)}" data-arg2="${esc(String(weNr||''))}"><i class="ti ti-plus"></i> Eintrag hinzufügen</button>
+    <div style="margin-top:10px">${zeilen || '<div class="empty"><i class="ti ti-tools"></i><p>Noch nichts erfasst</p></div>'}</div>
+  `);
+}
+registerActions({ modalAusstattung });
+
+/* Auswahlliste als <select> mit Gruppen; 'eigene' oeffnet ein Freitextfeld. */
+function ausstattungKatalogOptionen(gewaehlt){
+  return AUSSTATTUNG_KATALOG.map(g =>
+    `<optgroup label="${esc(g.gruppe)}">` + g.teile.map(t =>
+      `<option value="${esc(t.n)}"${t.n===gewaehlt?' selected':''}>${esc(t.n)}</option>`).join('') + '</optgroup>'
+  ).join('') + `<optgroup label="Sonstiges"><option value="__eigen__"${gewaehlt&&!ausstattungImKatalog(gewaehlt)?' selected':''}>anderes – selbst eintragen …</option></optgroup>`;
+}
+function ausstattungImKatalog(bez){
+  return AUSSTATTUNG_KATALOG.some(g => g.teile.some(t => t.n === bez));
+}
+
+async function modalAusstattungNeu(objektId, weNr){
+  await ausstattungFormular({objektId, weNr, datum: today(), kleinreparatur:false});
+}
+registerActions({ modalAusstattungNeu });
+
+async function modalAusstattungEdit(id){
+  const r = await idbGet('reparaturen', id).catch(()=>null);
+  if(!r){ toast('Eintrag nicht gefunden'); return; }
+  await ausstattungFormular(r);
+}
+registerActions({ modalAusstattungEdit });
+
+async function ausstattungFormular(r){
+  const obj = getObj(r.objektId) || {};
+  const eigen = r.gegenstand && !ausstattungImKatalog(r.gegenstand);
+  window._ausstattungFotos = (r.fotos||[]).slice();
+  showModal(`
+    <div class="m-title"><i class="ti ti-tools"></i> ${r.id?'Eintrag bearbeiten':'Neuer Eintrag'} – ${esc(obj.name||'')} · Wohnung ${esc(String(r.weNr||''))}</div>
+    <input type="hidden" id="ausId" value="${esc(r.id||'')}">
+    <input type="hidden" id="ausObj" value="${esc(r.objektId||'')}">
+    <input type="hidden" id="ausWe" value="${esc(String(r.weNr||''))}">
+    <div class="f"><label for="ausGegenstand">Was wurde getauscht?</label>
+      <select id="ausGegenstand" onchange="ausstattungAuswahlWechsel()">
+        ${ausstattungKatalogOptionen(r.gegenstand)}
+      </select></div>
+    <div class="f" id="ausEigenWrap" style="display:${eigen?'block':'none'}">
+      <label for="ausEigen">Bezeichnung</label>
+      <input id="ausEigen" value="${eigen?esc(r.gegenstand):''}" placeholder="z. B. Fliegengitter Schlafzimmer"></div>
+    <div class="f"><label for="ausDatum">Datum</label>
+      <input type="date" id="ausDatum" value="${esc(r.datum||today())}"></div>
+    <div class="f"><label for="ausKosten">Kosten (€)</label>
+      <input type="number" step="0.01" id="ausKosten" value="${r.kosten||''}"></div>
+    <div class="f"><label for="ausHandwerker">Handwerker / ausgeführt von</label>
+      <input id="ausHandwerker" value="${esc(r.handwerker||'')}" placeholder="z. B. Dirk Nicolay oder Firma"></div>
+    <div class="f"><label for="ausGewaehr">Gewährleistung bis</label>
+      <input type="date" id="ausGewaehr" value="${esc(r.gewaehrleistungBis||'')}"></div>
+    <div class="f"><label for="ausBeschr">Notiz</label>
+      <textarea id="ausBeschr" rows="2">${esc(r.beschreibung||'')}</textarea></div>
+    <label class="chk" style="display:flex;gap:8px;align-items:flex-start;margin:8px 0">
+      <input type="checkbox" id="ausKr"${r.kleinreparatur?' checked':''}>
+      <span>Als <b>Kleinreparatur</b> dem Mieter berechnen
+        <span id="ausKrHinweis" style="display:block;font-size:11px;color:var(--ink-40)"></span></span></label>
+    <div class="f"><label>Fotos</label>
+      <input type="file" id="ausFotos" accept="image/*" multiple onchange="ausstattungFotosWaehlen(this)">
+      <div id="ausFotoVorschau" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px"></div></div>
+    <div class="m-actions">
+      <button class="btn ghost" data-action-click="closeModal">Abbrechen</button>
+      ${r.id?`<button class="btn btn-danger" data-action-click="ausstattungLoeschen" data-arg="${esc(r.id)}"><i class="ti ti-trash"></i></button>`:''}
+      <button class="btn" data-action-click="ausstattungSpeichern">Speichern</button>
+    </div>
+  `);
+  ausstattungAuswahlWechsel();
+  ausstattungFotoVorschau();
+}
+
+/* Voreinstellung setzen und begruenden - ohne die Wahl zu erzwingen. */
+function ausstattungAuswahlWechsel(){
+  const sel  = document.getElementById('ausGegenstand');
+  const wrap = document.getElementById('ausEigenWrap');
+  const kr   = document.getElementById('ausKr');
+  const hin  = document.getElementById('ausKrHinweis');
+  if(!sel) return;
+  const eigen = sel.value === '__eigen__';
+  if(wrap) wrap.style.display = eigen ? 'block' : 'none';
+  if(eigen){ if(hin) hin.textContent = ''; return; }
+  const vorgabe = ausstattungKrVorgabe(sel.value);
+  if(kr && !kr.dataset.beruehrt) kr.checked = (vorgabe === true);
+  if(hin) hin.textContent = vorgabe === true
+    ? 'Üblicherweise kleinreparaturfähig – prüfen Sie den Zustand bei Einzug.'
+    : (vorgabe === null
+        ? 'Rechtsprechung uneinheitlich – im Zweifel nicht berechnen.'
+        : 'Üblicherweise Vermietersache (Instandhaltung, § 535 BGB).');
+}
+
+function ausstattungFotosWaehlen(input){
+  const dateien = [...(input.files||[])];
+  window._ausstattungFotos = window._ausstattungFotos || [];
+  let offen = dateien.length;
+  if(!offen) return;
+  for(const f of dateien){
+    const reader = new FileReader();
+    reader.onload = e => {
+      window._ausstattungFotos.push({data:e.target.result, mimeType:f.type, name:f.name});
+      if(--offen === 0) ausstattungFotoVorschau();
+    };
+    reader.onerror = () => { if(--offen === 0) ausstattungFotoVorschau(); };
+    reader.readAsDataURL(f);
+  }
+  input.value = '';
+}
+
+function ausstattungFotoVorschau(){
+  const el = document.getElementById('ausFotoVorschau');
+  if(!el) return;
+  const fotos = window._ausstattungFotos || [];
+  el.innerHTML = fotos.map((f,i) =>
+    `<div style="position:relative">
+      <img src="${esc(fotoThumbQuelle(f.data||f)||'')}" style="width:64px;height:64px;object-fit:cover;border-radius:6px">
+      <button class="btn btn-sm btn-danger" style="position:absolute;top:-6px;right:-6px;padding:2px 5px"
+        data-action-click="ausstattungFotoEntfernen" data-arg="${i}" data-argnum="1">×</button>
+    </div>`).join('');
+}
+
+function ausstattungFotoEntfernen(i){
+  (window._ausstattungFotos || []).splice(Number(i), 1);
+  ausstattungFotoVorschau();
+}
+registerActions({ ausstattungFotoEntfernen });
+
+async function ausstattungSpeichern(){
+  const id   = document.getElementById('ausId')?.value || '';
+  const objektId = document.getElementById('ausObj')?.value || '';
+  const weNr = document.getElementById('ausWe')?.value || '';
+  const sel  = document.getElementById('ausGegenstand')?.value || '';
+  const gegenstand = sel === '__eigen__'
+    ? (document.getElementById('ausEigen')?.value || '').trim()
+    : sel;
+  if(!gegenstand){ toast('Bitte eine Bezeichnung angeben'); return; }
+  const datum = document.getElementById('ausDatum')?.value || today();
+
+  /* Der zum Datum passende Mieter - nur als Nachweis, wer damals dort wohnte.
+     Der Eintrag gehoert der Wohnung und bleibt bei Auszug bestehen. */
+  const mieterId = await ausstattungMieterZumDatum(objektId, weNr, datum);
+
+  const alt = id ? (await idbGet('reparaturen', id).catch(()=>null)) : null;
+  const fotos = await ausstattungFotosSichern(window._ausstattungFotos || [], objektId, weNr);
+
+  await idbPut('reparaturen', Object.assign({}, alt || {}, {
+    id: id || uid(),
+    type: 'austausch',
+    objektId, weNr,
+    mieterId,
+    gegenstand,
+    titel: gegenstand,                    // damit Suche und Altlisten greifen
+    datum,
+    kosten: parseFloat(document.getElementById('ausKosten')?.value) || 0,
+    handwerker: (document.getElementById('ausHandwerker')?.value || '').trim(),
+    gewaehrleistungBis: document.getElementById('ausGewaehr')?.value || '',
+    beschreibung: (document.getElementById('ausBeschr')?.value || '').trim(),
+    kleinreparatur: !!document.getElementById('ausKr')?.checked,
+    fotos,
+    status: 'erledigt',                   // nie ein offener Vorgang
+    erstellt: (alt && alt.erstellt) || now(),
+    geaendert: now(),
+    ersteller: (alt && alt.ersteller) || CU?.name || '',
+  }));
+  window._ausstattungFotos = [];
+  closeModal();
+  clearTimeout(window._syncTimer);
+  window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
+  toast('Gespeichert ✓');
+  await modalAusstattung(objektId, weNr);
+}
+registerActions({ ausstattungSpeichern });
+
+/* Wer wohnte am Stichtag in der Wohnung? Ohne Treffer null - eine falsche
+   Zuordnung waere schlimmer als gar keine. */
+async function ausstattungMieterZumDatum(objektId, weNr, datum){
+  try{
+    const alle = await idbGetAll('mieter','objektId',objektId).catch(()=>[]);
+    const kand = alle.filter(m => String(m.weNr||'') === String(weNr||''));
+    const treffer = kand.find(m => {
+      const ein = m.einzugISO || m.einzug || '';
+      const aus = m.auszugISO || m.auszug || '';
+      if(ein && datum < ein) return false;
+      if(aus && datum > aus) return false;
+      return true;
+    });
+    return treffer ? treffer.id : null;
+  }catch(e){ console.warn('ausstattungMieterZumDatum:', e); return null; }
+}
+
+/* Fotos nach OneDrive auslagern (Konzept 23a). Schlaegt es fehl, bleibt die
+   dataURL inline - lieber gross als verloren. */
+async function ausstattungFotosSichern(fotos, objektId, weNr){
+  const out = [];
+  for(const f of fotos){
+    if(!f) continue;
+    if(istFotoRef(f) || istFotoRef(f.data)){ out.push(f.data || f); continue; }
+    const data = typeof f === 'string' ? f : f.data;
+    if(!data){ continue; }
+    if(!String(data).startsWith('data:')){ out.push(data); continue; }
+    try{
+      const ziel = fotoZielFuer(objektId, weNr, 'reparaturen');
+      const ref  = ziel ? await fotoAuslagern(data, Object.assign({}, ziel,
+        {name:'Ausstattung_'+odSafeName(String(f.name||'foto'))+'_'+uid()+'.jpg'})) : null;
+      out.push(ref || data);
+    }catch(e){ console.warn('Ausstattungsfoto nicht ausgelagert:', e); out.push(data); }
+  }
+  return out;
+}
+
+async function ausstattungLoeschen(id){
+  const r = await idbGet('reparaturen', id).catch(()=>null);
+  if(!r){ toast('Eintrag nicht gefunden'); return; }
+  if(!confirm(`Eintrag „${r.gegenstand||r.titel||''}" vom ${ausstattungDatum(r.datum)} löschen?`)) return;
+  for(const f of (r.fotos||[])){
+    if(istFotoRef(f)){
+      await odGraph('/me/drive/items/'+encodeURIComponent(f.odId), {method:'DELETE'})
+        .catch(e=>console.warn('Foto nicht gelöscht:', e));
+    }
+  }
+  await deleteMitTombstone('reparaturen', id);
+  closeModal();
+  toast('Eintrag gelöscht');
+  await modalAusstattung(r.objektId, r.weNr);
+}
+registerActions({ ausstattungLoeschen });
+
+/* Objektübersicht: alle Wohnungen, alle Austausche - die Liste, mit der man
+   auf ein Haus blickt und sieht, was wie alt ist. */
+async function modalAusstattungObjekt(objektId){
+  const obj  = getObj(objektId) || {};
+  const alle = (await idbGetAll('reparaturen','objektId',objektId).catch(()=>[]))
+    .filter(r => r.type === 'austausch');
+  if(!alle.length){
+    showModal('<div class="m-title"><i class="ti ti-tools"></i> ' + `Ausstattung – ${esc(obj.name||'')}` + '</div>' + '<div class="empty"><i class="ti ti-tools"></i><p>Für dieses Objekt ist noch nichts erfasst</p></div>');
+    return;
+  }
+  const nachWe = new Map();
+  for(const r of alle){
+    const we = String(r.weNr||'—');
+    if(!nachWe.has(we)) nachWe.set(we, []);
+    nachWe.get(we).push(r);
+  }
+  const sortiert = [...nachWe.entries()].sort((a,b) =>
+    String(a[0]).localeCompare(String(b[0]), 'de', {numeric:true}));
+
+  const bloecke = sortiert.map(([we, liste]) => {
+    liste.sort((a,b) => String(b.datum||'').localeCompare(String(a.datum||'')));
+    const zeilen = liste.map(r => `<tr>
+      <td>${esc(r.gegenstand||r.titel||'–')}</td>
+      <td style="white-space:nowrap">${esc(ausstattungDatum(r.datum))}</td>
+      <td style="white-space:nowrap;color:var(--ink-40)">${esc(ausstattungAlter(r.datum))}</td>
+      <td style="text-align:right;white-space:nowrap">${r.kosten?esc(fmtEur(r.kosten)):''}</td>
+      <td style="text-align:center">${r.kleinreparatur===true?'<i class="ti ti-user-dollar" title="Kleinreparatur"></i>':''}</td>
+    </tr>`).join('');
+    return `<div style="margin-bottom:12px">
+      <div style="display:flex;align-items:baseline;gap:8px">
+        <b>Wohnung ${esc(we)}</b>
+        <span style="font-size:12px;color:var(--ink-40)">${liste.length} Eintrag/Einträge</span>
+        <span style="flex:1"></span>
+        <button class="btn btn-sm" data-action-click="modalAusstattung"
+          data-arg="${esc(objektId)}" data-arg2="${esc(we)}"><i class="ti ti-pencil"></i></button>
+      </div>
+      <table class="tbl" style="font-size:12px;width:100%"><tbody>${zeilen}</tbody></table>
+    </div>`;
+  }).join('');
+
+  const summe = alle.reduce((a,r)=>a+(parseFloat(r.kosten)||0), 0);
+  const krSumme = alle.filter(r=>r.kleinreparatur===true).reduce((a,r)=>a+(parseFloat(r.kosten)||0), 0);
+  showModal(`
+    <div class="m-title"><i class="ti ti-tools"></i> Ausstattung – ${esc(obj.name||'')}</div>
+    <div style="font-size:12px;color:var(--ink-40);margin-bottom:10px">
+      ${alle.length} Einträge in ${sortiert.length} Wohnung(en) · gesamt ${esc(fmtEur(summe))}
+      ${krSumme?` · davon als Kleinreparatur gekennzeichnet ${esc(fmtEur(krSumme))}`:''}
+    </div>${bloecke}`);
+}
+registerActions({ modalAusstattungObjekt });
+
+/* Einmalige Migration: Bestandsreparaturen, die bisher automatisch in die
+   Kleinreparatur-Position liefen, bekommen das Kennzeichen gesetzt. Ohne das
+   wuerden bereits erstellte Abrechnungen bei einer Neuberechnung plötzlich
+   niedriger ausfallen. Laeuft genau einmal (settings-Flag). */
+async function ausstattungMigration(){
+  try{
+    const flag = await idbGet('settings','migration_kr_v323').catch(()=>null);
+    if(flag && flag.erledigt) return;
+    const alle = await idbGetAll('reparaturen').catch(()=>[]);
+    let n = 0;
+    for(const r of alle){
+      if(r.type === 'austausch') continue;
+      if(r.kleinreparatur !== undefined) continue;
+      const warAbgerechnet = !!r.mieterId && (parseFloat(r.kosten)||0) > 0;
+      r.kleinreparatur = warAbgerechnet;
+      await idbPut('reparaturen', r);
+      if(warAbgerechnet) n++;
+    }
+    await idbPut('settings', {id:'migration_kr_v323', erledigt:true, anzahl:n, datum:now()});
+    if(n) console.info('v323-Migration: '+n+' Reparatur(en) als Kleinreparatur gekennzeichnet');
+  }catch(e){ console.warn('ausstattungMigration:', e); }
+}
+
+/* ═══ AUSSTATTUNGS- UND AUSTAUSCHHISTORIE (v323) ═══════════════════════
+   Liegt bewusst im vorhandenen Store 'reparaturen', unterschieden durch
+   type:'austausch'. Ein eigener Store waere Doppelhaltung: ein Austausch IST
+   ein Vorgang an der Wohnung, nur einer, den man spaeter nach Alter fragt.
+
+   ENTSCHEIDEND: Der Eintrag haengt an der WOHNUNG (objektId + weNr), nicht am
+   Mieter. Bei Mieterwechsel bleibt er stehen. mieterId wird nur mitgeschrieben,
+   um spaeter zu sehen, wer damals dort wohnte - NICHT als Zuordnung.
+
+   'kr' ist nur eine VOREINSTELLUNG nach BGH VIII ZR 91/88 (Teile des haeufigen
+   direkten Zugriffs des Mieters). Ob im Einzelfall eine Kleinreparatur
+   vorliegt, haengt vom Vertragstext UND vom Zustand bei Einzug ab - war die
+   Sache schon bei Einzug schlecht, ist es keine. Deshalb je Eintrag
+   ueberschreibbar; die Voreinstellung darf nie automatisch abrechnen.
+   kr:null = Rechtsprechung uneinheitlich (Siphon). */
+const AUSSTATTUNG_KATALOG = [
+  {gruppe:'Bad / WC', teile:[
+    {n:'WC-Becken',              kr:false},
+    {n:'WC-Sitz (Klobrille)',    kr:true},
+    {n:'Spülkasten',             kr:false},
+    {n:'Spülkasten-Innengarnitur', kr:false},
+    {n:'Drückerplatte',          kr:false},
+    {n:'Waschbecken',            kr:false},
+    {n:'Armatur Waschbecken',    kr:true},
+    {n:'Eckventil',              kr:false},
+    {n:'Siphon',                 kr:null},
+    {n:'Ablaufgarnitur / Stöpsel', kr:false},
+    {n:'Dusche / Badewanne',     kr:false},
+    {n:'Armatur Dusche',         kr:true},
+    {n:'Duschschlauch',          kr:true},
+    {n:'Handbrause',             kr:true},
+    {n:'Brausehalter',           kr:true},
+    {n:'Duschtrennwand',         kr:false},
+    {n:'Duschablauf',            kr:false},
+    {n:'Silikonfugen',           kr:false},
+    {n:'Badlüfter',              kr:false},
+  ]},
+  {gruppe:'Küche', teile:[
+    {n:'Spüle',                  kr:false},
+    {n:'Armatur Küche',          kr:true},
+    {n:'Eckventil Küche',        kr:false},
+    {n:'Siphon Küche',           kr:null},
+    {n:'Herd',                   kr:false},
+    {n:'Backofen',               kr:false},
+    {n:'Dunstabzug',             kr:false},
+    {n:'Kühlschrank',            kr:false},
+  ]},
+  {gruppe:'Allgemein', teile:[
+    {n:'Türdrücker',             kr:true},
+    {n:'Türschloss',             kr:false},
+    {n:'Fenstergriff',           kr:true},
+    {n:'Rollladengurt',          kr:true},
+    {n:'Rollladenkasten',        kr:false},
+    {n:'Lichtschalter',          kr:true},
+    {n:'Steckdose',              kr:true},
+    {n:'Klingel',                kr:false},
+    {n:'Türspion',               kr:false},
+    {n:'Briefkastenschloss',     kr:true},
+    {n:'Heizkörperthermostat',   kr:true},
+    {n:'Rauchwarnmelder',        kr:false},
+  ]},
+];
+
+/* Voreinstellung zu einem Katalogteil. Unbekannt (eigener Eintrag) => false:
+   lieber nicht abrechnen als faelschlich abrechnen. */
+function ausstattungKrVorgabe(bezeichnung){
+  for(const g of AUSSTATTUNG_KATALOG){
+    const t = g.teile.find(x => x.n === bezeichnung);
+    if(t) return t.kr;
+  }
+  return false;
 }
 
 async function modalWohnungGrundriss(objektId, weNr){
