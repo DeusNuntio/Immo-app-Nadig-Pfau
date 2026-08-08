@@ -1236,7 +1236,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=35;   // v242: +buch_journal (F4 GoBD)
-const APP_VERSION = '2026-08-08-v329';
+const APP_VERSION = '2026-08-08-v330';
 /* v300 (03.08.2026): E-Mail-Auswahl je Wohneinheit korrigiert (Gerätetest-Befund).
    Beim ersten echten Push meldete die App "25 Wohnungen uebertragen, 90
    uebersprungen". Ein Teil davon ist echter Datenmangel (Krefeld hat noch
@@ -22675,6 +22675,18 @@ function getAnredeVertragNachname(m){
    Nur bei genau einem Komma wird gedreht - "Dr. Meier, Anna" ergibt "Anna
    Dr. Meier" waere falsch, kommt in den Daten aber nicht vor; mehrdeutige
    Schreibweisen bleiben unveraendert stehen. */
+/* v330: Nachname aus einem Personennamen. Unterstuetzt beide im Bestand
+   vorkommenden Schreibweisen: 'Nachname, Vorname' (Komma-Form) und
+   'Vorname Nachname'. Ohne Komma gilt das letzte Wort als Nachname. */
+function ewNachname(roh){
+  const t = String(roh||'').trim();
+  if(!t) return '';
+  const k = t.split(',');
+  if(k.length === 2 && k[0].trim() && k[1].trim()) return k[0].trim();
+  const w = t.split(/\s+/);
+  return w[w.length-1] || '';
+}
+
 function adressPostalischEW(m){
   const vp = vertragspartnerVon(m);
   const zeile = p => {
@@ -22688,6 +22700,19 @@ function adressPostalischEW(m){
   };
   const namen = vp.map(zeile).filter(Boolean);
   if(!namen.length) return esc(m.mieter||'');
+  /* v330: Mehrere Vertragspartner mit identischem Nachnamen werden postalisch
+     zu 'Familie <Nachname>' zusammengefasst. Jede zusaetzliche Zeile im
+     Anschriftfeld schob den gesamten Satzspiegel um rund 4,3 mm nach unten und
+     zerriss den Portal-Kasten am Seitenende (Messbefund v329, WE 6/8/9).
+     Die Briefanrede bleibt unveraendert personenbezogen. */
+  if(vp.length > 1){
+    const nn = vp.map(p => ewNachname(p.name)).filter(Boolean);
+    const erst = nn.length ? nn[0].toLocaleLowerCase('de-DE') : '';
+    if(nn.length === vp.length && erst &&
+       nn.every(x => x.toLocaleLowerCase('de-DE') === erst)){
+      return esc('Familie ' + nn[0]);
+    }
+  }
   return namen.map(esc).join('<br>');
 }
 
@@ -23474,10 +23499,15 @@ async function ewSeiteFuer(m, opt){
         <p>Der Code dient zunächst allein der Erfassung Ihrer Kontaktdaten. Das Mieterportal selbst – Nebenkostenabrechnung, Rundschreiben, Grundrisse, Dokumente und die Mängelmeldung – öffnen wir schrittweise; wir informieren Sie, sobald es so weit ist.</p>
       </td>
     </tr></table>
-    <p class="ew-klein">Warum wir Ihre E-Mail-Adresse brauchen: Wir müssen Ihnen monatlich Ihren Heiz- und Warmwasserverbrauch mitteilen (§ 6a HeizkostenV). Digital bekommen Sie diese Übersicht über das A+S-Portal; ohne E-Mail-Adresse müssen wir sie jeden Monat drucken und zustellen – die Kosten der Verbrauchsinformation sind umlagefähige Betriebskosten und belasten Ihre Abrechnung.</p>
 
     <div class="ew-umbruch"></div>
     <div class="ew-fortsetzung">${adressPostalischEW(m)} · ${esc(obj.name||'')} · Wohnung ${esc(String(m.weNr||''))} · Seite 2</div>
+
+    <!-- v330: Diese Fussnote stand bis v329 am Fuss von Seite 1. Dort war
+         keine Reserve mehr: jede zusaetzliche Empfaengerzeile schob den
+         Portal-Kasten ueber die Seitenkante. Hier oben auf Seite 2 traegt
+         sie denselben Inhalt, ohne den Umbruch zu gefaehrden. -->
+    <p class="ew-klein">Warum wir Ihre E-Mail-Adresse brauchen: Wir müssen Ihnen monatlich Ihren Heiz- und Warmwasserverbrauch mitteilen (§ 6a HeizkostenV). Digital bekommen Sie diese Übersicht über das A+S-Portal; ohne E-Mail-Adresse müssen wir sie jeden Monat drucken und zustellen – die Kosten der Verbrauchsinformation sind umlagefähige Betriebskosten und belasten Ihre Abrechnung.</p>
 
     <div class="ew-h2">Was sich für Sie nicht ändert</div>
     <ul class="ew-liste">
@@ -23680,7 +23710,19 @@ function ewStil(){
        passen - bei 7 pt sind das rund 100 Zeichen. ewAbsenderKurz haelt das
        ein; bei laengeren Briefkopfadressen dort pruefen. */
     .ew-abs{font-size:7pt;color:#777;border-bottom:1px solid #ccc;padding-bottom:1mm;margin:0 0 2mm;white-space:nowrap;overflow:hidden}
-    .ew-anschrift{font-size:10.5pt;line-height:1.4;min-height:18mm;width:85mm}
+    /* v330: feste Hoehe statt min-height. 22 mm fassen vier Zeilen a 5,2 mm
+       (Empfaenger + Objekt + Ort, bei zwei unterschiedlichen Nachnamen auch
+       zwei Empfaengerzeilen). Damit beginnt der Satzspiegel bei jedem Brief
+       an derselben Stelle - Voraussetzung dafuer, dass der gepruefte Umbruch
+       fuer alle Empfaenger gilt und nicht nur fuer einzeilige Anschriften.
+       Bewusst min-height und nicht height: bei fuenf und mehr Zeilen (drei
+       Vertragspartner mit verschiedenen Nachnamen) wuerde eine feste Hoehe
+       die Ortszeile in die Datumszeile laufen lassen - gemessen am
+       Chromium-Druck. Dieser Ausnahmefall darf das Feld wachsen lassen;
+       den Umbruch faengt dann break-inside:avoid am Portal-Kasten ab.
+       Die DIN-5008-Geometrie des Fensterausschnitts bleibt unberuehrt: sie
+       ergibt sich aus @page-margin 14 mm + .ew-kopf 31 mm oberhalb. */
+    .ew-anschrift{font-size:10.5pt;line-height:1.4;min-height:22mm;width:85mm}
     .ew-datum{text-align:right;font-size:10pt;color:#333;margin:3mm 0 5mm}
     .ew-betreff{font-weight:700;font-size:11.5pt;color:#0C447C;margin-bottom:3mm}
     .ew-anrede{margin-bottom:2.5mm}
@@ -23688,7 +23730,10 @@ function ewStil(){
     /* v312: Auf Seite 2 stehen drei Zwischenüberschriften; die Anlagenzeile
        fiel unter den Satzspiegel. Abstände dort gestrafft. */
     .ew-h2{font-weight:700;font-size:10.5pt;color:#0C447C;margin:2.6mm 0 1.2mm}
-    .ew-kasten{width:100%;border-collapse:collapse;background:#F4F6F9;margin:1mm 0}
+    /* v330: Ohne diese Sicherung trennte der Umbruch den QR-Code von seiner
+       Beschriftung (Wohnungsnummer/Schluessel) - der Kasten blieb als leere
+       Flaeche auf Seite 1 stehen. */
+    .ew-kasten{width:100%;border-collapse:collapse;background:#F4F6F9;margin:1mm 0;page-break-inside:avoid;break-inside:avoid}
     .ew-kasten>tbody>tr>td{vertical-align:middle;padding:2.5mm 3mm}
     .ew-daten{border-collapse:collapse;font-size:10pt}
     .ew-daten td{padding:0.8mm 0;vertical-align:top}
