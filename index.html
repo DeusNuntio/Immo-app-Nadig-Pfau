@@ -9,7 +9,10 @@
 <meta name="theme-color" content="#185FA5">
 <title>Nadig Pfau Hausverwaltung</title>
 <link rel="manifest" href="manifest.json">
-<script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+<!-- v328 (S1): SheetJS wird NICHT mehr blockierend im Kopf geladen. Ein Fremdskript
+     an dieser Stelle laeuft im App-Kontext (Zugriff auf IndexedDB, od_auth, settings)
+     und verzoegert ohne Netz den Start, bis sein Timeout ablaeuft. Es wird jetzt erst
+     beim Excel-Export/-Import geladen -> siehe xlsxLaden(). -->
 <style>
 /* ══ Schriften und Symbole lokal eingebettet (v282) ══════════════════════
    Zuvor von fonts.googleapis.com und cdn.jsdelivr.net geladen: die App war
@@ -1233,7 +1236,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=35;   // v242: +buch_journal (F4 GoBD)
-const APP_VERSION = '2026-08-07-v325';
+const APP_VERSION = '2026-08-08-v329';
 /* v300 (03.08.2026): E-Mail-Auswahl je Wohneinheit korrigiert (Gerätetest-Befund).
    Beim ersten echten Push meldete die App "25 Wohnungen uebertragen, 90
    uebersprungen". Ein Teil davon ist echter Datenmangel (Krefeld hat noch
@@ -13925,7 +13928,7 @@ async function mangelAnHandwerker(id, store){
     try{
       // dual-format: Referenz -> OneDrive-URL, Alt-String -> direkt
       const _src=await fotoQuelle(fotoSrcs[i]); if(!_src) continue;
-      const res=await fetch(_src);
+      const res=await fetchMitTimeout(_src, {}, 30000);   // v329 (R32)
       const blob=await res.blob();
       files.push(new File([blob], 'Foto_'+(i+1)+'.jpg', {type:blob.type||'image/jpeg'}));
     }catch(err){ console.warn('Foto für Teilen laden (Index '+i+'):', err); }   // v244 (R26)
@@ -16135,7 +16138,7 @@ async function dokTeilen(id) {
   const _quelle = await dokQuelle(d);   // v177: dataURL ODER OneDrive-Referenz
   if (!_quelle) { toast('Kein Dokument vorhanden'); return; }
   try {
-    const res = await fetch(_quelle);
+    const res = await fetchMitTimeout(_quelle, {}, 30000);   // v329 (R32)
     const blob = await res.blob();
     const isPdf = (d.mimeType||'').includes('pdf');
     const ext = isPdf ? '.pdf' : (d.mimeType||'').includes('image') ? '.jpg' : '';
@@ -23431,7 +23434,7 @@ async function ewSeiteFuer(m, opt){
 
   return `<div class="ew-seite">
     <table class="ew-kopf"><tr>
-      <td class="ew-l">${briefLogoSvg(95)}</td>
+      <td class="ew-l">${briefLogoSvg(68)}</td>
       <td class="ew-r">${bk.strasse?esc(bk.strasse)+'<br>':''}${bk.ort?esc(bk.ort)+'<br>':''}${bk.tel?'Tel. '+esc(telAnzeige(bk.tel))+'<br>':''}${bk.email?esc(bk.email):''}</td>
     </tr></table>
     <div class="ew-abs">${esc(ewAbsenderKurz(bk))}</div>
@@ -23538,7 +23541,12 @@ async function ewAnlagenFuer(m, anl, opt){
         sepaEmpfaengerAnschrift: gs.sepaGlaeubigerAnschrift || [bk.strasse, bk.ort].filter(Boolean).join(', '),
         sepaGlaeubigerId: gs.sepaGlaeubigerId,
         sepaMandatsreferenz: mvMandatsreferenz({objektId:m.objektId, weNr:m.weNr}),
-        sepaZahlerName: (m.mieter || m.name || ''),
+        /* v326: m.mieter enthält je nach Datenpflege mal "Nachname, Vorname"
+           und mal nur den Nachnamen (bei Ferfers fehlte der Vorname, bei Ernst
+           war er da). Die Vertragspartner sind die verlässliche Quelle -
+           dieselbe, aus der die Rückantwort ihre Namen zieht. Für die Bank muss
+           der Kontoinhaber vollständig lesbar sein. */
+        sepaZahlerName: ewSepaZahlerName(m),
         sepaZahlerAnschrift: [obj.name, obj.ort].filter(Boolean).join(', '),
       }, false));
       mitSepa = true;
@@ -23583,7 +23591,7 @@ function ewRueckantwortSeite(m, opt){
 
   return `<div class="ew-seite ew-rueck">
     <table class="ew-kopf"><tr>
-      <td class="ew-l">${briefLogoSvg(95)}</td>
+      <td class="ew-l">${briefLogoSvg(68)}</td>
       <td class="ew-r">${bk.strasse?esc(bk.strasse)+'<br>':''}${bk.ort?esc(bk.ort)+'<br>':''}${bk.tel?'Tel. '+esc(telAnzeige(bk.tel))+'<br>':''}${bk.email?esc(bk.email):''}</td>
     </tr></table>
     <div class="ew-h1">RÜCKANTWORT</div>
@@ -23779,6 +23787,20 @@ function ewAbsenderKurz(bk){
 /* Vertragspartnernamen liegen als "Nachname, Vorname" vor (siehe
    adressPostalischEW). Ohne Komma laesst sich nicht sicher trennen - dann
    steht alles im Nachnamenfeld, was beim Ausfuellformular unschaedlich ist. */
+/* Vollständiger Name des Zahlungspflichtigen für das SEPA-Mandat.
+   Mehrere Vertragspartner werden mit "und" verbunden - beide haften. */
+function ewSepaZahlerName(m){
+  try{
+    const partner = (typeof vertragspartnerVon==='function' ? vertragspartnerVon(m) : []) || [];
+    const namen = partner.map(p => {
+      const t = ewNameTeile(p);
+      return t.vor ? (t.nach + ', ' + t.vor) : t.nach;
+    }).filter(Boolean);
+    if(namen.length) return namen.join(' und ');
+  }catch(e){ console.warn('ewSepaZahlerName:', e); }
+  return m.mieter || m.name || '';
+}
+
 function ewNameTeile(p){
   const roh = String((p||{}).name||'').trim();
   const t = roh.split(',');
@@ -25600,7 +25622,8 @@ ${istZustimmung
 ═══════════════════════════════════════════════════════════ */
 async function exportExcel() {
   if(!istSystemAdmin()){ toast('Nur für Admins'); return; }
-  if (typeof XLSX === 'undefined') { toast('XLSX-Bibliothek nicht geladen'); return; }
+  try { await xlsxLaden(); }
+  catch(e){ console.warn('Excel-Bibliothek:', e); toast('Excel-Bibliothek nicht verfügbar (Internet nötig)'); return; }
   toast('Excel wird erstellt...');
   const myObj   = await getMyObjekte();
   const myIds   = myObj.map(o=>o.id);
@@ -27421,6 +27444,43 @@ async function leerstandLoeschen(kennung){
   }catch(e){ return false; }
 }
 
+/* ── v328 (S1): Excel-Bibliothek erst bei Bedarf laden ─────────────────────
+   Bis v327 stand SheetJS als blockierendes <script> im Kopf. Zwei Nachteile:
+   (a) Fremdcode mit vollem Zugriff auf IndexedDB, od_auth und settings lief
+       bei JEDEM Start mit - auch wenn nie exportiert wurde.
+   (b) Ohne Netz wartete der Browser auf dessen Timeout, bevor die App startete.
+   Geladen wird jetzt wie bei pdf.js erst beim ersten Aufruf, und zwar nur an
+   den fuenf Stellen, die Excel ueberhaupt brauchen.
+
+   XLSX_SRI: Subresource Integrity. Ist der Hash gesetzt, fuehrt der Browser die
+   Datei nur aus, wenn sie Byte fuer Byte stimmt - ein ausgetauschtes CDN-File
+   wird verworfen. Hash einmalig ermitteln (PowerShell):
+
+     $b=(Invoke-WebRequest 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js').Content
+     [Convert]::ToBase64String([System.Security.Cryptography.SHA384]::Create().ComputeHash($b))
+
+   Ergebnis mit 'sha384-' davor unten eintragen. Solange XLSX_SRI leer ist,
+   wird ohne Pruefung geladen (bisheriges Verhalten) und einmal gewarnt -
+   der Export darf an einer fehlenden Konstante nicht scheitern. */
+const XLSX_URL = 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js';
+const XLSX_SRI = '';   // z. B. 'sha384-…' – siehe Kommentar oben
+let _xlsxLadeP = null;
+function xlsxLaden(){
+  if(window.XLSX) return Promise.resolve(window.XLSX);
+  if(_xlsxLadeP)  return _xlsxLadeP;
+  _xlsxLadeP = new Promise((res, rej)=>{
+    const sc = document.createElement('script');
+    sc.src = XLSX_URL;
+    if(XLSX_SRI){ sc.integrity = XLSX_SRI; sc.crossOrigin = 'anonymous'; }
+    else console.warn('SheetJS ohne Integritaetspruefung geladen - XLSX_SRI ist nicht gesetzt.');
+    sc.onload  = ()=> window.XLSX ? res(window.XLSX)
+                                  : rej(new Error('XLSX nach dem Laden nicht verfuegbar'));
+    sc.onerror = ()=> rej(new Error('Excel-Bibliothek konnte nicht geladen werden'));
+    document.head.appendChild(sc);
+  }).catch(e=>{ _xlsxLadeP = null; throw e; });  // fehlgeschlagen -> naechster Versuch erlaubt
+  return _xlsxLadeP;
+}
+
 /* ── v259 (Variante A): Grundriss-PDF für den Aushang rendern ──────────────
    Grundrisse werden als PDF hochgeladen (Objekt-Dokument, deterministische ID
    wohnungGrundrissId(objektId,weNr,'a')). Der Aushang bettet Bilder ein, daher
@@ -27428,6 +27488,31 @@ async function leerstandLoeschen(kennung){
    dann und nur einmal von jsDelivr nachgeladen (CSP erlaubt jsDelivr für
    script-src/connect-src; der Worker läuft als Blob über worker-src blob:).
    Ohne Internet schlägt das Laden fehl → Aushang wird ohne Grundriss erzeugt. */
+/* v328 (S2): pdf.js kam bisher ohne jede Integritaetspruefung von jsDelivr -
+   sowohl die Bibliothek als auch der Workercode, der ueber einen Blob
+   ausgefuehrt wird. Beide laufen im App-Kontext.
+   Zwei getrennte Wege, weil nur einer davon vom Browser abgedeckt wird:
+   · Die Bibliothek haengt als <script> im Dokument -> Subresource Integrity.
+     Passt der Hash nicht, fuehrt der Browser sie gar nicht erst aus.
+   · Der Worker wird per fetch geholt -> fuer den greift SRI NICHT. Sein Hash
+     wird deshalb hier selbst geprueft (crypto.subtle), bevor der Blob entsteht.
+   Die Werte stammen aus dem npm-Paket pdfjs-dist@3.11.174, das jsDelivr unter
+   /npm/... unveraendert ausliefert. Gegenprobe bei einem Versionswechsel:
+     npm pack pdfjs-dist@<version>
+     openssl dgst -sha384 -binary package/build/pdf.min.js | openssl base64 -A
+   Schlaegt eine Pruefung fehl, bleibt es beim bisherigen Verhalten des
+   Aufrufers: der Aushang entsteht ohne Grundriss (kein harter Ausfall). */
+const PDFJS_SRI_LIB    = 'sha384-/1qUCSGwTur9vjf/z9lmu/eCUYbpOTgSjmpbMQZ1/CtX2v/WcAIKqRv+U1DUCG6e';
+const PDFJS_SRI_WORKER = 'sha384-SnzOobpRMLXZ52iJvZm/C0fYw0OQemTXzTjIsdsfMcrCtCEe9qgzxTd3RSklO5x2';
+
+// SHA-384 eines ArrayBuffers im SRI-Format ('sha384-<base64>').
+async function sriHash(puffer){
+  const d = await crypto.subtle.digest('SHA-384', puffer);
+  let bin=''; const b=new Uint8Array(d);
+  for(let i=0;i<b.length;i++) bin += String.fromCharCode(b[i]);
+  return 'sha384-' + btoa(bin);
+}
+
 let _pdfjsLadeP=null;
 function pdfJsLaden(){
   if(window.pdfjsLib && window._pdfjsWorkerReady) return Promise.resolve(window.pdfjsLib);
@@ -27436,18 +27521,31 @@ function pdfJsLaden(){
     const BASE='https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/';
     if(!window.pdfjsLib){
       await new Promise((res,rej)=>{ const sc=document.createElement('script'); sc.src=BASE+'pdf.min.js';
-        sc.onload=res; sc.onerror=()=>rej(new Error('pdf.js konnte nicht geladen werden')); document.head.appendChild(sc); });
+        sc.integrity=PDFJS_SRI_LIB; sc.crossOrigin='anonymous';
+        sc.onload=res;
+        // onerror deckt beides ab: kein Netz UND abgewiesener Integritaetshash.
+        sc.onerror=()=>rej(new Error('pdf.js konnte nicht geladen oder nicht verifiziert werden'));
+        document.head.appendChild(sc); });
     }
     if(!window.pdfjsLib) throw new Error('pdf.js nicht verfügbar');
     // Worker als Blob laden (deterministisch, CSP-konform über worker-src blob:)
-    const wResp=await fetch(BASE+'pdf.worker.min.js');
+    const wResp=await fetchMitTimeout(BASE+'pdf.worker.min.js', {}, 30000);
     if(!wResp || !wResp.ok) throw new Error('pdf.js-Worker konnte nicht geladen werden');
-    const wCode=await wResp.text();
-    const wUrl=URL.createObjectURL(new Blob([wCode],{type:'text/javascript'}));
+    const wBytes=await wResp.arrayBuffer();
+    if(crypto && crypto.subtle){
+      const ist=await sriHash(wBytes);
+      if(ist!==PDFJS_SRI_WORKER){
+        console.error('pdf.js-Worker: Hash weicht ab. Erwartet', PDFJS_SRI_WORKER, 'erhalten', ist);
+        throw new Error('pdf.js-Worker konnte nicht verifiziert werden');
+      }
+    } else {
+      console.warn('crypto.subtle nicht verfuegbar - pdf.js-Worker ungeprueft geladen.');
+    }
+    const wUrl=URL.createObjectURL(new Blob([wBytes],{type:'text/javascript'}));
     window.pdfjsLib.GlobalWorkerOptions.workerSrc=wUrl;
     window._pdfjsWorkerReady=true;
     return window.pdfjsLib;
-  })();
+  })().catch(e=>{ _pdfjsLadeP=null; throw e; });   // v328: erneuter Versuch moeglich
   return _pdfjsLadeP;
 }
 async function pdfErsteSeiteAlsBild(quelle, maxBreite){
@@ -27458,7 +27556,7 @@ async function pdfErsteSeiteAlsBild(quelle, maxBreite){
     daten=new Uint8Array(bin.length);
     for(let i=0;i<bin.length;i++) daten[i]=bin.charCodeAt(i);
   } else {
-    const resp=await fetch(quelle);
+    const resp=await fetchMitTimeout(quelle, {}, 30000);   // v329 (R32)
     if(!resp || !resp.ok) throw new Error('Grundriss-PDF konnte nicht geladen werden');
     daten=new Uint8Array(await resp.arrayBuffer());
   }
@@ -30077,6 +30175,14 @@ async function importExcel(input){
   const reader=new FileReader();
   reader.onload=async function(e){
     try{
+      // v328 (S1): Bibliothek erst hier laden - der Import ist der einzige
+      // Pfad, der sie beim Lesen braucht.
+      try { await xlsxLaden(); }
+      catch(le){
+        console.warn('Excel-Bibliothek:', le);
+        el.innerHTML='<div style="color:var(--red,#c0392b);font-size:13px">Excel-Bibliothek nicht verfügbar (Internet nötig).</div>';
+        return;
+      }
       const wb=XLSX.read(e.target.result,{type:'array',cellDates:true});
       let imported=0,tgCount=0;
 
@@ -30206,10 +30312,20 @@ async function renderSyncSchutz(){
   // Konfliktprotokoll (letzte 15)
   const log=(await idbGetAll('sync_log').catch(()=>[]))
     .sort((a,b)=>(b.erstellt||'').localeCompare(a.erstellt||'')).slice(0,15);
-  h+='<div style="font-weight:600;font-size:13px;margin-bottom:6px"><i class="ti ti-list-details"></i> Konfliktprotokoll (letzte 15)</div>';
+  /* v327: Das Protokoll schob die darunterliegenden Sicherungen weit nach
+     unten - im Normalfall interessiert es niemanden. Als <details> geschlossen,
+     die Anzahl steht in der Zusammenfassung. Bewusst natives <details> statt
+     eigener Auf-/Zuklapplogik: kein Zustand zu verwalten, funktioniert ohne
+     JavaScript und ist für Screenreader korrekt ausgezeichnet. */
   if(!log.length){
+    h+='<div style="font-weight:600;font-size:13px;margin-bottom:6px"><i class="ti ti-list-details"></i> Konfliktprotokoll</div>';
     h+='<div style="font-size:12px;color:var(--ink-40);margin-bottom:12px">Keine Sync-Konflikte protokolliert.</div>';
   } else {
+    h+=`<details style="margin-bottom:12px">
+      <summary style="font-weight:600;font-size:13px;cursor:pointer;padding:4px 0;list-style:revert">
+        <i class="ti ti-list-details"></i> Konfliktprotokoll (${log.length})
+      </summary>
+      <div style="margin-top:4px">`;
     h+=log.map(e=>{
       const loesbar = !!(e.snapshotLokal && e.snapshotRemote);
       return `<div style="padding:7px 0;border-bottom:1px solid var(--ink-10);font-size:12px">
@@ -30221,6 +30337,7 @@ async function renderSyncSchutz(){
         ${loesbar?`<button class="btn btn-sm" style="padding:1px 8px;font-size:11px" onclick="syncKonfliktLoesen('${e.id}')"><i class="ti ti-adjustments"></i> Details / lösen</button>`:''}
       </div>
     </div>`;}).join('');
+    h+='</div></details>';
   }
   // Snapshots
   const snaps=(await idbGetAll('mieter_snapshots').catch(()=>[]))
@@ -32573,6 +32690,12 @@ async function syncFromOneDriveHM(){
   }
 }
 
+/* v329: Deklaration nach oben gezogen. Sie stand bis v328 rund 200 Zeilen
+   WEITER UNTEN als ihre erste Verwendung - zur Laufzeit folgenlos, weil die
+   Funktionen erst nach dem Auswerten des Blocks aufgerufen werden, aber es ist
+   dasselbe Muster, das in v323 als TDZ-Fehler die App am Start gehindert hat. */
+let syncInProgress = false;
+
 // ── HM-Geraet: Upload (lokale Schreib-Stores -> immo_daten_hm.json) ──
 async function syncToOneDriveHM(){
   if (syncInProgress) return;
@@ -32592,9 +32715,11 @@ async function syncToOneDriveHM(){
     if (remote){
       const ls = await idbGet('settings','lastSync').catch(()=>null);
       if ((remote.updatedAt||'') > (ls?.value||'')){
-        syncInProgress = false;
+        /* v329 (R31): wie im Verwalter-Pfad - Sperre bleibt gesetzt.
+           syncFromOneDriveHM() ruft bei fehlender Datei KEINEN Upload zurueck
+           (es meldet nur "noch nicht bereitgestellt"), das Oeffnen war hier
+           also von vornherein ohne Zweck. */
         await syncFromOneDriveHM();
-        syncInProgress = true;
       }
     }
     const out = (remote && typeof remote === 'object') ? remote : {};
@@ -32771,7 +32896,6 @@ async function syncProfilUmstellen(){
 const OD_SYNC_TIMEOUT = 90000; // 90 s
 
 let odTokens       = null;
-let syncInProgress = false;
 let lastSyncHash   = '';
 
 // ── Token speichern/laden ─────────────────────────────────
@@ -33096,9 +33220,20 @@ async function syncToOneDrive() {
         const ls = await idbGet('settings','lastSync').catch(()=>null);
         const localSync = ls?.value||'';
         if ((remote.updatedAt||'') > localSync) {
-          syncInProgress = false;            // Merge-Funktion darf laufen
+          /* v329 (R31): Die Wiedereintrittssperre bleibt waehrend des Merges
+             GESETZT. Bis v328 wurde sie hier geoeffnet - und der Merge dauert
+             Sekunden. Feuerte in dieser Zeit der 3-Sekunden-Timer aus
+             syncSoon(), lief ein ZWEITER syncToOneDrive() an; zwei Uploads auf
+             dieselbe Datei enden im Last-Write-Wins.
+             Warum das Oeffnen frueher noetig schien: syncFromOneDrive() ruft bei
+             HTTP 404 selbst syncToOneDrive() auf (Ersteinrichtung). Aus DIESER
+             Kette heraus ist der Rueckruf aber ueberfluessig - wir stehen bereits
+             in syncToOneDrive und laufen unmittelbar danach in den Upload-Zweig
+             (vorpruefung === 'gelesen'). Der Rueckruf laeuft jetzt in die Sperre
+             und kehrt still zurueck; hochgeladen wird trotzdem, nur eben einmal.
+             Wird syncFromOneDrive dagegen eigenstaendig aufgerufen, ist
+             syncInProgress false und der 404-Pfad arbeitet unveraendert. */
           await syncFromOneDrive();          // remote → lokal mergen (datensatzweise)
-          syncInProgress = true;
         }
       } else if (head.status === 404) {
         vorpruefung = 'dateiFehlt';          // echte Ersteinrichtung: Upload erlaubt
@@ -36146,7 +36281,8 @@ function sepaText(v){
 async function zaExportSammellastschrift(){
   const konto = ZA_STATE.konto;
   if(!konto){ toast('Bitte zuerst ein Konto wählen.'); return; }
-  if(typeof XLSX==='undefined'){ toast('Excel-Bibliothek nicht geladen.'); return; }
+  try { await xlsxLaden(); }
+  catch(e){ console.warn('Excel-Bibliothek:', e); toast('Excel-Bibliothek nicht verfügbar (Internet nötig).'); return; }
   let alleM=[], alleSp=[];
   try{ alleM=await idbGetAll('mieter'); }catch(_){ }
   try{ alleSp=await idbGetAll('stellplaetze'); }catch(_){ }
@@ -36202,7 +36338,8 @@ async function zaExportSammellastschrift(){
 async function zaExportBuchungen(){
   const konto = ZA_STATE.konto;
   if(!konto){ toast('Bitte zuerst ein Konto wählen.'); return; }
-  if(typeof XLSX==='undefined'){ toast('Excel-Bibliothek nicht geladen.'); return; }
+  try { await xlsxLaden(); }
+  catch(e){ console.warn('Excel-Bibliothek:', e); toast('Excel-Bibliothek nicht verfügbar (Internet nötig).'); return; }
   let alle=[]; try{ alle=await idbGetAll('buchungen'); }catch(_){ }
   const buch=alle.filter(b=>b && b.kontoId===konto.id)
     .sort((a,b)=>(a.datumISO||'').localeCompare(b.datumISO||''));
@@ -38375,7 +38512,8 @@ function avAufteilungsvorschlag(objAus, grpObjekte, jahr, ksLabel, flaechen){
 async function anlageVExport(){
   const konto=ZA_STATE.konto;
   if(!konto) return;
-  if(typeof XLSX==='undefined'){ toast('Excel-Bibliothek nicht geladen.'); return; }
+  try { await xlsxLaden(); }
+  catch(e){ console.warn('Excel-Bibliothek:', e); toast('Excel-Bibliothek nicht verfügbar (Internet nötig).'); return; }
   const jahr=document.getElementById('avJahr')?.value || String(new Date().getFullYear()-1);
   let alle=[]; try{ alle=await idbGetAll('buchungen'); }catch(_){ }
   const buch=alle.filter(b=>b && !b.geloescht && b.status!=='storniert' && b.kontoId===konto.id
@@ -39139,7 +39277,6 @@ function _druckJetzt(html, dateiname){
     });
 
     let cleaned = false;
-    let warHidden = false;
     const cleanup = () => {
       if(cleaned) return; cleaned = true;
       document.body.classList.remove('printing-active');
@@ -39147,25 +39284,30 @@ function _druckJetzt(html, dateiname){
         if(prev) el.style.setProperty('display', prev);
         else el.style.removeProperty('display');
       });
-      root.innerHTML = '';
+      /* v326: NICHT mehr leeren. Der Android-Druckdienst rastert die Seite
+         beim Bestätigen von "Als PDF speichern" ein weiteres Mal; ein
+         geleertes #printRoot ergibt dort ein weißes Blatt. Der Inhalt darf
+         stehenbleiben - #printRoot ist ausserhalb des Drucks display:none und
+         wird bei jedem neuen Druckauftrag ohnehin überschrieben. */
       window.onafterprint = null;
       document.removeEventListener('pointerdown', cleanup);
       document.removeEventListener('keydown', cleanup);
-      document.removeEventListener('visibilitychange', sichtWechsel);
       if(_origTitle!=null){ try{ document.title = _origTitle; }catch(_){} }
     };
     // v206: Android-Druckdialog rastert die Seite NACH der Rückkehr von window.print()
     // erneut (Formatwahl, Scrollen); afterprint feuert dort sofort. Ein frühes Cleanup
     // leert #printRoot -> weiße Seite im Dialog (Gerätetest-Befund 11.07.). Deshalb:
     // Cleanup erst, wenn der Nutzer nachweislich zurück in der App ist.
-    const sichtWechsel = () => {
-      if(document.visibilityState === 'hidden'){ warHidden = true; }
-      else if(warHidden){ cleanup(); } // aus dem Druckdialog zurückgekehrt
-    };
+    /* v326: visibilitychange als Auslöser ENTFERNT. Beim "Als PDF speichern"
+       öffnet Android einen System-Dateidialog in einem eigenen Task - die
+       Sichtbarkeit wechselt dabei hidden->visible, OHNE dass der Nutzer in der
+       App ist. sichtWechsel hielt das für die Rückkehr aus dem Druckdialog und
+       räumte mitten im Rastern auf: Vorschau korrekt, gespeichertes PDF leer.
+       Am PC fiel das nie auf, weil window.print() dort blockiert.
+       Übrig bleiben nur Auslöser, die eine echte Nutzerhandlung IN der App sind. */
     const spaetCleanupArmieren = () => {
       document.addEventListener('pointerdown', cleanup);   // erste Berührung in der App
       document.addEventListener('keydown', cleanup);
-      document.addEventListener('visibilitychange', sichtWechsel);
       setTimeout(cleanup, 180000);                          // letztes Sicherheitsnetz
     };
 
@@ -40463,7 +40605,7 @@ async function rechnBelegOeffnen(id){
 async function dateiTeilen(quelle, dateiname, mime){
   if(!quelle){ toast('Keine Datei vorhanden'); return; }
   try{
-    const res=await fetch(quelle);
+    const res=await fetchMitTimeout(quelle, {}, 30000);   // v329 (R32)
     const blob=await res.blob();
     const typ=mime||blob.type||'application/octet-stream';
     const file=new File([blob], dateiname||'Datei', {type:typ});
@@ -40879,7 +41021,7 @@ async function shareFoto(){
   const src = window._currentFoto;
   if(!src){ toast('Kein Foto ausgewählt'); return; }
   try {
-    const res = await fetch(src);
+    const res = await fetchMitTimeout(src, {}, 30000);   // v329 (R32)
     const blob = await res.blob();
     const name = (window._currentFotoName||'Foto').replace(/[^a-zA-Z0-9äöüÄÖÜ _-]/g,'').slice(0,40) || 'Foto';
     const file = new File([blob], name+'.jpg', { type: blob.type||'image/jpeg' });
@@ -41412,7 +41554,7 @@ async function fotoDruckQuelle(x){
     try{
       const url = await odDownloadUrl(x.odId);
       if(url){
-        const resp = await fetch(url);
+        const resp = await fetchMitTimeout(url, {}, 30000);   // v329 (R32)
         if(resp && resp.ok){
           const blob = await resp.blob();
           return await blobZuDataUrl(blob);

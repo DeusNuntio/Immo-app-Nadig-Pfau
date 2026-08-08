@@ -1,7 +1,9 @@
 /* NadigPfau Hausverwaltung – Service Worker
    ─────────────────────────────────────────────────────────────────────────
    CACHE bei JEDER neuen index.html-Version hochzählen (PWA-Invariante).
-   Aktuell: v301.
+   Massgeblich ist ausschliesslich die Konstante CACHE weiter unten – hier
+   steht bewusst keine Versionsnummer mehr, sie lief zuletzt vier Versionen
+   hinterher (stand auf v301, waehrend CACHE bereits v327 war).
    Mehrdatei-Deploy (5 Dateien im selben GitHub-Pages-Verzeichnis):
      index.html + manifest.json + icon-192.png + icon-512.png + sw.js
    Strategie:
@@ -16,7 +18,11 @@
    ───────────────────────────────────────────────────────────────────────── */
 'use strict';
 
-const CACHE = 'nadigpfau-v325';
+const CACHE = 'nadigpfau-v329';
+
+/* v329 (R32): Wie lange die Navigation auf das Netz wartet, bevor die
+   gecachte Fassung ausgeliefert wird. Siehe Kommentar am fetch-Handler. */
+const NAV_WARTEZEIT_MS = 3000;
 
 const CORE = [
   './',
@@ -58,24 +64,38 @@ self.addEventListener('fetch', event => {
   // nicht abfangen, damit CORS/CSP und Auth unveraendert bleiben.
   if (url.origin !== self.location.origin) return;
 
-  // Navigationsanfragen -> network-first, Offline-Fallback index.html.
+  /* Navigationsanfragen -> Netz bevorzugt, aber MIT Wartegrenze.
+     Bis v328 stand hier ein unbegrenztes network-first. Bei Netzausfall griff
+     der Fallback sofort, bei ZAEHEM Netz (ein Balken im Keller) aber gar nicht:
+     der Start wartete auf den vollstaendigen Download der 857 kB. Jetzt laeuft
+     ein Rennen - meldet sich das Netz nicht binnen NAV_WARTEZEIT_MS, startet die
+     App aus dem Cache. Der Download laeuft im Hintergrund weiter und legt die
+     neue Fassung ab (waitUntil), sie greift dann beim naechsten Start.
+
+     FOLGE FUER DIE AUSLIEFERUNG: Ist die Verbindung langsam, kann direkt nach
+     einem Deploy noch die vorige Version erscheinen. Einmal neu starten. Beim
+     Pruefen einer frisch ausgelieferten Version also erst den zweiten Start
+     bewerten - zusammen mit dem bekannten CDN-Nachlauf von GitHub Pages.
+
+     Ohne gecachte Fassung (Erstinstallation) wird unveraendert gewartet. */
   if (req.mode === 'navigate') {
     event.respondWith((async () => {
-      try {
-        const netz = await fetch(req);
+      const cache = await caches.open(CACHE);
+      const netzP = fetch(req).then(res => {
         // Nur ERFOLGREICHE Antworten cachen: ein 404/500 des Servers darf die
         // funktionierende Offline-Kopie der index.html nicht ueberschreiben.
-        if (netz && netz.ok) {
-          const cache = await caches.open(CACHE);
-          cache.put('./index.html', netz.clone());
-        }
-        return netz;
-      } catch (_) {
-        const cache = await caches.open(CACHE);
-        return (await cache.match('./index.html')) ||
-               (await cache.match('./')) ||
-               Response.error();
+        if (res && res.ok) cache.put('./index.html', res.clone());
+        return res;
+      });
+      event.waitUntil(netzP.catch(() => null));   // Nachlauf ueberlebt die Antwort
+
+      const gecacht = (await cache.match('./index.html')) || (await cache.match('./'));
+      if (!gecacht) {
+        try { return await netzP; } catch (_) { return Response.error(); }
       }
+      const warten = new Promise(r => setTimeout(() => r(null), NAV_WARTEZEIT_MS));
+      const zuerst = await Promise.race([netzP.catch(() => null), warten]);
+      return zuerst || gecacht;
     })());
     return;
   }
