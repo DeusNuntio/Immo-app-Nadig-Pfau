@@ -3,11 +3,32 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdn.sheetjs.com; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob: https:; connect-src 'self' https://cdn.jsdelivr.net https://func-nadigpfau-g7fghseafmftemeq.westeurope-01.azurewebsites.net https://api.nadigpfau.de https://graph.microsoft.com https://login.microsoftonline.com https://*.microsoftpersonalcontent.com https://*.sharepoint.com https://*.up.1drv.com; frame-src 'self' blob:; worker-src 'self' blob:; base-uri 'self'; form-action 'self';">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; object-src 'none'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdn.sheetjs.com; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob: https:; connect-src 'self' https://cdn.jsdelivr.net https://func-nadigpfau-g7fghseafmftemeq.westeurope-01.azurewebsites.net https://api.nadigpfau.de https://graph.microsoft.com https://login.microsoftonline.com https://*.microsoftpersonalcontent.com https://*.sharepoint.com https://*.up.1drv.com; frame-src 'self' blob:; worker-src 'self' blob:; base-uri 'self'; form-action 'self';">
+<meta name="referrer" content="no-referrer">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#185FA5">
 <title>Nadig Pfau Hausverwaltung</title>
+<script>
+/* v333 (Audit F3) – Rahmenschutz gegen Clickjacking.
+   Hintergrund: 'frame-ancestors' wirkt NUR als echter HTTP-Header; im
+   Meta-Tag wird die Direktive vom Browser ignoriert. GitHub Pages laesst
+   keine eigenen Header zu. Ohne diesen Block laesst sich die App in einen
+   fremden Rahmen legen und der Nutzer klickt unsichtbar auf echte Knoepfe
+   (Loeschen, Sync, Backup). Der Block steht bewusst ganz oben, damit er
+   ausgefuehrt wird, bevor Bedienelemente existieren. */
+(function(){
+  try{
+    if (window.top === window.self) return;         // Normalfall: kein Rahmen
+    document.documentElement.style.display='none';  // erst verbergen,
+    window.top.location = window.self.location;     // dann ausbrechen
+  }catch(e){
+    /* Zugriff auf window.top verweigert = fremde Herkunft = Rahmen vorhanden.
+       Ausbrechen geht dann nicht; Inhalt bleibt verborgen. */
+    document.documentElement.style.display='none';
+  }
+})();
+</script>
 <link rel="manifest" href="manifest.json">
 <!-- v328 (S1): SheetJS wird NICHT mehr blockierend im Kopf geladen. Ein Fremdskript
      an dieser Stelle laeuft im App-Kontext (Zugriff auf IndexedDB, od_auth, settings)
@@ -1120,9 +1141,21 @@ body.printing-active #printRoot{display:block!important}
 <div id="camOverlay" style="display:none;position:fixed;inset:0;z-index:9999;background:#000;flex-direction:column">
   <div style="position:relative;flex:1;overflow:hidden;display:flex;align-items:center;justify-content:center">
     <video id="camVideo" playsinline autoplay muted style="width:100%;height:100%;object-fit:cover"></video>
-    <div id="camShotCount" style="position:absolute;top:14px;left:14px;background:rgba(0,0,0,.6);color:#fff;font-size:13px;padding:5px 12px;border-radius:20px;display:none"></div>
+    <!-- v332: Der Zaehler lag bisher auf denselben Koordinaten wie der
+         Blitzknopf und verdeckte ihn im Mehrfachaufnahme-Modus. Jetzt
+         mittig oben, damit beide Bedienelemente frei liegen. -->
+    <div id="camShotCount" style="position:absolute;top:14px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.6);color:#fff;font-size:13px;padding:5px 12px;border-radius:20px;display:none"></div>
     <button id="camTorchBtn" data-action-click="camTorch" title="Blitz" style="display:none;position:absolute;top:12px;left:12px;width:42px;height:42px;border-radius:50%;border:none;background:rgba(0,0,0,.5);color:#fff;font-size:20px;cursor:pointer"><i class="ti ti-bolt"></i></button>
     <button data-action-click="closeCam" aria-label="Kamera schließen" style="position:absolute;top:12px;right:12px;width:42px;height:42px;border-radius:50%;border:none;background:rgba(0,0,0,.5);color:#fff;font-size:22px;cursor:pointer">✕</button>
+    <!-- v332: Zoom-Regler. Wird nur eingeblendet, wenn die Kamera die
+         Faehigkeit "zoom" meldet (Chromium/Android). Auf iOS meldet
+         getCapabilities() weder zoom noch torch - dort bleibt der Regler
+         verborgen, statt eine Bedienung vorzutaeuschen, die nichts tut. -->
+    <div id="camZoomBox" style="display:none;position:absolute;left:14%;right:14%;bottom:16px;align-items:center;gap:10px;background:rgba(0,0,0,.45);border-radius:22px;padding:8px 14px">
+      <i class="ti ti-zoom-out" style="color:#fff;font-size:17px"></i>
+      <input id="camZoom" type="range" min="1" max="5" step="0.1" value="1" aria-label="Zoom" oninput="camZoomSet(this.value)" style="flex:1;accent-color:#85B7EB">
+      <span id="camZoomWert" style="color:#fff;font-size:12px;min-width:34px;text-align:right">1,0×</span>
+    </div>
   </div>
   <div style="padding:18px 20px calc(18px + env(safe-area-inset-bottom));background:#000;display:flex;align-items:center;justify-content:space-between;gap:16px">
     <button data-action-click="camPickGallery" title="Aus Galerie wählen" style="width:52px;height:52px;border-radius:12px;border:1.5px solid rgba(255,255,255,.3);background:rgba(255,255,255,.08);color:#fff;font-size:22px;cursor:pointer;display:flex;align-items:center;justify-content:center"><i class="ti ti-photo"></i></button>
@@ -1236,7 +1269,32 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=35;   // v242: +buch_journal (F4 GoBD)
-const APP_VERSION = '2026-08-08-v330';
+const APP_VERSION = '2026-08-08-v333';
+/* v333 (08.08.2026) – Security-Audit, Ausgabemaskierung und Rahmenschutz.
+   F1 KRITISCH: 39 Ausgabestellen setzten Freitext ungefiltert in innerHTML ein
+        (u. a. maengel.beschreibung, reparaturen.beschreibung, aufgaben.titel/
+        beschreibung, termine.titel/notiz, lager.bezeichnung/notiz, versorger.notiz).
+        Der Weg vom Mieterportal in die App war durchgehend offen: eine
+        Schadensmeldung -> "Als Mangel anlegen" -> Mangel-Detailansicht fuehrte
+        fremden Text als Markup aus. Jetzt durchgaengig esc()/escAttr().
+   F2 HOCH: neuer Helfer escJs() fuer JavaScript-Zeichenketten innerhalb von
+        HTML-Attributen. esc() reicht dort NICHT: der Browser dekodiert &#39;
+        vor dem JS-Parser, die Zeichenkette bricht auf (nachgewiesen, s. Bericht).
+        Angewandt auf die vier Etiketten-Handler mit Freitext-Argumenten.
+   F3 MITTEL: Rahmenschutz gegen Clickjacking (frame-ancestors ist im Meta-Tag
+        wirkungslos, GitHub Pages sendet kein X-Frame-Options).
+   F4 NIEDRIG: object-src 'none' und Referrer-Policy no-referrer ergaenzt.
+   F1c NACHTRAG: der neu gebaute sicherheits_pruefer.py hat 105 weitere
+        Stellen gefunden, die der erste Durchgang uebersehen hatte (zu enge
+        Feldliste: name, einheit, anbieter, ort, strasse, objektName, notes,
+        hinweis, lieferant fehlten). Ebenfalls maskiert. Eine Stelle bleibt
+        bewusst offen und traegt den Vermerk xss-ok - sie erzeugt
+        gewolltes Markup aus einer Konstanten.
+   S3  NACHTRAG: der Gegenbeweis test_sicherheits_pruefer.py hat einen Fehler
+        IM PRUEFER aufgedeckt (nur das erste Handler-Argument wurde geprueft).
+        Nach der Korrektur fand er sofort eine weitere echte Stelle:
+        modalAddEinkauf(… bezugText:'${esc(m.titel)}') -> escJs.
+   Keine fachliche Aenderung, keine Store-/DB-Aenderung, DB_VER 35 unveraendert. */
 /* v300 (03.08.2026): E-Mail-Auswahl je Wohneinheit korrigiert (Gerätetest-Befund).
    Beim ersten echten Push meldete die App "25 Wohnungen uebertragen, 90
    uebersprungen". Ein Teil davon ist echter Datenmangel (Krefeld hat noch
@@ -3640,7 +3698,7 @@ async function renderDash() {
       <div class="card-hdr" style="color:var(--red)"><i class="ti ti-alert-triangle"></i> Dringend (${dringend.length})</div>
       ${dringend.slice(0,3).map(d=>`<div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--ink-10);cursor:pointer" onclick="${d._typ==='mangel'?`showMangelDetail('${d.id}')`:`showAufgabeDetail('${d.id}')`}">
         <div style="width:6px;height:6px;border-radius:50%;background:var(--red);flex-shrink:0"></div>
-        <div style="flex:1;font-size:13px;color:var(--ink)">${d.titel}</div>
+        <div style="flex:1;font-size:13px;color:var(--ink)">${esc(d.titel)}</div>
         <div style="font-size:11px;color:var(--ink-40)">${getObj(d.objektId)?.name||''}</div>
         <i class="ti ti-chevron-right" style="font-size:13px;color:var(--ink-40)"></i>
       </div>`).join('')}
@@ -3657,7 +3715,7 @@ async function renderDash() {
       <div class="card-hdr" style="color:var(--amber)"><i class="ti ti-clipboard"></i> Offene Entwürfe (${drafts.length})</div>
       ${drafts.map(p=>`<div class="activity-item" onclick="editProtokoll('${p.id}')" style="cursor:pointer">
         <div class="activity-dot" style="background:var(--amber)"></div>
-        <div class="activity-text">${p.mieterName||'(kein Mieter)'} · WE ${p.weNr||'?'} · ${p.objektName||''} · Schritt ${(p._draftStep||0)+1}</div>
+        <div class="activity-text">${p.mieterName||'(kein Mieter)'} · WE ${p.weNr||'?'} · ${esc(p.objektName||'')} · Schritt ${(p._draftStep||0)+1}</div>
         <div class="activity-time">${fmtDate(p.datum)}</div>
       </div>`).join('')}
     </div>`;
@@ -3672,7 +3730,7 @@ async function renderDash() {
       <div class="card-hdr"><i class="ti ti-clipboard-check"></i> Letzte Protokolle</div>
       ${lastProts.map(p=>`<div class="activity-item" onclick="editProtokoll('${p.id}')" style="cursor:pointer">
         <div class="activity-dot ${p.art?.includes('Einzug')?'green':''}"></div>
-        <div class="activity-text">${p.mieterName||'–'} · WE ${p.weNr||'?'} · ${p.objektName||''}</div>
+        <div class="activity-text">${p.mieterName||'–'} · WE ${p.weNr||'?'} · ${esc(p.objektName||'')}</div>
         <div class="activity-time">${fmtDate(p.datum)}</div>
       </div>`).join('')}
     </div>`;
@@ -3703,8 +3761,8 @@ async function renderDash() {
     return `<div class="obj-card" onclick="showObjekt('${obj.id}')">
       <div class="obj-icon ${obj.color}"><i class="ti ${obj.tiefgarage?'ti-parking':'ti-building'}"></i></div>
       <div class="obj-body">
-        <div class="obj-name">${obj.name}</div>
-        <div class="obj-meta">${obj.ort}</div>
+        <div class="obj-name">${esc(obj.name)}</div>
+        <div class="obj-meta">${esc(obj.ort)}</div>
         <div class="obj-chips">
           ${obj.tiefgarage
             ? `<span class="chip chip-gray">${spInfo?`${spInfo.verm}/${spInfo.total} belegt`:'Stellplätze'}</span>${spInfo&&spInfo.frei?`<span class="chip chip-ok">${spInfo.frei} frei</span>`:''}`
@@ -5204,11 +5262,11 @@ async function renderObjZaehler(el){
     if(letzter && vorletzter){
       const diff = (parseFloat(letzter.wert)||0)-(parseFloat(vorletzter.wert)||0);
       const tage = Math.max(1,Math.round((new Date(letzter.datumISO)-new Date(vorletzter.datumISO))/86400000));
-      verbrauchTxt = `<span style="color:var(--ink-60)">Verbrauch seit letzter Ablesung: <strong>${diff.toFixed(2)} ${z.einheit}</strong> (${tage} Tage)</span>`;
+      verbrauchTxt = `<span style="color:var(--ink-60)">Verbrauch seit letzter Ablesung: <strong>${diff.toFixed(2)} ${esc(z.einheit)}</strong> (${tage} Tage)</span>`;
     }
     const vLink = z.versorgerId ? vMap[z.versorgerId] : null;
     const vLinkTxt = vLink
-      ? `<span style="color:var(--copper)"><i class="ti ti-link"></i> ${vLink.anbieter||getSparte(vLink.sparte).label}</span>`
+      ? `<span style="color:var(--copper)"><i class="ti ti-link"></i> ${esc(vLink.anbieter||getSparte(vLink.sparte).label)}</span>`
       : (istVerwalter() ? `<span style="color:var(--ink-40)"><i class="ti ti-link-off"></i> kein Versorger</span>` : '');
     h+=`<div class="card" style="margin-bottom:10px${istDub?';border:1px solid #E6A23C':''}">
       ${istDub?`<div style="font-size:11px;color:#B8860B;margin-bottom:6px"><i class="ti ti-alert-triangle"></i> Möglicher doppelter Zähler (gleiche Art &amp; Bezeichnung) – ggf. einen löschen.</div>`:''}
@@ -5218,9 +5276,9 @@ async function renderObjZaehler(el){
         </div>
         <div style="flex:1">
           <div style="font-weight:600;font-size:14px">${esc(z.name)}${z.weNr?` <span style="font-size:11px;font-weight:600;color:var(--copper);background:var(--ink-05);padding:1px 6px;border-radius:6px;margin-left:4px"><i class="ti ti-home" style="font-size:11px"></i> WE ${z.weNr}</span>`:''}</div>
-          ${z.zaehlernummer?`<div style="font-size:12px;color:var(--ink-60)"><i class="ti ti-hash"></i> ${z.zaehlernummer}</div>`:''}
+          ${z.zaehlernummer?`<div style="font-size:12px;color:var(--ink-60)"><i class="ti ti-hash"></i> ${esc(z.zaehlernummer)}</div>`:''}
           <div style="font-size:12px;color:var(--ink-40)">
-            ${letzter?`Letzter Stand: <strong>${letzter.wert} ${z.einheit}</strong> · ${letzter.datum}`:'Noch keine Ablesung'}
+            ${letzter?`Letzter Stand: <strong>${letzter.wert} ${esc(z.einheit)}</strong> · ${letzter.datum}`:'Noch keine Ablesung'}
           </div>
           ${vLinkTxt?`<div style="font-size:12px;margin-top:2px">${vLinkTxt}</div>`:''}
         </div>
@@ -5242,13 +5300,13 @@ async function modalZaehlerstand(zaehlerId){
   if(!z) return;
   window._zsFoto = null;
   showModal(`
-    <div class="m-title"><i class="ti ${ZAEHLER_ICON[z.art]||'ti-gauge'}"></i> Ablesung – ${z.name}</div>
-    <div class="f"><label>Zählerstand (${z.einheit}) *</label>
+    <div class="m-title"><i class="ti ${ZAEHLER_ICON[z.art]||'ti-gauge'}"></i> Ablesung – ${esc(z.name)}</div>
+    <div class="f"><label>Zählerstand (${esc(z.einheit)}) *</label>
       <input type="number" id="zsWert" step="0.001" inputmode="decimal" placeholder="z. B. 12345,678"></div>
     <div class="f"><label for="zsDatum">Ablesedatum</label>
       <input type="date" id="zsDatum" value="${today()}"></div>
     <div class="f"><label for="zsNummer">Zählernummer (optional)</label>
-      <input type="text" id="zsNummer" value="${z.zaehlernummer||''}" placeholder="Gerätenummer"></div>
+      <input type="text" id="zsNummer" value="${escAttr(z.zaehlernummer||'')}" placeholder="Gerätenummer"></div>
     <div class="f"><label for="zsFotoIn">Foto des Zählers</label>
       <input type="file" id="zsFotoIn" accept="image/*" style="display:none" onchange="onZsFoto(this)">
       <div style="display:flex;gap:6px">
@@ -5426,7 +5484,7 @@ function linienChartSVG(serien, opts={}){
         `<span style="font-size:11px;display:inline-flex;align-items:center;gap:5px"><span style="width:10px;height:10px;border-radius:50%;background:${ZCHART_FARBEN[i%ZCHART_FARBEN.length]};display:inline-block"></span>${esc(se.name)}</span>`).join('')}</div>`
     : '';
   return `<div><svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block">${g}</svg>${legende}
-    ${opts.hinweis?`<div style="font-size:10px;color:var(--ink-40);margin-top:4px">${opts.hinweis}</div>`:''}</div>`;
+    ${opts.hinweis?`<div style="font-size:10px;color:var(--ink-40);margin-top:4px">${esc(opts.hinweis)}</div>`:''}</div>`;
 }
 // Verbrauchspunkte eines Zählers aus seinen Ablesungen (aufsteigend); Modus:
 // 'diff' = Verbrauch je Ablesung, 'proTag' = Ø Verbrauch/Tag im Intervall.
@@ -5507,7 +5565,7 @@ function balkenChartSVG(paare, opts={}){
     bars+=`<text x="${(x+bw/2).toFixed(1)}" y="${(y-3).toFixed(1)}" text-anchor="middle" font-size="9" fill="var(--ink-60)">${eur(p.wert)}</text>`;
     bars+=`<text x="${(x+bw/2).toFixed(1)}" y="${H-padB+13}" text-anchor="middle" font-size="10" fill="var(--ink-60)">${p.label}</text>`;
   }); 
-  const legende=paare.some(p=>p.teil)?`<text x="${padL}" y="${H-4}" font-size="9" fill="var(--ink-40)">grau = unvollständiges Jahr${opts.einheit?' · '+opts.einheit:''}</text>`:(opts.einheit?`<text x="${padL}" y="${H-4}" font-size="9" fill="var(--ink-40)">${opts.einheit}</text>`:'');
+  const legende=paare.some(p=>p.teil)?`<text x="${padL}" y="${H-4}" font-size="9" fill="var(--ink-40)">grau = unvollständiges Jahr${esc(opts.einheit?' · '+opts.einheit:'')}</text>`:(opts.einheit?`<text x="${padL}" y="${H-4}" font-size="9" fill="var(--ink-40)">${esc(opts.einheit)}</text>`:'');
   return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;max-width:${W}px" xmlns="http://www.w3.org/2000/svg">`+
     `<line x1="${padL}" y1="${H-padB}" x2="${W-padL}" y2="${H-padB}" stroke="var(--ink-10)"></line>${bars}${legende}</svg>`;
 }
@@ -5552,7 +5610,7 @@ async function zeigeZaehlerVerlauf(zaehlerId){
     }
     rows+=`<tr style="border-bottom:1px solid var(--ink-10)">
       <td style="padding:6px 4px;font-size:12px">${s.datum}</td>
-      <td style="padding:6px 4px;font-size:12px;font-weight:600">${s.wert} ${z.einheit}</td>
+      <td style="padding:6px 4px;font-size:12px;font-weight:600">${s.wert} ${esc(z.einheit)}</td>
       <td style="padding:6px 4px;font-size:12px">${diff}</td>
       <td style="padding:6px 4px;font-size:11px;color:var(--ink-40)">${proTag}</td>
       <td style="padding:6px 4px;text-align:right">${s.foto?`<button class="btn btn-sm" data-action-click="openFoto" data-arg="${s.id}" data-arg2="zaehlerstand"><i class="ti ti-photo"></i></button>`:''}
@@ -5566,7 +5624,7 @@ async function zeigeZaehlerVerlauf(zaehlerId){
   // v187: Jahresvergleich tagesgenau; laufendes Jahr markiert.
   const jahrRows=Object.keys(jahrTagesgenau).sort((a,b)=>b-a).map(j=>
     `<tr><td style="padding:4px 6px;font-size:12px">${j}${jahrTagesgenau[j].unvollstaendig?' <span style=\"color:var(--ink-40);font-size:10px\">(unvollständig)</span>':''}</td>`+
-    `<td style="padding:4px 6px;font-size:12px;font-weight:600">${jahrTagesgenau[j].wert.toFixed(2)} ${z.einheit}</td></tr>`).join('');
+    `<td style="padding:4px 6px;font-size:12px;font-weight:600">${jahrTagesgenau[j].wert.toFixed(2)} ${esc(z.einheit)}</td></tr>`).join('');
 
   // v187: Verlaufskurve als Oe Verbrauch/Tag – neutralisiert ungleiche Ableseabstaende,
   // damit die Kurve echte Trends statt Intervall-Artefakte zeigt.
@@ -5579,7 +5637,7 @@ async function zeigeZaehlerVerlauf(zaehlerId){
   const jahrPaare=Object.keys(jahrTagesgenau).sort().map(j=>({label:j, wert:jahrTagesgenau[j].wert, teil:jahrTagesgenau[j].unvollstaendig}));
   const jahrBalkenHtml=jahrPaare.length>=1 ? balkenChartSVG(jahrPaare, {einheit:z.einheit}) : '';
   showModal(`
-    <div class="m-title"><i class="ti ti-chart-line"></i> Verlauf – ${z.name}</div>
+    <div class="m-title"><i class="ti ti-chart-line"></i> Verlauf – ${esc(z.name)}</div>
     ${chartHtml?`<div class="card-hdr" style="margin-bottom:6px">Verbrauchsverlauf</div><div style="margin-bottom:14px">${chartHtml}</div>`:''}
     ${jahrBalkenHtml?`<div class="card-hdr" style="margin-bottom:6px">Verbrauch je Kalenderjahr</div><div style="margin-bottom:10px">${jahrBalkenHtml}</div>`:''}
     ${jahrRows?`<table style="width:100%;border-collapse:collapse;margin-bottom:14px">
@@ -5668,22 +5726,22 @@ async function modalNeuerZaehler(objektId, zaehlerId){
   const vsOpts=['<option value="">— kein Versorger —</option>']
     .concat(versorger.map(v=>{
       const sp=getSparte(v.sparte);
-      return `<option value="${v.id}" ${z.versorgerId===v.id?'selected':''}>${(v.anbieter||sp.label)} (${sp.label})</option>`;
+      return `<option value="${v.id}" ${z.versorgerId===v.id?'selected':''}>${esc((v.anbieter||sp.label))} (${sp.label})</option>`;
     })).join('');
   showModal(`
     <div class="m-title"><i class="ti ${isEdit?'ti-pencil':'ti-plus'}"></i> ${isEdit?'Zähler bearbeiten':'Neuer Zähler'}</div>
     <div class="f"><label for="nzName">Bezeichnung *</label>
-      <input type="text" id="nzName" value="${(z.name||'').replace(/"/g,'&quot;')}" placeholder="z. B. Wasser Garten"></div>
+      <input type="text" id="nzName" value="${escAttr((z.name||''))}" placeholder="z. B. Wasser Garten"></div>
     <div class="f-row">
       <div class="f"><label for="nzArt">Art</label>
         <select id="nzArt">
           ${arten.map(([v,l])=>`<option value="${v}" ${z.art===v?'selected':''}>${l}</option>`).join('')}
         </select></div>
       <div class="f"><label for="nzEinheit">Einheit</label>
-        <input type="text" id="nzEinheit" value="${(z.einheit||'kWh').replace(/"/g,'&quot;')}" placeholder="kWh / m³"></div>
+        <input type="text" id="nzEinheit" value="${escAttr((z.einheit||'kWh'))}" placeholder="kWh / m³"></div>
     </div>
     <div class="f"><label for="nzNummer">Zählernummer</label>
-      <input type="text" id="nzNummer" value="${(z.zaehlernummer||'').replace(/"/g,'&quot;')}" placeholder="Gerätenummer"></div>
+      <input type="text" id="nzNummer" value="${escAttr((z.zaehlernummer||''))}" placeholder="Gerätenummer"></div>
     <div class="f"><label for="nzWeNr"><i class="ti ti-home"></i> Wohnung (WE)</label>
       <select id="nzWeNr">${weOpts}</select>
       <div style="font-size:11px;color:var(--ink-40);margin-top:4px">Wohnungszähler (z. B. Warmwasser Krefeld) bleiben dauerhaft der WE zugeordnet – auch bei Mieterwechsel.</div></div>
@@ -6047,15 +6105,15 @@ async function renderObjVersorger(el){
       <div style="display:flex;align-items:center;gap:10px">
         <div style="width:36px;height:36px;border-radius:8px;background:var(--ink-05);display:flex;align-items:center;justify-content:center;font-size:17px;color:var(--copper)"><i class="ti ${sp.icon}"></i></div>
         <div style="flex:1">
-          <div style="font-weight:600;font-size:14px">${v.anbieter||sp.label}</div>
-          <div style="font-size:12px;color:var(--ink-40)">${sp.label}${v.vertragsnummer?' · Vertrag '+v.vertragsnummer:''}</div>
+          <div style="font-weight:600;font-size:14px">${esc(v.anbieter||sp.label)}</div>
+          <div style="font-size:12px;color:var(--ink-40)">${sp.label}${esc(v.vertragsnummer?' · Vertrag '+v.vertragsnummer:'')}</div>
         </div>
         <button class="btn btn-sm" onclick="modalVersorger('${currentObjId}','${v.id}')"><i class="ti ti-pencil"></i></button>
       </div>
       ${fristInfo}
       <div style="font-size:12px;color:var(--ink-60);margin-top:6px;display:flex;flex-wrap:wrap;gap:10px">
         ${v.grundpreis?`<span>Grundpreis: <strong>${fmtEur(v.grundpreis)}/Monat</strong></span>`:''}
-        ${v.arbeitspreis?`<span>Arbeitspreis: <strong>${v.arbeitspreis} ct/${v.einheit||'Einheit'}</strong></span>`:''}
+        ${v.arbeitspreis?`<span>Arbeitspreis: <strong>${v.arbeitspreis} ct/${esc(v.einheit||'Einheit')}</strong></span>`:''}
       </div>
       ${v.zaehlerId&&zMap[v.zaehlerId]?`<div style="font-size:12px;color:var(--copper);margin-top:4px"><i class="ti ti-link"></i> Zähler: <strong>${zMap[v.zaehlerId].name}</strong>${zMap[v.zaehlerId].zaehlernummer?' · Nr. '+zMap[v.zaehlerId].zaehlernummer:''}</div>`:''}
       <button class="btn btn-sm" style="width:100%;margin-top:8px" onclick="zeigeVersorgerDetail('${v.id}')"><i class="ti ti-eye"></i> Details & Zugangsdaten</button>
@@ -6070,7 +6128,7 @@ async function modalVersorger(objektId, versorgerId){
   // Zähler desselben Objekts für die Zuordnung laden
   const objZaehler=(await idbGetAll('zaehler','objektId',objektId)).sort((a,b)=>(a.name||'').localeCompare(b.name||''));
   const zOpts=['<option value="">— kein Zähler —</option>']
-    .concat(objZaehler.map(z=>`<option value="${z.id}" ${v.zaehlerId===z.id?'selected':''}>${z.name}${z.zaehlernummer?' (Nr. '+z.zaehlernummer+')':''}</option>`)).join('');
+    .concat(objZaehler.map(z=>`<option value="${z.id}" ${v.zaehlerId===z.id?'selected':''}>${esc(z.name)}${esc(z.zaehlernummer?' (Nr. '+z.zaehlernummer+')':'')}</option>`)).join('');
   // v187: Passwort im Formular NIE automatisch vorbefuellen. Leeres Feld = unveraendert
   // (saveVersorgerFortsetzen behaelt dann das gespeicherte passwortEnc bei).
   let pwHinweis='';
@@ -6082,16 +6140,16 @@ async function modalVersorger(objektId, versorgerId){
     <div class="f-row">
       <div class="f"><label for="vSparte">Sparte</label>
         <select id="vSparte">${VERSORGER_SPARTE.map(s=>`<option value="${s.val}" ${v.sparte===s.val?'selected':''}>${s.label}</option>`).join('')}</select></div>
-      <div class="f"><label for="vAnbieter">Anbieter *</label><input type="text" id="vAnbieter" value="${v.anbieter||''}" placeholder="z. B. Stadtwerke"></div>
+      <div class="f"><label for="vAnbieter">Anbieter *</label><input type="text" id="vAnbieter" value="${escAttr(v.anbieter||'')}" placeholder="z. B. Stadtwerke"></div>
     </div>
-    <div class="f"><label for="vVertragsnr">Vertragsnummer</label><input type="text" id="vVertragsnr" value="${v.vertragsnummer||''}"></div>
+    <div class="f"><label for="vVertragsnr">Vertragsnummer</label><input type="text" id="vVertragsnr" value="${escAttr(v.vertragsnummer||'')}"></div>
     <div class="f-row">
       <div class="f"><label for="vBeginn">Vertragsbeginn</label><input type="date" id="vBeginn" value="${v.vertragsbeginn||''}"></div>
       <div class="f"><label for="vEnde">Vertragsende</label><input type="date" id="vEnde" value="${v.vertragsende||''}"></div>
     </div>
     <div class="f-row">
       <div class="f"><label for="vKuendFrist">Kündigungsfrist (Monate)</label><input type="number" inputmode="decimal" id="vKuendFrist" min="0" step="1" value="${v.kuendigungsfristMonate||''}" placeholder="z. B. 1"></div>
-      <div class="f"><label for="vEinheit">Abrechnungseinheit</label><input type="text" id="vEinheit" value="${v.einheit||''}" placeholder="kWh / m³"></div>
+      <div class="f"><label for="vEinheit">Abrechnungseinheit</label><input type="text" id="vEinheit" value="${escAttr(v.einheit||'')}" placeholder="kWh / m³"></div>
     </div>
     <div class="f"><label for="vZaehler"><i class="ti ti-link"></i> Zugeordneter Zähler</label>
       <select id="vZaehler">${zOpts}</select>
@@ -6110,7 +6168,7 @@ async function modalVersorger(objektId, versorgerId){
         ${v.passwortEnc?`<button type="button" class="btn btn-sm" id="vPwShowBtn" title="Anzeigen/Ändern" onclick="vFormPwToggle('${versorgerId||''}')"><i class="ti ti-eye"></i></button>`:''}
       </div></div>
     </div>
-    <div class="f"><label>Notizen</label><textarea spellcheck="true" lang="de" id="vNotiz" style="min-height:50px">${v.notiz||''}</textarea></div>
+    <div class="f"><label>Notizen</label><textarea spellcheck="true" lang="de" id="vNotiz" style="min-height:50px">${esc(v.notiz||'')}</textarea></div>
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="saveVersorger('${objektId}','${versorgerId||''}')"><i class="ti ti-check"></i> Speichern</button>
       <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
@@ -6284,7 +6342,7 @@ async function zeigeVersorgerDetail(versorgerId){
       </div>`;
   }
   showModal(`
-    <div class="m-title"><i class="ti ${sp.icon}"></i> ${v.anbieter}</div>
+    <div class="m-title"><i class="ti ${sp.icon}"></i> ${esc(v.anbieter)}</div>
     <div style="font-size:12px;color:var(--ink-40);margin-bottom:10px">${sp.label} · ${obj?.name||''}</div>
     ${zeile('Vertragsnummer', v.vertragsnummer)}
     ${zeile('Zugeordneter Zähler', zaehlerTxt)}
@@ -6297,7 +6355,7 @@ async function zeigeVersorgerDetail(versorgerId){
     ${zeile('Website', v.website, {link:true})}
     ${zeile('Benutzer / Kundennr.', v.login, {mono:true})}
     ${pwZeile}
-    ${v.notiz?`<div style="margin-top:10px;font-size:13px;color:var(--ink-60)"><strong>Notiz:</strong><br>${v.notiz.replace(/\n/g,'<br>')}</div>`:''}
+    ${v.notiz?`<div style="margin-top:10px;font-size:13px;color:var(--ink-60)"><strong>Notiz:</strong><br>${esc(v.notiz).replace(/\n/g,'<br>')}</div>`:''}
     <div id="versArchivBox" style="margin-top:12px"></div>
     <div class="f-row" style="margin-top:14px">
       <button class="btn btn-copper btn-full" onclick="modalVersorger('${v.objektId}','${v.id}')"><i class="ti ti-pencil"></i> Bearbeiten</button>
@@ -6320,7 +6378,7 @@ async function renderVersorgerArchiv(versorgerId){
     if(h.passwortEnc){
       pwTxt=`<div style="font-size:11px;display:flex;align-items:center;gap:6px"><span style="color:var(--ink-40)">Passwort:</span>
         <span id="vapw_${esc(h.id)}" style="font-family:monospace">••••••</span>
-        <button class="btn btn-sm" style="padding:1px 6px" onclick="versorgerArchivPwToggle('${esc(h.id)}')"><i class="ti ti-eye"></i></button></div>`;
+        <button class="btn btn-sm" style="padding:1px 6px" onclick="versorgerArchivPwToggle('${escJs(h.id)}')"><i class="ti ti-eye"></i></button></div>`;
     }
     rows+=`<div style="background:var(--ink-05);border-radius:8px;padding:8px 10px;margin-bottom:6px">
       <div style="display:flex;justify-content:space-between;font-size:12px">
@@ -6471,7 +6529,7 @@ async function zeigeLagerorte(){
         <div style="display:flex;align-items:center;gap:10px">
           <div style="width:36px;height:36px;border-radius:8px;background:var(--ink-05);display:flex;align-items:center;justify-content:center;color:var(--copper);flex-shrink:0"><i class="ti ti-box"></i></div>
           <div style="flex:1;min-width:0">
-            <div style="font-weight:600;font-size:13px">${o.bezeichnung}${o.nummer?` <span style="font-weight:400;color:var(--ink-40);font-size:11px">· ${o.nummer}</span>`:''}</div>
+            <div style="font-weight:600;font-size:13px">${esc(o.bezeichnung)}${o.nummer?` <span style="font-weight:400;color:var(--ink-40);font-size:11px">· ${esc(o.nummer)}</span>`:''}</div>
             ${o.pfad?`<div style="font-size:11px;color:var(--ink-40)">${o.pfad}</div>`:''}
           </div>
           <div style="display:flex;gap:4px;flex-shrink:0">
@@ -6497,7 +6555,7 @@ async function modalLagerort(ortId){
     <div class="f"><label for="loStandort">Standort *</label>
       <select id="loStandort">${standorte.map(s=>`<option value="${s.id}" ${o.standort===s.id?'selected':''}>${s.label}</option>`).join('')}</select></div>
     <div class="f"><label for="loBez">Bezeichnung * (kurz, fürs Etikett)</label>
-      <input type="text" id="loBez" value="${(o.bezeichnung||'').replace(/"/g,'&quot;')}" placeholder="z. B. Regal 3 / Kiste 5 / Werkzeugkoffer"></div>
+      <input type="text" id="loBez" value="${escAttr(o.bezeichnung||'')}" placeholder="z. B. Regal 3 / Kiste 5 / Werkzeugkoffer"></div>
     <div class="f"><label for="loPfad">Beschreibung / Pfad (optional)</label>
       <input type="text" id="loPfad" value="${(o.pfad||'').replace(/"/g,'&quot;')}" placeholder="z. B. Linkes Lager › Regal 3 › Fach 4"></div>
     <div class="f-row" style="margin-top:12px">
@@ -7943,7 +8001,7 @@ async function mailRenderNachrichten(body){
       ${n.nachricht||n.text?`<div style="font-size:13px;color:var(--ink);margin-top:8px;white-space:pre-wrap;line-height:1.5">${esc(n.nachricht||n.text)}</div>`:''}
       <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
         ${n.email?`<a class="btn btn-sm btn-primary" href="mailto:${esc(n.email)}"><i class="ti ti-mail-forward"></i> Antworten</a>`:''}
-        <button class="btn btn-sm" onclick="mailNachrichtErledigt('${esc(n.id||'')}', this)"><i class="ti ti-check"></i> Erledigt</button>
+        <button class="btn btn-sm" onclick="mailNachrichtErledigt('${escJs(n.id||'')}', this)"><i class="ti ti-check"></i> Erledigt</button>
       </div>
     </div>`;
   }
@@ -8194,8 +8252,8 @@ async function mailRenderPapierkorb(body){
       <div style="font-size:12px;color:var(--ink-60);margin:4px 0">${esc((n.nachricht||n.text||'').slice(0,200))}</div>
       <div style="font-size:11px;color:var(--ink-40)">gelöscht: ${n.geloescht?new Date(n.geloescht).toLocaleDateString('de-DE'):'—'}</div>
       <div style="margin-top:8px;display:flex;gap:8px">
-        <button class="btn btn-sm" onclick="mailPapierkorbAktion('${esc(n.id||'')}','restore',this)"><i class="ti ti-arrow-back-up"></i> Wiederherstellen</button>
-        <button class="btn btn-sm btn-danger" onclick="mailPapierkorbAktion('${esc(n.id||'')}','delete',this)"><i class="ti ti-trash-x"></i> Endgültig löschen</button>
+        <button class="btn btn-sm" onclick="mailPapierkorbAktion('${escJs(n.id||'')}','restore',this)"><i class="ti ti-arrow-back-up"></i> Wiederherstellen</button>
+        <button class="btn btn-sm btn-danger" onclick="mailPapierkorbAktion('${escJs(n.id||'')}','delete',this)"><i class="ti ti-trash-x"></i> Endgültig löschen</button>
       </div>
     </div>`).join('');
 }
@@ -8454,9 +8512,9 @@ async function portalMeldungenLaden(alle){
       ${fotos?`<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px">${fotos}</div>
         <div style="font-size:11px;color:var(--ink-40);margin-top:4px">Bildlinks sind 15 Minuten gültig – danach Liste neu laden.</div>`:''}
       <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
-        ${e.status!=='in_arbeit'?`<button class="btn btn-sm" onclick="portalMeldungStatus('${esc(e.id)}','in_arbeit')"><i class="ti ti-progress"></i> In Arbeit</button>`:''}
-        ${e.status!=='erledigt'?`<button class="btn btn-sm btn-primary" onclick="portalMeldungStatus('${esc(e.id)}','erledigt')"><i class="ti ti-check"></i> Erledigt</button>`:''}
-        <button class="btn btn-sm" onclick="portalMeldungAlsMangel('${esc(e.id)}')"><i class="ti ti-tool"></i> Als Mangel anlegen</button>
+        ${e.status!=='in_arbeit'?`<button class="btn btn-sm" onclick="portalMeldungStatus('${escJs(e.id)}','in_arbeit')"><i class="ti ti-progress"></i> In Arbeit</button>`:''}
+        ${e.status!=='erledigt'?`<button class="btn btn-sm btn-primary" onclick="portalMeldungStatus('${escJs(e.id)}','erledigt')"><i class="ti ti-check"></i> Erledigt</button>`:''}
+        <button class="btn btn-sm" onclick="portalMeldungAlsMangel('${escJs(e.id)}')"><i class="ti ti-tool"></i> Als Mangel anlegen</button>
       </div>
     </div>`;
     window._pmInbox=window._pmInbox||{};
@@ -8615,9 +8673,9 @@ async function druckeLagerortEtikett(ortId){
   const nummer=o.nummer||('ORT-'+(o.qrId||''));
   showModal(`
     <div class="m-title"><i class="ti ti-qrcode"></i> Etikett ${nummer}</div>
-    <p style="font-size:13px;color:var(--ink-60);margin-bottom:12px">PDF (30×50 mm) für „${o.bezeichnung}".</p>
-    <button class="btn btn-copper btn-full" style="margin-bottom:8px" onclick="closeModal();etikettPdfSpeichern('LAGERORT:${o.qrId}','${nummer}','${(o.bezeichnung||'').replace(/'/g,'')}','${(o.pfad||'').replace(/'/g,'')}','${nummer} · ${getLagerStandort(o.standort).label}')"><i class="ti ti-download"></i> Speichern (Download)</button>
-    <button class="btn btn-full" style="margin-bottom:8px" onclick="closeModal();etikettPdfTeilen('LAGERORT:${o.qrId}','${nummer}','${(o.bezeichnung||'').replace(/'/g,'')}','${(o.pfad||'').replace(/'/g,'')}','${nummer} · ${getLagerStandort(o.standort).label}')"><i class="ti ti-share"></i> Teilen / an Drucker</button>
+    <p style="font-size:13px;color:var(--ink-60);margin-bottom:12px">PDF (30×50 mm) für „${esc(o.bezeichnung)}".</p>
+    <button class="btn btn-copper btn-full" style="margin-bottom:8px" onclick="closeModal();etikettPdfSpeichern('LAGERORT:${escJs(o.qrId)}','${escJs(nummer)}','${escJs(o.bezeichnung||'')}','${escJs(o.pfad||'')}','${escJs(nummer+' · '+getLagerStandort(o.standort).label)}')"><i class="ti ti-download"></i> Speichern (Download)</button>
+    <button class="btn btn-full" style="margin-bottom:8px" onclick="closeModal();etikettPdfTeilen('LAGERORT:${escJs(o.qrId)}','${escJs(nummer)}','${escJs(o.bezeichnung||'')}','${escJs(o.pfad||'')}','${escJs(nummer+' · '+getLagerStandort(o.standort).label)}')"><i class="ti ti-share"></i> Teilen / an Drucker</button>
     <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>`);
 }
 
@@ -8629,9 +8687,9 @@ async function druckeArtikelEtikett(artikelId){
   const nummer = a.inventarnummer || ('Artikel-'+a.id.slice(-4));
   showModal(`
     <div class="m-title"><i class="ti ti-qrcode"></i> Etikett ${nummer}</div>
-    <p style="font-size:13px;color:var(--ink-60);margin-bottom:12px">PDF (30×50 mm) für „${a.bezeichnung}".</p>
-    <button class="btn btn-copper btn-full" style="margin-bottom:8px" onclick="closeModal();etikettPdfSpeichern('${code.replace(/'/g,'')}','${nummer}','${(a.bezeichnung||'').replace(/'/g,'')}','${nummer}','${getLagerStandort(a.standort).label}')"><i class="ti ti-download"></i> Speichern (Download)</button>
-    <button class="btn btn-full" style="margin-bottom:8px" onclick="closeModal();etikettPdfTeilen('${code.replace(/'/g,'')}','${nummer}','${(a.bezeichnung||'').replace(/'/g,'')}','${nummer}','${getLagerStandort(a.standort).label}')"><i class="ti ti-share"></i> Teilen / an Drucker</button>
+    <p style="font-size:13px;color:var(--ink-60);margin-bottom:12px">PDF (30×50 mm) für „${esc(a.bezeichnung)}".</p>
+    <button class="btn btn-copper btn-full" style="margin-bottom:8px" onclick="closeModal();etikettPdfSpeichern('${escJs(code)}','${escJs(nummer)}','${escJs(a.bezeichnung||'')}','${escJs(nummer)}','${escJs(getLagerStandort(a.standort).label)}')"><i class="ti ti-download"></i> Speichern (Download)</button>
+    <button class="btn btn-full" style="margin-bottom:8px" onclick="closeModal();etikettPdfTeilen('${escJs(code)}','${escJs(nummer)}','${escJs(a.bezeichnung||'')}','${escJs(nummer)}','${escJs(getLagerStandort(a.standort).label)}')"><i class="ti ti-share"></i> Teilen / an Drucker</button>
     <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>`);
 }
 
@@ -9232,7 +9290,7 @@ async function modalTaetigkeitStart(){
   showModal(`
     <div class="m-title"><i class="ti ti-player-play"></i> Tätigkeit starten</div>
     <div class="f"><label for="tsKat">Tätigkeit *</label>
-      <select id="tsKat" onchange="tsKatWechsel()">${kats.map(k=>`<option value="${k.id}" data-mangel="${k.mangel?'1':'0'}" data-allg="${k.allgemein?'1':'0'}">${k.name}</option>`).join('')}</select></div>
+      <select id="tsKat" onchange="tsKatWechsel()">${kats.map(k=>`<option value="${k.id}" data-mangel="${k.mangel?'1':'0'}" data-allg="${k.allgemein?'1':'0'}">${esc(k.name)}</option>`).join('')}</select></div>
 
     ${istAdmin?`<div class="f"><label>Bezug</label>
       <div style="display:flex;gap:6px">
@@ -9241,10 +9299,10 @@ async function modalTaetigkeitStart(){
       </div></div>`:''}
 
     <div class="f" id="tsObjWrap"><label>Objekt</label>
-      <select id="tsObj" onchange="tsObjWechsel()">${objekte.map(o=>`<option value="${o.id}">${o.name}</option>`).join('')}</select></div>
+      <select id="tsObj" onchange="tsObjWechsel()">${objekte.map(o=>`<option value="${o.id}">${esc(o.name)}</option>`).join('')}</select></div>
 
     <div class="f" id="tsStandortWrap" style="display:none"><label for="tsStandort">Standort</label>
-      <select id="tsStandort">${VERWALTUNG_STANDORTE.map(s=>`<option value="${s.id}">${s.name}</option>`).join('')}</select></div>
+      <select id="tsStandort">${VERWALTUNG_STANDORTE.map(s=>`<option value="${s.id}">${esc(s.name)}</option>`).join('')}</select></div>
 
     <div id="tsMangelWrap" style="display:none">
       <div class="f"><label for="tsMangel">Mangelbezug (optional)</label>
@@ -9343,14 +9401,14 @@ async function modalSegmentBearbeiten(sId, segId){
   showModal(`
     <div class="m-title"><i class="ti ti-pencil"></i> Tätigkeit bearbeiten</div>
     <div class="f"><label for="seKat">Tätigkeit</label>
-      <select id="seKat">${kats.map(k=>`<option value="${k.id}" ${k.id===seg.katId?'selected':''}>${k.name}</option>`).join('')}</select></div>
+      <select id="seKat">${kats.map(k=>`<option value="${k.id}" ${k.id===seg.katId?'selected':''}>${esc(k.name)}</option>`).join('')}</select></div>
     <div class="f"><label for="seObj">Objekt</label>
-      <select id="seObj"><option value="">– kein Objekt –</option>${objekte.map(o=>`<option value="${o.id}" ${o.id===seg.objId?'selected':''}>${o.name}</option>`).join('')}</select></div>
+      <select id="seObj"><option value="">– kein Objekt –</option>${objekte.map(o=>`<option value="${o.id}" ${o.id===seg.objId?'selected':''}>${esc(o.name)}</option>`).join('')}</select></div>
     <div class="f-row">
       <div class="f"><label for="seStart">Beginn</label><input type="time" id="seStart" value="${fmtUhr(seg.start)}"></div>
       <div class="f"><label for="seEnde">Ende</label><input type="time" id="seEnde" value="${seg.ende?fmtUhr(seg.ende):''}"></div>
     </div>
-    <div class="f"><label for="seNotiz">Notiz</label><input type="text" id="seNotiz" value="${(seg.notiz||'').replace(/"/g,'&quot;')}"></div>
+    <div class="f"><label for="seNotiz">Notiz</label><input type="text" id="seNotiz" value="${escAttr(seg.notiz||'')}"></div>
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="saveSegment('${sId}','${segId}')"><i class="ti ti-check"></i> Speichern</button>
       <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
@@ -9788,7 +9846,7 @@ async function modalTaetigkeitenVerwalten(){
     <div class="card" style="margin-bottom:6px;padding:8px 10px">
       <div style="display:flex;align-items:center;gap:8px">
         <div style="flex:1;min-width:0">
-          <div style="font-weight:600;font-size:13px;${k.sichtbar===false?'opacity:0.5':''}">${k.name}${k.sichtbar===false?' (ausgeblendet)':''}</div>
+          <div style="font-weight:600;font-size:13px;${k.sichtbar===false?'opacity:0.5':''}">${esc(k.name)}${k.sichtbar===false?' (ausgeblendet)':''}</div>
           <div style="font-size:11px;color:var(--ink-40)">${umlageLabel(k.umlage)}${k.mangel?' · mangelbezogen':''}</div>
         </div>
         <button class="btn btn-sm" onclick="modalTaetigkeitKatEdit('${k.id}')"><i class="ti ti-pencil"></i></button>
@@ -9906,7 +9964,7 @@ async function modalTaetigkeitKatEdit(katId){
   const isEdit=!!katId;
   showModal(`
     <div class="m-title"><i class="ti ti-clock-cog"></i> ${isEdit?'Tätigkeit bearbeiten':'Neue Tätigkeit'}</div>
-    <div class="f"><label for="tkName">Name *</label><input type="text" id="tkName" value="${(k.name||'').replace(/"/g,'&quot;')}" placeholder="z. B. Laubentfernung"></div>
+    <div class="f"><label for="tkName">Name *</label><input type="text" id="tkName" value="${escAttr((k.name||''))}" placeholder="z. B. Laubentfernung"></div>
     <div class="f"><label for="tkUmlage">Umlagefähigkeit</label>
       <select id="tkUmlage">
         <option value="ja" ${k.umlage==='ja'?'selected':''}>umlagefähig</option>
@@ -9967,9 +10025,9 @@ async function modalTaetigkeitQR(){
   showModal(`
     <div class="m-title"><i class="ti ti-qrcode"></i> Tätigkeits-QR</div>
     <div class="f"><label>Tätigkeit *</label>
-      <select id="tqKat">${kats.map(k=>`<option value="${k.id}">${k.name}</option>`).join('')}</select></div>
+      <select id="tqKat">${kats.map(k=>`<option value="${k.id}">${esc(k.name)}</option>`).join('')}</select></div>
     <div class="f"><label for="tqObj">Objekt *</label>
-      <select id="tqObj">${objekte.map(o=>`<option value="${o.id}">${o.name}</option>`).join('')}</select></div>
+      <select id="tqObj">${objekte.map(o=>`<option value="${o.id}">${esc(o.name)}</option>`).join('')}</select></div>
     <div style="font-size:11px;color:var(--ink-40);margin-bottom:10px">
       Der QR kodiert Tätigkeit und Objekt. Beim Scannen startet die Tätigkeit am gewählten Objekt.
     </div>
@@ -11430,7 +11488,7 @@ async function zeigeLagerKategorie(katId){
         <div style="display:flex;align-items:center;gap:10px">
           ${a.foto?`<img src="${a.foto}" style="width:42px;height:42px;border-radius:8px;object-fit:cover;flex-shrink:0" alt="Foto">`:`<div style="width:42px;height:42px;border-radius:8px;background:${kat.color}1a;display:flex;align-items:center;justify-content:center;color:${kat.color};flex-shrink:0"><i class="ti ${kat.icon}"></i></div>`}
           <div style="flex:1;min-width:0">
-            <div style="font-weight:600;font-size:13px">${a.bezeichnung||'(ohne Namen)'}</div>
+            <div style="font-weight:600;font-size:13px">${esc(a.bezeichnung||'(ohne Namen)')}</div>
             <div style="font-size:11px;color:var(--ink-40)">
               ${getLagerStandort(a.standort).label}${a.lagerort?' · '+a.lagerort:''}${a.groesse?' · '+a.groesse:''}
             </div>
@@ -11480,7 +11538,7 @@ async function renderLagerArtikelForm(a, artikelId){
 
   showModal(`
     <div class="m-title"><i class="ti ${kat.icon}"></i> ${isEdit?'Artikel bearbeiten':'Neuer Artikel'}</div>
-    <div class="f"><label for="laBez">Bezeichnung *</label><input type="text" id="laBez" value="${(a.bezeichnung||'').replace(/"/g,'&quot;')}" placeholder="z. B. Akkuschrauber Bosch"></div>
+    <div class="f"><label for="laBez">Bezeichnung *</label><input type="text" id="laBez" value="${escAttr(a.bezeichnung||'')}" placeholder="z. B. Akkuschrauber Bosch"></div>
     <div class="f-row">
       <div class="f"><label for="laKat">Kategorie</label>
         <select id="laKat" onchange="lagerKatWechsel('${artikelId||''}')">
@@ -11502,7 +11560,7 @@ async function renderLagerArtikelForm(a, artikelId){
       <div style="display:flex;gap:6px">
         <select id="laOrtSelect" style="flex:1">
           <option value="">– Lagerort wählen –</option>
-          ${alleOrte.map(o=>`<option value="${o.id}">${getLagerStandort(o.standort).label} · ${o.bezeichnung}</option>`).join('')}
+          ${alleOrte.map(o=>`<option value="${o.id}">${getLagerStandort(o.standort).label} · ${esc(o.bezeichnung)}</option>`).join('')}
         </select>
         <button type="button" class="btn" data-action-click="laOrtHinzufuegen" title="Hinzufügen"><i class="ti ti-plus"></i></button>
         <button type="button" class="btn btn-copper" data-action-click="scanLagerortQR" title="Lagerort-QR scannen"><i class="ti ti-qrcode"></i></button>
@@ -11573,7 +11631,7 @@ async function renderLagerArtikelForm(a, artikelId){
       </div>
       <div id="laFotoPreview" style="margin-top:8px">${a.foto?`<img src="${a.foto}" style="max-width:100%;border-radius:8px;border:1px solid var(--ink-10)" alt="Foto">`:''}</div>
     </div>
-    <div class="f"><label for="laNotiz">Notiz</label><textarea spellcheck="true" lang="de" id="laNotiz" style="min-height:50px">${a.notiz||''}</textarea></div>
+    <div class="f"><label for="laNotiz">Notiz</label><textarea spellcheck="true" lang="de" id="laNotiz" style="min-height:50px">${esc(a.notiz||'')}</textarea></div>
 
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="saveLagerArtikel('${artikelId||''}')"><i class="ti ti-check"></i> Speichern</button>
@@ -11736,7 +11794,7 @@ async function zeigeLagerArtikel(artikelId){
     orteTxt=a.lagerorte.map(id=>{const o=alleOrte.find(x=>x.id===id);return o?o.bezeichnung:null;}).filter(Boolean).join(', ');
   }
   showModal(`
-    <div class="m-title"><i class="ti ${kat.icon}"></i> ${a.bezeichnung}</div>
+    <div class="m-title"><i class="ti ${kat.icon}"></i> ${esc(a.bezeichnung)}</div>
     ${a.foto?`<img src="${a.foto}" style="width:100%;border-radius:10px;margin-bottom:10px;cursor:pointer" data-action-click="openFoto" data-arg="${a.id}" data-arg2="lager" alt="Foto">`:''}
     <div style="font-size:12px;color:var(--ink-40);margin-bottom:8px">${kat.label}${a.unterkategorie?' · '+a.unterkategorie:''}</div>
     ${warn?`<div style="background:#FDECEA;color:#C0392B;border-radius:8px;padding:8px 12px;margin-bottom:10px;font-size:13px"><i class="ti ti-alert-triangle"></i> Mindestbestand erreicht – nachbestellen${a.produktlink?' (Produktlink unten)':''}</div>`:''}
@@ -11811,7 +11869,7 @@ async function zeigeLagerNachbestellung(){
         <div style="display:flex;align-items:center;gap:10px">
           <div style="width:36px;height:36px;border-radius:8px;background:${kat.color}1a;display:flex;align-items:center;justify-content:center;color:${kat.color};flex-shrink:0"><i class="ti ${kat.icon}"></i></div>
           <div style="flex:1;min-width:0;cursor:pointer" onclick="zeigeLagerArtikel('${a.id}')">
-            <div style="font-weight:600;font-size:13px">${a.bezeichnung||'(ohne Namen)'}</div>
+            <div style="font-weight:600;font-size:13px">${esc(a.bezeichnung||'(ohne Namen)')}</div>
             <div style="font-size:11px;color:var(--ink-40)">
               Bestand <strong style="color:#C0392B">${a.bestand??0}</strong> / Min. ${a.mindestbestand??0}${a.lagerort?' · '+a.lagerort:''}
               ${bestelltVor?` · <span style="color:#2E7D52">bestellt am ${a.bestelltAm}</span>`:''}
@@ -11855,7 +11913,7 @@ async function lagerBestandSchnell(id){
   if(a.mengenstufe){
     // Mengenstufen-Artikel: Stufe wählen
     showModal(`
-      <div class="m-title"><i class="ti ti-package"></i> Menge – ${a.bezeichnung}</div>
+      <div class="m-title"><i class="ti ti-package"></i> Menge – ${esc(a.bezeichnung)}</div>
       <div class="f"><label for="lbsStufe">Aktuelle Menge</label>
         <select id="lbsStufe">
           <option value="viel" ${a.mengenstufe==='viel'?'selected':''}>viel</option>
@@ -11868,7 +11926,7 @@ async function lagerBestandSchnell(id){
       </div>`);
   } else {
     showModal(`
-      <div class="m-title"><i class="ti ti-package"></i> Bestand – ${a.bezeichnung}</div>
+      <div class="m-title"><i class="ti ti-package"></i> Bestand – ${esc(a.bezeichnung)}</div>
       <div class="f-row">
         <div class="f"><label for="lbsBestand">Neuer Bestand</label><input type="number" inputmode="decimal" id="lbsBestand" step="1" value="${a.bestand??0}"></div>
         <div class="f"><label for="lbsMindest">Mindestbestand</label><input type="number" inputmode="decimal" id="lbsMindest" step="1" value="${a.mindestbestand??''}"></div>
@@ -12071,7 +12129,7 @@ async function bcVerarbeite(wert){
       showModal(`<div class="m-title"><i class="ti ti-clock"></i> Tätigkeits-QR erkannt</div>
         <p style="font-size:13px;color:var(--ink-60);margin-bottom:6px">Dieser QR ist gültig:</p>
         <div style="background:var(--ink-05);border-radius:8px;padding:10px 12px;font-size:13px;margin-bottom:12px">
-          <strong>${kat?kat.name:katId}</strong><br>${zielName}
+          <strong>${esc(kat?kat.name:katId)}</strong><br>${zielName}
         </div>
         <p style="font-size:12px;color:var(--ink-40);margin-bottom:12px">Die Stempeluhr wird im nächsten Schritt aktiviert. Danach startet dieser Scan die Tätigkeit automatisch.</p>
         <button class="btn btn-full" data-action-click="closeModal">Schließen</button>`);
@@ -12090,7 +12148,7 @@ async function bcVerarbeite(wert){
       <div style="font-size:12px;color:var(--ink-40);margin-bottom:8px">Barcode ${wert}</div>
       ${treffer.map(a=>{const kat=getLagerKat(a.kategorie);return `<div class="card" style="margin-bottom:6px;cursor:pointer" onclick="closeModal();zeigeLagerArtikel('${a.id}')">
         <div style="display:flex;align-items:center;gap:10px"><i class="ti ${kat.icon}" style="color:${kat.color}"></i>
-        <div><div style="font-weight:600;font-size:13px">${a.bezeichnung}</div>
+        <div><div style="font-weight:600;font-size:13px">${esc(a.bezeichnung)}</div>
         <div style="font-size:11px;color:var(--ink-40)">${getLagerStandort(a.standort).label} · Bestand ${a.bestand??'–'}</div></div></div></div>`;}).join('')}
       <button class="btn btn-full" style="margin-top:8px" data-action-click="closeModal">Schließen</button>`);
   } else {
@@ -12146,7 +12204,7 @@ async function inventurLagerortWaehlen(){
     <div class="m-title"><i class="ti ti-box"></i> Lagerort wählen</div>
     <div style="max-height:55vh;overflow-y:auto">
       ${orte.map(o=>`<div class="card" style="margin-bottom:6px;cursor:pointer" onclick="inventurLosOrt('${o.id}')">
-        <div style="font-weight:600;font-size:13px">${o.bezeichnung}</div>
+        <div style="font-weight:600;font-size:13px">${esc(o.bezeichnung)}</div>
         <div style="font-size:11px;color:var(--ink-40)">${getLagerStandort(o.standort).label}${o.pfad?' · '+o.pfad:''}</div>
       </div>`).join('')}
     </div>
@@ -12200,7 +12258,7 @@ function renderInventurSchritt(){
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
       ${a.foto?`<img src="${a.foto}" style="width:48px;height:48px;border-radius:8px;object-fit:cover" alt="Foto">`:`<div style="width:48px;height:48px;border-radius:8px;background:${kat.color}1a;display:flex;align-items:center;justify-content:center;color:${kat.color}"><i class="ti ${kat.icon}"></i></div>`}
       <div style="flex:1">
-        <div style="font-weight:600;font-size:15px">${a.bezeichnung||'(ohne Namen)'}</div>
+        <div style="font-weight:600;font-size:15px">${esc(a.bezeichnung||'(ohne Namen)')}</div>
         <div style="font-size:12px;color:var(--ink-40)">${kat.label}${a.lagerort?' · '+a.lagerort:''}</div>
       </div>
     </div>
@@ -12297,7 +12355,7 @@ async function modalLagerEntnahme(artikelId, mangelId){
   const a=await idbGet('lager', artikelId); if(!a) return;
   const istStufe=!!a.mengenstufe;
   showModal(`
-    <div class="m-title"><i class="ti ti-package-export"></i> Entnehmen – ${a.bezeichnung}</div>
+    <div class="m-title"><i class="ti ti-package-export"></i> Entnehmen – ${esc(a.bezeichnung)}</div>
     <div style="background:var(--ink-05);border-radius:8px;padding:8px 12px;margin-bottom:10px;font-size:13px">
       Standort: <strong>${getLagerStandort(a.standort).label}</strong>${a.lagerort?' · '+a.lagerort:''}<br>
       Aktueller Bestand: <strong>${istStufe?mengenstufeLabel(a.mengenstufe):(a.bestand??0)}</strong>
@@ -12362,7 +12420,7 @@ async function modalLagerAnforderung(artikelId, mangelId){
   showModal(`
     <div class="m-title"><i class="ti ti-truck-delivery"></i> Material anfordern</div>
     <p style="font-size:13px;color:var(--ink-60);margin-bottom:10px">
-      „${a.bezeichnung}" liegt am Standort <strong>${getLagerStandort(a.standort).label}</strong>.
+      „${esc(a.bezeichnung)}" liegt am Standort <strong>${getLagerStandort(a.standort).label}</strong>.
       Die Anforderung wird für alle sichtbar, die Zugang zu diesem Standort haben – zum Mitbringen.
     </p>
     ${istStufe?'':`<div class="f"><label for="anfMenge">Benötigte Menge</label><input type="number" inputmode="decimal" id="anfMenge" step="1" min="1" value="1"></div>`}
@@ -12426,11 +12484,11 @@ async function materialFuerMangel(mangelId, store){
 function materialPickerRow(a, mangelId){
   const kat=getLagerKat(a.kategorie);
   const best=a.mengenstufe?mengenstufeLabel(a.mengenstufe):(a.bestand??'–');
-  return `<div class="card" style="margin-bottom:6px" data-name="${(a.bezeichnung||'').toLowerCase()}">
+  return `<div class="card" style="margin-bottom:6px" data-name="${escAttr((a.bezeichnung||'').toLowerCase())}">
     <div style="display:flex;align-items:center;gap:10px">
       <div style="width:34px;height:34px;border-radius:8px;background:${kat.color}1a;display:flex;align-items:center;justify-content:center;color:${kat.color};flex-shrink:0"><i class="ti ${kat.icon}"></i></div>
       <div style="flex:1;min-width:0">
-        <div style="font-weight:600;font-size:13px">${a.bezeichnung||'(ohne Namen)'}</div>
+        <div style="font-weight:600;font-size:13px">${esc(a.bezeichnung||'(ohne Namen)')}</div>
         <div style="font-size:11px;color:var(--ink-40)">${getLagerStandort(a.standort).label} · Bestand ${best}</div>
       </div>
       <div style="display:flex;gap:4px;flex-shrink:0">
@@ -12474,7 +12532,7 @@ async function zeigeLagerAnforderungen(){
       </div>
       <div style="font-size:12px;color:var(--ink-60)">
         Von Standort <strong>${x.standortLabel}</strong> mitbringen${x.ziel?` nach <strong>${x.ziel}</strong>`:''}.<br>
-        ${x.notiz?x.notiz+'<br>':''}
+        ${x.notiz?esc(x.notiz)+'<br>':''}
         <span style="color:var(--ink-40)">${x.ersteller} · ${x.erstellt}</span>
       </div>
       <div style="display:flex;gap:6px;margin-top:8px">
@@ -12528,7 +12586,7 @@ async function sucheLager(q){
     return `<div class="card" style="margin-top:6px;cursor:pointer" onclick="zeigeLagerArtikel('${a.id}')">
       <div style="display:flex;align-items:center;gap:10px">
         <i class="ti ${kat.icon}" style="color:${kat.color}"></i>
-        <div style="flex:1"><div style="font-weight:600;font-size:13px">${a.bezeichnung||'(ohne Namen)'}</div>
+        <div style="flex:1"><div style="font-weight:600;font-size:13px">${esc(a.bezeichnung||'(ohne Namen)')}</div>
           <div style="font-size:11px;color:var(--ink-40)">${kat.label} · ${getLagerStandort(a.standort).label} · Bestand: ${a.bestand??'–'}</div></div>
       </div></div>`;
   }).join('');
@@ -13994,7 +14052,7 @@ async function showMieter(id){
       <i class="ti ti-user-check"></i> Zukünftiger Mieter – aktiv ab ${m.einzug}. Rückt automatisch in die Übersicht auf, sobald der Mietbeginn erreicht ist.
     </div>`:''}
     ${m._vormieter?`<div style="background:var(--ink-05);border-radius:8px;padding:8px 12px;margin-top:8px;font-size:12px;color:var(--ink-60)">
-      <i class="ti ti-history"></i> Ehemaliger Mieter (ausgezogen${m.auszug?' am '+m.auszug:''}).${m.neueAdresse?' Neue Anschrift: '+m.neueAdresse:''}
+      <i class="ti ti-history"></i> Ehemaliger Mieter (ausgezogen${m.auszug?' am '+m.auszug:''}).${esc(m.neueAdresse?' Neue Anschrift: '+m.neueAdresse:'')}
     </div>`:''}
     <div class="det-grid">
 ${nurTg?'':`
@@ -14845,7 +14903,7 @@ function taskHTML(t) {
       ${done?'<i class="ti ti-check" style="font-size:12px"></i>':''}
     </div>
     <div class="t-body">
-      <div class="t-title ${done?'done':''}">${t.titel}</div>
+      <div class="t-title ${done?'done':''}">${esc(t.titel)}</div>
       <div class="t-meta">
         <span>${istAllgemein(t.objektId)?'<i class="ti ti-world" style="font-size:11px;color:var(--copper)"></i> Allgemein':(obj?.name||'')}</span>
         ${t.weNr?`<span>WE ${t.weNr}${mieterFuerWe(t.objektId,t.weNr)?' · '+esc(mieterFuerWe(t.objektId,t.weNr)):''}</span>`:''}
@@ -14854,7 +14912,7 @@ function taskHTML(t) {
         ${t.istIntervall?`<span title="Wiederkehrende Pflichttätigkeit"><i class="ti ti-repeat" style="font-size:11px;color:var(--copper)"></i></span>`:''}
         ${t.zugewiesenName?`<span title="Zugewiesen an"><i class="ti ti-user-check" style="font-size:10px;color:var(--copper)"></i> ${esc(t.zugewiesenName)}</span>`:''}
       </div>
-      ${t.beschreibung?`<div style="font-size:12px;color:var(--ink-40);margin-top:3px">${t.beschreibung.slice(0,60)}${t.beschreibung.length>60?'…':''}</div>`:''}
+      ${t.beschreibung?`<div style="font-size:12px;color:var(--ink-40);margin-top:3px">${esc(t.beschreibung.slice(0,60))}${t.beschreibung.length>60?'…':''}</div>`:''}
     </div>
     <div class="t-actions">
       <button class="btn btn-sm" onclick="event.stopPropagation();editAufgabe('${t.id}')"><i class="ti ti-pencil"></i></button>
@@ -14918,7 +14976,7 @@ function reparaturHTML(r){
         <span class="chip chip-${done?'ok':'warn'}" style="font-size:10px;padding:1px 6px">${done?'Erledigt':'Ausstehend'}</span>
       </div>
       ${details?`<div style="font-size:11px;color:var(--ink-40);margin-top:3px">${details}</div>`:''}
-      ${r.beschreibung?`<div style="font-size:12px;color:var(--ink-40);margin-top:2px;font-style:italic">${r.beschreibung}</div>`:''}
+      ${r.beschreibung?`<div style="font-size:12px;color:var(--ink-40);margin-top:2px;font-style:italic">${esc(r.beschreibung)}</div>`:''}
     </div>
     <div class="t-actions">
       ${r.rechnung?`<button class="btn btn-sm" onclick="${istFotoRef(r.rechnung)?`openFoto('${r.rechnung.odId}','odref')`:`openFoto('${r.rechnung}','Rechnung')`}"><i class="ti ti-file-invoice"></i></button>`:''}
@@ -15044,7 +15102,7 @@ async function renderIntervallConfig(){
       return `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--ink-10)">
         <label style="display:flex;align-items:center;gap:8px;flex:1;cursor:pointer;font-size:13px">
           <input type="checkbox" ${aktiv?'checked':''} onchange="toggleIntervall('${o.id}','${t.id}',this.checked)">
-          <span>${t.name} <span style="color:var(--ink-40);font-size:11px">(${t.hinweis})</span></span>
+          <span>${esc(t.name)} <span style="color:var(--ink-40);font-size:11px">(${esc(t.hinweis)})</span></span>
         </label>
         <span style="font-size:11px;color:var(--ink-40);white-space:nowrap">${aktiv?'fällig: '+naechst:''}</span>
       </div>`;
@@ -15702,7 +15760,7 @@ async function renderODArchivFuerWE(el, gruppe, weNr){
   const odAngemeldet = (typeof odTokens!=='undefined' && odTokens);
   let h=`<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px">
     <div style="font-weight:600;font-size:13px"><i class="ti ti-brand-onedrive"></i> OneDrive-Dateien (WE ${esc(String(weNr))})</div>
-    ${odAngemeldet?`<button class="btn btn-sm" onclick="odArchivAktualisieren('${esc(String(gruppe))}','${esc(String(weNr))}')"><i class="ti ti-refresh"></i></button>`:''}
+    ${odAngemeldet?`<button class="btn btn-sm" onclick="odArchivAktualisieren('${escJs(String(gruppe))}','${escJs(String(weNr))}')"><i class="ti ti-refresh"></i></button>`:''}
   </div>`;
   if(!odAngemeldet){
     h+='<div style="font-size:12px;color:var(--ink-40)">Nicht mit OneDrive verbunden. Verbindung unter „System → OneDrive".</div>';
@@ -17082,7 +17140,7 @@ async function modalNKA(objektId) {
   let kostenHTML = vorlage.kosten.map(k => {
     if (k.schluessel === 'einzeln') {
       // Heizung: je Mieter ein eigenes Feld
-      return `<div class="f-section-title" style="margin-top:10px"><i class="ti ti-flame"></i> ${k.name} – je Mieter</div>
+      return `<div class="f-section-title" style="margin-top:10px"><i class="ti ti-flame"></i> ${esc(k.name)} – je Mieter</div>
         ${mieter.map(m=>{
           const eISO = m.einzugISO || (m.einzug&&m.einzug.includes('.')?m.einzug.split('.').reverse().join('-'):m.einzug) || '';
           const aISO = m.auszugISO || (m.auszug&&m.auszug.includes('.')?m.auszug.split('.').reverse().join('-'):m.auszug) || '';
@@ -17466,7 +17524,7 @@ async function erstelleNKA(objektId, korrektur) {
     const sl=k.schluessel==='personen'?'Personen':k.schluessel==='wfl'?'Wohnfläche':
       k.schluessel==='we'||k.schluessel==='we_fest'?'WE':k.schluessel==='monate'?'Monate':
       k.schluessel==='personen_fest'?'Personen':k.schluessel==='etage'?'Etage':k.schluessel==='besonders'?'bes. Berechn.':'';
-    kostenZeilen+=`<tr><td style="padding:3px 8px;border:1px solid #dde;font-size:10px">${k.name}</td>
+    kostenZeilen+=`<tr><td style="padding:3px 8px;border:1px solid #dde;font-size:10px">${esc(k.name)}</td>
       <td style="padding:3px 8px;border:1px solid #dde;font-size:10px">${sl}</td>
       <td style="padding:3px 8px;border:1px solid #dde;font-size:10px;text-align:right;font-weight:600">${fmtEur(b)}</td></tr>`;
   });
@@ -17515,17 +17573,17 @@ async function erstelleNKA(objektId, korrektur) {
       <div style="display:flex;gap:40px;margin-top:6px">
         ${sigListe.map(sg=>`<div style="text-align:left">
           <img src="${sg.signatur}" style="max-height:62px;display:block;margin:2px auto -2px;position:relative;z-index:1" alt="Unterschrift">
-          <div style="border-top:1px solid #999;padding-top:2px;font-size:9px">${sg.name}</div>
+          <div style="border-top:1px solid #999;padding-top:2px;font-size:9px">${esc(sg.name)}</div>
         </div>`).join('')}
       </div>
-      <div style="margin-top:4px;font-size:9px;color:#666">${bk.name}</div>
+      <div style="margin-top:4px;font-size:9px;color:#666">${esc(bk.name)}</div>
     </div>`;
   } else if(sigListe.length===1){
     grussHTML=`<div class="gruss">Mit freundlichen Grüßen<br>
       <img src="${sigListe[0].signatur}" style="max-height:69px;display:block;margin:2px 0" alt="Unterschrift">
-      ${bk.name}</div>`;
+      ${esc(bk.name)}</div>`;
   } else {
-    grussHTML=`<div class="gruss">Mit freundlichen Grüßen<br><br>${bk.name}</div>`;
+    grussHTML=`<div class="gruss">Mit freundlichen Grüßen<br><br>${esc(bk.name)}</div>`;
   }
   let briefeHTML='';
 
@@ -17604,13 +17662,13 @@ async function erstelleNKA(objektId, korrektur) {
             <text x="160" y="165" font-family="Arial,Helvetica,sans-serif" font-size="12px" letter-spacing="1.4px" fill="#888780">HAUSVERWALTUNG</text>
           </svg>
           <div style="font-size:8px;color:#555;margin-top:4px;line-height:1.5">
-            ${bk.strasse} · ${bk.ort}<br>
+            ${esc(bk.strasse)} · ${esc(bk.ort)}<br>
             Tel: ${bk.tel}<br>
             ${bk.email||''}
           </div>
         </div>
         <div class="bk-right" style="order:1;text-align:left">
-          <div class="bk-absender">${bk.absender||bk.name} · ${bk.strasse} · ${bk.ort}</div>
+          <div class="bk-absender">${esc(bk.absender||bk.name)} · ${esc(bk.strasse)} · ${esc(bk.ort)}</div>
           <div class="bk-empf">
             <strong>${adressNachnamenVertrag(m)}</strong><br>
             ${obj?.name||''}<br>
@@ -18020,7 +18078,7 @@ async function modalNKALiegenschaft(lgId){
 
   // Heizung/Einzeln-Block (je Mieter) – analog Ruhrtalstr.
   const heizBlock = vorlage.kosten.filter(k=>k.schluessel==='einzeln').map(k=>`
-    <div class="f-section-title" style="margin-top:10px"><i class="ti ti-flame"></i> ${k.name} – je Mieter</div>
+    <div class="f-section-title" style="margin-top:10px"><i class="ti ti-flame"></i> ${esc(k.name)} – je Mieter</div>
     ${mieter.map(m=>{
       const eISO = m.einzugISO || (m.einzug&&m.einzug.includes('.')?m.einzug.split('.').reverse().join('-'):m.einzug) || '';
       const aISO = m.auszugISO || (m.auszug&&m.auszug.includes('.')?m.auszug.split('.').reverse().join('-'):m.auszug) || '';
@@ -18034,7 +18092,7 @@ async function modalNKALiegenschaft(lgId){
           <div class="f"><label for="nkaLg_aus_${m.id}">Auszug</label><input type="date" id="nkaLg_aus_${m.id}" value="${aISO}" onchange="nkaLgDatumChange()"></div>
         </div>
         <div class="f-row">
-          <div class="f"><label for="nkaLg_${k.id}_${m.id}">${k.name} (€)</label><input type="text" inputmode="decimal" id="nkaLg_${k.id}_${m.id}" placeholder="0,00"></div>
+          <div class="f"><label for="nkaLg_${k.id}_${m.id}">${esc(k.name)} (€)</label><input type="text" inputmode="decimal" id="nkaLg_${k.id}_${m.id}" placeholder="0,00"></div>
           <div class="f"><label for="nkaLg_vz_${m.id}">NK-Vorauszahlung (€/Mon.)</label><input type="text" inputmode="decimal" id="nkaLg_vz_${m.id}" value="${m.nk||''}"></div>
         </div>
         <div class="f-row">
@@ -18056,7 +18114,7 @@ async function modalNKALiegenschaft(lgId){
     } else if(k.schluessel==='wfl'){ hint='<div style="font-size:10px;color:var(--ink-40)">Verteilung nach Fläche (alle)</div>'; }
     else if(k.schluessel==='personen'){ hint='<div style="font-size:10px;color:var(--ink-40)">Verteilung nach Personen (alle)</div>'; }
     else if(k.schluessel==='etage'){ hint='<div style="font-size:10px;color:var(--ink-40)">Verteilung je Etage, getrennt nach Gebäude</div>'; }
-    return `<div class="f"><label for="nkaLg_${k.id}">${k.name} (€)</label>
+    return `<div class="f"><label for="nkaLg_${k.id}">${esc(k.name)} (€)</label>
       <input type="text" inputmode="decimal" id="nkaLg_${k.id}" placeholder="0,00">${hint}</div>`;
   }).join('');
 
@@ -18473,7 +18531,7 @@ async function erstelleNKALiegenschaft(lgId, korrektur){
     if(k.schluessel==='einzeln') return;
     const b=kostenMap[k.id]; if(!b) return;
     const sl=k.schluessel==='personen'?'Personen':k.schluessel==='etage'?'Etage':k.schluessel==='wfl_gruppe'?('Fläche '+(KREFELD_GRUPPEN[k.gruppe]?.label||'')):'Wohnfläche';
-    kostenZeilen+=`<tr><td style="padding:3px 8px;border:1px solid #dde;font-size:10px">${k.name}</td>
+    kostenZeilen+=`<tr><td style="padding:3px 8px;border:1px solid #dde;font-size:10px">${esc(k.name)}</td>
       <td style="padding:3px 8px;border:1px solid #dde;font-size:10px">${sl}</td>
       <td style="padding:3px 8px;border:1px solid #dde;font-size:10px;text-align:right;font-weight:600">${fmtEur(b)}</td></tr>`;
   });
@@ -18556,11 +18614,11 @@ async function erstelleNKALiegenschaft(lgId, korrektur){
     if(sigListe.length>=2){
       grussHTML=`<div class="gruss">Mit freundlichen Grüßen
         <div style="display:flex;gap:40px;margin-top:6px">
-          ${sigListe.map(sg=>`<div style="text-align:left"><img src="${sg.signatur}" style="max-height:62px;display:block;margin:2px auto -2px;position:relative;z-index:1" alt="Unterschrift"><div style="border-top:1px solid #999;padding-top:2px;font-size:9px">${sg.name}</div></div>`).join('')}
-        </div><div style="margin-top:4px;font-size:9px;color:#666">${bk.name}</div></div>`;
+          ${sigListe.map(sg=>`<div style="text-align:left"><img src="${sg.signatur}" style="max-height:62px;display:block;margin:2px auto -2px;position:relative;z-index:1" alt="Unterschrift"><div style="border-top:1px solid #999;padding-top:2px;font-size:9px">${esc(sg.name)}</div></div>`).join('')}
+        </div><div style="margin-top:4px;font-size:9px;color:#666">${esc(bk.name)}</div></div>`;
     } else if(sigListe.length===1){
-      grussHTML=`<div class="gruss">Mit freundlichen Grüßen<br><img src="${sigListe[0].signatur}" style="max-height:69px;display:block;margin:2px 0" alt="Unterschrift">${bk.name}</div>`;
-    } else { grussHTML=`<div class="gruss">Mit freundlichen Grüßen<br><br>${bk.name}</div>`; }
+      grussHTML=`<div class="gruss">Mit freundlichen Grüßen<br><img src="${sigListe[0].signatur}" style="max-height:69px;display:block;margin:2px 0" alt="Unterschrift">${esc(bk.name)}</div>`;
+    } else { grussHTML=`<div class="gruss">Mit freundlichen Grüßen<br><br>${esc(bk.name)}</div>`; }
 
     const korrBanner = korrektur ? `<div style="background:#FDECEA;border:1px solid #C0392B;color:#C0392B;padding:6px 10px;border-radius:4px;font-size:10px;margin-bottom:8px"><strong>Korrektur:</strong> ${esc(korrektur.text||'Diese Abrechnung ersetzt eine zuvor erstellte Fassung.')}</div>` : '';
 
@@ -18573,10 +18631,10 @@ async function erstelleNKALiegenschaft(lgId, korrektur){
             <line x1="130" y1="140" x2="850" y2="140" stroke="#185FA5" stroke-width="0.6" opacity="0.15"/>
             <text x="160" y="165" font-family="Arial,Helvetica,sans-serif" font-size="12px" letter-spacing="1.4px" fill="#888780">HAUSVERWALTUNG</text>
           </svg>
-          <div style="font-size:8px;color:#555;margin-top:4px;line-height:1.5">${bk.strasse} · ${bk.ort}<br>Tel: ${bk.tel}<br>${bk.email||''}</div>
+          <div style="font-size:8px;color:#555;margin-top:4px;line-height:1.5">${esc(bk.strasse)} · ${esc(bk.ort)}<br>Tel: ${bk.tel}<br>${esc(bk.email||'')}</div>
         </div>
         <div class="bk-right" style="order:1;text-align:left">
-          <div class="bk-absender">${bk.absender||bk.name} · ${bk.strasse} · ${bk.ort}</div>
+          <div class="bk-absender">${esc(bk.absender||bk.name)} · ${esc(bk.strasse)} · ${esc(bk.ort)}</div>
           <div class="bk-empf"><strong>${adressNachnamenVertrag(m)}</strong><br>${obj?.name||''}<br>${obj?.ort||''}</div>
           <div style="margin-top:8mm;font-size:10px;color:#555">${today}</div>
         </div>
@@ -18724,7 +18782,7 @@ h2{font-size:11px;font-weight:700;color:#1F4E79}
 @media print{body{padding:0;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
 </style></head><body>
 <div class="deckblatt pagebreak">
-  <div style="font-size:9px;color:#555;margin-bottom:10px">${bkDeck.name}${bkDeck.zusatz?' · '+bkDeck.zusatz:''} · ${bkDeck.strasse} · ${bkDeck.ort} · Tel: ${bkDeck.tel}</div>
+  <div style="font-size:9px;color:#555;margin-bottom:10px">${esc(bkDeck.name)}${bkDeck.zusatz?' · '+bkDeck.zusatz:''} · ${esc(bkDeck.strasse)} · ${esc(bkDeck.ort)} · Tel: ${bkDeck.tel}</div>
   <h1>Nebenkostenabrechnung ${jahr}${korrektur?' (Korrektur)':''}</h1>
   <div style="font-size:11px;color:#444;margin-bottom:10px">${vorlage.label}<br>Abrechnungszeitraum: ${fmtD(von)} – ${fmtD(bis)}<br>Erstellt am: ${today} · ${CU?.name||''}</div>
   ${korrektur?`<div style="background:#FDECEA;border:1px solid #C0392B;color:#C0392B;padding:6px 10px;border-radius:4px;font-size:10px;margin-bottom:10px"><strong>Korrektur:</strong> ${esc(korrektur.text||'')}</div>`:''}
@@ -18829,7 +18887,7 @@ async function renderProtokollArchiv() {
 
   <div class="filter-row" style="margin-bottom:12px">
     <button class="filter-chip ${filterObjId==='all'?'active':''}" onclick="setArchivFilter('objId','all',this)">Alle Objekte</button>
-    ${myObj.map(o=>`<button class="filter-chip ${filterObjId===o.id?'active':''}" onclick="setArchivFilter('objId','${o.id}',this)">${o.name}</button>`).join('')}
+    ${myObj.map(o=>`<button class="filter-chip ${filterObjId===o.id?'active':''}" onclick="setArchivFilter('objId','${o.id}',this)">${esc(o.name)}</button>`).join('')}
   </div>`;
 
   if (!gefiltert.length) {
@@ -18874,7 +18932,7 @@ async function renderProtokollArchiv() {
             ${p.mieterName||'–'} · WE ${p.weNr||'?'}
           </div>
           <div style="font-size:12px;color:var(--ink-40);margin-top:2px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-            <span>${obj?.name||p.objektName||'–'}</span>
+            <span>${esc(obj?.name||p.objektName||'–')}</span>
             <span>${fmtDate(p.datum)}</span>
             <span class="chip ${artChip}" style="font-size:10px;padding:1px 6px">${p.art||'Übergabe'}</span>
             ${mangelAnz ? `<span class="chip chip-err" style="font-size:10px;padding:1px 6px"><i class="ti ti-alert-triangle" style="font-size:9px"></i> ${mangelAnz} Mängel</span>` : ''}
@@ -18940,7 +18998,7 @@ function renderProtokollPapierkorb(el, eintraege){
           ${p.mieterName||'–'} · WE ${p.weNr||'?'}
         </div>
         <div style="font-size:12px;color:var(--ink-40);margin-top:2px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-          <span>${obj?.name||p.objektName||'–'}</span>
+          <span>${esc(obj?.name||p.objektName||'–')}</span>
           <span>${fmtDate(p.datum)}</span>
           <span class="chip chip-gray" style="font-size:10px;padding:1px 6px">${p.art||'Übergabe'}</span>
           <span class="chip ${restTage<=3?'chip-err':'chip-warn'}" style="font-size:10px;padding:1px 6px">noch ${restTage} Tag${restTage!==1?'e':''}</span>
@@ -19426,7 +19484,7 @@ function getBriefkopfHTML(objektId) {
   return `<div style="font-size:10px;color:#555;margin-bottom:8px;padding-bottom:6px;border-bottom:2px solid #1F4E79">
     <strong style="font-size:11px;color:#1F4E79">${esc(b.name)}</strong>${b.zusatz?`<br>${esc(b.zusatz)}`:''}
     <br>${esc(b.strasse)} · ${esc(b.ort)}
-    <br>Tel: ${b.tel}${b.email?` · ${b.email}`:''}
+    <br>Tel: ${b.tel}${b.email?` · ${esc(b.email)}`:''}
   </div>`;
 }
 
@@ -21198,7 +21256,7 @@ async function modalMietbescheinigung(mieterId){
         <input type="number" inputmode="decimal" id="mbBaujahr" value="${w.baujahr||gs.baujahr||''}" placeholder="z. B. 1965"></div>
     </div>
     <div class="f"><label>Lage im Gebäude</label>
-      <div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px">${WOGG_LAGE.map(l=>radio('mbLage',l,w.lage)).join('')}</div>
+      <div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px">${WOGG_LAGE.map(l=>radio('mbLage',l,w.lage)).join('')}/* xss-ok: erzeugt gewollt Markup; WOGG_LAGE ist eine Konstante, radio() maskiert selbst */</div>
       <div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px">${WOGG_LAGE2.map(l=>radio('mbLage2',l,w.lage2)).join('')}</div>
     </div>
     <div class="f-row">
@@ -22256,8 +22314,8 @@ table tr{page-break-inside:avoid}
 </style></head><body>
 
 <div class="bk">
-  <strong>${amtlicherName(bk.name)}</strong>${bk.zusatz?' · '+bk.zusatz:''}<br>
-  ${bk.strasse} · ${bk.ort}<br>
+  <strong>${esc(amtlicherName(bk.name))}</strong>${bk.zusatz?' · '+bk.zusatz:''}<br>
+  ${esc(bk.strasse)} · ${esc(bk.ort)}<br>
   Tel: ${bk.tel}${bk.email?' · '+bk.email:''}
 </div>
 
@@ -22265,7 +22323,7 @@ table tr{page-break-inside:avoid}
 <span style="font-size:10px;font-weight:400">gemäß § 19 des Bundesmeldegesetzes (BMG)</span></h1>
 
 <p style="font-size:11px;margin-bottom:10px">
-  Ich, <strong>${amtlicherName(bk.name)}</strong>,<br>
+  Ich, <strong>${esc(amtlicherName(bk.name))}</strong>,<br>
   bescheinige hiermit einen <strong>Einzug in</strong> folgende Wohnung:
 </p>
 
@@ -22285,9 +22343,9 @@ table tr{page-break-inside:avoid}
 
 <h2>Name und Anschrift des Wohnungsgebers</h2>
 <div class="zeile"><label>Name des Wohnungsgebers:</label>
-  <div class="val">${amtlicherName(bk.name)}</div></div>
+  <div class="val">${esc(amtlicherName(bk.name))}</div></div>
 <div class="zeile"><label>Straße, Hausnummer, PLZ und Ort:</label>
-  <div class="val">${bk.strasse}, ${bk.ort}</div></div>
+  <div class="val">${esc(bk.strasse)}, ${esc(bk.ort)}</div></div>
 
 <div class="checks">
   <div class="check-row"><div class="box" style="background:#333"></div>
@@ -22657,10 +22715,26 @@ function getAnredeVertragNachname(m){
     if(p.anrede === 'Divers') return 'Guten Tag, ' + nachnameAus(p.name);
     return (p.anrede === 'Frau' ? 'Sehr geehrte ' : 'Sehr geehrter ') + pfxName(p);
   }
+  /* v332: Bei mehreren Vertragspartnern wird die Dame zuerst genannt
+     (Hoeflichkeitsform im Geschaeftsbrief). Bis v331 folgte die Anrede der
+     Reihenfolge der Personenliste, woraus "Sehr geehrter Herr Presch und Frau
+     Presch" wurde. Sortiert wird ausschliesslich die Anrede - Anschriftfeld,
+     Rueckantwort und SEPA-Mandat behalten die Vertragsreihenfolge, weil dort
+     die Reihenfolge der Vertragsparteien massgeblich ist.
+     Stabil sortiert: unter den Frauen und unter den uebrigen bleibt die
+     Vertragsreihenfolge erhalten. */
+  const damenZuerst = vp
+    .map((p, i) => ({ p, i }))
+    .sort((a, b) => {
+      const fa = a.p.anrede === 'Frau' ? 0 : 1;
+      const fb = b.p.anrede === 'Frau' ? 0 : 1;
+      return fa !== fb ? fa - fb : a.i - b.i;
+    })
+    .map(x => x.p);
   // mehrere Vertragspartner: korrektes Genus für die erste Person
-  const erste = vp[0];
+  const erste = damenZuerst[0];
   const kopf = (erste.anrede === 'Frau' ? 'Sehr geehrte ' : 'Sehr geehrter ') + pfxName(erste);
-  const rest = vp.slice(1).map(pfxName);
+  const rest = damenZuerst.slice(1).map(pfxName);
   if(rest.length === 1) return kopf + ' und ' + rest[0];
   return kopf + ', ' + rest.slice(0,-1).join(', ') + ' und ' + rest[rest.length-1];
 }
@@ -23501,7 +23575,7 @@ async function ewSeiteFuer(m, opt){
     </tr></table>
 
     <div class="ew-umbruch"></div>
-    <div class="ew-fortsetzung">${adressPostalischEW(m)} · ${esc(obj.name||'')} · Wohnung ${esc(String(m.weNr||''))} · Seite 2</div>
+    <div class="ew-fortsetzung">${adressPostalischEW(m).replace(/<br>/g, ' · ')} · ${esc(obj.name||'')} · Wohnung ${esc(String(m.weNr||''))} · Seite 2</div>
 
     <!-- v330: Diese Fussnote stand bis v329 am Fuss von Seite 1. Dort war
          keine Reserve mehr: jede zusaetzliche Empfaengerzeile schob den
@@ -23722,8 +23796,15 @@ function ewStil(){
        den Umbruch faengt dann break-inside:avoid am Portal-Kasten ab.
        Die DIN-5008-Geometrie des Fensterausschnitts bleibt unberuehrt: sie
        ergibt sich aus @page-margin 14 mm + .ew-kopf 31 mm oberhalb. */
-    .ew-anschrift{font-size:10.5pt;line-height:1.4;min-height:22mm;width:85mm}
-    .ew-datum{text-align:right;font-size:10pt;color:#333;margin:3mm 0 5mm}
+    .ew-anschrift{font-size:10.5pt;line-height:1.4;min-height:18mm;width:85mm}
+    /* v331: Der Abstand zum Anschriftfeld haengt jetzt am Datum, nicht an der
+       Feldhoehe. Grund: der Geraetedruck von v330 zeigt, dass min-height am
+       Anschriftfeld dort nicht wirkt - gemessen standen zwischen Ortszeile und
+       Datum nur 1,3 mm statt der erwarteten 6,4 mm, das Datum klebte an der
+       Anschrift. Der Aussenabstand wirkt dagegen zuverlaessig (die 3 mm aus
+       v330 waren im Druck nachweisbar). 8 mm ergeben denselben Textabstand wie
+       in der geprueften Fassung v329. */
+    .ew-datum{text-align:right;font-size:10pt;color:#333;margin:8mm 0 5mm}
     .ew-betreff{font-weight:700;font-size:11.5pt;color:#0C447C;margin-bottom:3mm}
     .ew-anrede{margin-bottom:2.5mm}
     p{margin:0 0 2mm;text-align:left}
@@ -23849,9 +23930,14 @@ function ewSepaZahlerName(m){
 function ewNameTeile(p){
   const roh = String((p||{}).name||'').trim();
   const t = roh.split(',');
-  return (t.length===2 && t[0].trim() && t[1].trim())
-    ? {nach: t[0].trim(), vor: t[1].trim()}
-    : {nach: roh, vor: ''};
+  if(t.length===2 && t[0].trim() && t[1].trim()) return {nach: t[0].trim(), vor: t[1].trim()};
+  /* v331: Ohne Komma galt bisher der ganze Name als Nachname - in der
+     Rueckantwort stand dann "Brigitte Kuhs" im Feld Nachname und das Feld
+     Vorname blieb leer (Geraetedruck v330, WE 6/8/9). Ohne Komma ist das
+     letzte Wort der Nachname, alles davor der Vorname. */
+  const w = roh.split(/\s+/).filter(Boolean);
+  if(w.length >= 2) return {nach: w[w.length-1], vor: w.slice(0, -1).join(' ')};
+  return {nach: roh, vor: ''};
 }
 
 /* v319: Die Schriften DM Sans und DM Mono sind als @font-face in der
@@ -24036,7 +24122,7 @@ body{font-family:Arial,sans-serif;background:#fff;padding:20px;max-width:190mm;m
   </div>
   <div class="aushang-body">${text}</div>
   <div class="aushang-foot">
-    <div class="foot-abs"><strong>${abs.name}</strong>${abs.sub?'<br>'+abs.sub:''}</div>
+    <div class="foot-abs"><strong>${esc(abs.name)}</strong>${abs.sub?'<br>'+abs.sub:''}</div>
     <div class="foot-date">${fmtD(datum)}</div>
   </div>
 </div>
@@ -24058,7 +24144,7 @@ async function modalAddReparatur(mieterId, objektId) {
     <div class="m-title"><i class="ti ti-tools"></i> Kleinreparatur erfassen</div>
     <div class="f"><label for="repObjId">Objekt</label>
       <select id="repObjId">
-        ${myObj.map(o=>`<option value="${o.id}" ${o.id===objektId?'selected':''}>${o.name}</option>`).join('')}
+        ${myObj.map(o=>`<option value="${o.id}" ${o.id===objektId?'selected':''}>${esc(o.name)}</option>`).join('')}
       </select>
     </div>
     <div class="f"><label for="repMietId">Mieter (optional)</label>
@@ -24279,9 +24365,9 @@ async function modalGrundriss(objektId) {
     <div class="m-title"><i class="ti ti-map"></i> Grundrisse – ${getObj(objektId)?.name||''}</div>
     ${grundrisse.length
       ? grundrisse.map(g=>`<div style="margin-bottom:10px">
-          <div style="font-size:13px;font-weight:600;margin-bottom:6px">${g.name}</div>
+          <div style="font-size:13px;font-weight:600;margin-bottom:6px">${esc(g.name)}</div>
           ${g.mimeType?.startsWith('image/')?`<img src="${fotoThumbQuelle(g.data||g.ref)}" style="width:100%;border-radius:8px;cursor:pointer" data-action-click="openFoto" data-arg="${g.id}" data-arg2="dok" alt="Foto">`
-            :`<button class="btn btn-sm" onclick="downloadDok('${g.id}')"><i class="ti ti-download"></i> ${g.name} herunterladen</button>`}
+            :`<button class="btn btn-sm" onclick="downloadDok('${g.id}')"><i class="ti ti-download"></i> ${esc(g.name)} herunterladen</button>`}
           <div style="display:flex;gap:6px;margin-top:6px">
             <button class="btn btn-sm btn-danger" onclick="deleteDok('${g.id}');closeModal()"><i class="ti ti-trash"></i></button>
           </div>
@@ -24955,7 +25041,7 @@ async function showAufgabeDetail(id) {
   const done = a.status === 'erledigt';
   const pc = a.prio==='hoch'?'var(--red)':a.prio==='mittel'?'var(--amber)':'var(--green)';
   showModal(`
-    <div class="m-title"><i class="ti ti-checklist" style="color:${pc}"></i> ${a.titel}</div>
+    <div class="m-title"><i class="ti ti-checklist" style="color:${pc}"></i> ${esc(a.titel)}</div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
       <span class="chip chip-${a.prio==='hoch'?'err':a.prio==='mittel'?'warn':'ok'}">${a.prio||'–'}</span>
       <span class="chip chip-${done?'ok':'warn'}">${done?'Erledigt':'Offen'}</span>
@@ -24966,7 +25052,7 @@ async function showAufgabeDetail(id) {
       ${a.ersteller?`<span><i class="ti ti-user" style="font-size:12px"></i> ${a.ersteller} · ${a.erstellt||''}</span>`:''}
       ${a.erledigtAm?`<span><i class="ti ti-check" style="font-size:12px"></i> Erledigt am: ${a.erledigtAm}</span>`:''}
     </div>
-    ${a.beschreibung?`<div style="background:var(--ink-05);border-radius:8px;padding:10px;font-size:13px;line-height:1.6;margin-bottom:12px">${a.beschreibung}</div>`:''}
+    ${a.beschreibung?`<div style="background:var(--ink-05);border-radius:8px;padding:10px;font-size:13px;line-height:1.6;margin-bottom:12px">${esc(a.beschreibung)}</div>`:''}
     <div style="display:flex;gap:7px;flex-wrap:wrap">
       <button class="btn ${done?'':'btn-success'}" onclick="toggleAufgabe('${id}');closeModal()">
         <i class="ti ti-${done?'rotate-ccw':'check'}"></i> ${done?'Wieder öffnen':'Erledigen'}
@@ -24995,7 +25081,7 @@ async function showReparaturDetail(id) {
   (r.teile||[]).forEach(t=>{
     if(t.bezeichnung&&t.bezeichnung!=='–')
       teilHTML+=`<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--ink-10);font-size:13px">
-        <span>${t.bezeichnung}</span><span style="font-weight:600">${fmtEur(t.betrag)}</span></div>`;
+        <span>${esc(t.bezeichnung)}</span><span style="font-weight:600">${fmtEur(t.betrag)}</span></div>`;
   });
 
   showModal(`
@@ -25011,7 +25097,7 @@ async function showReparaturDetail(id) {
       ${r.datum?`<span><i class="ti ti-calendar" style="font-size:12px"></i> ${fmtDate(r.datum)}</span>`:''}
       ${r.ersteller?`<span><i class="ti ti-user-circle" style="font-size:12px"></i> ${r.ersteller}</span>`:''}
     </div>
-    ${r.beschreibung?`<div style="background:var(--ink-05);border-radius:8px;padding:10px;font-size:13px;line-height:1.6;margin-bottom:10px">${r.beschreibung}</div>`:''}
+    ${r.beschreibung?`<div style="background:var(--ink-05);border-radius:8px;padding:10px;font-size:13px;line-height:1.6;margin-bottom:10px">${esc(r.beschreibung)}</div>`:''}
     ${arbHTML?`<div class="card-hdr" style="margin-bottom:4px"><i class="ti ti-clock"></i> Arbeitsstunden</div>${arbHTML}<div style="padding:4px 0;margin-bottom:10px"></div>`:''}
     ${teilHTML?`<div class="card-hdr" style="margin-bottom:4px"><i class="ti ti-package"></i> Ersatzteile / Material</div>${teilHTML}<div style="padding:4px 0;margin-bottom:10px"></div>`:''}
     ${r.extBetrag?`<div style="display:flex;justify-content:space-between;font-size:13px;font-weight:600;padding:6px 0;border-top:2px solid var(--ink-10)"><span>Externe Rechnung</span><span>${fmtEur(r.extBetrag)}</span></div>`:''}
@@ -25089,8 +25175,8 @@ function einkaufHTML(e) {
       <div style="font-size:14px;font-weight:${done?'400':'600'};color:var(--ink);
         text-decoration:${done?'line-through':'none'}">${esc(e.artikel)}</div>
       <div style="font-size:11px;color:var(--ink-40);margin-top:3px;display:flex;gap:8px;flex-wrap:wrap">
-        ${e.menge?`<span><i class="ti ti-stack-2" style="font-size:10px"></i> ${e.menge} ${e.einheit||'Stk.'}</span>`:''}
-        ${obj?`<span><i class="ti ti-building" style="font-size:10px"></i> ${obj.name}</span>`:''}
+        ${e.menge?`<span><i class="ti ti-stack-2" style="font-size:10px"></i> ${e.menge} ${esc(e.einheit||'Stk.')}</span>`:''}
+        ${obj?`<span><i class="ti ti-building" style="font-size:10px"></i> ${esc(obj.name)}</span>`:''}
         ${e.kategorie?`<span class="chip chip-gray" style="font-size:10px;padding:1px 6px">${e.kategorie}</span>`:''}
         ${e.referenz?`<span style="font-style:italic">${esc(e.referenz)}</span>`:''}
         ${done&&e.preis?`<span class="chip chip-copper" style="font-size:10px;padding:1px 6px">${fmtEur(e.preis)}</span>`:''}
@@ -25213,7 +25299,7 @@ async function modalEditEinkauf(id) {
     ${e.status==='gekauft'?`<div class="f"><label for="ekPreis">Preis (€)</label>
       <input type="number" inputmode="decimal" id="ekPreis" value="${e.preis||''}" step="0.01" placeholder="Tatsächlicher Kaufpreis"></div>`:''}
     <div class="f"><label for="ekNotiz">Notiz</label>
-      <textarea spellcheck="true" lang="de" id="ekNotiz" style="min-height:60px">${e.notiz||''}</textarea></div>
+      <textarea spellcheck="true" lang="de" id="ekNotiz" style="min-height:60px">${esc(e.notiz||'')}</textarea></div>
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="updateEinkauf('${id}')">
         <i class="ti ti-check"></i> Speichern
@@ -25606,10 +25692,10 @@ p{font-size:11px;line-height:1.8;margin-bottom:6px}
       <text x="160" y="130" font-family="Georgia,serif" font-size="56px" fill="#0C447C">NADIG PFAU</text>
       <text x="160" y="165" font-family="Arial,sans-serif" font-size="12px" letter-spacing="1.4px" fill="#888780">HAUSVERWALTUNG</text>
     </svg>
-    <div style="font-size:7px;color:#555;margin-top:3px">${bk.strasse} · ${bk.ort} · Tel: ${bk.tel}</div>
+    <div style="font-size:7px;color:#555;margin-top:3px">${esc(bk.strasse)} · ${esc(bk.ort)} · Tel: ${bk.tel}</div>
   </div>
   <div class="bk-right">
-    <div class="bk-absender">${bk.name} · ${bk.strasse} · ${bk.ort}</div>
+    <div class="bk-absender">${esc(bk.name)} · ${esc(bk.strasse)} · ${esc(bk.ort)}</div>
     <div style="font-size:10px;line-height:1.7">
       <strong>${esc(m.mieter)}</strong><br>
       ${esc(obj?.name||'')} · WE ${esc(m.weNr)}${m.etage?' · '+esc(m.etage):''}<br>
@@ -25641,7 +25727,7 @@ ${istZustimmung
   : istModernisierung
   ? `<p>Die erhöhte Miete von <strong>${fmtEur(neueMiete + (neueNK||alteNK))}</strong> ist mit Beginn des dritten Monats nach Zugang dieser Erklärung zu zahlen (§ 559b Abs. 2 BGB). Bitte überweisen Sie den neuen Betrag ab diesem Zeitpunkt auf das Ihnen bekannte Konto.</p>`
   : `<p>Bitte überweisen Sie ab dem <strong>${wirksamAb}</strong> den neuen Betrag von <strong>${fmtEur(neueMiete + (neueNK||alteNK))}</strong> auf das Ihnen bekannte Konto.</p>`}
-<p style="margin-top:12mm">Mit freundlichen Grüßen<br><br>${bk.name}</p>
+<p style="margin-top:12mm">Mit freundlichen Grüßen<br><br>${esc(bk.name)}</p>
 <div style="font-size:8px;color:#aaa;margin-top:16mm;padding-top:4mm;border-top:1px solid #eee">
   Mieterhöhungsschreiben · ${esc(obj?.name||'')} WE ${esc(m.weNr)} · ${esc(m.mieter)} · ${esc(heute)} · Nadig Pfau Hausverwaltung
 </div>
@@ -26102,11 +26188,11 @@ function terminHTML(t) {
     </div>
     <div style="flex:1;min-width:0">
       <div style="font-size:13px;font-weight:600;color:var(--ink);text-decoration:${abs?'line-through':'none'}">
-        ${done?'<i class="ti ti-circle-check" style="color:var(--green);font-size:11px"></i> ':''}${t.titel}
+        ${done?'<i class="ti ti-circle-check" style="color:var(--green);font-size:11px"></i> ':''}${esc(t.titel)}
       </div>
       <div style="font-size:11px;color:var(--ink-40);margin-top:3px;display:flex;gap:8px;flex-wrap:wrap">
         ${t.uhrzeit?`<span><i class="ti ti-clock" style="font-size:10px"></i> ${t.uhrzeit}${t.uhrzeitEnd?' – '+t.uhrzeitEnd:''}</span>`:''}
-        ${obj?`<span><i class="ti ti-building" style="font-size:10px"></i> ${obj.name}</span>`:''}
+        ${obj?`<span><i class="ti ti-building" style="font-size:10px"></i> ${esc(obj.name)}</span>`:''}
         ${t.mieterName?`<span><i class="ti ti-user" style="font-size:10px"></i> ${esc(t.mieterName)}</span>`:''}
         ${t.zugewiesen?`<span><i class="ti ti-user-check" style="font-size:10px;color:var(--copper)"></i> ${esc(t.zugewiesen)}</span>`:''}
         <span class="chip chip-gray" style="font-size:9px;padding:1px 5px">${typ.label}</span>
@@ -26228,7 +26314,7 @@ async function modalAddTermin(prefillDate) {
     <div class="f"><label for="tObjekt">Objekt</label>
       <select id="tObjekt" onchange="loadMieterForTermin(this.value)">
         <option value="">– Kein Objekt –</option>
-        ${myObj.map(o=>`<option value="${o.id}">${o.name}</option>`).join('')}
+        ${myObj.map(o=>`<option value="${o.id}">${esc(o.name)}</option>`).join('')}
       </select>
     </div>
     <div class="f"><label for="tMieter">Mieter (optional)</label>
@@ -26311,7 +26397,7 @@ async function showTerminDetail(id) {
   }
 
   showModal(`
-    <div class="m-title" style="color:${typ.color}"><i class="ti ${typ.icon}"></i> ${t.titel}</div>
+    <div class="m-title" style="color:${typ.color}"><i class="ti ${typ.icon}"></i> ${esc(t.titel)}</div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
       <span class="chip chip-gray">${typ.label}</span>
       ${done?'<span class="chip chip-ok">Erledigt</span>':''}
@@ -26320,7 +26406,7 @@ async function showTerminDetail(id) {
     <div style="font-size:13px;color:var(--ink-40);margin-bottom:10px;display:flex;flex-direction:column;gap:5px">
       <span><i class="ti ti-calendar" style="font-size:12px"></i> ${d}</span>
       ${t.uhrzeit?`<span><i class="ti ti-clock" style="font-size:12px"></i> ${t.uhrzeit}${t.uhrzeitEnd?' – '+t.uhrzeitEnd:''} Uhr</span>`:''}
-      ${obj?`<span><i class="ti ti-building" style="font-size:12px"></i> ${obj.name} · ${obj.ort}</span>`:''}
+      ${obj?`<span><i class="ti ti-building" style="font-size:12px"></i> ${esc(obj.name)} · ${esc(obj.ort)}</span>`:''}
       ${t.mieterName?`<span><i class="ti ti-user" style="font-size:12px"></i> ${esc(t.mieterName)}</span>`:''}
       ${t.ersteller?`<span><i class="ti ti-user-circle" style="font-size:12px"></i> ${esc(t.ersteller)} · ${esc(t.erstellt||'')}</span>`:''}
       ${t.zugewiesen?`<span><i class="ti ti-user-check" style="font-size:12px;color:var(--copper)"></i> <strong>Zugewiesen an:</strong> ${esc(t.zugewiesen)}</span>`:''}
@@ -26355,7 +26441,7 @@ async function modalEditTermin(id) {
   showModal(`
     <div class="m-title"><i class="ti ti-pencil"></i> Termin bearbeiten</div>
     <div class="f"><label for="tTitel">Bezeichnung</label>
-      <input type="text" id="tTitel" value="${t.titel}" spellcheck="true" lang="de"></div>
+      <input type="text" id="tTitel" value="${escAttr(t.titel)}" spellcheck="true" lang="de"></div>
     <div class="f"><label for="tTyp">Typ</label>
       <select id="tTyp">${TERMIN_TYPEN.map(tp=>`<option value="${tp.val}" ${tp.val===t.typ?'selected':''}>${tp.label}</option>`).join('')}</select>
     </div>
@@ -26367,10 +26453,10 @@ async function modalEditTermin(id) {
     <div class="f"><label for="tObjekt">Objekt</label>
       <select id="tObjekt">
         <option value="">– Kein Objekt –</option>
-        ${myObj.map(o=>`<option value="${o.id}" ${o.id===t.objektId?'selected':''}>${o.name}</option>`).join('')}
+        ${myObj.map(o=>`<option value="${o.id}" ${o.id===t.objektId?'selected':''}>${esc(o.name)}</option>`).join('')}
       </select>
     </div>
-    <div class="f"><label for="tNotiz">Notiz</label><textarea spellcheck="true" lang="de" id="tNotiz" style="min-height:60px">${t.notiz||''}</textarea></div>
+    <div class="f"><label for="tNotiz">Notiz</label><textarea spellcheck="true" lang="de" id="tNotiz" style="min-height:60px">${esc(t.notiz||'')}</textarea></div>
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="updateTermin('${id}')"><i class="ti ti-check"></i> Speichern</button>
       <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
@@ -26428,7 +26514,7 @@ async function modalAddAufgabe(mieterId,objektId){
     <div class="m-title"><i class="ti ti-plus"></i> Neue Aufgabe</div>
     <div class="f"><label for="aObjId">Objekt</label><select id="aObjId">
       <option value="${ALLGEMEIN_ID}" ${objektId===ALLGEMEIN_ID?'selected':''}>Allgemein (alle Objekte)</option>
-      ${myObj.map(o=>`<option value="${o.id}" ${o.id===objektId?'selected':''}>${o.name}</option>`).join('')}
+      ${myObj.map(o=>`<option value="${o.id}" ${o.id===objektId?'selected':''}>${esc(o.name)}</option>`).join('')}
     </select></div>
     <div class="f"><label for="aMietId">Mieter (optional)</label><select id="aMietId">
       <option value="">– keinem Mieter zugeordnet –</option>
@@ -28023,7 +28109,7 @@ async function modalNeueAdresse(mieterId) {
       Anschrift nach dem Auszug, z. B. für die Zustellung der Nebenkostenabrechnung.
     </p>
     <div class="f"><label>Neue Anschrift</label>
-      <textarea spellcheck="true" lang="de" id="vmAdresse" style="min-height:80px" placeholder="Straße Hausnr.&#10;PLZ Ort">${m.neueAdresse||''}</textarea></div>
+      <textarea spellcheck="true" lang="de" id="vmAdresse" style="min-height:80px" placeholder="Straße Hausnr.&#10;PLZ Ort">${escAttr(m.neueAdresse||'')}</textarea></div>
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="saveNeueAdresse('${mieterId}')"><i class="ti ti-check"></i> Speichern</button>
       <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
@@ -28913,7 +28999,7 @@ async function newProtokoll(){
     <div class="m-title"><i class="ti ti-clipboard-check"></i> Neues Protokoll</div>
     <div class="f"><label for="pObjSel">Objekt</label>
       <select id="pObjSel" onchange="loadMieterForProt(this.value)">
-        ${myObj.map(o=>`<option value="${o.id}">${o.name}</option>`).join('')}
+        ${myObj.map(o=>`<option value="${o.id}">${esc(o.name)}</option>`).join('')}
       </select>
     </div>
     <div class="f"><label for="pMietSel">Mieter / WE</label>
@@ -29367,7 +29453,7 @@ function getProtStep(step){
         <div class="f-row t3">
           <div class="f"><label>Art</label><input value="${z.typ}" onchange="PD.zaehler[${i}].typ=this.value"></div>
           <div class="f"><label>Nr.</label><input value="${z.nr}" onchange="PD.zaehler[${i}].nr=this.value"></div>
-          <div class="f"><label>Stand (${z.einheit})</label><input type="number" inputmode="decimal" value="${z.stand}" onchange="PD.zaehler[${i}].stand=this.value"></div>
+          <div class="f"><label>Stand (${esc(z.einheit)})</label><input type="number" inputmode="decimal" value="${z.stand}" onchange="PD.zaehler[${i}].stand=this.value"></div>
         </div>
         ${z.foto ? `<div style="position:relative;width:80px;height:60px;border-radius:6px;overflow:hidden;border:1px solid var(--ink-10);margin-top:6px">
           <img src="${fotoThumbQuelle(z.foto)}" style="width:100%;height:100%;object-fit:cover" alt="Zählerfoto">
@@ -29391,7 +29477,7 @@ function getProtStep(step){
     </div>
     <div class="divider"></div>
     <div class="f"><label>Hinweise zur Schlüsselübergabe</label>
-      <textarea spellcheck="true" lang="de" onchange="PD.schluesselHinweis=this.value">${d.schluesselHinweis}</textarea>
+      <textarea spellcheck="true" lang="de" onchange="PD.schluesselHinweis=this.value">${escAttr(d.schluesselHinweis)}</textarea>
     </div>
   </div>`;
 
@@ -29408,7 +29494,7 @@ function getProtStep(step){
       </select></div>
     </div>
     <div class="f"><label>Vereinbarungen / Hinweise</label>
-      <textarea spellcheck="true" lang="de" onchange="PD.vereinbarungen=this.value" placeholder="z. B. Mieter beseitigt Mangel X bis ...">${d.vereinbarungen}</textarea>
+      <textarea spellcheck="true" lang="de" onchange="PD.vereinbarungen=this.value" placeholder="z. B. Mieter beseitigt Mangel X bis ...">${escAttr(d.vereinbarungen)}</textarea>
     </div>
   </div>`;
 
@@ -29521,7 +29607,7 @@ function renderProtRaeume(){
     </div>
     <div class="f" style="margin-top:10px">
       <label>Anmerkungen zu ${rn}</label>
-      <textarea spellcheck="true" lang="de" onchange="PD.raeume['${rn}'].notes=this.value" placeholder="Mängel, Besonderheiten...">${rd.notes}</textarea>
+      <textarea spellcheck="true" lang="de" onchange="PD.raeume['${rn}'].notes=this.value" placeholder="Mängel, Besonderheiten...">${escAttr(rd.notes)}</textarea>
     </div>`;
 }
 
@@ -29632,7 +29718,7 @@ function buildMangelSummary(){
         <span style="color:${d.conditions[b]==='Beschädigt'?'var(--red)':'var(--amber)'};font-weight:700">${d.conditions[b]}</span>
         <span style="color:var(--ink-40)"> – ${b}</span>
       </div>`).join('')}
-      ${d.notes?`<div style="font-size:12px;color:var(--ink-40);font-style:italic;margin-top:3px">${d.notes}</div>`:''}
+      ${d.notes?`<div style="font-size:12px;color:var(--ink-40);font-style:italic;margin-top:3px">${esc(d.notes)}</div>`:''}
       ${d.photos?.length?`<div style="font-size:11px;color:var(--ink-40);margin-top:3px"><i class="ti ti-camera" style="font-size:11px"></i> ${d.photos.length} Foto(s)</div>`:''}
     </div>`;
   });
@@ -30092,7 +30178,7 @@ async function printProtHTML(d) {
         if (imgs) roomRows += `<tr><td colspan="3" style="padding:4px 8px;border:1px solid #dde"><div style="font-size:8px;font-weight:700;color:#777;margin-bottom:2px">Fotos zu „${c}"</div><div style="display:flex;flex-wrap:wrap;gap:3px">${imgs}</div></td></tr>`;
       }
     }
-    if (rd.notes) roomRows += `<tr><td colspan="3" style="padding:3px 8px;border:1px solid #dde;font-size:10px;font-style:italic;color:#555">Hinweis: ${rd.notes}</td></tr>`;
+    if (rd.notes) roomRows += `<tr><td colspan="3" style="padding:3px 8px;border:1px solid #dde;font-size:10px;font-style:italic;color:#555">Hinweis: ${esc(rd.notes)}</td></tr>`;
 
     const _roomFotos = await protoFotoWerte(rd.photos, rd.photoIds);
     if (_roomFotos.length) {
@@ -30114,12 +30200,12 @@ async function printProtHTML(d) {
       if (_zSrc) { const comp = await compressImg(_zSrc);
         fotoCell = `<img src="${comp}" style="width:60px;height:45px;object-fit:cover;border-radius:3px;border:1px solid #ccd;vertical-align:middle;margin-left:4px" alt="Foto">`; }
     }
-    mR += `<tr><td style="padding:3px 8px;border:1px solid #dde;font-size:10px">${z.typ}</td><td style="padding:3px 8px;border:1px solid #dde;font-size:10px">${z.nr}</td><td style="padding:3px 8px;border:1px solid #dde;font-size:10px;font-weight:700">${z.stand} ${z.einheit} ${fotoCell}</td></tr>`;
+    mR += `<tr><td style="padding:3px 8px;border:1px solid #dde;font-size:10px">${z.typ}</td><td style="padding:3px 8px;border:1px solid #dde;font-size:10px">${z.nr}</td><td style="padding:3px 8px;border:1px solid #dde;font-size:10px;font-weight:700">${z.stand} ${esc(z.einheit)} ${fotoCell}</td></tr>`;
   }
   if (!mR) mR = `<tr><td colspan="3" style="padding:5px 8px;border:1px solid #dde;color:#888;font-size:10px">Keine Zählerstände erfasst</td></tr>`;
   const tgRow = d.tgNr ? `<tr><td style="padding:3px 8px;border:1px solid #dde;font-size:10px;background:#fff8f0">TG-Stellplatz Nr. ${d.tgNr} (Schlüssel/Chipkarte)</td><td style="padding:3px 8px;border:1px solid #dde;font-size:10px;font-weight:700;background:#fff8f0">übergeben</td></tr>` : '';
   const keyRows = Object.entries({wohnung:'Wohnungstürschlüssel',haus:'Haustürschlüssel',bk:'Briefkastenschlüssel',keller:'Kellerschlüssel',garage:'Garagenschlüssel',sonstige:'Sonstige'}).map(([k,l])=>`<tr><td style="padding:3px 8px;border:1px solid #dde;font-size:10px">${l}</td><td style="padding:3px 8px;border:1px solid #dde;font-size:10px;font-weight:700">${d.schluessel?.[k]||0} Stück</td></tr>`).join('');
-  win.document.write(`<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8"><title>Übergabeprotokoll ${d.objektName}</title>
+  win.document.write(`<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8"><title>Übergabeprotokoll ${esc(d.objektName)}</title>
 <style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:Arial,sans-serif;font-size:11px;color:#111;padding:14px}
 .hdr{border-bottom:3px solid #1F4E79;padding-bottom:8px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:flex-end}
 h1{font-size:15px;color:#1F4E79;font-weight:700}.sub{font-size:10px;color:#666;margin-top:2px}
@@ -30135,7 +30221,7 @@ tr{page-break-inside:avoid}
 .footer{font-size:8px;color:#aaa;text-align:center;margin-top:12px;padding-top:8px;border-top:1px solid #eee}
 @page{margin:1.2cm;size:A4}@media print{body{padding:0;-webkit-print-color-adjust:exact;print-color-adjust:exact}}</style><meta name="apple-mobile-web-app-title" content="Nadig Pfau Hausverwaltung">
 </head><body>
-<div class="hdr"><div><h1>Wohnungsübergabeprotokoll</h1><div class="sub">${d.objektName} · ${d.objektOrt||''} · WE ${d.weNr||'?'} · ${d.etage||''}</div></div><div class="art">${d.art||'Übergabe'}</div></div>
+<div class="hdr"><div><h1>Wohnungsübergabeprotokoll</h1><div class="sub">${esc(d.objektName)} · ${d.objektOrt||''} · WE ${d.weNr||'?'} · ${d.etage||''}</div></div><div class="art">${d.art||'Übergabe'}</div></div>
 <h2>Objektdaten & Beteiligte</h2><div class="meta">
   <div class="mi"><strong>Datum / Zeit</strong>${datum}${d.uhrzeitStart?' · '+d.uhrzeitStart+(d.uhrzeitEnd?' – '+d.uhrzeitEnd:'')+' Uhr':''}</div>
   <div class="mi"><strong>Wohnfläche</strong>${d.flaeche?d.flaeche+' m²':'–'}</div>
@@ -30161,7 +30247,7 @@ tr{page-break-inside:avoid}
   <th style="text-align:left;padding:3px 8px;background:#e8f0fe;border:1px solid #ccd;font-size:10px;width:70%">Art</th>
   <th style="text-align:left;padding:3px 8px;background:#e8f0fe;border:1px solid #ccd;font-size:10px">Anzahl</th>
 </tr></thead><tbody>${tgRow}${keyRows}</tbody></table>
-${d.schluesselHinweis?`<p style="font-size:10px;color:#555;margin:3px 0;font-style:italic">Hinweis: ${d.schluesselHinweis}</p>`:''}
+${d.schluesselHinweis?`<p style="font-size:10px;color:#555;margin:3px 0;font-style:italic">Hinweis: ${esc(d.schluesselHinweis)}</p>`:''}
 ${(d.uebernommeneMaengel&&d.uebernommeneMaengel.length)?`<h2>Aus der Abnahme übernommene Mängel</h2>
 <table><thead><tr>
   <th style="text-align:left;padding:3px 8px;background:#e8f0fe;border:1px solid #ccd;font-size:10px;width:30%">Mangel</th>
@@ -30172,7 +30258,7 @@ ${(d.uebernommeneMaengel&&d.uebernommeneMaengel.length)?`<h2>Aus der Abnahme üb
   <div class="mi"><strong>Gesamtzustand</strong>${d.gesamtzustand||'–'}</div>
   <div class="mi"><strong>Schönheitsreparaturen</strong>${d.schoenheit||'–'}</div>
 </div>
-${d.vereinbarungen?`<div style="background:#f0f4f9;border-radius:3px;padding:6px 8px;font-size:10px;margin-top:4px"><strong>Vereinbarungen:</strong> ${d.vereinbarungen}</div>`:''}
+${d.vereinbarungen?`<div style="background:#f0f4f9;border-radius:3px;padding:6px 8px;font-size:10px;margin-top:4px"><strong>Vereinbarungen:</strong> ${esc(d.vereinbarungen)}</div>`:''}
 <h2>Unterschriften</h2>
 <p style="font-size:9px;color:#666;margin-bottom:6px">Die Unterzeichnenden bestätigen Vollständigkeit, Richtigkeit und die Schlüsselübergabe.</p>
 <div class="sigs">
@@ -30187,7 +30273,7 @@ ${(d.aenderungen&&d.aenderungen.length)?`<div style="margin-top:12px;padding:8px
     <strong>${a.feld}:</strong> „${a.alt||'–'}" &rarr; „${a.neu||'–'}" · geändert von ${a.von} am ${a.wann}
   </div>`).join('')}
 </div>`:''}
-<div class="footer">Übergabeprotokoll · ${d.objektName} · WE ${d.weNr||'?'} · ${datum} · ${d.abgeschlossenAm||now()} · Nadig Pfau Hausverwaltung</div>
+<div class="footer">Übergabeprotokoll · ${esc(d.objektName)} · WE ${d.weNr||'?'} · ${datum} · ${d.abgeschlossenAm||now()} · Nadig Pfau Hausverwaltung</div>
 
 
 
@@ -30387,14 +30473,29 @@ async function renderSyncSchutz(){
   // Snapshots
   const snaps=(await idbGetAll('mieter_snapshots').catch(()=>[]))
     .sort((a,b)=>(b.erstellt||'').localeCompare(a.erstellt||''));
-  h+='<div style="font-weight:600;font-size:13px;margin:14px 0 6px"><i class="ti ti-database"></i> Lokale Mieter-Sicherungen ('+snaps.length+'/10)</div>';
+  /* v332: Bis zu zehn Sicherungen standen dauerhaft offen und nahmen den
+     halben Bildschirm ein. Gleiches Muster wie beim Konfliktprotokoll darueber:
+     natives <details>, kein eigener Auf-/Zuklapp-Zustand, fuer Screenreader
+     korrekt ausgezeichnet. Die juengste Sicherung bleibt sichtbar - sie ist
+     die, die man im Ernstfall braucht; alles Aeltere liegt im Aufklapper. */
   if(!snaps.length){
+    h+='<div style="font-weight:600;font-size:13px;margin:14px 0 6px"><i class="ti ti-database"></i> Lokale Mieter-Sicherungen (0/10)</div>';
     h+='<div style="font-size:12px;color:var(--ink-40)">Noch keine Sicherung vorhanden. Sie entsteht automatisch beim nächsten Sync oder Import.</div>';
   } else {
-    h+=snaps.map(s=>`<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:7px 0;border-bottom:1px solid var(--ink-10);font-size:12px">
+    const zeile = s=>`<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:7px 0;border-bottom:1px solid var(--ink-10);font-size:12px">
       <span style="flex:1;min-width:160px;word-break:break-word">${new Date(s.erstellt).toLocaleString('de-DE')} <span style="color:var(--ink-40)">· ${s.anzahl} Mieter, ${s.mitTelefon} mit Tel. · Anlass: ${esc(s.anlass||'')}</span></span>
       <button class="btn btn-sm" onclick="restoreMieterSnapshot('${s.id}')"><i class="ti ti-restore"></i> Wiederherstellen</button>
-    </div>`).join('');
+    </div>`;
+    h+='<div style="font-weight:600;font-size:13px;margin:14px 0 6px"><i class="ti ti-database"></i> Lokale Mieter-Sicherungen ('+snaps.length+'/10)</div>';
+    h+=zeile(snaps[0]);
+    if(snaps.length > 1){
+      h+=`<details style="margin-top:4px">
+        <summary style="font-size:12px;color:var(--ink-40);cursor:pointer;padding:4px 0;list-style:revert">
+          ${snaps.length - 1} ältere ${snaps.length === 2 ? 'Sicherung' : 'Sicherungen'} anzeigen
+        </summary>
+        <div style="margin-top:2px">` + snaps.slice(1).map(zeile).join('') + `</div>
+      </details>`;
+    }
   }
   return h;
 }
@@ -32916,6 +33017,16 @@ async function syncProfilUmstellen(){
     } catch(e){}
     // Snapshots koennen Voll-Mieterdaten enthalten -> ebenfalls leeren
     await idbClear('mieter_snapshots').catch(()=>{});
+    /* v333 (Audit R46): settings bleibt erhalten (syncProfil, deviceId ...),
+       die Entschluesselungsschluessel duerfen aber nicht mitwandern.
+       saEncKey oeffnet Selbstauskuenfte, portalEncKey das Mieterverzeichnis -
+       beides braucht ein Hausmeister-Geraet nicht, und beides macht den
+       Sinn des reduzierten Profils zunichte, wenn das Geraet verloren geht.
+       backendKey bleibt vorerst: er wird ggf. fuer die Zaehler-Erkennung
+       benoetigt - Entscheidung dazu ist offen (PROJECT_MEMORY R46). */
+    for (const id of ['saEncKey','portalEncKey']){
+      await idbDelete('settings', id).catch(()=>{});
+    }
   } else {
     if (!confirm('Dieses Gerät auf VOLL-Profil umstellen? Es lädt künftig wieder den gesamten Datenbestand aus OneDrive.')){
       sel.value = SYNC_PROFIL; return;
@@ -34499,7 +34610,7 @@ async function renderBranchenbuch(el){
   const karten = liste.length ? liste.map(x=>{
     const k=bbKat(x.kategorie);
     const orte = (x.orte||[]).includes('*') ? 'Alle Orte' : (x.orte||[]).join(', ');
-    const tel = x.telefon ? `<a href="tel:${x.telefon.replace(/[^+\d]/g,'')}" style="color:var(--ink-80);text-decoration:none"><i class="ti ti-phone"></i> ${esc(x.telefon)}</a>` : '';
+    const tel = x.telefon ? `<a href="tel:${esc(x.telefon.replace(/[^+\d]/g,''))}" style="color:var(--ink-80);text-decoration:none"><i class="ti ti-phone"></i> ${esc(x.telefon)}</a>` : '';
     const mob = x.mobil ? `<a href="tel:${x.mobil.replace(/[^+\d]/g,'')}" style="color:var(--ink-80);text-decoration:none"><i class="ti ti-device-mobile"></i> ${esc(x.mobil)}</a>` : '';
     const mail= x.email ? `<a href="${mailHref(x.email)}" style="color:var(--ink-80);text-decoration:none"><i class="ti ti-mail"></i> ${esc(x.email)}</a>` : '';
     return `<div class="bb-card ${x.notdienst?'bb-notdienst':''}">
@@ -34699,6 +34810,20 @@ function esc(v){
 }
 // A3: Sichere Einsetzung in HTML-Attribute (zusätzlich Backtick neutralisieren).
 function escAttr(v){ return esc(v).replace(/`/g,'&#96;'); }
+/* v333 (Audit F2): Zeichenkette fuer JavaScript INNERHALB eines HTML-Attributs.
+   Reihenfolge ist zwingend: erst JavaScript-, dann HTML-Maskierung. Umgekehrt
+   entstuende aus &#39; beim Parsen wieder ein ' und die Zeichenkette braeche auf.
+   Verwenden bei:  onclick="fn('${escJs(wert)}')"
+   NICHT verwenden fuer normalen Textinhalt - dafuer bleibt esc(). */
+function escJs(v){
+  return String(v==null?'':v)
+    .replace(/\\/g,'\\\\')
+    .replace(/'/g,"\\'")
+    .replace(/\r?\n/g,'\\n')
+    .replace(/</g,'\\x3C')
+    .replace(/&/g,'&amp;')
+    .replace(/"/g,'&quot;');
+}
 // A3: tel:-URL säubern – nur Ziffern, +, Klammern, Bindestrich, Schrägstrich, Leerzeichen.
 function telHref(v){ return 'tel:'+String(v==null?'':v).replace(/[^0-9+()/\s-]/g,'').trim(); }
 // A3: mailto:-URL säubern – Steuerzeichen/Anführungszeichen/Spitzklammern entfernen, dann attr-escapen.
@@ -39501,7 +39626,7 @@ async function modalAsAufstellung(einheitId){
       <div class="f" style="flex:1"><label for="asBis">bis</label><input type="date" id="asBis" value="${j}-06-30"></div>
     </div>
     <div class="f"><label for="asBrennstoff">Brennstoff</label>
-      <select id="asBrennstoff">${BRENNSTOFFE.map(b=>`<option value="${b.id}"${b.id==='erdgas'?' selected':''}>${b.name}${b.pef!=null?' · PEF '+String(b.pef).replace('.',','):''}</option>`).join('')}</select></div>
+      <select id="asBrennstoff">${BRENNSTOFFE.map(b=>`<option value="${b.id}"${b.id==='erdgas'?' selected':''}>${esc(b.name)}${b.pef!=null?' · PEF '+String(b.pef).replace('.',','):''}</option>`).join('')}</select></div>
     <p style="font-size:11px;color:var(--ink-40)">Rechnungen, die nur teilweise in den Zeitraum fallen, werden anteilig übernommen – bevorzugt anhand der Abschnitte auf der Rechnung, sonst tagesanteilig. Jede Zeile ist im Ausdruck nachvollziehbar.</p>
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" data-action-click="asAufstellungDrucken"><i class="ti ti-printer"></i> Aufstellung erzeugen</button>
@@ -39580,7 +39705,7 @@ async function asAufstellungDrucken(){
 
 <h2>1. Brennstoffkosten</h2>
 ${b1.length?`<table>
- <thead><tr><th>Datum</th><th>Menge${bs?' in '+bs.einheit:''}</th><th>Gesamtbrutto €</th><th>MwSt. €</th>
+ <thead><tr><th>Datum</th><th>Menge${esc(bs?' in '+bs.einheit:'')}</th><th>Gesamtbrutto €</th><th>MwSt. €</th>
  <th>CO₂-Abgabe €</th><th>CO₂-Ausstoß kg</th><th>Primärenergie&shy;faktor</th></tr></thead>
  <tbody>${b1.map(zeileB1).join('')}</tbody>
  <tfoot><tr><td>Summe</td><td class="r">${n3(sum(b1,'menge'))}</td><td class="r">${n2(sum(b1,'betrag'))}</td>
@@ -39704,7 +39829,7 @@ async function renderRechnungen(){
     </select>
     <select onchange="rechnFilter.zuordnung=this.value;renderRechnungen()" style="flex-shrink:0;padding:7px;border:1px solid var(--ink-10);border-radius:8px;font-size:12px">
       <option value="all"${rechnFilter.zuordnung==='all'?' selected':''}>Alle Arten</option>
-      ${RECHN_ZUORDNUNG.map(z=>`<option value="${z.id}"${rechnFilter.zuordnung===z.id?' selected':''}>${z.name}</option>`).join('')}
+      ${RECHN_ZUORDNUNG.map(z=>`<option value="${z.id}"${rechnFilter.zuordnung===z.id?' selected':''}>${esc(z.name)}</option>`).join('')}
     </select>
     <select onchange="rechnFilter.status=this.value;renderRechnungen()" style="flex-shrink:0;padding:7px;border:1px solid var(--ink-10);border-radius:8px;font-size:12px">
       <option value="all"${rechnFilter.status==='all'?' selected':''}>Alle</option>
@@ -39817,7 +39942,7 @@ async function modalRechnungErfassen(rechnung){
 
     <div class="f"><label for="rZuordnung">Zuordnung *</label>
       <select id="rZuordnung" onchange="rechnZuordnungWechsel()">
-        ${RECHN_ZUORDNUNG.map(z=>`<option value="${z.id}"${r.zuordnung===z.id?' selected':''}>${z.name}</option>`).join('')}
+        ${RECHN_ZUORDNUNG.map(z=>`<option value="${z.id}"${r.zuordnung===z.id?' selected':''}>${esc(z.name)}</option>`).join('')}
       </select></div>
 
     <div class="f" id="rObjWrap"><label for="rObj">Objekt</label>
@@ -39833,7 +39958,7 @@ async function modalRechnungErfassen(rechnung){
     <div id="rAsWrap" style="display:none">
       <div class="f"><label for="rAsPos">Position der A+S-Aufstellung</label>
         <select id="rAsPos" onchange="rechnAsPosWechsel()">
-          ${AS_POSITIONEN.map(p=>`<option value="${p.id}"${r.asPosition===p.id?' selected':''}>${p.name}</option>`).join('')}
+          ${AS_POSITIONEN.map(p=>`<option value="${p.id}"${r.asPosition===p.id?' selected':''}>${esc(p.name)}</option>`).join('')}
         </select></div>
       <div id="rAsEinheitInfo" style="font-size:11px;color:var(--ink-60);margin:-4px 0 8px"></div>
       <div class="f-row" id="rAsVerbrauchWrap">
@@ -41176,7 +41301,7 @@ async function showMangelDetail(id, store='maengel') {
       <span><i class="ti ti-calendar" style="font-size:12px"></i> ${m.datum||m.erstellt||'–'}</span>
       <span><i class="ti ti-user-circle" style="font-size:12px"></i> ${m.ersteller||'–'}</span>
     </div>
-    ${m.beschreibung?`<div style="background:var(--ink-05);border-radius:8px;padding:10px;font-size:13px;color:var(--ink);margin-bottom:12px;line-height:1.6">${m.beschreibung}</div>`:''}
+    ${m.beschreibung?`<div style="background:var(--ink-05);border-radius:8px;padding:10px;font-size:13px;color:var(--ink);margin-bottom:12px;line-height:1.6">${esc(m.beschreibung)}</div>`:''}
 
     ${m.fotos?.length ? `
     <div class="card-hdr" style="margin-bottom:8px"><i class="ti ti-photo"></i> Fotos (${m.fotos.length})</div>
@@ -41214,7 +41339,7 @@ async function showMangelDetail(id, store='maengel') {
       <button class="btn btn-sm" onclick="materialFuerMangel('${id}','${store}')"><i class="ti ti-package"></i> Material</button>
       <button class="btn btn-sm" onclick="mangelAnHandwerker('${id}','${store}')" style="background:#25D366;color:#fff;border-color:#25D366"><i class="ti ti-brand-whatsapp"></i> An Handwerker senden</button>
       <button class="btn btn-sm" onclick="modalSchadenMelden('${id}','${store}')"><i class="ti ti-shield-check"></i> An Versicherung melden</button>
-      <button class="btn btn-sm" onclick="modalAddEinkauf('${id}','Mangel','',{objektId:'${m.objektId||''}',weNr:'${esc(m.weNr||'')}',bezugText:'${esc((m.nummer?m.nummer+' · ':'')+m.titel)}'})"><i class="ti ti-shopping-cart"></i></button>
+      <button class="btn btn-sm" onclick="modalAddEinkauf('${id}','Mangel','',{objektId:'${m.objektId||''}',weNr:'${escJs(m.weNr||'')}',bezugText:'${escJs((m.nummer?m.nummer+' · ':'')+m.titel)}'})"><i class="ti ti-shopping-cart"></i></button>
       <button class="btn btn-sm btn-danger" onclick="deleteMangelConfirm('${id}','${store}')"><i class="ti ti-trash"></i></button>
     </div>`);
 }
@@ -41406,14 +41531,14 @@ async function editAufgabe(id) {
   const myObj = await getMyObjekte();
   showModal(`
     <div class="m-title"><i class="ti ti-pencil"></i> Aufgabe bearbeiten</div>
-    <div class="f"><label>Titel</label><input type="text" id="ea_titel" value="${a.titel}"></div>
+    <div class="f"><label>Titel</label><input type="text" id="ea_titel" value="${escAttr(a.titel)}"></div>
     <div class="f-row">
       <div class="f"><label for="ea_prio">Priorität</label><select id="ea_prio">
         ${['niedrig','mittel','hoch'].map(v=>`<option ${a.prio===v?'selected':''}>${v}</option>`).join('')}
       </select></div>
       <div class="f"><label for="ea_datum">Fällig am</label><input type="date" id="ea_datum" value="${a.datum||''}"></div>
     </div>
-    <div class="f"><label for="ea_beschr">Beschreibung</label><textarea spellcheck="true" lang="de" id="ea_beschr">${a.beschreibung||''}</textarea></div>
+    <div class="f"><label for="ea_beschr">Beschreibung</label><textarea spellcheck="true" lang="de" id="ea_beschr">${escAttr(a.beschreibung||'')}</textarea></div>
     <div class="f-row">
       <button class="btn btn-copper btn-full" onclick="saveEditAufgabe('${id}')"><i class="ti ti-check"></i> Speichern</button>
       <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
@@ -42163,10 +42288,18 @@ async function processPhoto(data) {
 /* ═══════════════════════════════════════════════════════════
    IN-APP KAMERA
 ═══════════════════════════════════════════════════════════ */
+/* v332: camTorchModus kennt drei Stufen. 'auto' schaltet den vorhandenen
+   Torch nur dann kurz zu, wenn das Vorschaubild zu dunkel ist - gemessen an
+   der mittleren Helligkeit eines verkleinerten Standbildes. Bewusst NICHT
+   ueber fillLightMode der ImageCapture-API: die ist auf Chromium beschraenkt
+   und wuerde einen zweiten Aufnahmepfad neben dem Canvas-Weg erfordern. */
 let camStream=null, camFacing='environment', camShots=0, camTorchAn=false;
+let camTorchModus='aus';        // 'aus' | 'an' | 'auto'
+let camZoomKann=false;          // meldet die Kamera die Faehigkeit zoom?
+const CAM_DUNKEL_SCHWELLE = 60; // mittlere Helligkeit 0..255, darunter gilt: zu dunkel
 
 async function openCam(){
-  camShots=0; camTorchAn=false;
+  camShots=0; camTorchAn=false; camTorchModus='aus';
   const ov=document.getElementById('camOverlay');
   ov.style.display='flex';
   document.getElementById('camShotCount').style.display='none';
@@ -42195,33 +42328,116 @@ async function startCamStream(){
   v.srcObject=camStream;
   await v.play().catch(()=>{});
   // Blitz/Torch nur anbieten, wenn das Gerät es bei dieser Kamera unterstützt
-  camTorchAn=false;
+  camTorchAn=false; camTorchModus='aus'; camZoomKann=false;
+  let caps={};
+  try{
+    const track=camStream.getVideoTracks()[0];
+    caps = track.getCapabilities ? track.getCapabilities() : {};
+  }catch(e){}
   const btn=document.getElementById('camTorchBtn');
   if(btn){
-    let kann=false;
-    try{
-      const track=camStream.getVideoTracks()[0];
-      const caps=track.getCapabilities ? track.getCapabilities() : {};
-      kann = !!caps.torch;
-    }catch(e){}
-    btn.style.display = kann ? 'flex' : 'none';
-    btn.style.background='rgba(0,0,0,.5)';
-    btn.innerHTML='<i class="ti ti-bolt"></i>';
+    btn.style.display = caps.torch ? 'flex' : 'none';
+    camTorchAnzeige();
+  }
+  /* v332: Zoom-Regler an die vom Geraet gemeldeten Grenzen binden. Ohne
+     gemeldete Faehigkeit bleibt er verborgen - ein Regler ohne Wirkung ist
+     schlimmer als keiner. */
+  const box=document.getElementById('camZoomBox');
+  const reg=document.getElementById('camZoom');
+  if(box && reg){
+    const z = caps.zoom;
+    camZoomKann = !!(z && typeof z.max === 'number' && z.max > (z.min||1));
+    if(camZoomKann){
+      reg.min  = z.min  != null ? z.min  : 1;
+      reg.max  = z.max;
+      reg.step = z.step && z.step > 0 ? z.step : 0.1;
+      reg.value = reg.min;
+      camZoomAnzeige(reg.min);
+    }
+    box.style.display = camZoomKann ? 'flex' : 'none';
   }
 }
 
+/* Zoomstufe auf den laufenden Videotrack anwenden. */
+async function camZoomSet(wert){
+  if(!camStream || !camZoomKann) return;
+  const z = Number(wert);
+  camZoomAnzeige(z);
+  try{
+    await camStream.getVideoTracks()[0].applyConstraints({ advanced:[{ zoom: z }] });
+  }catch(e){ /* einzelne Zwischenwerte koennen abgelehnt werden - stiller Fehler */ }
+}
+
+function camZoomAnzeige(z){
+  const el=document.getElementById('camZoomWert');
+  if(el) el.textContent = Number(z).toFixed(1).replace('.', ',') + '\u00d7';
+}
+
+/* Knopfbild und Farbe zur aktuellen Blitzstufe. */
+function camTorchAnzeige(){
+  const btn=document.getElementById('camTorchBtn');
+  if(!btn) return;
+  if(camTorchModus === 'an'){
+    btn.style.background='rgba(255,200,0,.85)';
+    btn.innerHTML='<i class="ti ti-bolt"></i>';
+    btn.title='Blitz an';
+  } else if(camTorchModus === 'auto'){
+    btn.style.background='rgba(255,200,0,.45)';
+    btn.innerHTML='<i class="ti ti-bolt"></i><span style="position:absolute;right:2px;bottom:0;font-size:9px;font-weight:700">A</span>';
+    btn.style.position='absolute';
+    btn.title='Blitz automatisch';
+  } else {
+    btn.style.background='rgba(0,0,0,.5)';
+    btn.innerHTML='<i class="ti ti-bolt-off"></i>';
+    btn.title='Blitz aus';
+  }
+}
+
+/* Mittlere Helligkeit des aktuellen Vorschaubildes (0..255). Ausgewertet wird
+   ein auf 32 Pixel Breite verkleinertes Standbild - das genuegt fuer die
+   Frage "zu dunkel?" und kostet keine messbare Zeit. */
+function camHelligkeit(){
+  try{
+    const v=document.getElementById('camVideo');
+    if(!v || !v.videoWidth) return null;
+    const c=document.createElement('canvas');
+    c.width=32; c.height=Math.max(1, Math.round(32 * v.videoHeight / v.videoWidth));
+    const ctx=c.getContext('2d');
+    ctx.drawImage(v, 0, 0, c.width, c.height);
+    const d=ctx.getImageData(0, 0, c.width, c.height).data;
+    let summe=0, n=0;
+    for(let i=0; i<d.length; i+=4){
+      summe += 0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2];
+      n++;
+    }
+    return n ? summe/n : null;
+  }catch(e){ return null; }
+}
+
+/* Torch hart setzen (ohne Stufenwechsel) - fuer die Automatik. */
+async function camTorchSetzen(an){
+  if(!camStream) return false;
+  try{
+    await camStream.getVideoTracks()[0].applyConstraints({ advanced:[{ torch: !!an }] });
+    camTorchAn = !!an;
+    return true;
+  }catch(e){ return false; }
+}
+
+/* v332: Der Knopf schaltet reihum aus -> an -> automatisch. In der Stufe 'an'
+   leuchtet der Torch dauerhaft (Dauerlicht, kein Blitz im fotografischen Sinn),
+   'automatisch' schaltet ihn nur fuer die Aufnahme zu, wenn es zu dunkel ist. */
 async function camTorch(){
   if(!camStream) return;
-  try{
-    const track=camStream.getVideoTracks()[0];
-    camTorchAn=!camTorchAn;
-    await track.applyConstraints({ advanced:[{ torch: camTorchAn }] });
-    const btn=document.getElementById('camTorchBtn');
-    if(btn){
-      btn.style.background = camTorchAn ? 'rgba(255,200,0,.85)' : 'rgba(0,0,0,.5)';
-      btn.innerHTML = camTorchAn ? '<i class="ti ti-bolt"></i>' : '<i class="ti ti-bolt-off"></i>';
-    }
-  }catch(e){ toast('Blitz nicht verfügbar'); }
+  camTorchModus = camTorchModus === 'aus' ? 'an'
+                : camTorchModus === 'an'  ? 'auto'
+                : 'aus';
+  const erfolg = await camTorchSetzen(camTorchModus === 'an');
+  if(!erfolg && camTorchModus === 'an'){
+    camTorchModus = 'aus';
+    toast('Blitz nicht verfügbar');
+  }
+  camTorchAnzeige();
 }
 
 async function camFlip(){
@@ -42232,9 +42448,22 @@ async function camFlip(){
 async function camCapture(){
   const v=document.getElementById('camVideo');
   if(!v.videoWidth){ toast('Kamera lädt noch…'); return; }
+  /* v332: Blitzautomatik. Nur wenn die Stufe 'auto' aktiv ist UND das Bild zu
+     dunkel ist, wird der Torch kurz zugeschaltet. Die Wartezeit gibt der
+     Kamera Gelegenheit, Belichtung und Weissabgleich nachzufuehren; ohne sie
+     entsteht ein Bild mit der alten, dunklen Belichtung und hartem Licht. */
+  let autoLichtAn = false;
+  if(camTorchModus === 'auto'){
+    const hell = camHelligkeit();
+    if(hell != null && hell < CAM_DUNKEL_SCHWELLE){
+      autoLichtAn = await camTorchSetzen(true);
+      if(autoLichtAn) await new Promise(r => setTimeout(r, 450));
+    }
+  }
   const canvas=document.getElementById('camCanvas');
   canvas.width=v.videoWidth; canvas.height=v.videoHeight;
   canvas.getContext('2d').drawImage(v,0,0);
+  if(autoLichtAn) await camTorchSetzen(false);
   // kurzes visuelles Feedback
   const sh=document.getElementById('camShutter');
   sh.style.background='rgba(255,255,255,.7)'; setTimeout(()=>sh.style.background='rgba(255,255,255,.25)',120);
