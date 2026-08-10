@@ -1269,7 +1269,14 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=35;   // v242: +buch_journal (F4 GoBD)
-const APP_VERSION = '2026-08-10-v337';
+const APP_VERSION = '2026-08-10-v338';
+/* v338 (10.08.2026) – "Als Mangel anlegen" uebernimmt jetzt vollstaendig.
+   1) Objekt: Kennung traegt die ID gross (wohnungsKennung -> toUpperCase),
+      getObj() vergleicht zeichengenau -> Auswahl fiel auf das ERSTE Objekt
+      zurueck. Jetzt schreibweiseunabhaengig; ohne Treffer bewusst leer.
+   2) Mieter: wird gesetzt, wenn genau einer zu Objekt und WE passt.
+   3) Fotos: SAS-Links gelten 15 Minuten, werden deshalb sofort geladen und
+      wie eigene Mangelfotos abgelegt. */
 /* v337 (10.08.2026) – Geraetetest-Nachlese Mieterportal.
    1) Schadensmeldungen: stiller Abruf beim Start + Hinweisstreifen auf dem
       Dashboard (rot bei Notfall/dringend). Vorher nur ueber Einstellungen ->
@@ -8736,8 +8743,33 @@ async function portalMeldungAlsMangel(id){
   const e=(window._pmInbox||{})[id];
   if(!e){ toast('Meldung nicht gefunden'); return; }
   const teile=String(e.kennung||'').split('-WE');
-  const objektId=teile[0]||'';
   const weNr=teile[1]||'';
+  /* v338: Die Kennung traegt die Objekt-ID in GROSSSCHREIBUNG
+     (wohnungsKennung() ruft .toUpperCase() auf). getObj() vergleicht
+     zeichengenau - die echte ID ist meist klein geschrieben. Deshalb hier
+     unabhaengig von der Schreibweise aufloesen. Genau dieser Fehler hat
+     im Backend den v301-Ausfall verursacht. */
+  const roh=(teile[0]||'').toUpperCase();
+  const treffer=OBJEKTE.find(o=>String(o.id||'').toUpperCase()===roh);
+  const objektId=treffer?treffer.id:'';
+  if(!objektId){
+    /* Lieber ohne Vorauswahl oeffnen als am falschen Objekt: ein plausibel
+       aussehender falscher Eintrag wird spaeter von niemandem hinterfragt. */
+    toast('Objekt zur Kennung '+(e.kennung||'')+' nicht gefunden – bitte selbst wählen');
+  }
+  /* Mieter nur setzen, wenn die Zuordnung eindeutig ist. */
+  let mieterId=null;
+  if(objektId && weNr){
+    try{
+      /* Mieter liegen in IndexedDB, nicht in einer globalen Liste - OBJEKTE ist
+         eine feste Konfiguration, der Mieterbestand nicht. */
+      const alle=await idbGetAll('mieter');
+      const kand=alle.filter(m=>m && m.objektId===objektId
+                              && String(m.weNr)===String(weNr)
+                              && !m._vormieter && m.aktiv!==false);
+      if(kand.length===1) mieterId=kand[0].id;
+    }catch(x){ /* ohne Mieterbezug oeffnen ist zulaessig */ }
+  }
   const titel=(PM_KATEGORIE[e.kategorie]||'Meldung')+' (Mieterportal)';
   if(typeof modalAddMangel!=='function'){ toast('Mangelmaske nicht verfügbar'); return; }
   try{ closeModal(); }catch(x){}
@@ -8748,7 +8780,7 @@ async function portalMeldungAlsMangel(id){
      Auswahlfeld wird erst durch mangelObjChange() befuellt, und ein automatisch
      gesetzter falscher Mieter waere schlimmer als ein leeres Feld. */
   setTimeout(async ()=>{
-    try{ await modalAddMangel(null, objektId); }catch(x){ toast('Mangelmaske konnte nicht geöffnet werden'); return; }
+    try{ await modalAddMangel(mieterId, objektId); }catch(x){ toast('Mangelmaske konnte nicht geöffnet werden'); return; }
     setTimeout(()=>{
       const t=document.getElementById('mgTitel'); if(t) t.value=titel;
       const b=document.getElementById('mgBeschr');
@@ -8758,9 +8790,54 @@ async function portalMeldungAlsMangel(id){
          Ein nicht existierender Wert wuerde das select stillschweigend auf den
          ersten Eintrag zuruecksetzen - aus einem Notfall wuerde "Gering". */
       if(sw && (e.dringlichkeit==='notfall'||e.dringlichkeit==='dringend')) sw.value='schwerwiegend';
+      /* v338: Fotos uebernehmen. Die SAS-Links gelten nur 15 Minuten - was
+         jetzt nicht geladen wird, ist beim naechsten Oeffnen weg. Deshalb
+         sofort holen. Fehler bleiben still: ein fehlendes Foto darf die
+         Mangelerfassung nicht verhindern. */
+      if(Array.isArray(e.fotos) && e.fotos.length) portalFotosUebernehmen(e.fotos);
     }, 60);
   }, 80);
 }
+
+/* v338: Schadensfotos aus dem Mieterportal in die offene Mangelmaske holen.
+   Ablage identisch zu selbst aufgenommenen Fotos (Store 'fotos' mit
+   protId '__mangel_offen__'), damit saveMangel() und restoreMangelFotos()
+   ohne Sonderfall damit umgehen koennen. */
+async function portalFotosUebernehmen(urls){
+  if(!Array.isArray(window._mangelPhotos)) return;
+  let geholt=0;
+  for(const u of urls.slice(0,5)){
+    try{
+      const r=await fetchMitTimeout(u, {}, 20000);
+      if(!r.ok) continue;
+      const blob=await r.blob();
+      if(blob.size>8*1024*1024) continue;
+      const data=await new Promise((ja,nein)=>{
+        const fr=new FileReader();
+        fr.onload=()=>ja(fr.result); fr.onerror=nein;
+        fr.readAsDataURL(blob);
+      });
+      const fid=uid();
+      window._mangelFotoIds=window._mangelFotoIds||[];
+      try{
+        await idbPut('fotos', { id:fid, protId:'__mangel_offen__', slot:'mangel', data, erstellt:now() });
+        window._mangelFotoIds.push(fid);
+      }catch(x){ console.warn('Portalfoto sichern:', x); }
+      window._mangelPhotos.push(data);
+      geholt++;
+    }catch(x){ console.warn('Portalfoto laden:', x); }
+  }
+  if(!geholt) return;
+  const grid=document.getElementById('mgPhotoGrid');
+  if(grid){
+    grid.style.display='grid';
+    grid.innerHTML=window._mangelPhotos.map((pf,i)=>
+      '<div class="ph-thumb"><img src="'+escAttr(pf)+'" alt="Vorschau"><button class="ph-del" onclick="delMangelFoto('+i+')">'+String.fromCharCode(10005)+'</button></div>'
+    ).join('');
+  }
+  toast(geholt+' Foto'+(geholt===1?'':'s')+' aus der Meldung übernommen');
+}
+registerActions({ portalFotosUebernehmen });
 
 // Hilfsfunktion: Modal schließen, dann Aktion (z. B. Posteingang öffnen)
 function closeAllModalsThen(fn){ try{ closeModal(); }catch(e){} setTimeout(()=>{ try{ fn&&fn(); }catch(e){} }, 60); }
