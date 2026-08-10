@@ -1269,7 +1269,14 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=35;   // v242: +buch_journal (F4 GoBD)
-const APP_VERSION = '2026-08-09-v336';
+const APP_VERSION = '2026-08-10-v337';
+/* v337 (10.08.2026) – Geraetetest-Nachlese Mieterportal.
+   1) Schadensmeldungen: stiller Abruf beim Start + Hinweisstreifen auf dem
+      Dashboard (rot bei Notfall/dringend). Vorher nur ueber Einstellungen ->
+      Mieterportal erreichbar - fuer 'Gefahr oder Wasseraustritt' zu tief.
+   2) Eigentuemerwechsel-Brief: Verwendungszweck bricht an den Schraegstrichen
+      um statt an beliebiger Stelle. Der GiroCode bleibt unveraendert.
+   Keine Sicherheitsaenderung, DB_VER unveraendert. */
 /* v336 (09.08.2026) – enthaelt v334 und v335 vollstaendig; nur v336 ausliefern.
    R50) Geraetebindung: bei gesetzter Bindung koennen sich nur der gebundene
         Benutzer und Admins anmelden; der Sync-Profilwechsel ist dann Admins
@@ -3579,6 +3586,12 @@ async function initApp(){
   await renderDash();
   nav('dash','Dashboard','',false);
   updateBadge();
+  /* v337: Schadensmeldungen im Hintergrund holen. Kein await - der Start
+     wartet nicht auf das Netz. Neu gezeichnet wird nur, wenn tatsaechlich
+     etwas offen ist UND der Nutzer noch auf dem Dashboard steht. */
+  portalMeldungenStandHolen().then(st => {
+    if (st && st.offen > 0 && curPage === 'dash') renderDash();
+  });
   initMSAL();
   initNotifications();
   initMailPoller();
@@ -3645,6 +3658,23 @@ async function renderDash() {
     <div class="stat" style="cursor:pointer" data-action-click="nav" data-arg="aufgaben"><div class="stat-n" style="color:${myAuf.length?'var(--amber)':'var(--green)'}">${myAuf.length}</div><div class="stat-l">Aufgaben</div></div>
     <div class="stat" style="cursor:pointer" onclick="modalAddMangel(null,null)"><div class="stat-n" style="color:${myMng.length?'var(--red)':'var(--green)'}">${myMng.length}</div><div class="stat-l">Mängel</div></div>
   </div>`;
+
+  /* v337: Hinweis auf offene Schadensmeldungen aus dem Mieterportal.
+     Erscheint nur, wenn der Abruf tatsaechlich geklappt hat (PM_STAND) und
+     mindestens eine Meldung offen ist. */
+  if (istVerwalter() && PM_STAND && PM_STAND.offen > 0) {
+    const eilig = PM_STAND.eilig > 0;
+    html += `<div class="card" style="cursor:pointer;margin-bottom:10px;border-left:4px solid ${eilig?'var(--red)':'var(--amber)'}"
+                  onclick="oeffnePortalMeldungen()">
+      <div style="display:flex;align-items:center;gap:10px">
+        <i class="ti ti-alert-triangle" style="font-size:20px;color:${eilig?'var(--red)':'var(--amber)'}"></i>
+        <div style="flex:1">
+          <div style="font-weight:600;font-size:13px">${PM_STAND.offen} offene Schadensmeldung${PM_STAND.offen===1?'':'en'}${eilig?` &middot; ${PM_STAND.eilig} eilig`:''}</div>
+          <div style="font-size:11px;color:var(--ink-40)">aus dem Mieterportal &middot; tippen zum Öffnen</div>
+        </div>
+        <i class="ti ti-chevron-right" style="color:var(--ink-40)"></i>
+      </div></div>`;
+  }
 
   if (setting) {
     html += `<div style="font-size:11px;color:var(--ink-40);margin-bottom:10px;display:flex;align-items:center;gap:4px">
@@ -8573,6 +8603,35 @@ async function oeffnePortalMeldungen(){
     </div>
     <button class="btn btn-full" style="margin-top:12px" data-action-click="closeModal">Schließen</button>`);
   await portalMeldungenLaden();
+}
+
+/* v337: Stiller Abruf fuer den Dashboard-Hinweis. Anders als
+   portalMeldungenLaden() zeichnet diese Funktion nichts und schlaegt bei
+   Fehlern nicht an - sie laeuft im Hintergrund und darf den Start nicht
+   stoeren. Ergebnis landet in PM_STAND. */
+let PM_STAND = null;   // {offen, eilig, geholt} | null = noch nichts bekannt
+
+async function portalMeldungenStandHolen(){
+  try{
+    const key = (await idbGet('settings','backendKey'))?.value;
+    if(!key) return null;                       // HM-Geraet: kein Schluessel, kein Abruf
+    const res = await fetchMitTimeout(BACKEND_AZURE+'/api/portal-meldung/inbox',
+                { headers:{'x-functions-key':key} }, 12000);
+    if(!res.ok) return null;
+    const liste = await res.json();
+    if(!Array.isArray(liste)) return null;
+    PM_STAND = {
+      offen: liste.length,
+      eilig: liste.filter(m => m.dringlichkeit==='notfall' || m.dringlichkeit==='dringend').length,
+      geholt: Date.now()
+    };
+    return PM_STAND;
+  }catch(e){
+    /* Kein Netz, kein Schluessel, Backend aus: PM_STAND bleibt null, der
+       Hinweis erscheint dann gar nicht. Lieber nichts sagen als "0 Meldungen"
+       behaupten, wenn wir es nicht wissen. */
+    return null;
+  }
 }
 
 async function portalMeldungenLaden(alle){
@@ -23686,7 +23745,7 @@ async function ewSeiteFuer(m, opt){
           <tr><td>Empfänger</td><td>${esc(empfaenger)}</td></tr>
           <tr><td>IBAN</td><td><b class="ew-mono">${esc(ibanFormatiert(iban))}</b></td></tr>
           ${gs.ktoBank?`<tr><td>Bank</td><td>${esc(gs.ktoBank)}</td></tr>`:''}
-          <tr><td>Verwendungszweck</td><td><span class="ew-mono">${esc(zweck)}</span></td></tr>
+          <tr><td>Verwendungszweck</td><td><span class="ew-mono ew-zweck">${esc(zweck).replace(/ \/ /g,'\n/ ')}</span></td></tr>
           <tr><td>Monatlich</td><td><b>${fmtEur(summe)}</b></td></tr>
         </table>
       </td>
@@ -23947,7 +24006,14 @@ function ewStil(){
     .ew-kasten>tbody>tr>td{vertical-align:middle;padding:2.5mm 3mm}
     .ew-daten{border-collapse:collapse;font-size:10pt}
     .ew-daten td{padding:0.8mm 0;vertical-align:top}
-    .ew-daten td:first-child{color:#666;width:32mm;padding-right:3mm}
+    .ew-daten td:first-child{color:#666;width:30mm;padding-right:2.5mm;font-size:9.5pt}
+    /* v337: Der Verwendungszweck ist mit Stellplatz bis zu 60 Zeichen lang und
+       passt bei lesbarer Groesse auf keine Zeile (Wertspalte ~85 mm, benoetigt
+       waeren ~127 mm). Statt ihn zu schrumpfen, bricht er jetzt GEWOLLT an den
+       Schraegstrichen um - eine Komponente je Zeile. Das ist beim Abtippen in
+       die Banking-App besser lesbar als ein Umbruch an beliebiger Stelle.
+       Der GiroCode traegt den Zweck weiterhin als eine Zeichenkette. */
+    .ew-zweck{white-space:pre-line;font-size:9pt;line-height:1.35;display:inline-block}
     .ew-qr{width:38mm;text-align:center}
     .ew-qr img{width:32mm;height:32mm;display:block;margin:0 auto 1mm}
     .ew-qr span{display:block;font-size:7.5pt;color:#666}
