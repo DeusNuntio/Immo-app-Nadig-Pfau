@@ -1269,7 +1269,26 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=35;   // v242: +buch_journal (F4 GoBD)
-const APP_VERSION = '2026-08-08-v333';
+const APP_VERSION = '2026-08-09-v336';
+/* v336 (09.08.2026) – enthaelt v334 und v335 vollstaendig; nur v336 ausliefern.
+   R50) Geraetebindung: bei gesetzter Bindung koennen sich nur der gebundene
+        Benutzer und Admins anmelden; der Sync-Profilwechsel ist dann Admins
+        vorbehalten. Letzteres ist der eigentlich kritische Weg - von 'hm' auf
+        'voll' gestellt holt ein Geraet die Volldatei mit IBAN und Kautionen.
+        Clientseitige Huerde, keine Grenze - in der Oberflaeche so beschriftet. */
+/* v335 (09.08.2026) – enthaelt v334 vollstaendig, daher v334 NICHT separat ausliefern.
+   R46b) HM-Profilwechsel loescht jetzt alle SETTINGS_GEHEIM inkl. backendKey.
+   R48)  Globales Auffangnetz fuer Fehler: unhandledrejection + error werden
+         protokolliert (Ringpuffer 30, abrufbar per fehlerProtokoll()).
+         Bewusst ohne Hinweisfenster - erst beobachten, dann sichtbar machen. */
+/* v334 (09.08.2026) – Nachlese Geraetetest v333.
+   A) Delegations-Dispatcher uebergab das Event als Ersatzargument; 11 Aktionen
+      mit optionalem erstem Parameter waren dadurch wirkungslos (Befund A:
+      "+ Artikel" in der Lager-Uebersicht). Altfehler, nicht aus v333.
+   B) Ablehnungen aus async-Aktionen werden jetzt protokolliert statt still
+      verschluckt - die Ursache von A war deshalb unsichtbar.
+   C) Wohnungsgeberbescheinigung: Geburtsdatum entfaellt hinter dem Namen.
+   Keine Sicherheitsaenderung, DB_VER unveraendert. */
 /* v333 (08.08.2026) – Security-Audit, Ausgabemaskierung und Rahmenschutz.
    F1 KRITISCH: 39 Ausgabestellen setzten Freitext ungefiltert in innerHTML ein
         (u. a. maengel.beschreibung, reparaturen.beschreibung, aufgaben.titel/
@@ -2637,13 +2656,67 @@ function __delegate(typ, ev, nurStop){
       if(typeof fn === 'function'){
         if(hatStop) ev.stopPropagation();
         const args = __delegateArgs(el);
-        try { fn.apply(el, args.length ? args : [ev]); }
+        /* v334 (Geraetetest v333, Befund A): frueher stand hier
+             fn.apply(el, args.length ? args : [ev])
+           Ohne data-arg-Attribute wurde also das Event als ERSTES Argument
+           uebergeben. Aktionen mit optionalem ersten Parameter hielten es
+           fuer eine ID - `modalLagerArtikel` etwa fuer eine Artikel-ID,
+           worauf idbGet einen DataError warf und der Knopf tot wirkte.
+           Geprueft: keine der registrierten Aktionen erwartet ein Event
+           (kein Parameter e/ev/event/evt, kein `arguments`, kein
+           event.target im Rumpf). Der Ersatz war funktionslos. */
+        try {
+          const r = fn.apply(el, args);
+          /* async-Aktionen liefern eine Zusage zurueck. Deren Ablehnung
+             faengt das try/catch NICHT - genau deshalb ist Befund A so
+             lange unbemerkt geblieben. */
+          if (r && typeof r.catch === 'function'){
+            r.catch(e => console.error('Aktion '+name+' Fehler (async):', e));
+          }
+        }
         catch(e){ console.error('Aktion '+name+' Fehler:', e); }
         return;
       }
     }
     el = el.parentNode;
   }
+}
+
+/* v335 (R48): globales Auffangnetz fuer Fehler.
+
+   Vorher registrierte die App weder 'unhandledrejection' noch 'error'.
+   Jede abgelehnte Zusage ausserhalb eines eigenen try/catch verschwand
+   damit spurlos - das ist der Grund, warum der tote Knopf aus R47 so
+   lange unbemerkt blieb: er hat bei JEDEM Klick einen DataError erzeugt,
+   nur hat ihn nie jemand gesehen.
+
+   Bewusst OHNE Hinweisfenster: abgebrochene Netzabrufe, Sync-Wiederholungen
+   und abgebrochene Dialoge erzeugen im Normalbetrieb regelmaessig
+   Ablehnungen. Ein Hinweis bei jeder davon waere Laerm, und Laerm wird
+   weggeklickt. Erst beobachten, welche Faelle real auftreten, dann gezielt
+   sichtbar machen. */
+window.__fehlerPuffer = [];
+function __fehlerNotieren(art, detail){
+  try {
+    window.__fehlerPuffer.push({
+      zeit: new Date().toISOString(),
+      art: art,
+      text: String(detail && detail.message ? detail.message : detail).slice(0, 300),
+      stapel: (detail && detail.stack ? String(detail.stack).slice(0, 600) : '')
+    });
+    // Ringpuffer: nur die letzten 30 behalten, sonst waechst er unbegrenzt
+    if (window.__fehlerPuffer.length > 30) window.__fehlerPuffer.shift();
+    console.error('[' + art + ']', detail);
+  } catch(e){ /* Protokollierung darf nie selbst die App stoeren */ }
+}
+window.addEventListener('unhandledrejection', ev => __fehlerNotieren('Zusage abgelehnt', ev.reason));
+window.addEventListener('error', ev => __fehlerNotieren('Fehler', ev.error || ev.message));
+
+/* Zum Nachsehen in der Konsole: fehlerProtokoll() */
+function fehlerProtokoll(){
+  if (!window.__fehlerPuffer.length){ console.log('Keine Fehler protokolliert.'); return []; }
+  console.table(window.__fehlerPuffer.map(f => ({ Zeit: f.zeit, Art: f.art, Text: f.text })));
+  return window.__fehlerPuffer;
 }
 
 ['click','change','input'].forEach(typ => {
@@ -3032,7 +3105,10 @@ async function setupErstAdminAnlegen(){
 
 async function loadLoginUsers(){
   const users=await idbGetAll('users');
-  const active=users.filter(u=>u.aktiv!==false);
+  /* v336 (R50): Bei gesetzter Gerätebindung nur den gebundenen Benutzer und
+     Admins zur Auswahl stellen. Das ist Bequemlichkeit, keine Sicherheit -
+     die verbindliche Prüfung steht in tryLogin(). */
+  const active=users.filter(u=>u.aktiv!==false && bindungErlaubt(u));
   const lastUser=localStorage.getItem('lastLoginUser')||'';
   const sel=document.getElementById('loginUserSel');
   sel.innerHTML='<option value="">– Benutzer wählen –</option>'+
@@ -3063,6 +3139,13 @@ async function tryLogin(){
     pinBuf='';updatePinDisplay();return;
   }
   let user=await idbGet('users',uid);
+  /* v336 (R50): Gerätebindung. Steht VOR der PIN-Prüfung, damit ein
+     gesperrter Benutzer nicht über die Fehlversuchszählung Rückschlüsse
+     auf die Richtigkeit einer PIN ziehen kann. */
+  if (user && !bindungErlaubt(user)){
+    showLoginErr('Dieses Gerät ist fest an '+(GERAET_BINDUNG?.name||'einen anderen Benutzer')+' gebunden.');
+    pinBuf=''; updatePinDisplay(); return;
+  }
   // v204 (P16): Rettungsanker – trägt der Datensatz (z. B. gerade erst von einem
   // Altgerät gemergt) noch einen Klartext-PIN ohne Hash, zuerst migrieren.
   if(user && !user.pinHash && user.pin!=null){
@@ -3449,6 +3532,7 @@ async function initApp(){
   }catch(e){ /* optionales Feature, kein Blocker */ }
   // v196 (A3): Geraete-Sync-Profil laden - bestimmt, welche Daten dieses Geraet synchronisiert
   try{ const pr=await idbGet('settings','syncProfil'); if(pr?.value==='hm') SYNC_PROFIL='hm'; }catch(e){}
+  await geraetBindungLaden();   // v336 (R50): vor dem ersten Login verfügbar
   await migriereBenutzernamenVoll().catch(e=>console.warn('Namensmigration:', e));
   // v323: Bestandsreparaturen als Kleinreparatur kennzeichnen (siehe
   // ausstattungMigration) - muss VOR der ersten NKA-Berechnung gelaufen sein.
@@ -3859,6 +3943,51 @@ async function getMyObjekte(){
 ═══════════════════════════════════════════════════════════ */
 function istVerwalter(u){ const r=(u||CU)?.role; return r==='admin'||r==='eigentuemer'; }
 function istSystemAdmin(u){ return (u||CU)?.role==='admin'; }
+
+/* ── v336 (R50): Gerätebindung ──────────────────────────────────────
+   Ist eine Bindung gesetzt, kann sich auf DIESEM Gerät nur der gebundene
+   Benutzer anmelden. Admins sind ausgenommen: sonst käme niemand mehr an
+   ein Gerät heran, um es zu warten oder die Bindung zu lösen.
+   Bewusst clientseitig und als solche beschriftet - wer die
+   Entwicklerwerkzeuge öffnet, hebt sie auf. Sie erschwert die Ausweitung
+   auf dem Gerät, sie verhindert sie nicht. */
+let GERAET_BINDUNG = null;   // {userId, name, gesetztAm} | null
+
+async function geraetBindungLaden(){
+  try{ const r = await idbGet('settings','geraetBindung'); GERAET_BINDUNG = r?.value || null; }
+  catch(e){ GERAET_BINDUNG = null; }
+  return GERAET_BINDUNG;
+}
+
+/* Darf sich dieser Benutzer auf diesem Gerät anmelden?
+   Der Benutzer-Datensatz wird uebergeben, weil beim Login CU noch nicht steht. */
+function bindungErlaubt(user){
+  if (!GERAET_BINDUNG || !GERAET_BINDUNG.userId) return true;   // keine Bindung
+  if (istSystemAdmin(user)) return true;                        // Admin immer
+  return user && user.id === GERAET_BINDUNG.userId;
+}
+
+async function geraetBindungSetzen(){
+  if (!istSystemAdmin()){ toast('Nur Admins können die Gerätebindung ändern'); return; }
+  const sel = document.getElementById('bindungUserSel');
+  if (!sel) return;
+  const uid = sel.value;
+  if (!uid){
+    if (!confirm('Gerätebindung aufheben?\n\nDanach kann sich auf diesem Gerät wieder jeder hinterlegte Benutzer anmelden.')) return;
+    await idbPut('settings', {id:'geraetBindung', value:null});
+    GERAET_BINDUNG = null;
+    toast('Gerätebindung aufgehoben');
+  } else {
+    const u = await idbGet('users', uid);
+    if (!u){ toast('Benutzer nicht gefunden'); return; }
+    if (!confirm('Dieses Gerät fest an "'+u.name+'" binden?\n\nDanach können sich hier nur noch dieser Benutzer und Admins anmelden. Auch das Sync-Profil lässt sich dann nur noch von einem Admin ändern.')) return;
+    await idbPut('settings', {id:'geraetBindung', value:{userId:u.id, name:u.name, gesetztAm:new Date().toISOString()}});
+    GERAET_BINDUNG = {userId:u.id, name:u.name, gesetztAm:new Date().toISOString()};
+    toast('Gerät an '+u.name+' gebunden');
+  }
+  renderSettings();
+}
+registerActions({ geraetBindungSetzen });
 function istEigentuemer(u){ return (u||CU)?.role==='eigentuemer'; }
 function rollenLabel(role){ return role==='admin'?'Admin':(role==='eigentuemer'?'Eigentümer':'Hausmeister'); }
 function darfObjekt(objektId, u){
@@ -22284,7 +22413,7 @@ async function wgbErzeugeUndDrucke(mieterId, sigListe) {
   let persZeilen = '';
   for (let i = 0; i < 7; i++) {
     const p = personen[i] || {name:'', geburtsdatum:''};
-    const val = p.name ? p.name + (p.geburtsdatum ? ', geb. ' + new Date(p.geburtsdatum).toLocaleDateString('de-DE') : '') : '';
+    const val = p.name || '';   // v334: ohne Geburtsdatum - § 19 BMG verlangt nur den Namen (Datenminimierung, Art. 5 Abs. 1 lit. c DSGVO)
     persZeilen += `<tr>
       <td style="width:20px;font-size:10px;color:#555;vertical-align:top;padding:2px 4px">${i+1}.</td>
       <td style="border-bottom:1px solid #999;padding:4px 2px;font-size:11px;min-height:22px">${val}</td>
@@ -31250,6 +31379,8 @@ async function renderSettings(){
   const el=document.getElementById('page-settings');
   const isAdmin=istVerwalter();        // Verwalter (Admin ODER Eigentümer): kaufmännische Bereiche
   const istSysAdmin=istSystemAdmin();  // Nur echter Admin: System, Benutzer, Objekt-Anlage
+  // v336 (R50): Benutzerliste für die Auswahl der Gerätebindung
+  const bindungUser = istSysAdmin ? await idbGetAll('users').catch(()=>[]) : [];
   el.innerHTML=`
     <div class="settings-tabs">
       <button class="st-tab active" data-tab="allgemein" data-action-click="switchSettingsTab" data-arg="allgemein"><i class="ti ti-adjustments"></i><span>Allgemein</span></button>
@@ -31355,6 +31486,30 @@ async function renderSettings(){
         werden die gedruckten Registrierschlüssel im Portal gültig.
       </p>
       <button class="btn btn-primary btn-full" data-action-click="modalSerienbriefEigentuemerwechsel"><i class="ti ti-printer"></i> Briefe erstellen</button>
+    </div>`:''}
+
+    ${istSysAdmin?`<div class="settings-card" data-tab="system">
+      <div class="card-hdr"><i class="ti ti-lock-access"></i> Gerätebindung</div>
+      <p style="font-size:13px;color:var(--ink-40);margin-bottom:12px;line-height:1.6">
+        Bindet <strong>dieses Gerät</strong> an einen Benutzer. Danach können sich hier nur noch
+        dieser Benutzer und Admins anmelden, und das Sync-Profil lässt sich nur noch von einem
+        Admin ändern. Gedacht für Hausmeister-Geräte.
+        <br><span style="color:var(--ink-60)">Hinweis: Die Sperre wirkt in der App. Sie erschwert
+        die Ausweitung auf dem Gerät, ersetzt aber weder ein Gerätepasswort noch – bei Verlust –
+        den Widerruf von OneDrive-Zugriff und Function-Key.</span>
+      </p>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <select id="bindungUserSel" style="flex:1;min-width:180px">
+          <option value="">– keine Bindung –</option>
+          ${bindungUser.filter(u=>u.aktiv!==false).map(u=>`<option value="${escAttr(u.id)}" ${GERAET_BINDUNG&&GERAET_BINDUNG.userId===u.id?'selected':''}>${esc(u.name)} · ${esc(rollenLabel(u.role))}</option>`).join('')}
+        </select>
+        <button class="btn btn-primary" data-action-click="geraetBindungSetzen"><i class="ti ti-device-floppy"></i> Übernehmen</button>
+      </div>
+      <div style="font-size:12px;color:var(--ink-60);margin-top:8px">
+        ${GERAET_BINDUNG&&GERAET_BINDUNG.userId
+          ? 'Aktuell gebunden an: <strong>'+esc(GERAET_BINDUNG.name||GERAET_BINDUNG.userId)+'</strong>'
+          : 'Aktuell keine Bindung – jeder hinterlegte Benutzer kann sich anmelden.'}
+      </div>
     </div>`:''}
 
     ${istSysAdmin?`<div class="settings-card" data-tab="system">
@@ -32999,6 +33154,14 @@ async function syncProfilUmstellen(){
   if (!sel) return;
   const neu = sel.value === 'hm' ? 'hm' : 'voll';
   if (neu === SYNC_PROFIL){ toast('Profil unverändert'); return; }
+  /* v336 (R50): Der eigentlich gefährliche Weg. Ein gebundenes Gerät von
+     'hm' zurück auf 'voll' zu stellen, holt beim nächsten Abgleich die
+     Volldatei mit IBAN, Kautionen und Selbstauskünften auf ein Gerät, das
+     sie nicht haben soll. Nur ein Admin darf das. */
+  if (GERAET_BINDUNG && GERAET_BINDUNG.userId && !istSystemAdmin()){
+    toast('Nur Admins dürfen das Sync-Profil dieses Geräts ändern');
+    sel.value = SYNC_PROFIL; return;
+  }
   if (neu === 'hm'){
     if (!confirm('Dieses Gerät auf HAUSMEISTER-Profil umstellen?\n\nAlle kaufmännischen und sensiblen Daten (Buchhaltung, Kautionen, Verträge, Mieterdetails, Verwalter-Zugänge) werden LOKAL von diesem Gerät entfernt. In OneDrive und auf dem Verwalter-Gerät bleiben sie vollständig erhalten.\n\nHinweis: Die Rückkehr zum Voll-Profil erfordert eine Neueinrichtung des Geräts.')){
       sel.value = SYNC_PROFIL; return;
@@ -33024,7 +33187,16 @@ async function syncProfilUmstellen(){
        Sinn des reduzierten Profils zunichte, wenn das Geraet verloren geht.
        backendKey bleibt vorerst: er wird ggf. fuer die Zaehler-Erkennung
        benoetigt - Entscheidung dazu ist offen (PROJECT_MEMORY R46). */
-    for (const id of ['saEncKey','portalEncKey']){
+    /* v335 (R46b): jetzt ALLE Geheimnisse, nicht nur die Entschluesselungs-
+       schluessel. In v333 blieb backendKey noch liegen, weil unklar war, ob
+       das Geraet ihn fuer die Zaehlerstand-Erkennung braucht. Entscheidung
+       vom 09.08.2026: braucht es nicht. Das HM-Geraet synchronisiert ueber
+       OneDrive, nicht ueber das Backend.
+       Folge: auf HM-Geraeten entfallen Zaehler-/Rechnungserkennung und
+       KI-Artikelnamen (manuelle Eingabe unveraendert moeglich).
+       Gewinn: ein verlorenes HM-Geraet oeffnet weder inbox-sa noch
+       portal-sync, portal-meldung/inbox oder send-mail. */
+    for (const id of SETTINGS_GEHEIM){
       await idbDelete('settings', id).catch(()=>{});
     }
   } else {
