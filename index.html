@@ -1269,7 +1269,57 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=35;   // v242: +buch_journal (F4 GoBD)
-const APP_VERSION = '2026-08-11-v343';
+const APP_VERSION = '2026-08-11-v345';
+/* v345 (11.08.2026) – KRITISCH: Nebenkostenabrechnung wies eine Summe aus,
+   die aus den gedruckten Positionen nicht nachvollziehbar war.
+   BEFUND (Nutzer, Kyffhaeuser 28 WE 1): Im Mieterbrief der liegenschaftsweiten
+   Abrechnung fehlte die Zeile "Treppenhausreinigung". Die Summe stimmte aber -
+   sie enthielt die 526,51 EUR sehr wohl. Der Mieter sieht also 1.544,61 EUR an
+   Einzelposten und darunter eine Summe von 2.071,12 EUR.
+   URSACHE: Der Zeilenbau im Mieterbrief (nkaLgErzeugen) kannte nur die
+   Schluessel 'wfl', 'personen' und 'wfl_gruppe'; jeder andere fiel in ein
+   stilles "else { return; }" und wurde uebersprungen. Die SUMME dagegen kommt
+   aus getAnteil() und rechnet alle Schluessel korrekt. Anzeige und Rechnung
+   liefen also auseinander. 'etage' kam mit v314 dazu - der Zeilenbau wurde
+   nicht mitgezogen.
+   RECHTLICH: Eine Betriebskostenabrechnung muss aus sich heraus nachvollziehbar
+   sein (BGH VIII ZR 84/07 u. a.: Angabe der Gesamtkosten, des Verteilerschluessels,
+   der Berechnung des Anteils und der Vorauszahlungen). Eine Summe, die 526,51 EUR
+   mehr ausweist als die aufgefuehrten Posten, genuegt dem nicht. Bereits
+   versandte Abrechnungen dieser Art sind zu korrigieren - siehe Hinweis im
+   PROJECT_MEMORY.
+   BEHOBEN, dreifach:
+   1) 'etage' wird als eigener Zweig ausgegeben (Schluessel, Wohnmonate der
+      Etage, eigener Anteil).
+   2) KEIN stilles Ueberspringen mehr: ein unbekannter Schluessel erzeugt
+      trotzdem eine Zeile mit dem berechneten Anteil. Lieber eine Zeile mit
+      duerftiger Erklaerung als eine fehlende Position.
+   3) KONTROLLSUMME: die Summe der gedruckten Zeilen wird gegen den gerechneten
+      Anteil geprueft. Weichen sie um mehr als einen Cent ab, erscheint ein
+      sichtbarer Hinweis im Dokument statt einer stillen Differenz. */
+/* v344 (11.08.2026) – Geraetetest v343: drei Befunde.
+   F1) EIGENE REGRESSION AUS v343, und zwar ein WIEDERHOLUNGSFEHLER.
+       mvSammleAnlagenStyles scopet das CSS der Anlagen auf .anlage-vt. Der
+       Regex dafuer sucht den Selektor nach '{', '}' oder Zeilenanfang - steht
+       davor ein CSS-KOMMENTAR, wird dieser Teil des vermeintlichen Selektors
+       und die Regel geht kaputt. v343 hat der body-Regel des Anlagenrahmens
+       genau so einen Kommentar vorangestellt. Folge: die Schriftregel wurde
+       nicht auf .anlage-vt umgeschrieben und griff in KEINEM eingebetteten
+       Kontext. Im Mietvertrag erbten die Anlagen dadurch Georgia (Serifen,
+       Nutzerbefund am Ausdruck vom 11.08.), im Brief zufaellig das richtige
+       Atkinson - dort steht es ohnehin auf dem body des Briefdokuments.
+       Derselbe Regex hat in v316 schon einmal genau so zugeschlagen; der
+       Kommentar dort warnt davor. DAUERHAFTE ABHILFE statt Umformatieren:
+       Kommentare werden VOR dem Scoping entfernt. Damit ist die Fehlerklasse
+       geschlossen, nicht nur dieser eine Fall.
+   F2) ANLAGE_DRUCKSEITEN nach F1 neu gemessen. Die in v343 notierte
+       Hausordnung mit 2 Seiten war ein MESSARTEFAKT: bei kaputter Schriftregel
+       misst der Container mit einer anderen Ersatzschrift.
+   F3) Das SEPA-Mandat im Mietvertrag trug keinen Namen des Zahlungspflichtigen
+       - mvDruckDaten setzte sepaZahlerName nie, das Feld blieb leer und der
+       Hinweis darunter sprach vom "vorgedruckten Namen", den es nicht gab.
+       Im Eigentuemerwechsel-Brief ist das seit v326 richtig. Jetzt dieselbe
+       Darstellung (Nachname, Vorname; mehrere Vertragspartner mit "und"). */
 /* v343 (11.08.2026) – Briefschrift jetzt fuer ALLE vier Vertragsanlagen.
    v342 hatte nur SEPA-Mandat und Datenschutzhinweis umgestellt; liegen in
    einer Sendung Anlagen mit und ohne Atkinson, faellt der Unterschied auf.
@@ -18933,10 +18983,12 @@ async function erstelleNKALiegenschaft(lgId, korrektur){
     const mWohnBis=(_aISO&&new Date(_aISO)<new Date(bis))?_aISO:bis;
 
     let posZeilen='';
+    /* v345: Kontrollsumme - siehe Gegenprobe weiter unten. */
+    let zeilenSumme=0;
     vorlage.kosten.forEach(k=>{
       if(k.schluessel==='einzeln'){
         const h=kostenMap[k.id]?.[m.id]||0;
-        if(h>0) posZeilen+=nkaZeile(k.name,'bes. Berechnung','',h,1,h);
+        if(h>0){ posZeilen+=nkaZeile(k.name,'bes. Berechnung','',h,1,h); zeilenSumme+=h; }
         return;
       }
       const b=kostenMap[k.id]||0; if(!b) return;
@@ -18950,15 +19002,61 @@ async function erstelleNKALiegenschaft(lgId, korrektur){
         if(g!==k.gruppe){ return; }              // Position betrifft diesen Mieter nicht
         const div=gruppenFM[k.gruppe]||0;
         geteilt=div; anteil=fm; preis=div>0?b/div:0; kosten=div>0?b*fm/div:0;
-      } else { return; }
+      }
+      /* v345: 'etage' fehlte hier und wurde still uebersprungen - die Zeile
+         verschwand aus dem Brief, die Summe enthielt den Betrag weiterhin.
+         Ausgewiesen wird, was der Mieter zum Nachrechnen braucht: die
+         Wohnmonate seiner Etage als Teiler und die eigenen Wohnmonate. */
+      else if(k.schluessel==='etage'){
+        const eigen = weMonate(m,von,bis);
+        const eKey = nkaEtageKey(m);
+        let etagenMonate = 0, anzEtagen = 0;
+        if(eKey!=null){
+          const proEtage = new Map();
+          mieter.forEach(mm=>{ const e=nkaEtageKey(mm); if(e==null) return;
+            proEtage.set(e,(proEtage.get(e)||0)+weMonate(mm,von,bis)); });
+          anzEtagen = proEtage.size;
+          etagenMonate = proEtage.get(eKey)||0;
+        }
+        slLabel='Etage';
+        geteilt = anzEtagen ? (anzEtagen+' Etagen / '+etagenMonate+' Mon.') : '–';
+        anteil  = eigen;
+        preis   = (anzEtagen && etagenMonate>0) ? (b/anzEtagen/etagenMonate) : 0;
+        kosten  = getAnteil(k, m);
+      }
+      /* v345: KEIN stilles Ueberspringen mehr. Ein Schluessel, den dieser
+         Zeilenbau nicht kennt, floss bisher trotzdem in die Summe ein - genau
+         so entstand der Befund oben. Lieber eine Zeile mit knapper Erklaerung
+         als eine fehlende Position in einer Abrechnung. */
+      else {
+        slLabel = String(k.schluessel||'–');
+        geteilt = '–'; anteil = '–'; preis = 0; kosten = getAnteil(k, m);
+        console.warn('NKA: unbekannter Verteilerschluessel im Zeilenbau:', k.schluessel, k.id);
+      }
+      zeilenSumme += Number(kosten)||0;
       posZeilen+=nkaZeile(k.name, slLabel,
         typeof geteilt==='number'?geteilt.toFixed(2):geteilt, b, anteil, preis, kosten);
     });
     if(ex.repsImZeitraum?.length>0){
       ex.repsImZeitraum.forEach(r=>{ posZeilen+=nkaZeile(r.titel+' ('+fmtDate(r.datum)+')', r.extern==='extern'?'Extern':'Intern','–','–','–','–',r.kosten||0); });
     }
-    if(ex.krManual>0) posZeilen+=nkaZeile('Kleinreparaturen (manuell)','–','–','–','–','–',ex.krManual);
-    if(ex.so>0) posZeilen+=nkaZeile('Sonstiges','–','–','–','–','–',ex.so);
+    if(ex.krManual>0){ posZeilen+=nkaZeile('Kleinreparaturen (manuell)','–','–','–','–','–',ex.krManual); zeilenSumme+=ex.krManual; }
+    if(ex.so>0){ posZeilen+=nkaZeile('Sonstiges','–','–','–','–','–',ex.so); zeilenSumme+=ex.so; }
+
+    /* v345: GEGENPROBE. Der Mieter muss die Summe aus den gedruckten Zeilen
+       nachrechnen koennen. Weicht die Summe der Zeilen vom gerechneten Anteil
+       ab, fehlt eine Position - genau der Fehler aus v344. Dann steht es
+       sichtbar im Dokument, statt still in der Summe zu verschwinden. */
+    const _sollSumme = nkAnteil + (ex.kr||0) + (ex.so||0);
+    const _abw = Math.abs(zeilenSumme - _sollSumme);
+    const kontrollHinweis = (_abw > 0.011)
+      ? '<div style="margin:6px 0;padding:6px 9px;border:1.5px solid #C0392B;border-radius:4px;'
+        + 'background:#FDECEA;color:#8B1E13;font-size:10px;font-weight:600">'
+        + 'Rechenkontrolle nicht bestanden: Die aufgef\u00fchrten Positionen ergeben '
+        + fmtEur(zeilenSumme) + ', die Abrechnung weist ' + fmtEur(_sollSumme)
+        + ' aus (Abweichung ' + fmtEur(_abw) + '). Diese Abrechnung bitte NICHT versenden.</div>'
+      : '';
+    if(_abw > 0.011) console.error('NKA-Kontrollsumme', m.id, zeilenSumme, _sollSumme);
 
     let grussHTML;
     if(sigListe.length>=2){
@@ -19008,6 +19106,7 @@ async function erstelleNKALiegenschaft(lgId, korrektur){
         <thead><tr><th>Kostenart</th><th>Schlüssel</th><th>Betrag</th><th>Geteilt durch</th><th>Ihr Anteil</th><th>Preis/Anteil</th><th>Ihre Kosten</th></tr></thead>
         <tbody>${posZeilen}</tbody>
       </table>
+      ${kontrollHinweis}
       <table class="summen-table">
         <tr><td>Summe Nebenkosten</td><td>${fmtEur(nkAnteil-heiz-ex.kr-ex.so)}</td></tr>
         ${heiz>0?`<tr><td>Heiz-Warmwasserkosten</td><td>${fmtEur(heiz)}</td></tr>`:''}
@@ -20407,14 +20506,17 @@ function mvVertragHTML(d){
    bleibt also nicht unbemerkt.
    Stand der Werte: 29.07.2026, v289, ohne manuellen Umbruch im Merkblatt. */
 const ANLAGE_DRUCKSEITEN = {
-  hausordnung: 2,   // v343: 3 -> 2. Der Wechsel auf die Briefschrift war NICHT als
-                    // Verdichtung gedacht, spart aber ein Blatt - Atkinson setzt hier
-                    // guenstiger um als Arial. Mit messen_ew.py in beiden Kontexten
-                    // bestaetigt. Zuvor v294: Verdichtungsversuch 9.5->9.0pt brachte
-                    // nichts und wurde zugunsten der Lesbarkeit zurueckgenommen.
+  hausordnung: 2,   // v344 nachgemessen (v343-Wert war zufaellig richtig, aber aus
+                    // einer Messung mit kaputter Schriftregel - siehe F1). Der Wechsel
+                    // auf die Briefschrift spart hier ein Blatt; Atkinson setzt
+                    // kompakter als Arial. Zuvor v294: Verdichtungsversuch
+                    // 9.5->9.0pt brachte nichts und wurde zurueckgenommen.
   merkblatt:   2,   // v294: verdichtet (10pt/1.4 -> 9.6pt/1.32), per messen_mv_kontext.py
                     // im Mietvertrags-Kontext nachgemessen: jetzt 2 statt 3 Seiten.
-  dsgvo:        2,   // Haupttext + Unterschrift/Fusszeile
+  dsgvo:        1,   // v344: 2 -> 1. Bis v343 lief der Schluss (Rest von Nr. 9 und
+                    // Nr. 10) auf ein zweites, zu 85 % leeres Blatt. Mit der korrekt
+                    // greifenden Briefschrift passt der Hinweis auf eine Seite -
+                    // OHNE Textkuerzung, der Wortlaut ist unveraendert.
   sepa:         1,   // v342: einsprachig deutsch -> passt auf ein Blatt
                     // (messen_ew.py, beide Kontexte: Mietvertrag und EW-Brief)
 };
@@ -20564,7 +20666,14 @@ function mvSammleAnlagenStyles(anl){
   const m = /<style>([\s\S]*?)<\/style>/i.exec(probe);
   // Auf .anlage-vt scopen, damit die Anlagen-Styles den MV-Text nicht verändern.
   if(!m) return '';
-  const scoped = m[1].replace(/(^|\})\s*([^{@}]+)\{/g, (full, br, sel)=>{
+  /* v344: Kommentare ZUERST entfernen. Der Regex unten erkennt einen Selektor
+     an dem, was vor ihm steht ('{', '}' oder Zeilenanfang) - ein davorstehender
+     CSS-Kommentar wird sonst Teil des Selektors und die Regel greift nie mehr.
+     Das ist in v316 und noch einmal in v343 passiert, beide Male unbemerkt,
+     weil CSS ungueltige Regeln still verwirft. Kein Fehler, keine Meldung, nur
+     ein anderes Schriftbild. */
+  const ohneKommentare = m[1].replace(/\/\*[\s\S]*?\*\//g, '');
+  const scoped = ohneKommentare.replace(/(^|\})\s*([^{@}]+)\{/g, (full, br, sel)=>{
     // @page und body unscoped lassen bzw. neutralisieren
     const s = sel.trim();
     if(s.startsWith('@')||s==='*'||s==='body') return br + ' .anlage-vt ' + (s==='body'?'':s) + '{';
@@ -21304,8 +21413,38 @@ async function mvBaueRenderdaten(){
     /* v301: Anschrift des Zahlungspflichtigen vordrucken statt abschreiben
        lassen - sie ist die Wohnungsanschrift und uns bekannt. */
     sepaZahlerAnschrift: obj ? [obj.name, obj.ort].filter(Boolean).join(', ') : '',
+    /* v344: Name des Zahlungspflichtigen. Fehlte bisher komplett - das Mandat
+       ging ohne Namen an den Mieter, obwohl er uns bekannt ist, und der Hinweis
+       darunter verwies auf einen "vorgedruckten Namen". Darstellung wie im
+       Eigentuemerwechsel-Brief (ewSepaZahlerName): "Nachname, Vorname",
+       mehrere Vertragspartner mit "und" verbunden - beide haften. */
+    sepaZahlerName: mvSepaZahlerName(D),
     sepaMandatsreferenz: mvMandatsreferenz(D),
   };
+}
+
+/* v344: Name(n) des Zahlungspflichtigen fuer das SEPA-Mandat des Mietvertrags.
+   Der Generator fuehrt die Vertragspartner in mieter1Name/mieter2Name; der
+   Brief zieht sie dagegen aus der Personenliste des Mieters (ewSepaZahlerName).
+   Beide Wege muessen dasselbe Format liefern, damit Mandat aus Vertrag und
+   Mandat aus Brief fuer die Bank gleich aussehen: "Nachname, Vorname". */
+function mvSepaZahlerName(D){
+  try{
+    const roh = [ (D||{}).mieter1Name, (D||{}).mieter2Name ]
+      .map(x => String(x||'').trim())
+      /* Der Generator laesst Zusaetze wie ", geb. 12.03.1985" im Namensfeld zu
+         (siehe Platzhalter im Formular). Auf dem Mandat hat das nichts zu
+         suchen - die Bank gleicht den Kontoinhaber ab. */
+      .map(x => x.replace(/,?\s*geb\..*$/i, '').trim())
+      .filter(Boolean);
+    if(!roh.length) return '';
+    const namen = roh.map(x => {
+      const t = (typeof ewNameTeile==='function') ? ewNameTeile({name:x}) : null;
+      if(!t) return x;
+      return t.vor ? (t.nach + ', ' + t.vor) : t.nach;
+    });
+    return namen.join(' und ');
+  }catch(e){ console.warn('mvSepaZahlerName:', e); return ''; }
 }
 
 /* v285: Mandatsreferenz nach SEPA-Regelwerk (Rulebook: hoechstens 35 Zeichen,
