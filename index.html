@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; object-src 'none'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdn.sheetjs.com; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob: https:; connect-src 'self' https://cdn.jsdelivr.net https://func-nadigpfau-g7fghseafmftemeq.westeurope-01.azurewebsites.net https://api.nadigpfau.de https://graph.microsoft.com https://login.microsoftonline.com https://*.microsoftpersonalcontent.com https://*.sharepoint.com https://*.up.1drv.com; frame-src 'self' blob:; worker-src 'self' blob:; base-uri 'self'; form-action 'self';">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; object-src 'none'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdn.sheetjs.com; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob: https:; connect-src 'self' https://stnadigpfau.blob.core.windows.net https://cdn.jsdelivr.net https://func-nadigpfau-g7fghseafmftemeq.westeurope-01.azurewebsites.net https://api.nadigpfau.de https://graph.microsoft.com https://login.microsoftonline.com https://*.microsoftpersonalcontent.com https://*.sharepoint.com https://*.up.1drv.com; frame-src 'self' blob:; worker-src 'self' blob:; base-uri 'self'; form-action 'self';">
 <meta name="referrer" content="no-referrer">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -1269,7 +1269,19 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=35;   // v242: +buch_journal (F4 GoBD)
-const APP_VERSION = '2026-08-10-v338';
+const APP_VERSION = '2026-08-11-v340';
+/* v340 (11.08.2026) – Fotouebernahme aus Portalmeldungen repariert.
+   Ursache war NICHT die Azure-CORS-Einstellung, sondern die eigene CSP:
+   connect-src listete den Blob-Host nicht. Das <img> zeigte die Bilder
+   trotzdem, weil img-src weit gefasst ist (https:) - fetch() wurde
+   blockiert. Die SAS-Links tragen ihre Berechtigung selbst; der Host ist
+   derselbe, aus dem die Bilder ohnehin schon angezeigt werden, es kommt
+   also kein neues Ziel hinzu. */
+/* v339 (10.08.2026) – Nachlese Mieterportal, Teil 2.
+   1) portalMeldungId am Mangel: verhindert doppeltes Anlegen auch geraete-
+      uebergreifend (Maengel synchronisieren, eine lokale Sperre nicht).
+   2) Mangel 'behoben' -> Meldung wird im Portal auf 'erledigt' gesetzt.
+   3) Blitzknopf: getCapabilities() nach 600 ms erneut abfragen. */
 /* v338 (10.08.2026) – "Als Mangel anlegen" uebernimmt jetzt vollstaendig.
    1) Objekt: Kennung traegt die ID gross (wohnungsKennung -> toUpperCase),
       getObj() vergleicht zeichengenau -> Auswahl fiel auf das ERSTE Objekt
@@ -8641,6 +8653,19 @@ async function portalMeldungenStandHolen(){
   }
 }
 
+/* v339: Welche Meldungen sind bereits in einen Mangel ueberfuehrt? Die
+   Antwort steht in den Maengeln (portalMeldungId) und wandert damit ueber
+   OneDrive auf alle Geraete - eine rein lokale Merkliste wuerde bei zwei
+   Bearbeitern nicht wirken. */
+async function portalBereitsUmgewandelt(){
+  try{
+    const alle = await idbGetAll('maengel');
+    const map = {};
+    for(const m of alle){ if(m && m.portalMeldungId) map[m.portalMeldungId] = m; }
+    return map;
+  }catch(e){ return {}; }
+}
+
 async function portalMeldungenLaden(alle){
   const body=document.getElementById('pmBody');
   if(!body) return;
@@ -8678,6 +8703,9 @@ async function portalMeldungenLaden(alle){
     return;
   }
 
+  // v339: Zuordnung Meldung -> bereits angelegter Mangel
+  const umgewandelt = await portalBereitsUmgewandelt();
+
   let html=kopf;
   for(const e of liste){
     let text='', tel='', zutritt='';
@@ -8709,13 +8737,32 @@ async function portalMeldungenLaden(alle){
       <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
         ${e.status!=='in_arbeit'?`<button class="btn btn-sm" onclick="portalMeldungStatus('${escJs(e.id)}','in_arbeit')"><i class="ti ti-progress"></i> In Arbeit</button>`:''}
         ${e.status!=='erledigt'?`<button class="btn btn-sm btn-primary" onclick="portalMeldungStatus('${escJs(e.id)}','erledigt')"><i class="ti ti-check"></i> Erledigt</button>`:''}
-        <button class="btn btn-sm" onclick="portalMeldungAlsMangel('${escJs(e.id)}')"><i class="ti ti-tool"></i> Als Mangel anlegen</button>
+        ${umgewandelt[e.id]
+          ? `<span class="btn btn-sm" style="opacity:.55;cursor:default" title="Bereits als Mangel angelegt"><i class="ti ti-check"></i> Mangel ${esc(String(umgewandelt[e.id].nummer||''))} angelegt</span>`
+          : `<button class="btn btn-sm" onclick="portalMeldungAlsMangel('${escJs(e.id)}')"><i class="ti ti-tool"></i> Als Mangel anlegen</button>`}
       </div>
     </div>`;
     window._pmInbox=window._pmInbox||{};
     window._pmInbox[e.id]={...e, _text:text};
   }
   body.innerHTML=html;
+}
+
+/* v339: Status setzen OHNE Oberflaechenwirkung. portalMeldungStatus() zeigt
+   einen Hinweis an und laedt die Meldungsliste neu - beides ist falsch, wenn
+   das Fenster laengst geschlossen ist und der Nutzer gerade einen Mangel
+   gespeichert hat. Schlaegt es fehl, bleibt die Meldung offen; das ist der
+   harmlosere Ausgang als ein faelschlich geschlossener Vorgang. */
+async function portalMeldungStatusStill(id,status){
+  const key=(await idbGet('settings','backendKey').catch(()=>null))?.value;
+  if(!key) return false;
+  try{
+    const r=await fetchMitTimeout(BACKEND_AZURE+'/api/portal-meldung/status',{
+      method:'POST', headers:{'Content-Type':'application/json','x-functions-key':key},
+      body:JSON.stringify({ id, status })
+    }, 12000);
+    return !!(r && r.ok);
+  }catch(e){ return false; }
 }
 
 async function portalMeldungStatus(id,status){
@@ -8795,6 +8842,8 @@ async function portalMeldungAlsMangel(id){
          sofort holen. Fehler bleiben still: ein fehlendes Foto darf die
          Mangelerfassung nicht verhindern. */
       if(Array.isArray(e.fotos) && e.fotos.length) portalFotosUebernehmen(e.fotos);
+      /* v339: Herkunft merken, damit saveMangel() sie am Datensatz ablegt. */
+      window._mangelAusMeldung = id;
     }, 60);
   }, 80);
 }
@@ -29091,6 +29140,7 @@ async function modalAddMangel(mieterId,objektId,type='mangel'){
   mangelObjChange(mieterId);
   mangelKostenUpdate();
   window._mangelPhotos=[];
+  window._mangelAusMeldung=null;   // v339: nur gesetzt, wenn aus einer Portalmeldung heraus
   window._mangelSession='mangel_'+Date.now();
   restoreMangelFotos();
   }
@@ -29188,9 +29238,18 @@ async function saveMangel(){
     kostenArbeit:arbeit||null, kosten:gesamt||null,
     status:document.getElementById('mgStatus').value,
     fotos:window._mangelPhotos||[],
+    /* v339: Herkunft aus dem Mieterportal. Wandert ueber OneDrive mit, damit
+       auch ein zweites Geraet die Meldung als bereits umgewandelt erkennt. */
+    portalMeldungId: window._mangelAusMeldung || null,
     erstellt:now(),ersteller:CU?.name||'',
   };
   await idbPut('maengel',entry);
+  /* v339: Ist der Mangel schon beim Anlegen erledigt, die Meldung gleich
+     mitschliessen. Fehler bleiben still - der Mangel ist gespeichert, das
+     zaehlt; der Portalstatus laesst sich jederzeit von Hand nachziehen. */
+  if(entry.portalMeldungId && entry.status==='behoben'){
+    try{ await portalMeldungStatusStill(entry.portalMeldungId,'erledigt'); }catch(e){}
+  }
   try {
     const offen = await idbGetAll('fotos', 'protId', '__mangel_offen__');
     for(const fo of offen) await idbDelete('fotos', fo.id).catch(()=>{});
@@ -42653,6 +42712,21 @@ async function startCamStream(){
   if(btn){
     btn.style.display = caps.torch ? 'flex' : 'none';
     camTorchAnzeige();
+    /* v339: Zweiter Blick. Unter Android/Chrome meldet getCapabilities()
+       direkt nach play() haeufig noch kein 'torch', obwohl die Kamera es
+       kann - der Zoomregler erschien, der Blitzknopf nicht (Geraetetest
+       10.08.2026). Nach kurzer Verzoegerung ist die Faehigkeit da.
+       Nur einblenden, nie ausblenden: ein schon sichtbarer Knopf soll
+       nicht wieder verschwinden. */
+    if(!caps.torch){
+      setTimeout(()=>{
+        try{
+          const t=camStream && camStream.getVideoTracks ? camStream.getVideoTracks()[0] : null;
+          const c=t && t.getCapabilities ? t.getCapabilities() : {};
+          if(c.torch && btn){ btn.style.display='flex'; camTorchAnzeige(); }
+        }catch(e){}
+      }, 600);
+    }
   }
   /* v332: Zoom-Regler an die vom Geraet gemeldeten Grenzen binden. Ohne
      gemeldete Faehigkeit bleibt er verborgen - ein Regler ohne Wirkung ist
