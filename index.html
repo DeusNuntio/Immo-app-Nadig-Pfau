@@ -1269,7 +1269,36 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=35;   // v242: +buch_journal (F4 GoBD)
-const APP_VERSION = '2026-08-11-v341';
+const APP_VERSION = '2026-08-11-v343';
+/* v343 (11.08.2026) – Briefschrift jetzt fuer ALLE vier Vertragsanlagen.
+   v342 hatte nur SEPA-Mandat und Datenschutzhinweis umgestellt; liegen in
+   einer Sendung Anlagen mit und ohne Atkinson, faellt der Unterschied auf.
+   Hausordnung und Merkblatt ziehen deshalb nach. Groesse und Zeilenabstand
+   bleiben unveraendert - die Seitenzahlen sind mit messen_ew.py in BEIDEN
+   Kontexten (Mietvertrag und Eigentuemerwechsel-Brief) nachgemessen und
+   unveraendert: Hausordnung 3, Merkblatt 2, Datenschutzhinweis 2, SEPA 1.
+   Der Schriftfilter in anlageSchriften deckt jetzt alle vier Kompaktklassen ab. */
+/* v342 (11.08.2026) – Eigentuemerwechsel-Brief: Nutzerbefund am Ausdruck.
+   1) Der Verwendungszweck steht wieder in EINER Zeile. Der v337-Umbruch an
+      den Schraegstrichen war eine Notloesung gegen eine Zellenbreite, die es
+      so nicht gibt: gemessen im Chromium-Druck ist die Wertspalte 116,6 mm
+      breit, der laengste reale Zweck (Wohnung + ein Stellplatz, 60 Zeichen)
+      braucht bei 8,5 pt 111,1 mm. Er passt also. Nur die theoretisch langen
+      Faelle (Wohnung mit mehreren Stellplaetzen) brauchen weiterhin eine
+      Ausweichstufe - dafuer ewZweckKlasse/ewZweckText.
+      Gewinn: 2 Zeilen Hoehe auf Seite 1.
+   2) SEPA-Lastschriftmandat: die englischen Paralleltexte sind entfernt.
+      Das Mandat lief dadurch auf zwei Blaetter, obwohl alle Adressaten
+      deutschsprachig sind. Die Verordnung (EU) Nr. 260/2012 schreibt den
+      WORTLAUT der Ermaechtigung vor, nicht dessen Zweisprachigkeit; der
+      DK-Vordruck ist zweisprachig, weil er auch grenzueberschreitend
+      eingesetzt wird. Alle Pflichtangaben des Rulebooks bleiben unveraendert.
+   3) SEPA-Mandat und Datenschutzhinweis laufen jetzt in der Briefschrift
+      (Atkinson Hyperlegible) statt in Arial - dieselbe Begruendung wie in
+      v325: I, l und 1 sind dort unterscheidbar, und das Mandat wird von Hand
+      ausgefuellt. Arial bleibt Rueckfallebene. Hausordnung und Merkblatt
+      bleiben bewusst unveraendert (nicht Teil des Nutzerauftrags).
+   ANLAGE_DRUCKSEITEN.sepa von 2 auf 1 nachgemessen (messen_ew.py). */
 /* v341 (11.08.2026) – Seitenumbruch Eigentuemerwechsel-Brief repariert.
    Der v337-Umbruch im Verwendungszweck kostete 2-3 Zeilen; der Portal-
    Kasten mit QR und Registrierschluessel fiel aus Seite 1 und tauchte
@@ -20182,7 +20211,18 @@ function mvVertragHTML(d){
       thead { display:table-header-group; }
     </style>`;
 
-  let h = '<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8"><title>Wohnraum-Mietvertrag</title>' + STYLE + mvSammleAnlagenStyles(anl) + '</head><body>';
+  /* v343: Die Anlagen laufen in der Briefschrift. Der Mietvertrag ist ein
+     eigenstaendiges Dokument (Druckvorschau per srcdoc, Archivkopie im
+     'dokumente'-Store) - ohne eingebettete Schrift faellt Atkinson dort still
+     auf Arial zurueck, und dieselbe Anlage haette im Vertrag eine andere
+     Seitenzahl als im Eigentuemerwechsel-Brief. ANLAGE_DRUCKSEITEN kann aber
+     nur EINE Zahl tragen; die Duplex-Leerseiten saessen in einem der beiden
+     Faelle falsch. Kosten: rund 46 kB je Vertragsdokument (nur Atkinson, kein
+     Festbreitensatz) - vertretbar, weil Vertraege selten entstehen. Fuer die
+     116 Serienbriefe gilt bewusst die Gegenentscheidung (v319). */
+  const mvSchriften = (anl && (anl.hausordnung || anl.merkblatt || anl.dsgvo || anl.sepa))
+    ? anlageSchriften('ho-kompakt') : '';
+  let h = '<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8"><title>Wohnraum-Mietvertrag</title>' + STYLE + mvSammleAnlagenStyles(anl) + mvSchriften + '</head><body>';
 
   // Briefkopf
   h += '<div class="mv-kopf"><b>' + mvEsc(d.briefkopfName) + '</b><br>' + mvEsc(d.briefkopfAnschrift) + '<br>' + mvEsc(d.briefkopfKontakt) + '</div>';
@@ -20367,13 +20407,16 @@ function mvVertragHTML(d){
    bleibt also nicht unbemerkt.
    Stand der Werte: 29.07.2026, v289, ohne manuellen Umbruch im Merkblatt. */
 const ANLAGE_DRUCKSEITEN = {
-  hausordnung: 3,   // § 1 bis § 10 samt Unterschriftszeile - v294: nochmals verdichtet
-                    // (9.5pt->9.0pt/1.24 probeweise), Seitenzahl blieb per Messung bei 3;
-                    // beim lesbareren 9.5pt/1.34-Stand belassen (kein Vorteil durch kleinere Schrift).
+  hausordnung: 2,   // v343: 3 -> 2. Der Wechsel auf die Briefschrift war NICHT als
+                    // Verdichtung gedacht, spart aber ein Blatt - Atkinson setzt hier
+                    // guenstiger um als Arial. Mit messen_ew.py in beiden Kontexten
+                    // bestaetigt. Zuvor v294: Verdichtungsversuch 9.5->9.0pt brachte
+                    // nichts und wurde zugunsten der Lesbarkeit zurueckgenommen.
   merkblatt:   2,   // v294: verdichtet (10pt/1.4 -> 9.6pt/1.32), per messen_mv_kontext.py
                     // im Mietvertrags-Kontext nachgemessen: jetzt 2 statt 3 Seiten.
   dsgvo:        2,   // Haupttext + Unterschrift/Fusszeile
-  sepa:         2,   // ausgefuelltes Mandat (Platzhalter waere 1 Seite)
+  sepa:         1,   // v342: einsprachig deutsch -> passt auf ein Blatt
+                    // (messen_ew.py, beide Kontexte: Mietvertrag und EW-Brief)
 };
 const ANLAGE_PLATZHALTER_SEITEN = 1;
 
@@ -23878,7 +23921,7 @@ async function ewSeiteFuer(m, opt){
           <tr><td>Empfänger</td><td>${esc(empfaenger)}</td></tr>
           <tr><td>IBAN</td><td><b class="ew-mono">${esc(ibanFormatiert(iban))}</b></td></tr>
           ${gs.ktoBank?`<tr><td>Bank</td><td>${esc(gs.ktoBank)}</td></tr>`:''}
-          <tr><td>Verwendungszweck</td><td><span class="ew-mono ew-zweck">${esc(zweck).replace(/ \/ /g,'\n/ ').replace(/^\s+/,'')}</span></td></tr>
+          <tr><td>Verwendungszweck</td><td><span class="ew-mono ${ewZweckKlasse(zweck)}">${esc(ewZweckText(zweck))}</span></td></tr>
           <tr><td>Monatlich</td><td><b>${fmtEur(summe)}</b></td></tr>
         </table>
       </td>
@@ -24044,6 +24087,27 @@ function ibanFormatiert(iban){
   return String(iban||'').replace(/\s+/g,'').replace(/(.{4})/g,'$1 ').trim();
 }
 
+/* v342: Der Verwendungszweck soll in EINER Zeile stehen - so, wie ihn der
+   Mieter in die Banking-App abtippt. Gemessene Grundlagen (Chromium-Druck,
+   Wertspalte des Bankkastens 116,6 mm breit):
+     43 Zeichen ->  79,6 mm      (Wohnung ohne Stellplatz)
+     60 Zeichen -> 111,1 mm      (Wohnung + ein Stellplatz, laengster realer Fall)
+     63 Zeichen -> 116,6 mm      (Grenze bei 8,5 pt)
+   Darueber wird verkleinert, und erst jenseits von 72 Zeichen (Wohnung mit
+   mehreren Stellplaetzen - theoretisch, kommt im Bestand nicht vor) bricht der
+   Zweck wie in v337 an den Schraegstrichen um. Der GiroCode traegt den Zweck
+   unabhaengig davon immer als EINE Zeichenkette. */
+function ewZweckKlasse(zweck){
+  const n = String(zweck||'').length;
+  if(n <= 60) return 'ew-zweck';
+  if(n <= 72) return 'ew-zweck ew-zweck-eng';
+  return 'ew-zweck ew-zweck-umbruch';
+}
+function ewZweckText(zweck){
+  const t = String(zweck||'');
+  return t.length <= 72 ? t : t.replace(/ \/ /g, '\n/ ').replace(/^\s+/, '');
+}
+
 function ewStil(){
   return `<style>
     *{margin:0;padding:0;box-sizing:border-box}
@@ -24140,13 +24204,11 @@ function ewStil(){
     .ew-daten{border-collapse:collapse;font-size:10pt}
     .ew-daten td{padding:0.45mm 0;vertical-align:top}   /* v341: enger, siehe Kopfkommentar */
     .ew-daten td:first-child{color:#666;width:30mm;padding-right:2.5mm;font-size:9.5pt}
-    /* v337: Der Verwendungszweck ist mit Stellplatz bis zu 60 Zeichen lang und
-       passt bei lesbarer Groesse auf keine Zeile (Wertspalte ~85 mm, benoetigt
-       waeren ~127 mm). Statt ihn zu schrumpfen, bricht er jetzt GEWOLLT an den
-       Schraegstrichen um - eine Komponente je Zeile. Das ist beim Abtippen in
-       die Banking-App besser lesbar als ein Umbruch an beliebiger Stelle.
-       Der GiroCode traegt den Zweck weiterhin als eine Zeichenkette. */
-    .ew-zweck{white-space:pre-line;font-size:8.5pt;line-height:1.2;display:inline-block}
+    /* v342: einzeilig (Messwerte siehe ewZweckKlasse). Die Annahme aus v337,
+       die Wertspalte sei ~85 mm breit, war falsch - sie misst 116,6 mm. */
+    .ew-zweck{white-space:nowrap;font-size:8.5pt;line-height:1.2;display:inline-block}
+    .ew-zweck-eng{font-size:7pt}
+    .ew-zweck-umbruch{white-space:pre-line;font-size:7pt}
     .ew-qr{width:38mm;text-align:center}
     .ew-qr img{width:32mm;height:32mm;display:block;margin:0 auto 1mm}
     .ew-qr span{display:block;font-size:7.5pt;color:#666}
@@ -24279,13 +24341,16 @@ function ewNameTeile(p){
    Bewusst NICHT im Archivdokument (siehe archiviereMieterDokument-Aufruf):
    dort laegen die 132 kB je Mieter in immo_daten.json, bei 116 Einheiten
    ueber 15 MB. Archivierte Briefe werden ohnehin in der App geoeffnet. */
-function ewSchriftStil(){
+/* v342: Der Filter ist jetzt uebergebbar. Die Anlagen brauchen nur Atkinson
+   (rund 46 kB statt 182 kB) - sie enthalten keinen Festbreitensatz. */
+function ewSchriftStil(filter){
+  const wahl = filter || /DM\s+(Sans|Mono)|Atkinson\s+Hyperlegible/;
   try{
     let regeln = '';
     for(const el of document.querySelectorAll('style')){
       const txt = el.textContent || '';
       for(const m of txt.matchAll(/@font-face\s*\{[^}]*\}/g)){
-        if(/DM\s+(Sans|Mono)|Atkinson\s+Hyperlegible/.test(m[0])) regeln += m[0] + '\n';
+        if(wahl.test(m[0])) regeln += m[0] + '\n';
       }
     }
     return regeln ? '<style>' + regeln + '</style>' : '';
@@ -30920,7 +30985,11 @@ function anlageRahmen(titel, untertitel, innerHtml, fussSeiten, bodyClass){
 <style>
   @page { size:A4; margin:15mm 16mm 16mm 16mm; }
   *{box-sizing:border-box;margin:0;padding:0}
-  body{font-family:Arial,"Segoe UI",system-ui,sans-serif;color:#1f2937;font-size:10.5pt;line-height:1.5}
+  /* v343: Briefschrift fuer alle Vertragsanlagen (Begruendung wie v325:
+     I, l und 1 sind in Atkinson unterscheidbar - die Anlagen enthalten Namen,
+     Anschriften und handschriftlich auszufuellende Felder). Arial bleibt
+     Rueckfallebene, falls die eingebettete Schrift nicht laedt. */
+  body{font-family:"Atkinson Hyperlegible",Arial,"Segoe UI",system-ui,sans-serif;color:#1f2937;font-size:10.5pt;line-height:1.5}
   h1{font-size:17pt;color:#0c447c;text-align:center;margin-bottom:2px;letter-spacing:.5px}
   .sub{text-align:center;font-size:9.5pt;color:#666;font-style:italic;margin-bottom:14px}
   .eyebrow{text-align:center;font-size:8.5pt;color:#888;text-transform:uppercase;letter-spacing:1px;margin-bottom:4px}
@@ -30998,6 +31067,8 @@ function anlageRahmen(titel, untertitel, innerHtml, fussSeiten, bodyClass){
      um wenige Millimeter auf ein zweites Blatt - Unterschriftszeile allein
      auf Seite 2. Zeilen- und Blockabstaende um zusammen rund 25 mm
      verdichtet; Schriftgroessen der Pflichttexte bleiben unveraendert. */
+  /* v343: Die Schrift steht jetzt einmal auf body (siehe oben), nicht mehr
+     je Anlage. */
   body.sepa-kompakt{font-size:9.5pt;line-height:1.3}
   body.sepa-kompakt h1{font-size:15pt;margin-bottom:0}
   body.sepa-kompakt .sub{margin-bottom:7px;font-style:normal;font-size:10pt;color:#555}
@@ -31005,7 +31076,6 @@ function anlageRahmen(titel, untertitel, innerHtml, fussSeiten, bodyClass){
   .sepa-zeile{margin-bottom:6px}
   .sepa-zeile:last-child{margin-bottom:0}
   .sepa-label{font-weight:700;font-size:8.5pt;color:#0c447c;margin-bottom:2px}
-  .sepa-en{font-weight:400;color:#777;font-style:italic}
   .sepa-inhalt{font-size:10pt}
   .sepa-wert{font-weight:700}
   .sepa-leer{display:inline-block;border-bottom:1px solid #555;height:14px;vertical-align:bottom}
@@ -31029,7 +31099,6 @@ function anlageRahmen(titel, untertitel, innerHtml, fussSeiten, bodyClass){
   .sepa-hinweis{font-size:7pt;color:#777;margin-top:1px;line-height:1.25}
   .sepa-text{margin:7px 0;text-align:justify}
   .sepa-text p{margin:0 0 4px}
-  .sepa-en-text{font-size:8pt;color:#555;line-height:1.25}
   .sepa-art{font-size:9.5pt}
   .sepa-kreuz{font-size:12pt;vertical-align:-1px}
   .sepa-box{font-size:12pt;vertical-align:-1px;color:#666}
@@ -31050,7 +31119,21 @@ function anlageRahmen(titel, untertitel, innerHtml, fussSeiten, bodyClass){
   body.ds-kompakt .sig .anerk{margin-bottom:10px}
   body.ds-kompakt .sigrow{margin-top:20px}
   body.ds-kompakt .foot{margin-top:8px}
-</style></head><body class="${bodyClass||''}">${innerHtml}</body></html>`;
+</style>${anlageSchriften(bodyClass)}</head><body class="${bodyClass||''}">${innerHtml}</body></html>`;
+}
+
+/* v342: Einzeldruck der Anlagen laeuft in einem eigenen Dokument (iframe bzw.
+   srcdoc der Druckvorschau) - die @font-face-Regeln der App gelten dort nicht,
+   Atkinson faellt sonst still auf Arial zurueck und der Satz laeuft anders als
+   gemessen. Nur fuer die beiden Anlagen, die die Briefschrift verwenden, und
+   BEWUSST hinter dem ersten </style>: mvSammleAnlagenStyles liest genau den
+   ersten Style-Block, in den eingebetteten Kontexten (Mietvertrag,
+   Eigentuemerwechsel-Brief) bleiben die Schriftdaten damit aussen vor.
+   v343: gilt fuer alle vier Anlagen. */
+function anlageSchriften(bodyClass){
+  if(!/sepa-kompakt|ds-kompakt|ho-kompakt|mb-kompakt/.test(String(bodyClass||''))) return '';
+  try{ return ewSchriftStil(/Atkinson\s+Hyperlegible/); }
+  catch(e){ console.warn('anlageSchriften:', e); return ''; }
 }
 
 // Auto-Druck-Schnipsel (gleiche Technik wie MV)
@@ -31237,9 +31320,10 @@ function anlageSepaHtml(daten, autoDruck){
   /* v318: gleiche Kaestchen, aber ueber die volle Satzbreite verteilt. */
   const kaestenVoll = (anzahl) => '<div class="sepa-kaesten sepa-kaesten-voll">' +
     Array.from({length: anzahl}, () => '<span class="sepa-kasten"></span>').join('') + '</div>';
-  const zeile = (deLabel, enLabel, inhalt, hinweis) => `
+  /* v342: einsprachig deutsch - siehe Kopfkommentar zur Version. */
+  const zeile = (label, inhalt, hinweis) => `
     <div class="sepa-zeile">
-      <div class="sepa-label">${esc(deLabel)}${enLabel?' <span class="sepa-en">/ '+esc(enLabel)+'</span>':''}</div>
+      <div class="sepa-label">${esc(label)}</div>
       <div class="sepa-inhalt">${inhalt}</div>
       ${hinweis?'<div class="sepa-hinweis">'+hinweis+'</div>':''}
     </div>`;
@@ -31247,32 +31331,29 @@ function anlageSepaHtml(daten, autoDruck){
   const inner = `
     <div class="eyebrow">Anlage zum Mietvertrag – SEPA-Lastschriftmandat</div>
     <h1>SEPA-LASTSCHRIFTMANDAT</h1>
-    <div class="sub">SEPA Direct Debit Mandate</div>
 
     <div class="sepa-block">
-      ${zeile('Name des Zahlungsempfängers','Creditor name', feld(d.sepaEmpfaenger, 300))}
-      ${zeile('Anschrift des Zahlungsempfängers','Creditor address', feld(d.sepaEmpfaengerAnschrift, 300))}
-      ${zeile('Gläubiger-Identifikationsnummer','Creditor identifier', feld(d.sepaGlaeubigerId, 220))}
-      ${zeile('Mandatsreferenz','Mandate reference', feld(d.sepaMandatsreferenz, 220),
-              'Vom Zahlungsempfänger vergeben. / Completed by the creditor.')}
+      ${zeile('Name des Zahlungsempfängers', feld(d.sepaEmpfaenger, 300))}
+      ${zeile('Anschrift des Zahlungsempfängers', feld(d.sepaEmpfaengerAnschrift, 300))}
+      ${zeile('Gläubiger-Identifikationsnummer', feld(d.sepaGlaeubigerId, 220))}
+      ${zeile('Mandatsreferenz', feld(d.sepaMandatsreferenz, 220),
+              'Vom Zahlungsempfänger vergeben.')}
     </div>
 
     <div class="sepa-text">
       <p>Ich ermächtige / Wir ermächtigen (A) den Zahlungsempfänger <b>${esc(d.sepaEmpfaenger||'')}</b>, Zahlungen von meinem / unserem Konto mittels Lastschrift einzuziehen. Zugleich (B) weise ich mein / weisen wir unser Kreditinstitut an, die vom Zahlungsempfänger <b>${esc(d.sepaEmpfaenger||'')}</b> auf mein / unser Konto gezogenen Lastschriften einzulösen.</p>
       <p><b>Hinweis:</b> Ich kann / Wir können innerhalb von acht Wochen, beginnend mit dem Belastungsdatum, die Erstattung des belasteten Betrages verlangen. Es gelten dabei die mit meinem / unserem Kreditinstitut vereinbarten Bedingungen.</p>
-      <p class="sepa-en-text">By signing this mandate form, you authorise (A) the creditor ${esc(d.sepaEmpfaenger||'')} to send instructions to your bank to debit your account and (B) your bank to debit your account in accordance with the instructions from the creditor ${esc(d.sepaEmpfaenger||'')}.</p>
-      <p class="sepa-en-text">As part of your rights, you are entitled to a refund from your bank under the terms and conditions of your agreement with your bank. A refund must be claimed within 8 weeks starting from the date on which your account was debited.</p>
     </div>
 
     <div class="sepa-block">
       <div class="sepa-zeile">
-        <div class="sepa-label">Zahlungsart <span class="sepa-en">/ Type of payment</span></div>
+        <div class="sepa-label">Zahlungsart</div>
         <div class="sepa-inhalt sepa-art">
-          <span class="sepa-kreuz">☒</span> Wiederkehrende Zahlung <span class="sepa-en">/ Recurrent payment</span>
-          <span class="sepa-abstand"><span class="sepa-box">☐</span> Einmalige Zahlung <span class="sepa-en">/ One-off payment</span></span>
+          <span class="sepa-kreuz">☒</span> Wiederkehrende Zahlung
+          <span class="sepa-abstand"><span class="sepa-box">☐</span> Einmalige Zahlung</span>
         </div>
       </div>
-      ${zeile('Name, Vorname des Zahlungspflichtigen (Kontoinhaber)','Debtor name',
+      ${zeile('Name, Vorname des Zahlungspflichtigen (Kontoinhaber)',
               (d.sepaZahlerName ? '<div class="sepa-vorgedruckt">' + esc(d.sepaZahlerName) + '</div>' : '')
               /* v318: Der vorgedruckte Mietername bleibt stehen, darunter
                  Kaestchen fuer Nachname und Vorname. Bis v317 stand nur der
@@ -31284,27 +31365,27 @@ function anlageSepaHtml(daten, autoDruck){
                  Beschriftung sagt, in welcher Reihenfolge. */
               + '<div class="sepa-teilfeld">Name, Vorname</div>' + kaestenVoll(30),
               d.sepaZahlerName
-                ? 'Nur ausfüllen, wenn der Kontoinhaber vom vorgedruckten Namen abweicht. / Only if the account holder differs from the name shown above.'
-                : 'Nur ausfüllen, wenn der Kontoinhaber nicht mit dem Mieter übereinstimmt. / Only if the account holder differs from the tenant.')}
-      ${zeile('Anschrift des Zahlungspflichtigen (Kontoinhaber)','Debtor address',
+                ? 'Nur ausfüllen, wenn der Kontoinhaber vom vorgedruckten Namen abweicht.'
+                : 'Nur ausfüllen, wenn der Kontoinhaber nicht mit dem Mieter übereinstimmt.')}
+      ${zeile('Anschrift des Zahlungspflichtigen (Kontoinhaber)',
               (d.sepaZahlerAnschrift
                 ? '<div class="sepa-vorgedruckt">' + esc(d.sepaZahlerAnschrift) + '</div>'
                 : kaesten(30)),
               d.sepaZahlerAnschrift
-                ? 'Abweichende Anschrift bitte formlos daneben eintragen. / Please note a different address alongside.'
-                : 'Angabe freigestellt. / Optional information.')}
-      ${zeile('IBAN des Zahlungspflichtigen','IBAN of the debtor', kaesten(22))}
-      ${zeile('BIC (8 oder 11 Stellen)','BIC', kaesten(11),
-              'Die Angabe des BIC kann entfallen, wenn der Zahlungsdienstleister des Zahlungspflichtigen in einem EU-/EWR-Mitgliedsstaat ansässig ist. / The BIC is optional when the debtor bank is located in a EEA SEPA country.')}
-      ${zeile('Kreditinstitut','Name of the debtor bank', kaesten(30))}
+                ? 'Abweichende Anschrift bitte formlos daneben eintragen.'
+                : 'Angabe freigestellt.')}
+      ${zeile('IBAN des Zahlungspflichtigen', kaesten(22))}
+      ${zeile('BIC (8 oder 11 Stellen)', kaesten(11),
+              'Die Angabe des BIC kann entfallen, wenn der Zahlungsdienstleister des Zahlungspflichtigen in einem EU-/EWR-Mitgliedsstaat ansässig ist.')}
+      ${zeile('Kreditinstitut', kaesten(30))}
       <div class="sepa-zeile sepa-zwei">
-        <div><div class="sepa-label">Ort <span class="sepa-en">/ Location</span></div>${kaesten(18)}</div>
-        <div><div class="sepa-label">Datum (TT.MM.JJJJ) <span class="sepa-en">/ Date</span></div>${kaesten(8)}</div>
+        <div><div class="sepa-label">Ort</div>${kaesten(18)}</div>
+        <div><div class="sepa-label">Datum (TT.MM.JJJJ)</div>${kaesten(8)}</div>
       </div>
     </div>
 
     <div class="sig">
-      <p class="anerk">Unterschrift(en) des Zahlungspflichtigen (Kontoinhaber) / Signature(s) of the debtor</p>
+      <p class="anerk">Unterschrift(en) des Zahlungspflichtigen (Kontoinhaber)</p>
       <div class="sigrow"><div class="sigline">Unterschrift</div><div class="sigline">weitere Unterschrift</div></div>
     </div>
     <div class="foot">Hausverwaltung Nadig / Pfau · SEPA-Lastschriftmandat</div>
