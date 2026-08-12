@@ -1269,7 +1269,33 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=35;   // v242: +buch_journal (F4 GoBD)
-const APP_VERSION = '2026-08-12-v359';
+const APP_VERSION = '2026-08-12-v361';
+/* v361 (12.08.2026) – Postfachabruf: die App sagt, WORAN es liegt.
+   Nutzerbefund: Die Liste laedt (Endpunkt vorhanden, Speicher erreichbar), nur
+   der Abruf scheitert - gemeldet wurde "Abruf fehlgeschlagen - Zugangsdaten und
+   Zeitgeber im Backend pruefen". Drei voellig verschiedene Ursachen unter einer
+   Meldung, keine davon benannt.
+   mail-imap.js liefert bei 502 jetzt einen Grund mit ('zugangsdaten' |
+   'pakete' | 'verbindung') samt kurzer Meldung - ohne Kennwoerter. Die App
+   liest die Antwort AUCH im Fehlerfall (bisher wurde sofort geworfen und die
+   einzige brauchbare Auskunft ging verloren) und uebersetzt den Grund in den
+   naechsten Handgriff: fehlende App Settings benennen, "npm i imapflow
+   mailparser" nennen, oder auf Kennwort/Host/IMAP-Freischaltung hinweisen.
+   ACHTUNG: mail-imap.js muss dafuer erneut deployt werden. */
+/* v360 (12.08.2026) – Wohnungsgeberbescheinigung, drei Befunde aus dem
+   Ausdruck WE 11 (Robotecki):
+   1) SCHRIFT: Der Vordruck lief in Arial, waehrend Briefe und alle uebrigen
+      Anlagen die Briefschrift (Atkinson Hyperlegible) tragen. Die
+      @font-face-Regeln werden jetzt wie bei den Mietvertragsanlagen ueber
+      ewSchriftStil() eingebunden; faellt das aus, bleibt Arial als Rueckfall.
+      Derselbe Befund wie B1 im Pruefprotokoll - an einer Stelle, die dort
+      nicht aufgefuehrt war.
+   2) ORT: Unter der Unterschrift stand "Ort, Datum: 15.06.2026" ohne Ort.
+      Jetzt "Hilden, 15.06.2026"; der Ort kommt aus dem Briefkopf, die
+      Postleitzahl wird fuer diese Zeile abgetrennt.
+   3) TELEFON: Im Block "Name und Anschrift des Wohnungsgebers" fehlte eine
+      Erreichbarkeit fuer Rueckfragen der Meldebehoerde. Neue Zeile mit
+      Telefonnummer und E-Mail-Adresse aus dem Briefkopf. */
 /* v359 (12.08.2026) – Nutzerfrage: "Kann ich die Historie auch in der
    NK-Eingabe sehen und bearbeiten?" Die Pruefung hat einen Fehler zutage
    gefoerdert: Die Eingabemaske zeigte eine ANDERE Zahl als der Brief rechnet.
@@ -8523,7 +8549,17 @@ async function postfachAbrufen(){
     const r=await fetchMitTimeout(BACKEND_AZURE+'/api/mails/abruf',{
       method:'POST', headers:{'x-functions-key':key}, body:'{}'
     }, 60000);
-    if(!r || !r.ok) throw new Error('HTTP '+(r?r.status:'ohne Antwort'));
+    /* v361: Bei 502 nennt das Backend den Grund. Die Antwort wird deshalb auch
+       im Fehlerfall gelesen, statt sofort zu werfen - sonst geht die einzige
+       brauchbare Auskunft verloren. */
+    if(!r) throw new Error('ohne Antwort');
+    if(!r.ok){
+      const f = await r.json().catch(()=>({}));
+      toast(postfachFehlertext(f && f.grund, f && f.meldung, r.status), 9000);
+      console.error('Postfachabruf:', r.status, f);
+      renderMail();
+      return;
+    }
     const d=await r.json().catch(()=>({}));
     /* v352 (N7): Zeitpunkt merken, damit der Reiter sagen kann, wann zuletzt
        von Hand abgerufen wurde. Bewusst nur fuer die laufende Sitzung - der
@@ -8533,9 +8569,28 @@ async function postfachAbrufen(){
     toast(d.neu ? (d.neu+' neue Nachricht(en) ✓') : 'Keine neuen Nachrichten.');
   }catch(e){
     console.error('Postfachabruf:', e);
-    toast('Abruf fehlgeschlagen – Zugangsdaten und Zeitgeber im Backend prüfen.', 5000);
+    toast('Das Backend hat nicht geantwortet. Läuft die Function App, und ist der Schlüssel richtig?', 8000);
   }
   renderMail();
+}
+
+/* v361: Aus dem Grund des Backends wird der naechste Handgriff.
+   Bewusst konkret: "Abruf fehlgeschlagen" hat niemandem geholfen. */
+function postfachFehlertext(grund, meldung, status){
+  const zusatz = meldung ? ' (' + meldung + ')' : '';
+  switch(grund){
+    case 'zugangsdaten':
+      return 'Im Backend fehlen Angaben' + zusatz
+        + '. Bitte in Azure unter Umgebungsvariablen IMAP_HOST, IMAP_USER und IMAP_PASS setzen.';
+    case 'pakete':
+      return 'Im Backend fehlen die Pakete: im Ordner nadigpfau-backend "npm i imapflow mailparser" '
+        + 'ausführen und den ganzen Ordner erneut deployen.';
+    case 'verbindung':
+      return 'Das Postfach war nicht erreichbar' + zusatz
+        + '. Häufigste Ursachen: falsches Kennwort, falscher Host (imap.ionos.de) oder IMAP im Postfach nicht freigeschaltet.';
+    default:
+      return 'Abruf fehlgeschlagen (HTTP ' + (status||'?') + '). Einzelheiten stehen im Log Stream der Function App.';
+  }
 }
 
 async function postfachStatus(id, status){
@@ -23603,11 +23658,25 @@ async function wgbErzeugeUndDrucke(mieterId, sigListe, opt) {
     </tr>`;
   }
 
+  /* v360: @font-face-Regeln der Briefschrift aus der App uebernehmen -
+     dieselbe Technik wie bei den Mietvertragsanlagen (anlageSchriften). */
+  const wgbSchrift = (typeof ewSchriftStil==='function')
+    ? ewSchriftStil(/Atkinson\s+Hyperlegible/) : '';
+
+  /* Ausstellungsort fuer die Unterschriftszeile. VERWALTER_ORT/bk.ort fuehrt
+     "40723 Hilden"; auf dem Vordruck steht nur die Stadt. */
+  const wgbOrt = String(bk.ort||'').replace(/^\s*\d{5}\s*/, '').trim();
+
   const wgbHtml = `<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8">
 <title>Wohnungsgeberbescheinigung – ${esc(m.mieter)}</title>
-<style>
+${wgbSchrift}<style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:Arial,sans-serif;font-size:11px;color:#111;padding:20px;max-width:210mm}
+/* v360: Bis v359 lief der Vordruck in Arial, waehrend Briefe und alle uebrigen
+   Anlagen die Briefschrift tragen. Dieselbe Abweichung wie B1 im
+   Pruefprotokoll, nur an einer Stelle, die dort nicht aufgefuehrt war.
+   Faellt die Schriftregel aus (kein @font-face gefunden), greift die bisherige
+   Reihe weiter - der Vordruck bleibt in jedem Fall lesbar. */
+body{font-family:'Atkinson Hyperlegible',Arial,sans-serif;font-size:11px;color:#111;padding:20px;max-width:210mm}
 h1{font-size:13px;font-weight:700;margin-bottom:12px;text-align:center}
 h2{font-size:11px;font-weight:700;margin:14px 0 6px;border-bottom:1px solid #333;padding-bottom:3px}
 .bk{font-size:10px;color:#444;margin-bottom:14px;padding:8px;background:#f8f8f8;border-left:3px solid #1F4E79}
@@ -23662,6 +23731,10 @@ table tr{page-break-inside:avoid}
   <div class="val">${esc(amtlicherName(bk.name))}</div></div>
 <div class="zeile"><label>Straße, Hausnummer, PLZ und Ort:</label>
   <div class="val">${esc(bk.strasse)}, ${esc(bk.ort)}</div></div>
+<!-- v360: Die Meldebehoerde braucht eine Erreichbarkeit fuer Rueckfragen.
+     Im Briefkopf stand die Nummer, im amtlichen Teil des Vordrucks nicht. -->
+<div class="zeile"><label>Telefon:</label>
+  <div class="val">${esc(bk.tel||'')}${bk.email?' · '+esc(bk.email):''}</div></div>
 
 <div class="checks">
   <div class="check-row"><div class="box" style="background:#333"></div>
@@ -23682,11 +23755,11 @@ oder zur Verfügung zu stellen, obwohl ein tatsächlicher Bezug der Wohnung wede
   ${(sigListe&&sigListe.length)
     ? sigListe.map(sg=>`<div class="sig-box" style="border-top:none">
         <img src="${sg.signatur}" style="max-height:92px;display:block;margin:0 auto 2px;position:relative;z-index:1" alt="Unterschrift">
-        <div style="padding-top:2px">Ort, Datum: ${heute}<br>${esc(sg.name||'')} – Wohnungsgeber</div>
+        <div style="padding-top:2px">${wgbOrt?esc(wgbOrt)+', ':''}${heute}<br>${esc(sg.name||'')} – Wohnungsgeber</div>
       </div>`).join('')
     : `<div class="sig-box" style="border-top:none">
         <div style="height:72px"></div>
-        <div style="border-top:1px solid #333;padding-top:4px">Ort, Datum: ${heute}<br>Unterschrift des Wohnungsgebers</div>
+        <div style="border-top:1px solid #333;padding-top:4px">${wgbOrt?esc(wgbOrt)+', ':''}${heute}<br>Unterschrift des Wohnungsgebers</div>
       </div>`}
   <!-- v358: Das Stempelfeld entfaellt. § 19 BMG verlangt keinen Stempel; das
        leere Feld sah aus, als fehle noch etwas. -->
