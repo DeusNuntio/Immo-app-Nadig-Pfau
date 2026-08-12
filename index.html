@@ -1269,7 +1269,133 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=35;   // v242: +buch_journal (F4 GoBD)
-const APP_VERSION = '2026-08-11-v345';
+const APP_VERSION = '2026-08-11-v353';
+/* v353 (11.08.2026) – N6: Knopf "Letzte NKA" in der Gruppe Abrechnung.
+   Bisher kostete der haeufigste Fall - "die zuletzt erstellte Abrechnung noch
+   einmal ansehen" - drei Schritte: Objekt oeffnen, Reiter NKA-Archiv, Eintrag
+   suchen. oeffneLetzteNKA() nimmt die juengste Abrechnung des Objekts und
+   uebergibt sie an oeffneNKAGesamt() aus v350.
+   Sortiert wird ueber 'erstellt' und damit genauso wie im Archiv - zwei
+   verschiedene Vorstellungen von "die letzte" waeren wieder eine Stelle zum
+   Auseinanderlaufen. Der Knopf ist immer sichtbar und sagt beim Druecken, wenn
+   es noch keine Abrechnung gibt; ein Knopf, der je nach Datenlage verschwindet,
+   laesst den Nutzer raten, ob er ihn uebersehen hat. */
+/* v352 (11.08.2026) – N7 Posteingang: Die Zaehler der Reiter (Selbstauskuenfte,
+   E-Mail, Website-Nachrichten) wurden erst gesetzt, wenn der jeweilige Reiter
+   GEOEFFNET wurde. Wer den Posteingang aufschlug, musste durchklicken, um zu
+   sehen, ob nebenan etwas liegt - eine leere Zahl bedeutete "nicht
+   nachgesehen", sah aber aus wie "nichts da".
+   NEU postfachZaehlerNachtragen(): holt die Zahlen der uebrigen Reiter beim
+   Seitenaufbau nebeneinander und traegt sie nach. Faellt ein Endpunkt aus,
+   bleiben die anderen Zahlen stehen; ein fehlender Endpunkt (404) erzeugt gar
+   keine Zahl statt einer falschen Null. Bewusst ohne await - die Zahlen sind
+   Beiwerk, der gewaehlte Reiter soll nicht auf sie warten.
+   Ausserdem nennt der E-Mail-Reiter jetzt den Abruftakt (alle 10 Minuten
+   serverseitig) und den Zeitpunkt des letzten Abrufs von Hand in dieser
+   Sitzung. */
+/* v351 (11.08.2026) – N3: Zuordnung Buchhaltung -> Kostenart der
+   Liegenschaftsvorlage. In NKA_LG_BUCH_MAP.lg_mg fehlte die Kategorie
+   'reinigung' vollstaendig; eine Reinigungsbuchung erhielt in Moenchengladbach
+   gar keinen Zuordnungsvorschlag und musste jedes Mal von Hand zugewiesen
+   werden. Es ist dieselbe Position, die in v345 im Mieterbrief gefehlt hat.
+   Die doppelten IDs ('hausreinigung' in der Einzel-, 'treppenhaus' in der
+   MG-Sammelabrechnung) werden bewusst NICHT zusammengefuehrt: gespeicherte
+   Positionen liegen unter den alten Schluesseln, ein Umbenennen ohne Migration
+   wuerde eingegebene Betraege verlieren.
+   NEU nkaLgMapPruefen(): prueft, ob jede im Mapping genannte Kostenart in der
+   Vorlage wirklich existiert, und nennt umlagefaehige Kategorien ganz ohne
+   Zuordnung. Damit wird die Kennungs-Fehlerklasse sichtbar, statt sich als
+   stiller leerer Vorschlag zu tarnen. */
+/* v350 (11.08.2026) – zwei Befunde.
+   R1) FOLGEFEHLER AUS v349: Der neue Dokumenttyp 'nka_gesamt' war an keiner
+       Registrierungsstelle eingetragen. Er fiel in die Gruppe "Sonstiges",
+       und ADMIN_ONLY_DOK kannte nur 'nka' - die Gesamtaufstellung mit den
+       Ergebnissen ALLER Wohneinheiten waere damit fuer Eigentuemer- und
+       Hausmeisterkonten sichtbar gewesen. Ergaenzt in DOK_TYPEN und
+       ADMIN_ONLY_DOK; zusaetzlich eine harte Portalsperre, die VOR der
+       Override-Pruefung greift, damit ein versehentlich gesetztes Haekchen
+       sie nicht aufheben kann. Dieselbe Fehlerklasse wie bei neuen
+       IndexedDB-Stores: ein neuer Wert braucht ALLE Registrierungsstellen.
+   N4) Im NKA-Archiv fehlte der Knopf zum Ansehen der fertigen Abrechnung
+       (Nutzerbefund "Klick oeffnet nichts" - es war kein kaputter Knopf,
+       sondern gar keiner). Neu: "Ansehen" oeffnet die Gesamtaufstellung aus
+       dem dokumente-Store. Die Id bildet jetzt nkaGesamtId() fuer BEIDE
+       Seiten - Ablage und Oeffnen -, weil genau solche Paare in diesem
+       Projekt schon fuenfmal auseinandergelaufen sind. Fuer Abrechnungen aus
+       der Zeit vor v349 gibt es kein Gesamtdokument; das sagt die App
+       ausdruecklich, statt einen leeren Druck zu oeffnen. */
+/* v349 (11.08.2026) – DATENSCHUTZBEFUND: Der Mieter bekam die Zahlen seiner
+   Nachbarn. Beide NKA-Pfade legten je Mieter das VOLLSTAENDIGE Sammeldokument
+   im Archiv ab - Deckblatt mit den Ergebnissen aller Wohneinheiten plus
+   saemtliche Einzelbriefe. Da portalDokumenteFuerMieter() jedes Dokument mit
+   passender mieterId ausliefert, haette mit der Freischaltung des
+   Mieterportals jeder Mieter Namen, Wohnflaechen, Personenzahl,
+   Vorauszahlungen und Nachzahlungen aller uebrigen Mieter einsehen koennen.
+   Ein Mieter hat Anspruch auf die Gesamtkosten und den Verteilerschluessel,
+   nicht auf die personenbezogenen Ergebnisse der anderen
+   (Art. 5 Abs. 1 lit. c DSGVO, Datenminimierung).
+   BEHOBEN: nkaEinzeldokument() loest den eigenen Brief aus dem Gesamtdokument
+   und legt ihn als eigenstaendiges HTML ab; archiviereNkaGesamt() speichert
+   die Gesamtaufstellung beim OBJEKT (mieterId:null, wie beim Aushang) - ohne
+   mieterId erreicht sie das Portal nicht. Der AUSDRUCK bleibt unveraendert
+   vollstaendig, geaendert ist nur die Ablage. Laesst sich ein Brief nicht
+   herausloesen, wird nichts geraten: es bleibt beim Gesamtdokument und der
+   Fall wird protokolliert. */
+/* v348 (11.08.2026) – R59 Option A, Etappe 2 (App-Seite): neuer Reiter
+   "E-Mail" im Posteingang. Gegenstueck zur neuen Backend-Datei mail-imap.js,
+   die info@nadigpfau.de per IMAP abholt (Zeitgeber alle 10 Minuten, zusaetzlich
+   Abruf von Hand). Liste nach Ordnern (Offen/Erledigt/Papierkorb), Volltext,
+   Anhaenge ueber kurzlebige SAS-URL, Statuswechsel.
+   GRUNDSAETZE: Das Postfach wird NUR GELESEN - kein \Seen, kein Loeschen, kein
+   Verschieben; "erledigt" wirkt ausschliesslich in der Tabelle 'mails'. Der
+   Text kommt bereits als reiner Text aus dem Backend (dort wird HTML entfernt)
+   und wird hier zusaetzlich per esc() gesetzt - zwei Schichten, weil eine
+   Fremdmail der unfreundlichste Eingabekanal der App ist (Lehre aus R34).
+   Fehlt der Endpunkt (Backend noch nicht ausgeliefert), sagt der Reiter das
+   ausdruecklich, statt "keine Nachrichten" zu behaupten. */
+/* v347 (11.08.2026) – Drei Befunde aus dem MG-Test, die eine Rechenkontrolle
+   NICHT finden kann, weil beide Rechenwege dasselbe (falsche) Ergebnis liefern.
+   1) ANSCHRIFT GEGEN ANREDE (Kyffhaeuser 28 WE 2): Anschriftfeld "Dimke",
+      Anrede "Sehr geehrter Herr Gerretz, Joschka". Ursache: zwei Rueckfallwege
+      - getAnredeVertrag() ueber vertragspartnerVon() (ohne Flag: alle lebenden
+      Personen), adressNachnamenVertrag() ueber adressNachnamen(m.mieter).
+      Jetzt eine Quelle, dasselbe Prinzip wie bei den Betraegen in v346.
+   2) FLAECHE 0 BEI 12 WOHNMONATEN (WE 11 "Jakels"): alle flaechenabhaengigen
+      Posten 0,00 EUR, ausgewiesen wurden trotzdem 541,17 EUR Nachzahlung.
+   3) MIETER OHNE WOHNMONAT (WE 9/10/11 mit Einzug 2026): Brief ueber 0,00 EUR,
+      teils mit rueckwaerts laufendem eigenen Zeitraum (01.07.2026-31.12.2025).
+   NEU: nkaPruefungMieter() prueft diese vier Faelle je Mieter, nkaPruefHinweisHTML()
+   gibt sie als gelben internen Kasten im Dokument aus - in beiden Abrechnungsarten.
+   Es wird bewusst KEIN Brief unterdrueckt und nichts automatisch korrigiert.
+   AUSSERDEM (R59, Nutzerbefund): Der Posteingang der App zeigte nur das
+   Website-Kontaktformular, wurde aber wie ein Mail-Postfach gelesen. Einen
+   IMAP-Abruf gibt es im Projekt nicht. Sofortmassnahme (Option C, reine
+   Beschriftung): Reiter heisst "Website-Nachrichten", darueber steht in JEDEM
+   Zustand die Herkunftszeile. Option A (echter IMAP-Abruf im Backend) bleibt
+   offen und braucht eine Entscheidung - Zugangsdaten, Anhangsablage,
+   Loeschfrist, VVT. */
+/* v346 (11.08.2026) – Nebenkostenabrechnung: gedruckte Zeilen und ausgewiesene
+   Summe stammen aus EINER Quelle.
+   BEFUND (Gerätetest v345, MG-Abrechnung): Die mit v345 eingebaute
+   Rechenkontrolle meldete bei 5 von 20 Briefen 0,01-0,02 EUR Abweichung.
+   URSACHE: kein Rechenfehler, sondern zwei Rechenwege. Die SUMME kommt aus
+   getAnteil() -> nkaCentVerteilung() (centgenaue Verteilung mit Restcent-
+   Vergabe, damit die Anteile aller Mieter exakt den Gesamtbetrag ergeben).
+   Der ZEILENBAU rechnete denselben Anteil nochmals roh als b*Anteil/Divisor.
+   Beide Wege unterscheiden sich je Zeile um Bruchteile eines Cents; ueber
+   zehn Positionen summierte sich das auf ein bis zwei Cent.
+   BEHOBEN:
+   1) Der gedruckte Zeilenbetrag wird jetzt in BEIDEN Abrechnungsarten
+      (liegenschaftsweit und Einzelabrechnung) direkt aus getAnteil() bezogen.
+      Die Spalten "Geteilt durch", "Ihr Anteil" und "Preis/Anteil" bleiben
+      unveraendert als Herleitung stehen.
+   2) Automatisch uebernommene Reparaturen (krAuto) fliessen in die
+      Kontrollsumme ein - bisher fehlten sie dort, was bei Objekten mit
+      Reparaturen im Zeitraum einen Fehlalarm ausgeloest haette.
+   3) Die Einzelabrechnung erhaelt dieselbe Gegenprobe wie die
+      liegenschaftsweite Abrechnung; die Toleranz entfaellt, verglichen wird
+      auf den Cent genau. Eine Meldung bedeutet ab jetzt immer einen echten
+      Fehler, nicht mehr eine Rundung. */
 /* v345 (11.08.2026) – KRITISCH: Nebenkostenabrechnung wies eine Summe aus,
    die aus den gedruckten Positionen nicht nachvollziehbar war.
    BEFUND (Nutzer, Kyffhaeuser 28 WE 1): Im Mieterbrief der liegenschaftsweiten
@@ -8176,14 +8302,21 @@ async function renderMail(){
   el.innerHTML = `
     <div class="tab-bar" style="margin-bottom:12px">
       <button class="tab-btn ${tab==='sa'?'active':''}" onclick="setMailTab('sa')"><i class="ti ti-file-description"></i> Selbstauskünfte <span id="mailCountSa"></span></button>
-      <button class="tab-btn ${tab==='nachrichten'?'active':''}" onclick="setMailTab('nachrichten')"><i class="ti ti-message"></i> Nachrichten <span id="mailCountMsg"></span></button>
+      <button class="tab-btn ${tab==='postfach'?'active':''}" onclick="setMailTab('postfach')"><i class="ti ti-mail"></i> E-Mail <span id="mailCountMail"></span></button>
+      <button class="tab-btn ${tab==='nachrichten'?'active':''}" onclick="setMailTab('nachrichten')"><i class="ti ti-message"></i> Website-Nachrichten <span id="mailCountMsg"></span></button>
       <button class="tab-btn ${tab==='mieter'?'active':''}" onclick="setMailTab('mieter')"><i class="ti ti-mail-fast"></i> Mieter-Mail</button>
       <button class="tab-btn ${tab==='token'?'active':''}" onclick="setMailTab('token')"><i class="ti ti-send"></i> Link senden</button>
       <button class="tab-btn ${tab==='papierkorb'?'active':''}" onclick="setMailTab('papierkorb')"><i class="ti ti-trash"></i> Papierkorb</button>
     </div>
     <div id="mailBody"><p style="font-size:13px;color:var(--ink-40)">Lade …</p></div>`;
   const body = document.getElementById('mailBody');
+  /* v352 (N7): Die Zaehler der NICHT geoeffneten Reiter nachtragen. Bis v351
+     wurden sie erst beim Oeffnen gesetzt - eine leere Zahl bedeutete "nicht
+     nachgesehen", sah aber aus wie "nichts da". Bewusst ohne await: die Zahlen
+     sind Beiwerk, der gewaehlte Reiter soll nicht auf sie warten. */
+  postfachZaehlerNachtragen(tab);
   if(tab==='sa')               await mailRenderSA(body);
+  else if(tab==='postfach')    await mailRenderPostfach(body);
   else if(tab==='nachrichten') await mailRenderNachrichten(body);
   else if(tab==='mieter')      await mailRenderMieterMail(body);
   else if(tab==='papierkorb')  await mailRenderPapierkorb(body);
@@ -8191,6 +8324,35 @@ async function renderMail(){
 }
 
 function setMailTab(t){ window._mailTab = t; renderMail(); }
+
+/* v352 (N7): Anzahl der Eintraege je Reiter, ohne ihn zu oeffnen.
+   Die drei Abrufe laufen nebeneinander; faellt einer aus, bleiben die anderen
+   Zahlen stehen. Der gerade geoeffnete Reiter wird ausgelassen, weil seine
+   eigene Renderfunktion die Zahl ohnehin setzt - sonst blinkt sie doppelt.
+   Ein Fehler wird protokolliert, aber nicht als Meldung gezeigt: der Nutzer
+   sieht ihn beim Oeffnen des betroffenen Reiters ausfuehrlich. */
+async function postfachZaehlerNachtragen(aktiverTab){
+  const key=(await idbGet('settings','backendKey').catch(()=>null))?.value;
+  if(!key) return;
+  const quellen=[
+    {tab:'sa',           el:'mailCountSa',   pfad:'/api/inbox-sa'},
+    {tab:'postfach',     el:'mailCountMail', pfad:'/api/mails?ordner=offen'},
+    {tab:'nachrichten',  el:'mailCountMsg',  pfad:'/api/inbox'},
+  ].filter(q=>q.tab!==aktiverTab);
+
+  await Promise.all(quellen.map(async q=>{
+    try{
+      const r=await fetchMitTimeout(BACKEND_AZURE+q.pfad,{ headers:{'x-functions-key':key} });
+      if(!r || !r.ok) return;                       // 404 = Endpunkt fehlt: keine Zahl, keine Falschaussage
+      const liste=await r.json().catch(()=>null);
+      if(!Array.isArray(liste)) return;
+      const el=document.getElementById(q.el);
+      if(el) el.textContent = liste.length ? '('+liste.length+')' : '';
+    }catch(e){
+      console.warn('Zähler '+q.tab+' nicht abrufbar:', e && e.message);
+    }
+  }));
+}
 
 // ── Selbstauskünfte (aus /api/inbox-sa) ──
 async function mailRenderSA(body){
@@ -8235,25 +8397,198 @@ async function mailRenderSA(body){
   body.innerHTML=html;
 }
 
+/* v347 (R59): Herkunftszeile. Dieser Reiter zeigt ausschliesslich das
+   Kontaktformular der Website (Tabelle 'requests' ueber /api/interest). Es gibt
+   keinen IMAP-Abruf - E-Mails an info@nadigpfau.de erscheinen hier NICHT.
+   Die Zeile steht in JEDEM Zustand ueber der Liste, auch bei leerer Liste,
+   fehlendem Schluessel oder nicht erreichbarem Backend; sonst entstuende beim
+   Nutzer der Eindruck, es fehle etwas. */
+const NACHRICHTEN_HERKUNFT =
+  '<div style="border:1px solid var(--line);border-radius:8px;padding:8px 10px;'
+  + 'margin-bottom:10px;font-size:12px;color:var(--ink-60);background:var(--bg,#fafafa)">'
+  + '<i class="ti ti-info-circle"></i> Hier erscheinen nur Anfragen ueber das '
+  + '<b>Kontaktformular der Website</b>. E-Mails an <b>info@nadigpfau.de</b> werden '
+  + 'nicht abgerufen \u2013 diese bearbeiten Sie im IONOS-Postfach.</div>';
+
+/* ══════════ v348 (R59, Option A): echtes Postfach ══════════
+   Gegenstueck zu mail-imap.js im Backend. Die App liest ausschliesslich - das
+   IONOS-Postfach bleibt unberuehrt, "erledigt" wirkt nur in der Tabelle 'mails'.
+   Der Text kommt bereits als REINER TEXT aus dem Backend (dort wird HTML
+   entfernt); hier wird zusaetzlich esc() gesetzt. Zwei Schichten, weil eine
+   Fremdmail der unfreundlichste Eingabekanal ist, den die App hat. */
+window._postfachOrdner = window._postfachOrdner || 'offen';
+window._postfachMails = {};
+
+function setPostfachOrdner(o){ window._postfachOrdner = o; renderMail(); }
+
+async function postfachAbrufen(){
+  const key=(await idbGet('settings','backendKey').catch(()=>null))?.value;
+  if(!key){ toast('Kein Backend-Schlüssel hinterlegt.'); return; }
+  toast('Postfach wird abgerufen …');
+  try{
+    const r=await fetchMitTimeout(BACKEND_AZURE+'/api/mails/abruf',{
+      method:'POST', headers:{'x-functions-key':key}, body:'{}'
+    }, 60000);
+    if(!r || !r.ok) throw new Error('HTTP '+(r?r.status:'ohne Antwort'));
+    const d=await r.json().catch(()=>({}));
+    /* v352 (N7): Zeitpunkt merken, damit der Reiter sagen kann, wann zuletzt
+       von Hand abgerufen wurde. Bewusst nur fuer die laufende Sitzung - der
+       Server ruft ohnehin alle 10 Minuten ab, eine dauerhaft gespeicherte
+       Zeitangabe wuerde mehr Genauigkeit vortaeuschen, als sie hat. */
+    window._postfachZuletzt = new Date().toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'});
+    toast(d.neu ? (d.neu+' neue Nachricht(en) ✓') : 'Keine neuen Nachrichten.');
+  }catch(e){
+    console.error('Postfachabruf:', e);
+    toast('Abruf fehlgeschlagen – Zugangsdaten und Zeitgeber im Backend prüfen.', 5000);
+  }
+  renderMail();
+}
+
+async function postfachStatus(id, status){
+  const key=(await idbGet('settings','backendKey').catch(()=>null))?.value;
+  if(!key){ toast('Kein Backend-Schlüssel hinterlegt.'); return; }
+  try{
+    const r=await fetchMitTimeout(BACKEND_AZURE+'/api/mails/status',{
+      method:'POST', headers:{'Content-Type':'application/json','x-functions-key':key},
+      body:JSON.stringify({ id, status })
+    });
+    if(!r || !r.ok) throw new Error('HTTP '+(r?r.status:'ohne Antwort'));
+    toast(status==='erledigt'?'Als erledigt abgelegt ✓':status==='geloescht'?'In den Papierkorb ✓':'Zurückgelegt ✓');
+  }catch(e){
+    console.error('Mailstatus:', e);
+    toast('Status konnte nicht gesetzt werden.', 4000);
+    return;
+  }
+  renderMail();
+}
+
+/* Anhang: die URL entsteht erst hier und gilt 15 Minuten. */
+async function postfachAnhang(id, nr){
+  const key=(await idbGet('settings','backendKey').catch(()=>null))?.value;
+  if(!key){ toast('Kein Backend-Schlüssel hinterlegt.'); return; }
+  try{
+    const r=await fetchMitTimeout(BACKEND_AZURE+'/api/mails/anhang?id='+encodeURIComponent(id)+'&n='+encodeURIComponent(nr),
+      { headers:{'x-functions-key':key} });
+    if(!r || !r.ok) throw new Error('HTTP '+(r?r.status:'ohne Antwort'));
+    const d=await r.json().catch(()=>({}));
+    if(!d.url) throw new Error('keine URL');
+    window.open(d.url,'_blank','noopener');
+  }catch(e){
+    console.error('Anhang:', e);
+    toast('Anhang konnte nicht geöffnet werden.', 4000);
+  }
+}
+
+function postfachDetailZeigen(id){
+  const ziel=document.getElementById('mailDetail_'+id);
+  const m=window._postfachMails[id];
+  if(!ziel || !m) return;
+  if(ziel.innerHTML){ ziel.innerHTML=''; return; }
+  const anh=(m.anhaenge||[]).map(a=>
+    `<button class="btn btn-sm" onclick="postfachAnhang('${escJs(m.id)}',${Number(a.nr)})">`
+    + `<i class="ti ti-paperclip"></i> ${esc(a.name||'Anhang')} `
+    + `<span style="color:var(--ink-40)">(${Math.max(1,Math.round((a.bytes||0)/1024))} kB)</span></button>`).join(' ');
+  ziel.innerHTML=`
+    <div style="border-top:1px solid var(--line);margin-top:8px;padding-top:8px">
+      <div style="font-size:12px;color:var(--ink-40);margin-bottom:6px">An: ${esc(m.an||'')}</div>
+      <div style="white-space:pre-wrap;font-size:13px;line-height:1.5">${esc(m.text||'(kein Text)')}</div>
+      ${anh?`<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">${anh}</div>`:''}
+    </div>`;
+}
+
+async function mailRenderPostfach(body){
+  const ordner = window._postfachOrdner || 'offen';
+  const kopf = `
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px">
+      <button class="btn btn-sm ${ordner==='offen'?'btn-primary':''}" onclick="setPostfachOrdner('offen')">Offen</button>
+      <button class="btn btn-sm ${ordner==='erledigt'?'btn-primary':''}" onclick="setPostfachOrdner('erledigt')">Erledigt</button>
+      <button class="btn btn-sm ${ordner==='papierkorb'?'btn-primary':''}" onclick="setPostfachOrdner('papierkorb')">Papierkorb</button>
+      <button class="btn btn-sm" onclick="postfachAbrufen()" style="margin-left:auto"><i class="ti ti-refresh"></i> Jetzt abrufen</button>
+    </div>
+    <div style="border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin-bottom:10px;font-size:12px;color:var(--ink-60)">
+      <i class="ti ti-info-circle"></i> Nachrichten aus <b>info@nadigpfau.de</b>. Das Postfach wird nur gelesen \u2013
+      \u201eerledigt\u201c wirkt nur hier, im IONOS-Postfach ändert sich nichts.<br>
+      <span style="color:var(--ink-40)">Der Server ruft alle 10 Minuten selbstständig ab.${
+        window._postfachZuletzt ? ' Zuletzt in dieser Sitzung: '+esc(window._postfachZuletzt)+'.' : ''
+      }</span>
+    </div>`;
+
+  const key=(await idbGet('settings','backendKey').catch(()=>null))?.value;
+  if(!key){ body.innerHTML=kopf+'<div class="empty"><i class="ti ti-key-off"></i><p>Kein Backend-Schlüssel hinterlegt.</p></div>'; return; }
+
+  let liste=[];
+  try{
+    const res=await fetchMitTimeout(BACKEND_AZURE+'/api/mails?ordner='+encodeURIComponent(ordner),
+      { headers:{'x-functions-key':key} });
+    if(res.ok) liste=await res.json().catch(()=>[]);
+    else if(res.status===404){
+      body.innerHTML=kopf+'<div class="empty"><i class="ti ti-plug-off"></i><p>Der Endpunkt /api/mails fehlt \u2013 mail-imap.js ist noch nicht ausgeliefert.</p></div>';
+      return;
+    } else {
+      body.innerHTML=kopf+'<div class="empty"><i class="ti ti-alert-circle"></i><p>Abruf fehlgeschlagen ('+res.status+').</p></div>';
+      return;
+    }
+  }catch(e){
+    console.error('Postfachliste:', e);
+    body.innerHTML=kopf+'<div class="empty"><i class="ti ti-wifi-off"></i><p>Backend nicht erreichbar.</p></div>';
+    return;
+  }
+
+  if(ordner==='offen'){
+    const cnt=document.getElementById('mailCountMail');
+    if(cnt) cnt.textContent=liste.length?'('+liste.length+')':'';
+  }
+  if(!Array.isArray(liste) || !liste.length){
+    body.innerHTML=kopf+'<div class="empty"><i class="ti ti-mail-off"></i><p>Keine Nachrichten in diesem Ordner.</p></div>';
+    return;
+  }
+
+  window._postfachMails={};
+  let html=kopf;
+  for(const m of liste){
+    window._postfachMails[m.id]=m;
+    const dt=m.datum?new Date(m.datum).toLocaleString('de-DE'):'';
+    const von=m.vonName?(m.vonName+' <'+m.vonAdresse+'>'):(m.vonAdresse||'(ohne Absender)');
+    const anzahl=(m.anhaenge||[]).length;
+    const knoepfe = ordner==='papierkorb'
+      ? `<button class="btn btn-sm" onclick="postfachStatus('${escJs(m.id)}','offen')"><i class="ti ti-arrow-back-up"></i> Wiederherstellen</button>`
+      : ordner==='erledigt'
+        ? `<button class="btn btn-sm" onclick="postfachStatus('${escJs(m.id)}','offen')"><i class="ti ti-arrow-back-up"></i> Zurück in Offen</button>
+           <button class="btn btn-sm" onclick="postfachStatus('${escJs(m.id)}','geloescht')"><i class="ti ti-trash"></i> Papierkorb</button>`
+        : `<button class="btn btn-sm btn-primary" onclick="postfachStatus('${escJs(m.id)}','erledigt')"><i class="ti ti-check"></i> Erledigt</button>
+           <button class="btn btn-sm" onclick="postfachStatus('${escJs(m.id)}','geloescht')"><i class="ti ti-trash"></i> Papierkorb</button>`;
+    html+=`<div style="border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:10px;background:var(--white)">
+      <div><b>${esc(m.betreff||'(ohne Betreff)')}</b>${anzahl?` <i class="ti ti-paperclip" title="${anzahl} Anhang/Anhänge"></i>`:''}</div>
+      <div style="font-size:12px;color:var(--ink-40);margin-top:2px">${esc(von)} · ${esc(dt)}</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+        <button class="btn btn-sm" onclick="postfachDetailZeigen('${escJs(m.id)}')"><i class="ti ti-eye"></i> Anzeigen</button>
+        ${knoepfe}
+      </div>
+      <div id="mailDetail_${esc(m.id)}"></div>
+    </div>`;
+  }
+  body.innerHTML=html;
+}
+
 // ── Website-Nachrichten (aus /api/inbox – Kontaktformular). Robust, falls Endpunkt fehlt. ──
 async function mailRenderNachrichten(body){
   const key=(await idbGet('settings','backendKey').catch(()=>null))?.value;
   if(!key){
-    body.innerHTML='<div class="empty"><i class="ti ti-key-off"></i><p>Kein Backend-Schlüssel hinterlegt.</p></div>';
+    body.innerHTML=NACHRICHTEN_HERKUNFT+'<div class="empty"><i class="ti ti-key-off"></i><p>Kein Backend-Schlüssel hinterlegt.</p></div>';
     return;
   }
   let liste=[];
   try{
     const res=await fetchMitTimeout(BACKEND_AZURE+'/api/inbox',{ headers:{'x-functions-key':key} });
     if(res.ok) liste=await res.json().catch(()=>[]);
-    else if(res.status!==404){ body.innerHTML='<div class="empty"><i class="ti ti-alert-circle"></i><p>Abruf fehlgeschlagen ('+res.status+').</p></div>'; return; }
+    else if(res.status!==404){ body.innerHTML=NACHRICHTEN_HERKUNFT+'<div class="empty"><i class="ti ti-alert-circle"></i><p>Abruf fehlgeschlagen ('+res.status+').</p></div>'; return; }
   }catch(e){
-    body.innerHTML='<div class="empty"><i class="ti ti-wifi-off"></i><p>Backend nicht erreichbar.</p></div>';
+    body.innerHTML=NACHRICHTEN_HERKUNFT+'<div class="empty"><i class="ti ti-wifi-off"></i><p>Backend nicht erreichbar.</p></div>';
     return;
   }
   const cnt=document.getElementById('mailCountMsg'); if(cnt) cnt.textContent=liste.length?'('+liste.length+')':'';
-  if(!liste.length){ body.innerHTML='<div class="empty"><i class="ti ti-message-off"></i><p>Keine neuen Nachrichten.</p></div>'; return; }
-  let html='';
+  if(!liste.length){ body.innerHTML=NACHRICHTEN_HERKUNFT+'<div class="empty"><i class="ti ti-message-off"></i><p>Keine neuen Nachrichten.</p></div>'; return; }
+  let html=NACHRICHTEN_HERKUNFT;
   for(const n of liste){
     const dt=n.zeitstempel||n.erstellt?new Date(n.zeitstempel||n.erstellt).toLocaleString('de-DE'):'';
     const name=n.name||[n.vorname,n.nachname].filter(Boolean).join(' ')||'(ohne Namen)';
@@ -13894,6 +14229,7 @@ async function renderObjMieter(el){
     `)}
     ${_oGrp('Abrechnung', `
       ${istVerwalter()?`<button class="btn btn-sm" onclick="modalNKA('${currentObjId}')"><i class="ti ti-receipt"></i> NKA</button>`:''}
+      ${istVerwalter()?`<button class="btn btn-sm" onclick="oeffneLetzteNKA('${currentObjId}')"><i class="ti ti-history"></i> Letzte NKA</button>`:''}
       ${istVerwalter()&&(getObj(currentObjId)?.gruppe==='krefeld')?`<button class="btn btn-sm btn-copper" onclick="modalNKALiegenschaft('lg_krefeld')"><i class="ti ti-building-community"></i> NKA Krefeld (alle Häuser)</button>`:''}
       ${istVerwalter()&&(getObj(currentObjId)?.gruppe==='mg')?`<button class="btn btn-sm btn-copper" onclick="modalNKALiegenschaft('lg_mg')"><i class="ti ti-building-community"></i> NKA Mönchengladbach (alle Häuser)</button>`:''}
     `)}
@@ -15845,6 +16181,9 @@ const DOK_TYPEN = [
   {val:'lastschrift',label:'SEPA-Lastschriftmandat', icon:'ti-building-bank'},
   {val:'abrechnung',label:'Abrechnung',         icon:'ti-receipt'},
   {val:'nka',     label:'Nebenkostenabrechnung',icon:'ti-receipt-2'},
+  /* v350: eigener Typ fuer die Gesamtaufstellung (objektgebunden, mieterId:null).
+     Ohne Eintrag hier landete sie in "Sonstiges" und fiel durch ADMIN_ONLY_DOK. */
+  {val:'nka_gesamt',label:'NKA-Gesamtaufstellung',icon:'ti-list-details'},
   {val:'brief',   label:'Schreiben / Brief',    icon:'ti-mail'},
   {val:'mieterhoehung',label:'Mieterhöhung',    icon:'ti-trending-up'},
   {val:'wgb',     label:'Wohnungsgeberbescheinigung',icon:'ti-file-certificate'},
@@ -15901,6 +16240,12 @@ function istPortalFreigegeben(dok, typDefaults){
   // Entwürfe nie ausliefern (Brief-/MV-Entwürfe liegen i.d.R. in 'mv_entwuerfe';
   // dieses Flag fängt versehentlich im dokumente-Store markierte Entwürfe sicher ab).
   if(dok.entwurf === true || dok.status === 'draft') return false;
+  /* v350: Die NKA-Gesamtaufstellung geht NIE ins Portal - auch nicht per
+     Einzel-Override. Sie enthaelt die Ergebnisse ALLER Mieter; darauf hat ein
+     einzelner Mieter keinen Anspruch (Art. 5 Abs. 1 lit. c DSGVO). Die Sperre
+     steht bewusst VOR der Override-Pruefung, damit ein versehentlich gesetztes
+     Haekchen sie nicht aufheben kann. Zweite Schicht neben mieterId:null. */
+  if(dok.typ === 'nka_gesamt') return false;
   // Einzel-Override gewinnt immer (erlaubt auch gezielte Freigabe sensibler Typen).
   if(dok.portalFreigabe === true)  return true;
   if(dok.portalFreigabe === false) return false;
@@ -15985,6 +16330,80 @@ async function archiviereMieterDokument({mieterId, objektId, typ, name, html, mi
 }
 
 /* ═══════════════════════════════════════════════════════════
+   v349 – NKA-ABLAGE: Der Mieter bekommt nur seine eigene Abrechnung.
+
+   Bis v348 wurde je Mieter das vollstaendige Sammeldokument abgelegt:
+   Deckblatt mit den Ergebnissen ALLER Wohneinheiten plus saemtliche
+   Einzelbriefe. Mit der Freischaltung des Mieterportals haette damit jeder
+   Mieter die Zahlen seiner Nachbarn einsehen koennen (Namen, Flaechen,
+   Personenzahl, Vorauszahlungen, Nachzahlungen). Der Mieter hat Anspruch auf
+   die Gesamtkosten und den Verteilerschluessel - nicht auf die
+   personenbezogenen Ergebnisse der uebrigen Mieter (Art. 5 Abs. 1 lit. c
+   DSGVO). Der AUSDRUCK bleibt unveraendert vollstaendig; geaendert ist nur,
+   was im Archiv landet.
+   ═══════════════════════════════════════════════════════════ */
+
+/* Trennt den Dokumentkopf (DOCTYPE bis einschliesslich <body>) vom Rumpf ab.
+   Beide NKA-Vorlagen enden mit exakt "</style></head><body>"; kommt der
+   Marker nicht genau einmal vor, wird nichts geraten, sondern null geliefert
+   und der Aufrufer faellt auf das Gesamtdokument zurueck. Lieber ein zu
+   umfangreiches Archivdokument als ein zerschnittenes. */
+function nkaDokumentKopf(html){
+  const marker = '</style></head><body>';
+  const teile = String(html||'').split(marker);
+  if(teile.length !== 2) return null;
+  return teile[0] + marker;
+}
+
+/* Einzelabrechnung eines Mieters als eigenstaendiges HTML. Ohne Deckblatt,
+   ohne fremde Briefe, ohne Autodruck-Skript (das Archiv wird angesehen). */
+function nkaEinzeldokument(gesamtHtml, briefHtml){
+  const kopf = nkaDokumentKopf(gesamtHtml);
+  if(!kopf || !briefHtml) return null;
+  return kopf + briefHtml + '</body></html>';
+}
+
+/* Gesamtaufstellung beim OBJEKT ablegen - mieterId:null, wie beim Aushang.
+   portalDokumenteFuerMieter() liefert nur mieterbezogene Dokumente und Plaene
+   aus; ohne mieterId erreicht das Dokument das Portal daher nicht.
+   Deterministische Id je Objekt und Zeitraum: eine erneute Erzeugung ersetzt
+   die vorherige Fassung, statt Dubletten anzuhaeufen. */
+/* v350: Die Id wird an ZWEI Stellen gebraucht - beim Ablegen und beim Oeffnen
+   aus dem NKA-Archiv. Genau solche Paare sind in diesem Projekt schon fuenfmal
+   auseinandergelaufen (Kennungs-Fehlerklasse), deshalb nur EINE Funktion. */
+function nkaGesamtId(objektId, von, bis){
+  return 'nka_gesamt_' + String(objektId||'').replace(/\W/g,'_')
+       + '_' + String(von||'').replace(/\W/g,'')
+       + '_' + String(bis||'').replace(/\W/g,'');
+}
+
+async function archiviereNkaGesamt({objektId, von, bis, name, html}){
+  try{
+    const id = nkaGesamtId(objektId, von, bis);
+    await idbPut('dokumente', {
+      id,
+      objektId: objektId || null,
+      mieterId: null,
+      typ: 'nka_gesamt',
+      name: name || 'Nebenkostenabrechnung (Gesamtaufstellung)',
+      erstellt: now(),
+      ersteller: (typeof CU!=='undefined' && CU?.name) ? CU.name : '',
+      mimeType: 'text/html',
+      istHtml: true,
+      data: 'data:text/html;charset=utf-8,' + encodeURIComponent(html),
+      size: new Blob([html]).size,
+      geaendert: nowIso()
+    });
+    clearTimeout(window._syncTimer);
+    window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
+    return id;
+  }catch(e){
+    console.error('NKA-Gesamtablage fehlgeschlagen:', e && e.message);
+    return null;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════
    AUSHANG-ABLAGE: „Wohnung frei"-Aushang als wohnungsgebundenes
    HTML-Dokument im 'dokumente'-Store. Anders als archiviereMieterDokument
    NICHT mieterId-gebunden (mieterId:null) – der Aushang gehört zur Wohnung,
@@ -16040,7 +16459,10 @@ async function renderDokumente(el, objektId, mieterId) {
     : alle.filter(d=>d.objektId===objektId && !d.mieterId);
   // Sensible Dokumente sind nur für Admins sichtbar:
   // NKA (Finanzdaten), Ausweise (§20 PAuswG / Art.9 DSGVO), SEPA-Mandate (Bankdaten)
-  const ADMIN_ONLY_DOK = ['nka','ausweis','lastschrift'];
+  /* v350: 'nka_gesamt' ergaenzt. Die Gesamtaufstellung enthaelt die Ergebnisse
+     ALLER Wohneinheiten - sie gehoert noch weniger in fremde Haende als eine
+     Einzelabrechnung. */
+  const ADMIN_ONLY_DOK = ['nka','nka_gesamt','ausweis','lastschrift'];
   if (!istVerwalter()) docs = docs.filter(d=>!ADMIN_ONLY_DOK.includes(d.typ));
 
   const gruppeByTyp = {};
@@ -17986,6 +18408,9 @@ async function erstelleNKA(objektId, korrektur) {
     grussHTML=`<div class="gruss">Mit freundlichen Grüßen<br><br>${esc(bk.name)}</div>`;
   }
   let briefeHTML='';
+  /* v349: zusaetzlich je Mieter gemerkt, damit im Archiv nur der eigene Brief
+     landet. Der Ausdruck nutzt weiterhin briefeHTML in voller Laenge. */
+  const briefeJeMieter = {};
 
   mieterErgebnisse.forEach(({m,ex,nkAnteil,gesamt,vzJahres,diff})=>{
     const diffPos=diff>0;
@@ -17997,10 +18422,13 @@ async function erstelleNKA(objektId, korrektur) {
     const mWohnVon = (_eISO && new Date(_eISO) > new Date(von)) ? _eISO : von;
     const mWohnBis = (_aISO && new Date(_aISO) < new Date(bis)) ? _aISO : bis;
     let posZeilen='';
+    /* v346: Kontrollsumme wie im liegenschaftsweiten Pfad – siehe Gegenprobe
+       unterhalb der Positionsliste. */
+    let zeilenSumme=0;
     kostenDef.forEach(k=>{
       if(k.schluessel==='einzeln'){
         const h=kostenMap[k.id]?.[m.id]||0;
-        if(h>0) posZeilen+=nkaZeile(k.name,'bes. Berechnung','',h,1,h);
+        if(h>0){ posZeilen+=nkaZeile(k.name,'bes. Berechnung','',h,1,h); zeilenSumme+=h; }
         return;
       }
       const b=kostenMap[k.id]||0; if(!b) return;
@@ -18021,6 +18449,9 @@ async function erstelleNKA(objektId, korrektur) {
         case 'besonders':     geteilt='-';anteil='-';preis='-';kosten=b;break;
         default:              kosten=getAnteil(k,m);geteilt='-';anteil='-';preis='-';
       }
+      /* v346: gedruckter Betrag aus derselben Quelle wie die Summe (s. LG-Pfad). */
+      kosten = getAnteil(k, m);
+      zeilenSumme += Number(kosten)||0;
       posZeilen+=nkaZeile(k.name,k.schluessel==='personen'?'Personen':k.schluessel==='wfl'?'WFL':k.schluessel==='we'||k.schluessel==='we_fest'?'WE':k.schluessel==='monate'?'Monate':k.schluessel==='etage'?'Etage':'Bes.',
         typeof geteilt==='number'?geteilt.toFixed(2):geteilt,
         b,
@@ -18032,18 +18463,37 @@ async function erstelleNKA(objektId, korrektur) {
     if(ex.repsImZeitraum?.length>0){
       ex.repsImZeitraum.forEach(r=>{
         posZeilen+=nkaZeile(r.titel+' ('+fmtDate(r.datum)+')',r.extern==='extern'?'Extern':'Intern','–','–','–','–',r.kosten||0);
+        zeilenSumme+=Number(r.kosten)||0;
       });
     }
-    if(ex.krManual>0) posZeilen+=nkaZeile('Kleinreparaturen (manuell)','–','–','–','–','–',ex.krManual);
-    if(ex.so>0) posZeilen+=nkaZeile('Sonstiges','–','–','–','–','–',ex.so);
+    if(ex.krManual>0){ posZeilen+=nkaZeile('Kleinreparaturen (manuell)','–','–','–','–','–',ex.krManual); zeilenSumme+=ex.krManual; }
+    if(ex.so>0){ posZeilen+=nkaZeile('Sonstiges','–','–','–','–','–',ex.so); zeilenSumme+=ex.so; }
     // v294: Waschmaschine - eigene Zeile, Format wie zuvor bei personen_fest
     // (Schluessel "Bes.", Anteil = Personenmonate, Preis = fester Satz).
     if(ex.wm>0){
       const wmDef=kostenDef.find(k=>k.perMieterOptIn);
       posZeilen+=nkaZeile(wmDef?wmDef.name:'Strom Waschmaschine','Bes.','–','–',ex.wmPersonen,wmDef?.preisProPers||0,ex.wm);
+      zeilenSumme+=Number(ex.wm)||0;
     }
 
-    briefeHTML+=`
+    /* v346: GEGENPROBE der Einzelabrechnung. Der Mieter muss die ausgewiesene
+       Summe aus den gedruckten Zeilen nachrechnen koennen (§ 259 BGB,
+       Nachvollziehbarkeit der Betriebskostenabrechnung). Weichen beide
+       voneinander ab, fehlt eine Position - dann steht es sichtbar im
+       Dokument, statt still in der Summe zu verschwinden. */
+    const _sollSumme = nkAnteil + (ex.kr||0) + (ex.so||0) + (ex.wm||0);
+    const _abw = Math.abs(Math.round(zeilenSumme*100) - Math.round(_sollSumme*100))/100;
+    const kontrollHinweis = (_abw >= 0.01)
+      ? '<div style="margin:6px 0;padding:6px 9px;border:1.5px solid #C0392B;border-radius:4px;'
+        + 'background:#FDECEA;color:#8B1E13;font-size:10px;font-weight:600">'
+        + 'Rechenkontrolle nicht bestanden: Die aufgef\u00fchrten Positionen ergeben '
+        + fmtEur(zeilenSumme) + ', die Abrechnung weist ' + fmtEur(_sollSumme)
+        + ' aus (Abweichung ' + fmtEur(_abw) + '). Diese Abrechnung bitte NICHT versenden.</div>'
+      : '';
+    if(_abw >= 0.01) console.error('NKA-Kontrollsumme (Einzel)', m.id, zeilenSumme, _sollSumme);
+    const _pruefHinweis = nkaPruefHinweisHTML(nkaPruefungMieter(m, von, bis));
+
+    briefeJeMieter[m.id] = `
     <div class="pagebreak">
       <div class="bk-box">
         <div class="bk-left" style="order:2;text-align:right;padding-top:5mm">
@@ -18102,6 +18552,7 @@ async function erstelleNKA(objektId, korrektur) {
         </tr></thead>
         <tbody>${posZeilen}</tbody>
       </table>
+      ${kontrollHinweis}${_pruefHinweis}
 
       <table class="summen-table">
         <tr><td>Summe Nebenkosten</td><td>${fmtEur(nkAnteil-( kostenMap['heizung']?.[m.id]||0)-(ex.kr||0)-(ex.so||0))}</td></tr>
@@ -18148,6 +18599,7 @@ async function erstelleNKA(objektId, korrektur) {
 
       ${grussHTML}
     </div>`;
+    briefeHTML += briefeJeMieter[m.id];   // v349: Ausdruck bleibt vollstaendig
   });
 
   // NKA im Archiv speichern
@@ -18280,15 +18732,29 @@ ${briefeHTML}
 <scr` + `ipt>(function(){var p=function(){setTimeout(function(){window.focus();window.print();},700);};if(document.readyState==='complete'){p();}else{window.addEventListener('load',p);}})()</scr` + `ipt>
 </body></html>`;
 
-  // Pro Mieter im Archiv ablegen (auch für ausgezogene/Vormieter abrufbar)
+  /* v349: Je Mieter NUR der eigene Brief. Bis v348 lag hier das vollstaendige
+     Sammeldokument samt Deckblatt und den Briefen aller Nachbarn - ueber das
+     Mieterportal waeren damit fremde Abrechnungsergebnisse einsehbar geworden.
+     Laesst sich der Brief nicht herausloesen (unerwartetes Dokumentgeruest),
+     wird nichts geraten: dann bleibt es beim Gesamtdokument und der Fall wird
+     protokolliert, damit er auffaellt statt still zu misslingen. */
   for (const {m} of mieterErgebnisse) {
+    const einzel = nkaEinzeldokument(nkaHtml, briefeJeMieter[m.id]);
+    if(!einzel) console.error('NKA: Einzelbrief nicht herausloesbar, Mieter', m.id);
     await archiviereMieterDokument({
       mieterId: m.id, objektId,
       typ: 'nka',
       name: `Nebenkostenabrechnung ${jahr} – ${obj?.name||''}`,
-      html: nkaHtml,
+      html: einzel || nkaHtml,
     });
   }
+
+  /* Gesamtaufstellung beim OBJEKT - nicht beim Mieter. */
+  await archiviereNkaGesamt({
+    objektId, von, bis,
+    name: `Nebenkostenabrechnung ${jahr} – ${obj?.name||''} (Gesamtaufstellung)`,
+    html: nkaHtml
+  });
 
   // PDF-Fenster öffnen
   druckHTML(nkaHtml);
@@ -18688,8 +19154,48 @@ const NKA_LG_BUCH_MAP={
     grundsteuer:{alle:'grundsteuer'}, gebaeudeversicherung:{alle:'gebvrs'},
     strassenreinigung:{alle:'strassenreinig'}, regenwasser:{alle:'regenwasser'},
     gartenpflege:{alle:'vorgarten'},
+    /* v351 (N3): fehlte bisher. In der Einzelabrechnung heisst die Kostenart
+       'hausreinigung', in der MG-Sammelabrechnung 'treppenhaus' - ohne diesen
+       Eintrag bekam eine Reinigungsbuchung in MG gar keinen Vorschlag und
+       musste jedes Mal von Hand zugeordnet werden. Es ist dieselbe Position,
+       die in v345 im Mieterbrief gefehlt hat. */
+    reinigung:{alle:'treppenhaus'},
   },
 };
+/* v351: Prueft, ob jede im Mapping genannte Kostenart in der Vorlage wirklich
+   existiert. Ein Tippfehler oder eine spaeter umbenannte ID faellt sonst nicht
+   auf - der Vorschlag bleibt einfach leer, und die Position landet nicht in der
+   Abrechnung. Genau so ist die Treppenhausreinigung in v345 verlorengegangen.
+   Liefert eine Liste von Klartexten; leer heisst: alles stimmt zusammen. */
+function nkaLgMapPruefen(lgId){
+  const fehler = [];
+  const vorlage = getNKALgVorlage(lgId);
+  if(!vorlage) return ['Vorlage ' + lgId + ' nicht gefunden.'];
+  const vorhanden = new Set((vorlage.kosten||[]).map(k=>k.id));
+  const map = NKA_LG_BUCH_MAP[lgId] || {};
+  Object.keys(map).forEach(kat=>{
+    Object.keys(map[kat]||{}).forEach(kreis=>{
+      const ziel = map[kat][kreis];
+      if(ziel && !vorhanden.has(ziel)){
+        fehler.push('Buchungskategorie "' + kat + '" (' + kreis + ') zeigt auf "'
+          + ziel + '" - diese Kostenart gibt es in der Vorlage nicht.');
+      }
+    });
+  });
+  return fehler;
+}
+
+/* Umlagefaehige Buchungskategorien ohne jeden Zuordnungsvorschlag. Das ist
+   KEIN Fehler - nicht jede Liegenschaft hat jede Kostenart -, sondern eine
+   Arbeitsanweisung: solche Buchungen muessen von Hand zugeordnet werden.
+   Deshalb nur ins Protokoll, nicht in die Oberflaeche; ein Dauerhinweis, den
+   man wegklickt, warnt beim naechsten Mal nicht mehr. */
+function nkaLgMapOhneZuordnung(lgId){
+  const map = NKA_LG_BUCH_MAP[lgId] || {};
+  return (typeof BUCH_KATEGORIEN!=='undefined' ? BUCH_KATEGORIEN : [])
+    .filter(k=>k.nka && !map[k.id]).map(k=>k.label);
+}
+
 function nkaLgZielVorschlag(lgId, kat, kreis){
   const m=(NKA_LG_BUCH_MAP[lgId]||{})[kat];
   if(!m) return '';
@@ -18705,6 +19211,20 @@ async function nkaLgBuchPanelToggle(lgId){
   const vorlage=getNKALgVorlage(lgId);
   const konto=nkaLgKonto(lg);
   if(!lg||!vorlage||!konto){ panel.innerHTML='<div style="font-size:12px;color:var(--ink-40)">Kein Import-Konto für diese Liegenschaft.</div>'; return; }
+  /* v351 (N3): Zuordnungstabelle gegen die Vorlage pruefen, bevor Vorschlaege
+     angezeigt werden. Zeigt ein Eintrag auf eine Kostenart, die es in der
+     Vorlage nicht gibt, bleibt der Vorschlag stillschweigend leer - so ist in
+     v345 die Treppenhausreinigung aus dem Mieterbrief verschwunden. */
+  const _mapFehler = nkaLgMapPruefen(lgId);
+  const _mapHinweis = _mapFehler.length
+    ? '<div style="border:1.5px solid #C0392B;background:#FDECEA;color:#8B1E13;border-radius:6px;'
+      + 'padding:8px 10px;margin-bottom:10px;font-size:12px"><b>Zuordnungstabelle fehlerhaft:</b><ul style="margin:4px 0 0 16px;padding:0">'
+      + _mapFehler.map(f=>'<li>'+esc(f)+'</li>').join('') + '</ul></div>'
+    : '';
+  if(_mapFehler.length) console.error('NKA-Zuordnungstabelle', lgId, _mapFehler);
+  const _ohne = nkaLgMapOhneZuordnung(lgId);
+  if(_ohne.length) console.info('NKA: ohne Zuordnungsvorschlag in ' + lgId + ':', _ohne.join(', '));
+
   const von=document.getElementById('nkaLgVon')?.value||'';
   const bis=document.getElementById('nkaLgBis')?.value||'';
   const alle=await idbGetAll('buchungen').catch(()=>[]);
@@ -18725,13 +19245,14 @@ async function nkaLgBuchPanelToggle(lgId){
   }
   const zeilen=Object.values(gruppen).sort((a,b)=>b.summe-a.summe);
   if(!zeilen.length){
-    panel.innerHTML='<div style="font-size:12px;color:var(--ink-40)">Keine kategorisierten Ausgaben mit Kostenstelle im Zeitraum.'+(unzAnz?' <span style="color:var(--amber)">('+unzAnz+' ohne Gebäude-Zuordnung – bitte in der Buchhaltung zuordnen.)</span>':'')+'</div>';
+    panel.innerHTML=_mapHinweis+'<div style="font-size:12px;color:var(--ink-40)">Keine kategorisierten Ausgaben mit Kostenstelle im Zeitraum.'+(unzAnz?' <span style="color:var(--amber)">('+unzAnz+' ohne Gebäude-Zuordnung – bitte in der Buchhaltung zuordnen.)</span>':'')+'</div>';
     return;
   }
   const zielOpts=vorlage.kosten.filter(k=>k.schluessel!=='einzeln');
   const kreisLabel=k=> k==='inrather'?'nur Inrather': k==='wilmendyk'?'nur Wilmendyk':'alle Häuser';
   const eur=n=>(Number(n)||0).toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:2});
   panel.innerHTML=`
+    ${_mapHinweis}
     <div style="font-size:12px;font-weight:600;margin:8px 0 4px"><i class="ti ti-cash-banknote"></i> Ausgaben aus der Buchhaltung (${konto.label||konto.id}, ${von||'…'} – ${bis||'…'})</div>
     ${unzAnz?`<div style="font-size:11px;color:var(--amber);margin-bottom:6px"><i class="ti ti-help-circle"></i> ${unzAnz} Ausgang/Ausgänge ohne Gebäude-Zuordnung sind nicht gelistet – bitte in der Buchhaltung die Kostenstelle setzen.</div>`:''}
     ${zeilen.map((z,i)=>{
@@ -18972,6 +19493,8 @@ async function erstelleNKALiegenschaft(lgId, korrektur){
 
   // Einzelbriefe
   let briefeHTML='';
+  /* v349: siehe nkaEinzeldokument - je Mieter nur der eigene Brief ins Archiv. */
+  const briefeJeMieter = {};
   mieterErgebnisse.forEach(({m,ex,nkAnteil,gesamt,vzJahres,diff})=>{
     const obj=getObj(m.objektId);
     const bk=getBriefkopf(m.objektId);
@@ -19033,12 +19556,22 @@ async function erstelleNKALiegenschaft(lgId, korrektur){
         geteilt = '–'; anteil = '–'; preis = 0; kosten = getAnteil(k, m);
         console.warn('NKA: unbekannter Verteilerschluessel im Zeilenbau:', k.schluessel, k.id);
       }
+      /* v346: Der gedruckte Betrag muss aus DERSELBEN Quelle stammen wie die
+         ausgewiesene Summe. getAnteil() verteilt centgenau (nkaCentVerteilung
+         inkl. Restcent-Vergabe); der frueher hier gerechnete Rohwert
+         b*Anteil/Divisor wich je Zeile um Bruchteile eines Cents ab und ergab
+         in der Summe die 1-2-Cent-Meldungen der Rechenkontrolle aus v345.
+         Spalten "Geteilt durch"/"Ihr Anteil"/"Preis" bleiben unveraendert -
+         sie erklaeren die Herleitung, massgeblich ist die Spalte "Ihre Kosten". */
+      kosten = getAnteil(k, m);
       zeilenSumme += Number(kosten)||0;
       posZeilen+=nkaZeile(k.name, slLabel,
         typeof geteilt==='number'?geteilt.toFixed(2):geteilt, b, anteil, preis, kosten);
     });
     if(ex.repsImZeitraum?.length>0){
-      ex.repsImZeitraum.forEach(r=>{ posZeilen+=nkaZeile(r.titel+' ('+fmtDate(r.datum)+')', r.extern==='extern'?'Extern':'Intern','–','–','–','–',r.kosten||0); });
+      /* v346: diese Zeilen sind Teil von ex.kr (krAuto) und muessen daher auch
+         in die Kontrollsumme - sonst meldet die Gegenprobe faelschlich. */
+      ex.repsImZeitraum.forEach(r=>{ posZeilen+=nkaZeile(r.titel+' ('+fmtDate(r.datum)+')', r.extern==='extern'?'Extern':'Intern','–','–','–','–',r.kosten||0); zeilenSumme+=Number(r.kosten)||0; });
     }
     if(ex.krManual>0){ posZeilen+=nkaZeile('Kleinreparaturen (manuell)','–','–','–','–','–',ex.krManual); zeilenSumme+=ex.krManual; }
     if(ex.so>0){ posZeilen+=nkaZeile('Sonstiges','–','–','–','–','–',ex.so); zeilenSumme+=ex.so; }
@@ -19048,15 +19581,20 @@ async function erstelleNKALiegenschaft(lgId, korrektur){
        ab, fehlt eine Position - genau der Fehler aus v344. Dann steht es
        sichtbar im Dokument, statt still in der Summe zu verschwinden. */
     const _sollSumme = nkAnteil + (ex.kr||0) + (ex.so||0);
-    const _abw = Math.abs(zeilenSumme - _sollSumme);
-    const kontrollHinweis = (_abw > 0.011)
+    /* v346: Beide Seiten stammen jetzt aus derselben centgenauen Verteilung,
+       daher wird auf den Cent verglichen (Float-Reste vorher wegrunden).
+       Eine Abweichung ist ab hier immer ein echter Fehler, keine Rundung. */
+    const _abw = Math.abs(Math.round(zeilenSumme*100) - Math.round(_sollSumme*100))/100;
+    const kontrollHinweis = (_abw >= 0.01)
       ? '<div style="margin:6px 0;padding:6px 9px;border:1.5px solid #C0392B;border-radius:4px;'
         + 'background:#FDECEA;color:#8B1E13;font-size:10px;font-weight:600">'
         + 'Rechenkontrolle nicht bestanden: Die aufgef\u00fchrten Positionen ergeben '
         + fmtEur(zeilenSumme) + ', die Abrechnung weist ' + fmtEur(_sollSumme)
         + ' aus (Abweichung ' + fmtEur(_abw) + '). Diese Abrechnung bitte NICHT versenden.</div>'
       : '';
-    if(_abw > 0.011) console.error('NKA-Kontrollsumme', m.id, zeilenSumme, _sollSumme);
+    if(_abw >= 0.01) console.error('NKA-Kontrollsumme', m.id, zeilenSumme, _sollSumme);
+    /* v347: Stammdatenpruefung zusaetzlich zur Rechenkontrolle. */
+    const _pruefHinweis = nkaPruefHinweisHTML(nkaPruefungMieter(m, von, bis));
 
     let grussHTML;
     if(sigListe.length>=2){
@@ -19070,7 +19608,7 @@ async function erstelleNKALiegenschaft(lgId, korrektur){
 
     const korrBanner = korrektur ? `<div style="background:#FDECEA;border:1px solid #C0392B;color:#C0392B;padding:6px 10px;border-radius:4px;font-size:10px;margin-bottom:8px"><strong>Korrektur:</strong> ${esc(korrektur.text||'Diese Abrechnung ersetzt eine zuvor erstellte Fassung.')}</div>` : '';
 
-    briefeHTML+=`
+    briefeJeMieter[m.id] = `
     <div class="pagebreak">
       <div class="bk-box">
         <div class="bk-left" style="order:2;text-align:right;padding-top:5mm">
@@ -19106,7 +19644,7 @@ async function erstelleNKALiegenschaft(lgId, korrektur){
         <thead><tr><th>Kostenart</th><th>Schlüssel</th><th>Betrag</th><th>Geteilt durch</th><th>Ihr Anteil</th><th>Preis/Anteil</th><th>Ihre Kosten</th></tr></thead>
         <tbody>${posZeilen}</tbody>
       </table>
-      ${kontrollHinweis}
+      ${kontrollHinweis}${_pruefHinweis}
       <table class="summen-table">
         <tr><td>Summe Nebenkosten</td><td>${fmtEur(nkAnteil-heiz-ex.kr-ex.so)}</td></tr>
         ${heiz>0?`<tr><td>Heiz-Warmwasserkosten</td><td>${fmtEur(heiz)}</td></tr>`:''}
@@ -19145,6 +19683,7 @@ async function erstelleNKALiegenschaft(lgId, korrektur){
             : 'Das Guthaben wird mit der kommenden Mietzahlung verrechnet bzw. ausgezahlt.')}</p>
       ${grussHTML}
     </div>`;
+    briefeHTML += briefeJeMieter[m.id];   // v349: Ausdruck bleibt vollstaendig
   });
 
   // Archiv-Eintrag (ein Eintrag je Liegenschaft+Zeitraum)
@@ -19256,14 +19795,25 @@ ${briefeHTML}
 <scr`+`ipt>(function(){var p=function(){setTimeout(function(){window.focus();window.print();},700);};if(document.readyState==='complete'){p();}else{window.addEventListener('load',p);}})()</scr`+`ipt>
 </body></html>`;
 
-  // Je Mieter im Archiv ablegen
+  /* v349: siehe Objektpfad - je Mieter nur der eigene Brief. */
   for(const {m} of mieterErgebnisse){
+    const einzel = nkaEinzeldokument(nkaHtml, briefeJeMieter[m.id]);
+    if(!einzel) console.error('NKA: Einzelbrief nicht herausloesbar, Mieter', m.id);
     await archiviereMieterDokument({
       mieterId:m.id, objektId:m.objektId, typ:'nka',
       name:`Nebenkostenabrechnung ${jahr} – ${vorlage.label}${korrektur?' (Korrektur)':''}`,
-      html:nkaHtml,
+      html: einzel || nkaHtml,
     });
   }
+
+  /* Gesamtaufstellung je Liegenschaft beim ERSTEN Objekt der Liegenschaft.
+     Eine Liegenschaft umfasst mehrere Objekte; das Dokument gehoert zur
+     Abrechnungseinheit, nicht zu einem einzelnen Haus. */
+  await archiviereNkaGesamt({
+    objektId: lg.objektIds[0], von, bis,
+    name: `Nebenkostenabrechnung ${jahr} – ${vorlage.label}${korrektur?' (Korrektur)':''} (Gesamtaufstellung)`,
+    html: nkaHtml
+  });
   closeModal();
   toast(korrektur?'Korrektur gespeichert und wird gedruckt…':'NKA gespeichert und wird gedruckt…');
   druckHTML(nkaHtml);
@@ -22963,6 +23513,11 @@ async function renderNKAArchiv(el, objektId) {
       +(nka.istLiegenschaft?'<div style="font-size:10px;color:var(--copper);margin-bottom:6px"><i class="ti ti-building-community"></i> Liegenschaftsweite Abrechnung</div>':'')
       +(nka.istKorrektur?'<div style="font-size:10px;color:#C0392B;margin-bottom:6px"><i class="ti ti-edit"></i> Korrektur'+(nka.korrekturText?': '+esc(nka.korrekturText):'')+(nka.korrekturAm?' · '+nka.korrekturAm:'')+'</div>':'')
       +'<div style="display:flex;gap:6px;flex-wrap:wrap">'
+      /* v350 (N4): Bis v349 bot die Karte nur Korrektur und Loeschen - die
+         fertige Abrechnung liess sich gar nicht ansehen. Seit v349 liegt die
+         Gesamtaufstellung unter einer deterministischen Id im dokumente-Store
+         und wird hier direkt geoeffnet. */
+      +`<button class="btn btn-sm" onclick="oeffneNKAGesamt('${nka.id}')"><i class="ti ti-eye"></i> Ansehen</button>`
       +`<button class="btn btn-sm btn-copper" onclick="modalNKAKorrektur('${nka.id}')"><i class="ti ti-edit"></i> Korrektur</button>`
       +`<button class="btn btn-sm btn-danger" onclick="deleteNKA('${nka.id}')"><i class="ti ti-trash"></i> Löschen</button>`
       +'</div>'
@@ -22970,6 +23525,40 @@ async function renderNKAArchiv(el, objektId) {
   });
 
   el.innerHTML = h;
+}
+
+/* v353 (N6): Die zuletzt erstellte Abrechnung dieses Objekts unmittelbar
+   oeffnen - ohne Umweg ueber den Reiter "NKA-Archiv".
+   Sortiert wird ueber 'erstellt' und damit genauso wie im Archiv selbst; zwei
+   verschiedene Sortierungen fuer "die letzte" waeren wieder eine Stelle, an
+   der zwei Wege auseinanderlaufen koennen. */
+async function oeffneLetzteNKA(objektId){
+  const alle = await idbGetAll('nka_archiv','objektId',objektId).catch(e=>{
+    console.error('NKA-Archiv nicht lesbar:', e && e.message); return null;
+  });
+  if(alle===null){ toast('Das NKA-Archiv konnte nicht gelesen werden.'); return; }
+  if(!alle.length){ toast('Für dieses Objekt wurde noch keine Abrechnung erstellt.'); return; }
+  const letzte = alle.slice().sort((a,b)=>String(b.erstellt||'').localeCompare(String(a.erstellt||'')))[0];
+  await oeffneNKAGesamt(letzte.id);
+}
+
+/* v350 (N4): Fertige Abrechnung aus dem Archiv oeffnen.
+   Die Id wird nach derselben Regel gebildet wie in archiviereNkaGesamt() -
+   beide Stellen muessen zusammenpassen; weicht eine ab, findet sich nichts.
+   Deshalb ist die Bildung in nkaGesamtId() zusammengefasst und wird von
+   beiden Seiten aufgerufen (Lehre aus der Kennungs-Fehlerklasse). */
+async function oeffneNKAGesamt(nkaId){
+  const nka = await idbGet('nka_archiv', nkaId).catch(()=>null);
+  if(!nka){ toast('Eintrag nicht gefunden'); return; }
+  const dokId = nkaGesamtId(nka.objektId, nka.von, nka.bis);
+  const dok = await idbGet('dokumente', dokId).catch(()=>null);
+  if(!dok){
+    /* Abrechnungen aus der Zeit vor v349 haben keine Gesamtaufstellung im
+       dokumente-Store. Das ehrlich sagen statt einen leeren Druck zu oeffnen. */
+    toast('Für diese Abrechnung liegt kein Gesamtdokument vor. Abrechnungen vor v349 lassen sich über „Korrektur“ erneut erzeugen.', 6000);
+    return;
+  }
+  await openArchivDok(dokId);
 }
 
 async function deleteNKA(id) {
@@ -23127,8 +23716,15 @@ function getAnredeVertrag(m){
 
 // Adress-Nachnamen nur der Vertragspartner; Fallback auf bisherige Heuristik
 function adressNachnamenVertrag(m){
+  /* v347: Anschriftfeld und Anrede muessen aus DERSELBEN Quelle stammen.
+     Bis v346 nutzte die Anrede vertragspartnerVon() (Rueckfall ohne gesetztes
+     Flag: alle lebenden Personen), das Anschriftfeld dagegen
+     adressNachnamen(m.mieter). Ohne Markierung zeigten beide auf verschiedene
+     Felder - im MG-Test stand "Dimke" ueber der Anrede an Herrn Gerretz.
+     Jetzt derselbe Weg; nur ohne Personenliste greift die alte Heuristik. */
   const lebend = (m.personen_liste||[]).filter(p=>p && p.name && !p.verstorben);
-  const vp = lebend.filter(p=>p.vertragspartner);
+  const markiert = lebend.filter(p=>p.vertragspartner);
+  const vp = markiert.length ? markiert : lebend;
   if(vp.length){
     const nachname = n => {
       n = (n||'').trim();
@@ -23141,6 +23737,67 @@ function adressNachnamenVertrag(m){
   }
   // keine explizite Markierung -> bewährte Heuristik
   return adressNachnamen(m);
+}
+
+/* ── v347: Plausibilitaetspruefung vor dem Versand einer Abrechnung ──
+   Deckt die Faelle ab, die die Rechenkontrolle aus v345/v346 nicht finden kann,
+   weil beide Seiten dasselbe (falsche) Ergebnis liefern. Prueft nur, korrigiert
+   nichts - die Stammdaten gehoeren dem Verwalter. */
+function nkaPruefungMieter(m, von, bis){
+  const hinweise = [];
+  const monate  = wohnMonate(m, von, bis);
+  const flaeche = parseFloat(m.flaeche) || 0;
+
+  if(monate > 0 && !(flaeche > 0)){
+    hinweise.push('Keine Wohnflaeche hinterlegt, aber ' + monate +
+      ' Wohnmonate: alle flaechenabhaengigen Positionen stehen auf 0,00 \u20ac.');
+  }
+  if(monate <= 0){
+    hinweise.push('Kein Wohnmonat im Abrechnungszeitraum \u2013 die Abrechnung ergibt 0,00 \u20ac. '
+      + 'Vermutlich Einzug nach Ende oder Auszug vor Beginn des Zeitraums.');
+  }
+  try{
+    const eISO = m.einzugISO || null, aISO = m.auszugISO || null;
+    const vonM = (eISO && new Date(eISO) > new Date(von)) ? eISO : von;
+    const bisM = (aISO && new Date(aISO) < new Date(bis)) ? aISO : bis;
+    if(vonM && bisM && new Date(vonM) > new Date(bisM)){
+      hinweise.push('Der ausgewiesene eigene Zeitraum laeuft rueckwaerts (' + vonM + ' bis ' + bisM + ').');
+    }
+  }catch(e){ console.error('nkaPruefungMieter Zeitraum:', e && e.message); }
+
+  /* Seit v347 speisen sich Anschrift und Anrede aus derselben Quelle
+     (Personenliste). Damit kann der Widerspruch aus dem MG-Test nicht mehr im
+     Brief erscheinen - er verschwindet aber auch nicht aus den Stammdaten.
+     Deshalb wird hier das Altfeld m.mieter gegen die Personenliste geprueft:
+     stand dort "Dimke", waehrend die Liste "Gerretz, Joschka" fuehrt, ist einer
+     von beiden ein Vormieter. */
+  try{
+    const altName = String(m.mieter || '').trim();
+    if(altName){
+      const altNach = altName.includes(',')
+        ? altName.split(',')[0].trim().toLowerCase()
+        : altName.split(/\s+/).pop().toLowerCase();
+      const partner = vertragspartnerVon(m).map(p=>String(p.name||'').toLowerCase());
+      if(altNach && partner.length && !partner.some(n=>n.includes(altNach))){
+        hinweise.push('Das Feld "Mieter" (' + altName + ') und die Personenliste (' +
+          vertragspartnerVon(m).map(p=>p.name).join(', ') +
+          ') nennen verschiedene Personen \u2013 vermutlich ein nicht entfernter Vormieter.');
+      }
+    }
+  }catch(e){ console.error('nkaPruefungMieter Namen:', e && e.message); }
+
+  return hinweise;
+}
+
+/* Gelber Kasten fuer die Ausgabe im Dokument; leere Liste -> leerer String. */
+function nkaPruefHinweisHTML(hinweise){
+  if(!hinweise || !hinweise.length) return '';
+  return '<div style="margin:6px 0;padding:6px 9px;border:1.5px solid #B8860B;'
+    + 'border-radius:4px;background:#FFF8E1;color:#6B4E00;font-size:10px">'
+    + '<b>Interner Pruefhinweis \u2013 vor dem Versand klaeren:</b>'
+    + '<ul style="margin:3px 0 0 14px;padding:0">'
+    + hinweise.map(h=>'<li>'+esc(h)+'</li>').join('')
+    + '</ul></div>';
 }
 
 // Nachname aus "Nachname, Vorname" oder "Vorname Nachname" extrahieren
