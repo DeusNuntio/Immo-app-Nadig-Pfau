@@ -1269,7 +1269,101 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=35;   // v242: +buch_journal (F4 GoBD)
-const APP_VERSION = '2026-08-11-v353';
+const APP_VERSION = '2026-08-12-v359';
+/* v359 (12.08.2026) – Nutzerfrage: "Kann ich die Historie auch in der
+   NK-Eingabe sehen und bearbeiten?" Die Pruefung hat einen Fehler zutage
+   gefoerdert: Die Eingabemaske zeigte eine ANDERE Zahl als der Brief rechnet.
+   window._nkaDivisoren summierte parseInt(m.personen) bzw. m.flaeche und
+   multiplizierte starr mit 12; die Personenhistorie (Zuzug/Auszug mitten im
+   Jahr) blieb unberuecksichtigt, Vormieter fehlten ganz - der Brief zaehlt sie
+   mit. Erneut die Zwei-Quellen-Fehlerklasse, diesmal zwischen Maske und
+   Dokument.
+   BEHOBEN:
+   1) nkaDivisorenSetzen() speist die Anzeige aus denselben Funktionen wie der
+      Brief (personenMonate/flaechenMonate/weMonate) und aus dem tatsaechlich
+      eingestellten Zeitraum. Die Erlaeuterungstexte nennen jetzt Monatssummen
+      statt "x 12".
+   2) Die Schluessel werden bei jedem Zeitraumwechsel neu gerechnet; bis v358
+      standen sie fest, seit sie beim Oeffnen einmal gesetzt worden waren.
+   3) Je Mieter zeigt die Karte Personenmonate und Vorauszahlung des Zeitraums,
+      mit Vermerk, wenn eine unterjaehrige Aenderung hinterlegt ist. BEARBEITET
+      wird weiterhin ausschliesslich im Mieterdatensatz (Knopf "Bearbeiten"),
+      denn eine an zwei Stellen pflegbare Historie waere genau der Fehler, den
+      diese Aenderung behebt. */
+/* v358 (12.08.2026) – Wohnungsgeberbescheinigung, Nutzerwuensche am Ausdruck:
+   1) Einzugsdatum und Unterschriftsdatum sind bei der Erstellung eingebbar.
+      Das Einzugsdatum ist aus den Stammdaten vorbelegt; eine Aenderung wirkt
+      NUR auf das Schriftstueck, der Mieterdatensatz bleibt unberuehrt - eine
+      Bescheinigung ist kein Stammdatenpflegevorgang. Fehlt eine Angabe, gilt
+      die bisherige Quelle (Stammdaten bzw. heute).
+   2) Unterschrift von 57px auf 92px vergroessert; das leere Unterschriftsfeld
+      waechst mit, damit von Hand ebenso viel Platz bleibt.
+   3) Das Stempelfeld entfaellt. § 19 BMG verlangt keinen Stempel, und das leere
+      Feld sah aus, als fehle noch etwas.
+   4) NICHT gewuenscht, aber am Ausdruck falsch: die Beschriftung
+      "Stockwerk / Wohnung / Lagebeschreibung:" klebte am Wert
+      ("...LagebeschreibungD: G - links"). Sie ist gemessen 190,5px breit
+      (messen_wgb_label.py, Arial 10px), festgelegt waren 180px bei
+      white-space:nowrap - die Beschriftung schob den Wert weg. Jetzt 198px. */
+/* v357 (12.08.2026) – Pruefprotokoll B3/B4 am Ausdruck vom 12.08. geprueft.
+   BEFUND: ANLAGE_DRUCKSEITEN.dsgvo stand seit v344 auf 1, der Datenschutz-
+   hinweis belegt aber ZWEI Seiten - im Mietvertrag (mit Unterschriftsblock)
+   ebenso wie im Eigentuemerwechsel-Brief (ohne). Nachgemessen mit
+   messen_dsgvo.py im Chromium-Druck A4; der Ausdruck des Nutzers zeigt
+   dasselbe. Weil die Duplex-Leerseitenlogik den hinterlegten Umfang verwendet,
+   rechnete sie mit einer Seite zu wenig: die folgende Anlage begann auf der
+   Rueckseite statt auf einem neuen Blatt (B3). Der Wert steht jetzt auf 2; am
+   Text der Anlage aendert sich nichts.
+   B4 bleibt offen: der Hinweis passt tatsaechlich nicht auf ein Blatt.
+   LEHRE (bestaetigt eine alte Projektregel): Eine Seitenzahl im Code ohne
+   Messprotokoll ist eine Vermutung. v344 setzte 2 -> 1, ohne dass die Variante
+   MIT Unterschriftsblock je gedruckt worden waere. */
+/* v356 (12.08.2026) – Nachbesserung zu v354, eigener Fehler.
+   Beim Bau von v354 habe ich zwei der DREI Stellen behandelt, an denen
+   Vormieter entstehen, und uebersehen, dass es mit objekt_stamm /
+   getWohnungStamm() bereits eine echte Wohnungs-Stammdatenquelle gibt. Mein
+   weMerkmaleVonWohnung() leitete die Flaeche nur aus anderen Mietern ab -
+   damit waere es eine VIERTE Wahrheit ueber dieselbe Angabe geworden, genau
+   die Fehlerklasse, die diese Sitzung mehrfach aufgeraeumt hat.
+   KORREKTUR:
+   1) weMerkmaleVonWohnung() fragt ZUERST die Wohnungs-Stammdaten, dann die
+      Mieter derselben Wohneinheit. Eine Quelle mit klarer Rangfolge.
+   2) saveVormieterAnlegen() - die dritte Stelle, der Dialog - nutzt jetzt
+      dieselbe Funktion und prueft ebenfalls das Auszugsdatum gegen den Einzug
+      des Nachmieters. Eine Korrektur wird dem Nutzer gesagt, nicht still
+      vorgenommen.
+   Damit gilt fuer ALLE drei Wege dasselbe: Flaeche aus einer Quelle,
+   Auszug am Tag vor dem Einzug des Nachfolgers. */
+/* v355 (12.08.2026) – C1: "Fotouebernahme aus Portalmeldungen funktioniert
+   nicht". Die Vermutung des Nutzers, es liege am Alter der Meldung, trifft zu:
+   Die Bildlinks sind SAS-Links mit 15 Minuten Gueltigkeit und entstehen im
+   Backend beim Abruf der LISTE. Wird die Liste geoeffnet und spaeter "Als
+   Mangel anlegen" gedrueckt, sind die in window._pmInbox gemerkten Links
+   abgelaufen; jeder Abruf scheitert, und portalFotosUebernehmen() kehrte bei
+   `if(!geholt) return;` STILL zurueck - ohne ein Wort.
+   BEHOBEN: portalFotosFrisch() holt die Links unmittelbar vor der Uebernahme
+   neu und aktualisiert auch den gemerkten Eintrag. Schlaegt es dennoch fehl,
+   nennt die App den Grund und den naechsten Schritt. Auch der zweite stille
+   Ausstieg (Mangelmaske noch nicht bereit) meldet sich jetzt.
+   Ein stiller Abbruch ist die schlechteste aller Rueckmeldungen: er sieht aus
+   wie ein Fehler im Programm und ist doch nur eine abgelaufene Frist. */
+/* v354 (12.08.2026) – Nutzerbefund Kyffhaeuser 30 WE 11 (Jakels):
+   Der Vormieter war ueber den Bankimport angelegt worden. Dort standen Flaeche
+   und Etage FEST AUF LEER, obwohl die Wohnung bekannt ist. Folge: jede
+   flaechenabhaengige Position seiner Abrechnung stand auf 0,00 EUR, waehrend
+   die Abrechnung 541,17 EUR Nachzahlung auswies. Beim anderen Vormieter
+   derselben Wohnung war die Flaeche vorhanden, weil er aus einem
+   vollstaendigen Datensatz hervorging - deshalb fiel es nicht auf.
+   ZWEI REGELN, ab jetzt an einer Stelle:
+   1) weMerkmaleVonWohnung() holt Flaeche, Etage und Lage von einem anderen
+      Mieter derselben Wohneinheit (aktiver Mieter zuerst, sonst der zuletzt
+      eingezogene Vormieter). Laesst sich keine Flaeche finden, sagt die App es
+      ausdruecklich, statt still eine Null zu speichern.
+   2) auszugVorEinzug() setzt den Auszug auf den Tag VOR dem Einzug des
+      Nachmieters. Bis v353 wurde der Einzugstag selbst gesetzt - die Wohnung
+      galt an diesem Tag als doppelt vermietet, und in der Abrechnung zaehlte
+      der Monat bei beiden Mietern. Beim Bankimport wird ein zu spaet
+      angegebener Auszug auf diese Grenze zurueckgezogen. */
 /* v353 (11.08.2026) – N6: Knopf "Letzte NKA" in der Gruppe Abrechnung.
    Bisher kostete der haeufigste Fall - "die zuletzt erstellte Abrechnung noch
    einmal ansehen" - drei Schritte: Objekt oeffnen, Reiter NKA-Archiv, Eintrag
@@ -9262,7 +9356,12 @@ async function portalMeldungAlsMangel(id){
          jetzt nicht geladen wird, ist beim naechsten Oeffnen weg. Deshalb
          sofort holen. Fehler bleiben still: ein fehlendes Foto darf die
          Mangelerfassung nicht verhindern. */
-      if(Array.isArray(e.fotos) && e.fotos.length) portalFotosUebernehmen(e.fotos);
+      /* v355: erst frische Links holen, dann uebernehmen - die gemerkten sind
+         so alt wie die Ansicht und nach 15 Minuten wertlos. */
+      if(Array.isArray(e.fotos) && e.fotos.length){
+        portalFotosFrisch(id, e.fotos).then(u=>portalFotosUebernehmen(u))
+          .catch(x=>console.error('Fotouebernahme:', x && x.message));
+      }
       /* v339: Herkunft merken, damit saveMangel() sie am Datensatz ablegt. */
       window._mangelAusMeldung = id;
     }, 60);
@@ -9273,8 +9372,44 @@ async function portalMeldungAlsMangel(id){
    Ablage identisch zu selbst aufgenommenen Fotos (Store 'fotos' mit
    protId '__mangel_offen__'), damit saveMangel() und restoreMangelFotos()
    ohne Sonderfall damit umgehen koennen. */
+/* v355 (C1): Frische Bildlinks fuer eine Meldung holen.
+   Die SAS-Links gelten 15 Minuten und werden im Backend beim Listenabruf
+   erzeugt. Die in window._pmInbox gemerkten Links sind daher genau so alt wie
+   die Ansicht. Vor jeder Uebernahme wird deshalb neu geladen; nur wenn das
+   nicht gelingt, wird auf die gemerkten Links zurueckgegriffen. */
+async function portalFotosFrisch(meldungId, alteUrls){
+  try{
+    /* Derselbe Schluessel wie in portalMeldungenLaden() - 'backendKey'. Ein
+       zweiter, nur hier verwendeter Name waere genau die Kennungs-Fehlerklasse,
+       die dieses Projekt schon mehrfach beschaeftigt hat. */
+    const key=(await idbGet('settings','backendKey').catch(()=>null))?.value;
+    if(!key) return alteUrls||[];
+    const res=await fetchMitTimeout(BACKEND_AZURE+'/api/portal-meldung/inbox?alle=1',
+      { headers:{'x-functions-key':key} });
+    if(!res || !res.ok) return alteUrls||[];
+    const liste=await res.json().catch(()=>null);
+    if(!Array.isArray(liste)) return alteUrls||[];
+    const e=liste.find(x=>x && x.id===meldungId);
+    if(!e || !Array.isArray(e.fotos) || !e.fotos.length) return alteUrls||[];
+    /* Gemerkten Eintrag mitziehen, damit auch die Vorschau in der Liste wieder
+       gilt, wenn der Nutzer zurueckgeht. */
+    if(window._pmInbox && window._pmInbox[meldungId]) window._pmInbox[meldungId].fotos=e.fotos;
+    return e.fotos;
+  }catch(x){
+    console.warn('Frische Bildlinks nicht abrufbar:', x && x.message);
+    return alteUrls||[];
+  }
+}
+
 async function portalFotosUebernehmen(urls){
-  if(!Array.isArray(window._mangelPhotos)) return;
+  if(!Array.isArray(window._mangelPhotos)){
+    /* v355: Bis v354 endete die Funktion hier stillschweigend. Wenn die
+       Mangelmaske noch nicht bereit ist, muss das gesagt werden - sonst wirkt
+       die Uebernahme kaputt. */
+    console.warn('Fotouebernahme: Mangelmaske noch nicht bereit.');
+    toast('Die Fotos konnten nicht übernommen werden – bitte die Maske schließen und erneut versuchen.', 6000);
+    return;
+  }
   let geholt=0;
   for(const u of urls.slice(0,5)){
     try{
@@ -9297,7 +9432,14 @@ async function portalFotosUebernehmen(urls){
       geholt++;
     }catch(x){ console.warn('Portalfoto laden:', x); }
   }
-  if(!geholt) return;
+  if(!geholt){
+    /* v355: Der eigentliche Nutzerbefund. Fruher endete es hier ohne ein Wort.
+       Der haeufigste Grund ist eine abgelaufene Gueltigkeit der Bildlinks -
+       das wird ausdruecklich benannt, damit der naechste Versuch gelingt. */
+    console.warn('Fotouebernahme: kein Foto ladbar (Links abgelaufen oder Backend nicht erreichbar).');
+    toast('Kein Foto übernommen. Die Bildlinks gelten nur 15 Minuten – bitte die Meldungsliste neu laden und es noch einmal versuchen.', 8000);
+    return;
+  }
   const grid=document.getElementById('mgPhotoGrid');
   if(grid){
     grid.style.display='grid';
@@ -17505,20 +17647,53 @@ function nkaEtageKey(m){
      zusammengefasst - jedes Haus hat sein eigenes Treppenhaus. */
   return String(m && m.objektId || '') + '#' + et;
 }
+/* v359: Verteilerschluessel-Summen fuer die Anzeige in der Eingabemaske.
+   Bewusst dieselben Funktionen wie im Brief - eine Zahl, eine Herkunft.
+   Gezaehlt werden ALLE Mieter des Zeitraums einschliesslich Vormietern, weil
+   der Brief das auch tut: wer im Zeitraum gewohnt hat, gehoert in den Teiler. */
+function nkaDivisorenSetzen(liste, von, bis){
+  const alle = liste || window._nkaAlleMieter || [];
+  if(!von || !bis){ return; }
+  window._nkaDivisoren = {
+    p:  alle.reduce((s,m)=>s+personenMonate(m,von,bis),0),
+    f:  alle.reduce((s,m)=>s+flaechenMonate(m,von,bis),0),
+    we: alle.reduce((s,m)=>s+weMonate(m,von,bis),0),
+  };
+}
+
 function nkaSchlInfoText(schl){
   const d=window._nkaDivisoren||{p:0,f:0,we:0};
   const f2=x=>x.toFixed(2).replace('.',',');
   switch(schl){
-    case 'personen':      return 'Schlüssel: '+d.p+' Pers. = '+(d.p*12)+' Personenmonate';
-    case 'wfl':           return 'Schlüssel: '+f2(d.f)+' m² = '+f2(d.f*12)+' m²-Monate';
-    case 'we': case 'monate': return 'Schlüssel: '+d.we+' WE = '+(d.we*12)+' Monate';
+    /* v359: Die Werte SIND bereits Monatssummen des eingestellten Zeitraums -
+       das frueher hier gerechnete "x 12" hat sie ein zweites Mal multipliziert
+       und bei unterjaehrigen Aenderungen ohnehin nicht gestimmt. */
+    case 'personen':      return 'Schlüssel: '+d.p+' Personenmonate im Zeitraum';
+    case 'wfl':           return 'Schlüssel: '+f2(d.f)+' m²-Monate im Zeitraum';
+    case 'we': case 'monate': return 'Schlüssel: '+d.we+' Wohnmonate im Zeitraum';
     case 'etage':         return 'Zuerst gleichmäßig auf die Etagen, dann auf die Wohnungen der Etage';
-    case 'personen_fest': return 'Festpreis je Person ('+d.p+' Pers. gesamt)';
+    case 'personen_fest': return 'Festpreis je Person und Monat ('+d.p+' Personenmonate gesamt)';
     case 'we_fest':       return 'Festpreis je Wohneinheit';
     case 'besonders':     return 'Betrag wird 1:1 übernommen';
     default:              return '';
   }
 }
+/* v359: Von der NK-Eingabe in den Mieterdatensatz. Der Zwischenstand wird
+   vorher gesichert - die Maske speichert sonst erst nach 800 ms Ruhe, und der
+   Wechsel waere schneller. */
+async function nkaZuMieterdaten(mieterId){
+  /* Die Objekt-Id kommt aus dem Mieter selbst - eine eigene globale Variable
+     dafuer waere ein weiterer Bezeichner, der auseinanderlaufen kann.
+     nkaSavePositionen() hat einen eigenen Guard auf das Formular. */
+  try{
+    const m = await idbGet('mieter', mieterId);
+    if(m && m.objektId) await nkaSavePositionen(m.objektId);
+  }catch(e){ console.error('NKA-Zwischenstand:', e && e.message); }
+  closeModal();
+  if(typeof modalEditMieter==='function') await modalEditMieter(mieterId);
+  else toast('Mieterdaten konnten nicht geöffnet werden');
+}
+
 function nkaSchlChange(kId){
   const sel=document.querySelector('.nkaSchlSel[data-kid="'+kId+'"]');
   const info=document.getElementById('nkaSchlInfo_'+kId);
@@ -17943,13 +18118,14 @@ async function modalNKA(objektId) {
     .filter(m=>m.mieter && !m._zukuenftig)
     .sort((a,b)=>Number(a.weNr)-Number(b.weNr) || (a._vormieter?1:-1));
 
-  // Aktuelle Verteilerschlüssel-Summen für die Anzeige (P5) — nur aktive Mieter
-  const aktiveM = mieter.filter(m=>!m._vormieter);
-  window._nkaDivisoren = {
-    p:  aktiveM.reduce((s,m)=>s+(parseInt(m.personen)||1),0),
-    f:  aktiveM.reduce((s,m)=>s+(parseFloat(m.flaeche)||0),0),
-    we: aktiveM.length,
-  };
+  /* v359: Die angezeigten Verteilerschluessel stammen jetzt aus DENSELBEN
+     Funktionen wie der gedruckte Brief. Bis v358 rechnete die Maske
+     parseInt(m.personen) x 12 - sie ignorierte damit die Personenhistorie
+     (Zuzug/Auszug mitten im Jahr), unterstellte starr zwoelf Monate und liess
+     Vormieter aus, die der Brief mitzaehlt. Zwei Quellen fuer dieselbe Zahl.
+     nkaDivisorenSetzen() wird auch bei jedem Zeitraumwechsel gerufen. */
+  window._nkaAlleMieter = mieter;
+  nkaDivisorenSetzen(mieter, getNKAZeitraum(objektId).von, getNKAZeitraum(objektId).bis);
 
   // v294 (Nutzerbefund Mindener 23/25): Kostenarten mit perMieterOptIn (aktuell
   // "Strom Waschmaschine") sind kein fester Umlage-Posten mehr, den ausnahmslos
@@ -17970,6 +18146,10 @@ async function modalNKA(objektId) {
           <div style="font-size:12px;font-weight:600;color:var(--ink);margin-bottom:6px">WE ${esc(m.weNr)} – ${esc(m.mieter)}
             ${m._vormieter?'<span class="chip chip-warn" style="font-size:9px;padding:0 5px">Vormieter</span>':''}
             <span id="nkaWohnM_${m.id}" style="font-weight:400;color:var(--ink-40)"></span></div>
+          <!-- v359: Personenmonate und Vorauszahlung des Zeitraums sichtbar.
+               Bearbeitet wird im Mieterdatensatz - die Historie an zwei Stellen
+               pflegbar zu machen waere genau der Fehler, den v359 behebt. -->
+          <div id="nkaHist_${m.id}" style="font-size:11px;color:var(--ink-60);margin:2px 0 6px"></div>
           <div class="f-row">
             <div class="f"><label>Einzug</label>
               <input type="date" id="nka_ein_${m.id}" value="${eISO}" onchange="nkaDatumChange()"></div>
@@ -18071,6 +18251,7 @@ async function modalNKA(objektId) {
   document.getElementById('nkaJahr').value = String(defJahr);
   setPeriode(defJahr);
   window._nkaPeriode = {von:document.getElementById('nkaVon').value, bis:document.getElementById('nkaBis').value};
+  nkaDivisorenSetzen(mieter, window._nkaPeriode.von, window._nkaPeriode.bis);
   nkaUpdateWohnmonate(mieter);
   await nkaLoadPositionen(objektId);
 
@@ -18087,16 +18268,40 @@ async function modalNKA(objektId) {
       const mTmp={...m, einzugISO:ein, auszugISO:aus, einzug:ein, auszug:aus};
       const wm=wohnMonate(mTmp,von,bis);
       el.textContent = '· '+wm+'/'+n+' Mon.'+(wm!==n?' (anteilig)':'');
+
+      /* v359: Personenmonate und Vorauszahlung - dieselben Funktionen wie im
+         Brief. Ein Hinweis erscheint nur, wenn tatsaechlich eine unterjaehrige
+         Aenderung hinterlegt ist; sonst waere es Rauschen. */
+      const hEl=document.getElementById('nkaHist_'+m.id);
+      if(hEl){
+        const pm = personenMonate(mTmp,von,bis);
+        const vz = vzSummeZeitraum(mTmp,von,bis);
+        const pWechsel = (m.personen_liste||[]).some(p=>p && (p.ab||p.bis));
+        const vWechsel = !!(m.vzHistorie && m.vzHistorie.length);
+        const stueck = [];
+        stueck.push('<b>'+pm+'</b> Personenmonate'
+          + (pWechsel?' <span style="color:var(--copper)">· unterjährig geändert</span>':''));
+        stueck.push('Vorauszahlung <b>'+fmtEur(vz)+'</b>'
+          + (vWechsel?' <span style="color:var(--copper)">· unterjährig geändert</span>':''));
+        hEl.innerHTML = stueck.join(' &nbsp;·&nbsp; ')
+          + ' <button type="button" class="btn btn-sm" style="padding:1px 7px;font-size:10px;margin-left:4px"'
+          + ' onclick="nkaZuMieterdaten(\''+escJs(m.id)+'\')">Bearbeiten</button>';
+      }
       const card=document.getElementById('nkaCard_'+m.id);
       if(card && m._vormieter && wm===0) card.style.opacity='0.45';
       else if(card) card.style.opacity='';
     });
   }
-  window.nkaDatumChange = ()=>nkaUpdateWohnmonate(mieter);
+  window.nkaDatumChange = ()=>{ nkaDivisorenSetzen(mieter,
+      document.getElementById('nkaVon')?.value, document.getElementById('nkaBis')?.value);
+    nkaUpdateWohnmonate(mieter); };
   const periodeWechsel = async () => {
     const alt = window._nkaPeriode;
     if (alt && alt.von && alt.bis) await nkaSavePositionen(objektId, alt.von, alt.bis);
     window._nkaPeriode = {von:document.getElementById('nkaVon').value, bis:document.getElementById('nkaBis').value};
+    /* v359: Schluessel neu rechnen - bis v358 wurden sie einmal beim Oeffnen
+       gesetzt und blieben beim Jahreswechsel stehen. */
+    nkaDivisorenSetzen(mieter, window._nkaPeriode.von, window._nkaPeriode.bis);
     nkaUpdateWohnmonate(mieter);
     await nkaLoadPositionen(objektId);
   };
@@ -21063,7 +21268,16 @@ const ANLAGE_DRUCKSEITEN = {
                     // 9.5->9.0pt brachte nichts und wurde zurueckgenommen.
   merkblatt:   2,   // v294: verdichtet (10pt/1.4 -> 9.6pt/1.32), per messen_mv_kontext.py
                     // im Mietvertrags-Kontext nachgemessen: jetzt 2 statt 3 Seiten.
-  dsgvo:        1,   // v344: 2 -> 1. Bis v343 lief der Schluss (Rest von Nr. 9 und
+  // v357 GEMESSEN (messen_dsgvo.py, Chromium-Druck A4): BEIDE Varianten belegen
+  // ZWEI Seiten - mit Unterschriftsblock (Mietvertrag) wie ohne (EW-Brief). Der
+  // in v344 notierte Wert 1 ist damit widerlegt; der Ausdruck vom 12.08.2026
+  // zeigt dasselbe Bild. Weil dsgvo mit 1 hinterlegt war, rechnete die
+  // Duplex-Leerseitenlogik mit einer Seite zu wenig - die folgende Anlage begann
+  // auf der Rueckseite statt auf einem neuen Blatt (Protokoll B3).
+  // Am Text der Anlage aendert sich nichts, nur die Buchhaltung darueber.
+  // Ob sich der Hinweis auf EIN Blatt verdichten laesst, ist offen (B4): erst
+  // messen, dann kuerzen - nie umgekehrt.
+  dsgvo:        2,   // ueberholt v344 (2 -> 1). Bis v343 lief der Schluss (Rest von Nr. 9 und
                     // Nr. 10) auf ein zweites, zu 85 % leeres Blatt. Mit der korrekt
                     // greifenden Briefschrift passt der Hinweis auf eine Seite -
                     // OHNE Textkuerzung, der Wortlaut ist unveraendert.
@@ -23288,13 +23502,48 @@ async function druckeWohnungsgeberBescheinigung(mieterId){
   showModal(`
     <div class="m-title"><i class="ti ti-file-certificate"></i> Wohnungsgeberbescheinigung</div>
     <div style="font-size:12px;color:var(--ink-40);margin-bottom:8px">${esc(m.mieter)} · WE ${esc(String(m.weNr||''))}</div>
+    <div class="f-section-title" style="margin-top:4px"><i class="ti ti-calendar"></i> Daten</div>
+    <div class="f-row">
+      <div class="f"><label for="wgbEinzug">Einzugsdatum</label>
+        <input type="date" id="wgbEinzug" value="${esc(wgbIsoAus(m.einzugISO || m.einzug))}"></div>
+      <div class="f"><label for="wgbUntDatum">Datum der Unterschrift</label>
+        <input type="date" id="wgbUntDatum" value="${esc(today())}"></div>
+    </div>
+    <div style="font-size:11px;color:var(--ink-40);margin-bottom:6px">
+      Das Einzugsdatum ist aus den Stammdaten vorbelegt und kann hier abweichend gesetzt werden;
+      der Stammdatensatz bleibt unveraendert.
+    </div>
     <div class="f-section-title" style="margin-top:4px"><i class="ti ti-signature"></i> Unterschrift(en)</div>
     <div style="font-size:11px;color:var(--ink-40);margin-bottom:6px">Eine oder zwei hinterlegte Unterschriften wählen (z. B. Alexander-Roland Nadig und Anna-Alexandra Pfau).</div>
     <div id="wgbSigPick">${liste}</div>
     <div class="f-row" style="margin-top:12px">
-      <button class="btn btn-copper btn-full" onclick="wgbDruckStart('${mieterId}')"><i class="ti ti-printer"></i> Erstellen & Drucken</button>
+      <button class="btn btn-copper btn-full" onclick="wgbDruckStart('${mieterId}')"><i class="ti ti-printer"></i> Erstellen &amp; Drucken</button>
       <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
     </div>`);
+}
+
+/* v358: Ein Datum kann als ISO (2026-07-01) oder deutsch (01.07.2026) im
+   Datensatz stehen. Das date-Feld braucht ISO; ist nichts oder nichts
+   Verwertbares hinterlegt, bleibt es leer, statt ein falsches Datum zu raten. */
+function wgbIsoAus(wert){
+  const t = String(wert||'').trim();
+  if(!t) return '';
+  if(/^\d{4}-\d{2}-\d{2}$/.test(t)) return t;
+  const m = t.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
+  if(m) return m[3]+'-'+m[2].padStart(2,'0')+'-'+m[1].padStart(2,'0');
+  return '';
+}
+/* Deutsche Schreibweise fuer den Ausdruck; leere Eingabe bleibt leer.
+   Bewusst selbst zusammengesetzt statt ueber toLocaleDateString: das liefert je
+   nach Umgebung "1.7.2026" oder "01.07.2026". Auf einem amtlichen Vordruck soll
+   das Datum immer gleich aussehen - und zwar zweistellig, wie im uebrigen
+   Dokument. */
+function wgbDatumDe(iso){
+  const m = String(iso||'').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if(!m) return '';
+  const d = new Date(iso);
+  if(isNaN(d.getTime())) return '';
+  return m[3] + '.' + m[2] + '.' + m[1];
 }
 
 function wgbSigToggle(userId){
@@ -23317,11 +23566,15 @@ async function wgbGewaehlteSignaturen(){
 
 async function wgbDruckStart(mieterId){
   const sigListe = await wgbGewaehlteSignaturen();
+  /* v358: Die Felder VOR closeModal() auslesen - danach ist der Dialog aus dem
+     Dokument entfernt und getElementById liefert null. */
+  const einzugISO   = document.getElementById('wgbEinzug')?.value || '';
+  const untDatumISO = document.getElementById('wgbUntDatum')?.value || '';
   closeModal();
-  await wgbErzeugeUndDrucke(mieterId, sigListe);
+  await wgbErzeugeUndDrucke(mieterId, sigListe, { einzugISO, untDatumISO });
 }
 
-async function wgbErzeugeUndDrucke(mieterId, sigListe) {
+async function wgbErzeugeUndDrucke(mieterId, sigListe, opt) {
   const m   = await idbGet('mieter', mieterId);
   if (!m) return;
   const obj = getObj(m.objektId);
@@ -23330,8 +23583,14 @@ async function wgbErzeugeUndDrucke(mieterId, sigListe) {
     ? m.personen_liste
     : [{name: m.mieter, geburtsdatum:''}];
 
-  // Datum heute
-  const heute = new Date().toLocaleDateString('de-DE');
+  /* v358: Beide Daten kommen aus dem Dialog. Fehlt eine Angabe, gilt weiterhin
+     die bisherige Quelle: Einzug aus den Stammdaten, Unterschrift von heute.
+     Der Mieterdatensatz wird NICHT geaendert - eine Bescheinigung ist ein
+     Schriftstueck, kein Stammdatenpflegevorgang. */
+  const einzugDruck = wgbDatumDe(opt && opt.einzugISO) || m.einzug || '';
+  const untDatum    = wgbDatumDe(opt && opt.untDatumISO) || new Date().toLocaleDateString('de-DE');
+  // Dateiname und Fusszeile tragen das Unterschriftsdatum
+  const heute = untDatum;
 
   // Personenzeilen
   let persZeilen = '';
@@ -23353,7 +23612,11 @@ h1{font-size:13px;font-weight:700;margin-bottom:12px;text-align:center}
 h2{font-size:11px;font-weight:700;margin:14px 0 6px;border-bottom:1px solid #333;padding-bottom:3px}
 .bk{font-size:10px;color:#444;margin-bottom:14px;padding:8px;background:#f8f8f8;border-left:3px solid #1F4E79}
 .zeile{display:flex;gap:8px;margin-bottom:8px;align-items:baseline}
-.zeile label{font-size:10px;color:#555;white-space:nowrap;width:180px;flex-shrink:0}
+.zeile label{font-size:10px;color:#555;white-space:nowrap;width:198px;flex-shrink:0}
+/* v358: 180px reichten nicht. Gemessen (messen_wgb_label.py, Arial 10px):
+   "Stockwerk / Wohnung / Lagebeschreibung:" ist 190,5px breit; mit nowrap schob
+   sie den Wert weg - im Ausdruck stand "...LagebeschreibungD: G - links".
+   198px = gemessene Breite plus Reserve. */
 .zeile .val{border-bottom:1px solid #777;flex:1;min-height:16px;font-size:11px;padding:1px 0}
 table{width:100%;border-collapse:collapse}
 table tr{page-break-inside:avoid}
@@ -23385,7 +23648,7 @@ table tr{page-break-inside:avoid}
 <div class="zeile"><label>Stockwerk / Wohnung / Lagebeschreibung:</label>
   <div class="val">${esc(m.etage||'')} · WE ${esc(m.weNr||'')}</div></div>
 <div class="zeile"><label>am (Einzugsdatum):</label>
-  <div class="val">${m.einzug||''}</div></div>
+  <div class="val">${esc(einzugDruck)}</div></div>
 
 <h2>Für folgende Personen</h2>
 <table>${persZeilen}
@@ -23418,17 +23681,15 @@ oder zur Verfügung zu stellen, obwohl ein tatsächlicher Bezug der Wohnung wede
 <div class="sig-area">
   ${(sigListe&&sigListe.length)
     ? sigListe.map(sg=>`<div class="sig-box" style="border-top:none">
-        <img src="${sg.signatur}" style="max-height:57px;display:block;margin:0 auto 2px;position:relative;z-index:1" alt="Unterschrift">
+        <img src="${sg.signatur}" style="max-height:92px;display:block;margin:0 auto 2px;position:relative;z-index:1" alt="Unterschrift">
         <div style="padding-top:2px">Ort, Datum: ${heute}<br>${esc(sg.name||'')} – Wohnungsgeber</div>
       </div>`).join('')
     : `<div class="sig-box" style="border-top:none">
-        <div style="height:38px"></div>
+        <div style="height:72px"></div>
         <div style="border-top:1px solid #333;padding-top:4px">Ort, Datum: ${heute}<br>Unterschrift des Wohnungsgebers</div>
       </div>`}
-  ${(sigListe&&sigListe.length>=2)?'':`<div class="sig-box" style="border-top:none">
-    <div style="height:38px"></div>
-    <div style="border-top:1px solid #333;padding-top:4px">Stempel (optional)</div>
-  </div>`}
+  <!-- v358: Das Stempelfeld entfaellt. § 19 BMG verlangt keinen Stempel; das
+       leere Feld sah aus, als fehle noch etwas. -->
 </div>
 
 <div class="footer">
@@ -28215,12 +28476,92 @@ async function saveNewMieter(objektId) {
   await renderDash();
 }
 
+/* ═══════════════════════════════════════════════════════════
+   v354 – Wohnungsmerkmale und Auszugsdatum
+
+   Es gibt keine eigene Stammdatentabelle je Wohnung; Flaeche und Etage haengen
+   am Mieter. Wird ein Mieter zu einer Wohnung angelegt, muessen sie daher von
+   einem anderen Mieter DERSELBEN Wohnung uebernommen werden - sonst entsteht
+   ein Datensatz mit Flaeche 0, und die Abrechnung wird der Hoehe nach unrichtig
+   (so geschehen bei Kyffhaeuser 30 WE 11).
+═══════════════════════════════════════════════════════════ */
+
+/* Flaeche, Etage und Lage der Wohnung aus einem anderen Mieter derselben
+   Wohneinheit. Bevorzugt wird der aktive Mieter, danach der zuletzt
+   eingezogene Vormieter - je juenger der Datensatz, desto eher stimmt er.
+   Liefert nur Felder, die tatsaechlich gefuellt sind; ein leerer Wert wuerde
+   sonst einen vorhandenen ueberschreiben. */
+async function weMerkmaleVonWohnung(objektId, weNr, mieterAlle){
+  const out = {};
+  if(!objektId || !weNr) return out;
+
+  /* v356: ZUERST die Wohnungs-Stammdaten. Sie ueberdauern Mieterwechsel und
+     sind die eigentliche Quelle; die Ableitung aus Mietern ist nur der
+     Rueckfall fuer Wohnungen, zu denen noch keine Stammdaten erfasst sind.
+     In v354 fehlte dieser Schritt - damit waere eine vierte Wahrheit ueber
+     dieselbe Angabe entstanden. */
+  try{
+    const stamm = await getWohnungStamm(objektId, weNr);
+    if(stamm){
+      if(parseFloat(stamm.flaeche)>0)      out.flaeche = stamm.flaeche;
+      if(String(stamm.etage||'').trim())   out.etage   = stamm.etage;
+      if(String(stamm.lage||'').trim())    out.lage    = stamm.lage;
+    }
+  }catch(e){
+    console.error('weMerkmaleVonWohnung Stammdaten:', e && e.message);
+  }
+
+  try{
+    const alle = mieterAlle || await idbGetAll('mieter');
+    const kandidaten = (alle||[])
+      .filter(m => m && String(m.objektId||'')===String(objektId)
+                    && String(m.weNr||'')===String(weNr))
+      .sort((a,b)=>{
+        /* aktiver Mieter zuerst, danach nach Einzug absteigend */
+        const av = a._vormieter?1:0, bv = b._vormieter?1:0;
+        if(av!==bv) return av-bv;
+        return String(b.einzugISO||'').localeCompare(String(a.einzugISO||''));
+      });
+    for(const k of kandidaten){
+      if(out.flaeche===undefined && parseFloat(k.flaeche)>0) out.flaeche = k.flaeche;
+      if(out.etage===undefined && String(k.etage||'').trim())  out.etage  = k.etage;
+      if(out.lage===undefined  && String(k.lage||'').trim())   out.lage   = k.lage;
+    }
+  }catch(e){
+    console.error('weMerkmaleVonWohnung:', e && e.message);
+  }
+  return out;
+}
+
+/* Auszugstag des Vormieters aus dem Einzug des Nachmieters: der Tag davor.
+   Zieht der Nachfolger am 01.05. ein, endet das Vormietverhaeltnis am 30.04. -
+   ein gleicher Tag hiesse, die Wohnung waere doppelt vermietet, und in der
+   Nebenkostenabrechnung wuerde ein Monat doppelt gezaehlt. */
+function auszugVorEinzug(einzugISO){
+  if(!einzugISO) return '';
+  const d = new Date(einzugISO);
+  if(isNaN(d.getTime())) return '';
+  d.setDate(d.getDate() - 1);
+  return d.toISOString().slice(0,10);
+}
+
 // Macht einen bisherigen Mieter zum Vormieter und verknüpft ihn mit dem Nachmieter.
 // Übernimmt die neue Adresse aus dem letzten Auszugsprotokoll, falls vorhanden.
 async function mieterZuVormieter(alt, neu) {
   alt._vormieter = true;
   alt._nachmieterId = neu.id;
-  alt.auszug = alt.auszug || neu.einzug;
+  /* v354: Bis v353 wurde als Auszug der EINZUGSTAG des Nachmieters gesetzt -
+     damit galt die Wohnung an diesem Tag als doppelt vermietet, und in der
+     Nebenkostenabrechnung zaehlte der Monat bei beiden. Richtig ist der Tag
+     davor. Ein bereits erfasster Auszug bleibt unangetastet. */
+  if(!alt.auszug && !alt.auszugISO){
+    const iso = auszugVorEinzug(neu.einzugISO || (neu.einzug&&neu.einzug.includes('.')
+      ? neu.einzug.split('.').reverse().join('-') : neu.einzug));
+    if(iso){
+      alt.auszugISO = iso;
+      alt.auszug = new Date(iso).toLocaleDateString('de-DE');
+    }
+  }
   // Neue Adresse aus letztem Protokoll des alten Mieters ziehen
   try {
     const prots = (await idbGetAll('protokolle')).filter(p=>!p._papierkorb&&p.mieterId===alt.id);
@@ -28475,12 +28816,27 @@ async function saveVormieterAnlegen(mieterId){
   const name = document.getElementById('vmName')?.value?.trim()||'';
   if(!name){ toast('Bitte Namen des Vormieters angeben'); return; }
   const einzugISO = document.getElementById('vmEinzug')?.value||'';
-  const auszugISO = document.getElementById('vmAuszug')?.value||'';
+  let   auszugISO = document.getElementById('vmAuszug')?.value||'';
   const obj = getObj(m.objektId);
+
+  /* v356: dieselben beiden Regeln wie beim Bankimport und beim Mieterwechsel.
+     Diese dritte Stelle hatte ich in v354 uebersehen. */
+  const _vmMerk = await weMerkmaleVonWohnung(m.objektId, m.weNr);
+  const _grenze = auszugVorEinzug(m.einzugISO);
+  if(_grenze && (!auszugISO || auszugISO > _grenze)){
+    /* Der Vormieter kann nicht laenger gewohnt haben als bis zum Tag vor dem
+       Einzug des jetzigen Mieters. Korrektur wird gesagt, nicht verschwiegen. */
+    if(auszugISO && auszugISO > _grenze){
+      toast('Auszug auf '+new Date(_grenze).toLocaleDateString('de-DE')
+        +' gesetzt – der Nachmieter zieht am '+new Date(m.einzugISO).toLocaleDateString('de-DE')+' ein.', 7000);
+    }
+    auszugISO = _grenze;
+  }
   const vm = {
     id: 'm_' + m.objektId + '_' + (m.weNr||'') + '_VM_' + name.replace(/\W/g,'').slice(0,10) + '_' + Date.now().toString(36),
     objektId: m.objektId, objekt: obj?.name||'',
-    weNr: m.weNr||'', etage: m.etage||'', flaeche: m.flaeche||'',
+    weNr: m.weNr||'', etage: _vmMerk.etage||m.etage||'', flaeche: _vmMerk.flaeche||m.flaeche||'',
+    lage: _vmMerk.lage||m.lage||'',
     mieter: name,
     personen_liste: [{name, anrede:'Herr', vertragspartner:true}],
     personen: 1,
@@ -39198,15 +39554,40 @@ async function zaAltMieterAnlegen(i){
   const auszugISO=document.getElementById('zaAltAuszug')?.value||'';
   const obj=getObj(objektId);
   const iban=zaNormIban(r.buchung.iban);
+
+  /* v354 (Nutzerbefund Kyffhaeuser 30 WE 11): Flaeche und Etage standen hier
+     fest auf leer, obwohl die Wohnung bekannt ist. Der so angelegte Vormieter
+     bekam eine Abrechnung, in der jede flaechenabhaengige Position 0,00 EUR
+     betrug - rechnerisch stimmig, sachlich falsch. Jetzt werden die Merkmale
+     von einem anderen Mieter derselben Wohnung uebernommen. */
+  const _merk = await weMerkmaleVonWohnung(objektId, weNr, window._zaMieterCache);
+  if(_merk.flaeche===undefined){
+    console.warn('Bankimport: keine Wohnflaeche fuer WE '+weNr+' ermittelbar.');
+    toast('Für WE '+weNr+' ist keine Wohnfläche hinterlegt – bitte im Mieterdatensatz nachtragen.', 6000);
+  }
+
+  /* Das Auszugsdatum muss vor dem Einzug des Nachmieters liegen. Ist keines
+     angegeben, wird es aus dem aktiven Mieter derselben Wohnung abgeleitet. */
+  let _auszugISO = auszugISO;
+  try{
+    const aktiv = (window._zaMieterCache||await idbGetAll('mieter')||[])
+      .find(m=>m && String(m.objektId||'')===String(objektId)
+                && String(m.weNr||'')===String(weNr)
+                && !m._vormieter && !m._zukuenftig);
+    const grenze = aktiv && auszugVorEinzug(aktiv.einzugISO);
+    if(grenze && (!_auszugISO || _auszugISO > grenze)) _auszugISO = grenze;
+  }catch(e){ console.error('Auszugsgrenze:', e && e.message); }
+
   const vm={
     id:'m_'+objektId+'_'+weNr+'_VM_'+name.replace(/\W/g,'').slice(0,10)+'_'+Date.now().toString(36),
-    objektId, objekt:obj?.name||'', weNr, etage:'', flaeche:'',
+    objektId, objekt:obj?.name||'', weNr,
+    etage:_merk.etage||'', flaeche:_merk.flaeche||'', lage:_merk.lage||'',
     mieter:name,
     personen_liste:[{name, anrede:'', vertragspartner:true}],
     personen:1,
     telefon:'', email:'', anschrift:'',
     einzug:einzugISO?new Date(einzugISO).toLocaleDateString('de-DE'):'', einzugISO,
-    auszug:auszugISO?new Date(auszugISO).toLocaleDateString('de-DE'):'', auszugISO,
+    auszug:_auszugISO?new Date(_auszugISO).toLocaleDateString('de-DE'):'', auszugISO:_auszugISO,
     iban:iban||'', ibans: iban?[{iban, inhaber:name, bic:'', status:'aktiv', seit:nowIso(), bis:''}]:[],
     miete: _altMiete||'', nk: _altNk||'', gesamt: (_altMiete||_altNk) ? Math.round((_altMiete+_altNk)*100)/100 : '',
     leerstand:false, _vormieter:true,
