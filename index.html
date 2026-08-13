@@ -1269,7 +1269,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=35;   // v242: +buch_journal (F4 GoBD)
-const APP_VERSION = '2026-08-13-v366';
+const APP_VERSION = '2026-08-13-v367';
 /* v364 (12.08.2026) – offene Punkte abgearbeitet.
    1) D1/XLSX_SRI: Der im Code hinterlegte PowerShell-Befehl war FALSCH und
       konnte nie funktionieren - Invoke-WebRequest liefert unter .Content einen
@@ -9646,11 +9646,22 @@ async function portalFotosUebernehmen(urls){
     toast('Die Fotos konnten nicht übernommen werden – bitte die Maske schließen und erneut versuchen.', 6000);
     return;
   }
-  let geholt=0;
+  /* v367 (C7): Bis v366 endete jeder Misserfolg in derselben Meldung ueber
+     abgelaufene Bildlinks. Tatsaechlich gibt es drei verschiedene Lagen, und
+     nur eine davon hat mit der Gueltigkeit zu tun:
+       - gar kein Bild vorhanden      -> nichts zu tun, kein Fehler
+       - Abruf vom Browser verweigert -> fehlendes CORS-Recht am Speicherkonto
+       - Abruf abgelehnt (403/404)    -> Link tatsaechlich abgelaufen
+     Die falsche Meldung schickte auf eine Fehlersuche, die es nicht gab. */
+  if(!Array.isArray(urls) || !urls.length){
+    toast('Zu dieser Meldung gehören keine Fotos.');
+    return;
+  }
+  let geholt=0, abgelehnt=0, verweigert=0;
   for(const u of urls.slice(0,5)){
     try{
       const r=await fetchMitTimeout(u, {}, 20000);
-      if(!r.ok) continue;
+      if(!r.ok){ abgelehnt++; continue; }
       const blob=await r.blob();
       if(blob.size>8*1024*1024) continue;
       const data=await new Promise((ja,nein)=>{
@@ -9666,14 +9677,23 @@ async function portalFotosUebernehmen(urls){
       }catch(x){ console.warn('Portalfoto sichern:', x); }
       window._mangelPhotos.push(data);
       geholt++;
-    }catch(x){ console.warn('Portalfoto laden:', x); }
+    }catch(x){
+      /* Ein vom Browser blockierter Abruf kommt ohne Statuscode zurueck -
+         daran ist die CORS-Sperre erkennbar. */
+      verweigert++;
+      console.warn('Portalfoto laden:', x);
+    }
   }
   if(!geholt){
     /* v355: Der eigentliche Nutzerbefund. Fruher endete es hier ohne ein Wort.
        Der haeufigste Grund ist eine abgelaufene Gueltigkeit der Bildlinks -
        das wird ausdruecklich benannt, damit der naechste Versuch gelingt. */
-    console.warn('Fotouebernahme: kein Foto ladbar (Links abgelaufen oder Backend nicht erreichbar).');
-    toast('Kein Foto übernommen. Die Bildlinks gelten nur 15 Minuten – bitte die Meldungsliste neu laden und es noch einmal versuchen.', 8000);
+    console.warn('Fotouebernahme fehlgeschlagen · abgelehnt:', abgelehnt, '· verweigert:', verweigert);
+    if(verweigert && !abgelehnt){
+      toast('Die Fotos konnten nicht geladen werden. Der Browser hat den Abruf blockiert – im Speicherkonto fehlt die Freigabe (CORS) für diese App.', 9000);
+    } else {
+      toast('Kein Foto übernommen. Die Bildlinks gelten nur 15 Minuten – bitte die Meldungsliste neu laden und es noch einmal versuchen.', 8000);
+    }
     return;
   }
   const grid=document.getElementById('mgPhotoGrid');
@@ -16678,11 +16698,25 @@ async function portalDokumenteFuerMieter(mieterId){
    (vorhandener mieterId-Index). So bleibt jedes Schreiben pro Mieter
    abrufbar und weiterleitbar – auch für ausgezogene (Vor-)Mieter.
 ═══════════════════════════════════════════════════════════ */
-async function archiviereMieterDokument({mieterId, objektId, typ, name, html, mimeType}) {
+/* v367 (C3): Kennung eines Mieterdokuments, das eine bestimmte Sache in einem
+   bestimmten Zeitraum betrifft. Wird sie mitgegeben, ersetzt eine erneute
+   Erzeugung die vorherige Fassung, statt eine zweite danebenzulegen. Ohne
+   Angabe bleibt es beim bisherigen Verhalten (neue Id) - fuer alles, wovon es
+   bewusst mehrere geben darf.
+   Gebildet wird sie nach derselben Regel wie nkaGesamtId(); beide Stellen
+   muessen zusammenpassen, deshalb steht die Regel nur hier. */
+function mieterDokumentId(typ, mieterId, von, bis){
+  return 'dok_' + String(typ||'sonstiges').replace(/\W/g,'_')
+       + '_' + String(mieterId||'').replace(/\W/g,'_')
+       + '_' + String(von||'').replace(/\W/g,'')
+       + '_' + String(bis||'').replace(/\W/g,'');
+}
+
+async function archiviereMieterDokument({mieterId, objektId, typ, name, html, mimeType, festeId}) {
   if (!mieterId) return null;
   try {
     const entry = {
-      id: uid(),
+      id: festeId || uid(),
       objektId: objektId || null,
       mieterId,
       typ: typ || 'sonstiges',
@@ -18657,6 +18691,7 @@ async function erstelleNKA(objektId, korrektur) {
   const gesamtWE       = leerstandUmlegen ? (vollWEM||sumWEM): sumWEM;
   const gesamtMonate   = gesamtWE;
 
+
   // Kosten einlesen
   const kostenMap = {};
   kostenDef.forEach(k => {
@@ -18667,6 +18702,14 @@ async function erstelleNKA(objektId, korrektur) {
       kostenMap[k.id]=parseBetrag(document.getElementById('nka_'+k.id)?.value);
     }
   });
+
+  /* v367 (C1): Deckungspruefung - jetzt, weil erst hier feststeht, um welche
+     Betraege es geht. Geprueft wird gegen den tatsaechlich verwendeten Divisor
+     (gesamtWFL); nur der entscheidet ueber die Anteile. */
+  const _flaechenKosten = kostenDef
+    .filter(k => k.schluessel==='wfl' || k.schluessel==='wfl_gruppe')
+    .reduce((sum,k) => sum + (Number(kostenMap[k.id])||0), 0);
+  const _deckung = nkaDeckungPruefen([objektId], mieter, von, bis, gesamtWFL, _flaechenKosten);
 
   // Reparaturen im Abrechnungszeitraum laden
   const alleReps = await idbGetAll('reparaturen');
@@ -18950,32 +18993,15 @@ async function erstelleNKA(objektId, korrektur) {
     if(_abw >= 0.01) console.error('NKA-Kontrollsumme (Einzel)', m.id, zeilenSumme, _sollSumme);
     /* v366 (F8): zweiter, unabhaengiger Hinweis - er greift genau dort, wo die
        Rechenkontrolle blind ist (beide Seiten null). */
-    const kontrollHinweisGesamt = kontrollHinweis + nkaUnbekanntHinweisHTML(_unbekannteSchluessel);
+    const kontrollHinweisGesamt = kontrollHinweis + nkaUnbekanntHinweisHTML(_unbekannteSchluessel)
+      + nkaDeckungHinweisHTML(_deckung);   // v367 (C1)
     const _pruefHinweis = nkaPruefHinweisHTML(nkaPruefungMieter(m, von, bis));
 
     briefeJeMieter[m.id] = `
     <div class="pagebreak">
       <div class="bk-box">
         <div class="bk-left" style="order:2;text-align:right;padding-top:5mm">
-          <svg width="230" height="86" viewBox="0 0 1000 200" xmlns="http://www.w3.org/2000/svg" style="display:inline-block">
-            <polygon points="75,52 102,68 102,100 75,116 48,100 48,68" fill="none" stroke="#185FA5" stroke-width="0.8" opacity="0.12"/>
-            <line x1="50" y1="104" x2="50" y2="64" stroke="#0C447C" stroke-width="3.2" stroke-linecap="round" opacity="0.95"/>
-            <line x1="50" y1="64" x2="73" y2="104" stroke="#0C447C" stroke-width="3.2" stroke-linecap="round" opacity="0.95"/>
-            <line x1="73" y1="64" x2="73" y2="104" stroke="#0C447C" stroke-width="3.2" stroke-linecap="round" opacity="0.95"/>
-            <line x1="80" y1="64" x2="80" y2="104" stroke="#185FA5" stroke-width="3.2" stroke-linecap="round"/>
-            <path d="M 80,64 Q 105,64 105,74 Q 105,84 80,84" fill="none" stroke="#185FA5" stroke-width="3.2" stroke-linecap="round"/>
-            <ellipse cx="97" cy="74" rx="7" ry="8.5" fill="#85B7EB" opacity="0.9"/>
-            <ellipse cx="97" cy="74" rx="3.5" ry="4.2" fill="white" opacity="0.95"/>
-            <ellipse cx="97" cy="73.5" rx="1.6" ry="2" fill="#185FA5"/>
-            <text x="160" y="130" font-family="Georgia,serif" font-size="56px" font-weight="400" letter-spacing="1.8px" fill="#0C447C">NADIG PFAU</text>
-            <line x1="130" y1="140" x2="850" y2="140" stroke="#185FA5" stroke-width="0.6" opacity="0.15"/>
-            <text x="160" y="165" font-family="Arial,Helvetica,sans-serif" font-size="12px" letter-spacing="1.4px" fill="#888780">HAUSVERWALTUNG</text>
-          </svg>
-          <div style="font-size:8px;color:#555;margin-top:4px;line-height:1.5">
-            ${esc(bk.strasse)} · ${esc(bk.ort)}<br>
-            Tel: ${bk.tel}<br>
-            ${bk.email||''}
-          </div>
+          ${nkaKopfHTML(bk)}
         </div>
         <div class="bk-right" style="order:1;text-align:left">
           <div class="bk-absender">${esc(bk.absender||bk.name)} · ${esc(bk.strasse)} · ${esc(bk.ort)}</div>
@@ -19090,7 +19116,11 @@ async function erstelleNKA(objektId, korrektur) {
 <title>Nebenkostenabrechnung ${jahr} – ${obj?.name}</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:Arial,sans-serif;font-size:10px;color:#111;padding:16px}
+/* v367 (C5): Georgia wie in allen uebrigen Schreiben (v157). Die Ziffern
+     der Tabellen bleiben bei Arial - Georgia setzt Mediaevalziffern, die in
+     Betragsspalten unruhig laufen und unterschiedlich hoch sind. */
+  body{font-family:Georgia,'Times New Roman',serif;font-size:10px;color:#111;padding:16px}
+  table,.uebersicht-table,.pos-table{font-family:Arial,Helvetica,sans-serif}
 h1{font-size:13px;font-weight:700;margin-bottom:6px}
 h2{font-size:11px;font-weight:700;color:#1F4E79}
 .pagebreak{page-break-after:always;padding-bottom:20px;margin-bottom:20px}
@@ -19204,7 +19234,8 @@ ${briefeHTML}
     await archiviereMieterDokument({
       mieterId: m.id, objektId,
       typ: 'nka',
-      name: `Nebenkostenabrechnung ${jahr} – ${obj?.name||''}`,
+      festeId: mieterDokumentId('nka', m.id, von, bis),   // v367 (C3)
+      name: `Nebenkostenabrechnung ${jahr} – ${obj?.name||''}${m.weNr?' · WE '+m.weNr:''}`,
       html: einzel || nkaHtml,
     });
   }
@@ -19229,6 +19260,48 @@ ${briefeHTML}
    Kontrolle vergleicht die Summe der gedruckten Zeilen mit dem gerechneten
    Anteil. Faellt eine Position auf null, sind BEIDE Seiten null - die
    Abweichung ist null, und der Fehler bleibt unsichtbar. */
+/* v367 (C4): Kopf der Abrechnung. Wer als Absender auftritt, entscheidet, was
+   oben steht: Die Wortmarke gehoert zu Nadig Pfau. Tritt Roland B. Nadig
+   allein auf (Moenchengladbach, Hilden), wuerde sie einen Absender behaupten,
+   der nicht unterschreibt - dann steht dort sein Name.
+
+   Bewusst EINE Funktion fuer beide Abrechnungswege: bis v366 stand dieselbe
+   Grafik woertlich an zwei Stellen im Quelltext. */
+function nkaKopfHTML(bk){
+  const name = String((bk && bk.name) || '');
+  const eigenerName = /nadig/i.test(name) && !/pfau/i.test(name);
+
+  const marke = eigenerName
+    ? `<div style="font-family:Georgia,'Times New Roman',serif;font-size:20pt;font-weight:700;`
+      + `color:#0C447C;letter-spacing:0.5px;line-height:1.15">${esc(bk.name||'')}</div>`
+      /* Die Unterzeile nur, wenn das Wort nicht schon im Namen steht -
+         "Hausverwaltung Roland B. Nadig" ueber "HAUSVERWALTUNG" liest sich
+         wie ein Fehler. */
+      + (/hausverwaltung/i.test(name) ? ''
+          : `<div style="font-family:Arial,Helvetica,sans-serif;font-size:8pt;letter-spacing:1.4px;`
+            + `color:#888780;margin-top:2px">HAUSVERWALTUNG</div>`)
+    : `<svg width="230" height="86" viewBox="0 0 1000 200" xmlns="http://www.w3.org/2000/svg" style="display:inline-block">
+            <polygon points="75,52 102,68 102,100 75,116 48,100 48,68" fill="none" stroke="#185FA5" stroke-width="0.8" opacity="0.12"/>
+            <line x1="50" y1="104" x2="50" y2="64" stroke="#0C447C" stroke-width="3.2" stroke-linecap="round" opacity="0.95"/>
+            <line x1="50" y1="64" x2="73" y2="104" stroke="#0C447C" stroke-width="3.2" stroke-linecap="round" opacity="0.95"/>
+            <line x1="73" y1="64" x2="73" y2="104" stroke="#0C447C" stroke-width="3.2" stroke-linecap="round" opacity="0.95"/>
+            <line x1="80" y1="64" x2="80" y2="104" stroke="#185FA5" stroke-width="3.2" stroke-linecap="round"/>
+            <path d="M 80,64 Q 105,64 105,74 Q 105,84 80,84" fill="none" stroke="#185FA5" stroke-width="3.2" stroke-linecap="round"/>
+            <ellipse cx="97" cy="74" rx="7" ry="8.5" fill="#85B7EB" opacity="0.9"/>
+            <ellipse cx="97" cy="74" rx="3.5" ry="4.2" fill="white" opacity="0.95"/>
+            <ellipse cx="97" cy="73.5" rx="1.6" ry="2" fill="#185FA5"/>
+            <text x="160" y="130" font-family="Georgia,serif" font-size="56px" font-weight="400" letter-spacing="1.8px" fill="#0C447C">NADIG PFAU</text>
+            <line x1="130" y1="140" x2="850" y2="140" stroke="#185FA5" stroke-width="0.6" opacity="0.15"/>
+            <text x="160" y="165" font-family="Arial,Helvetica,sans-serif" font-size="12px" letter-spacing="1.4px" fill="#888780">HAUSVERWALTUNG</text>
+          </svg>`;
+
+  return marke
+    + `<div style="font-size:8px;color:#555;margin-top:4px;line-height:1.5">`
+    + `${esc(bk.strasse||'')} · ${esc(bk.ort||'')}<br>`
+    + `Tel: ${esc(bk.tel||'')}<br>`
+    + `${esc(bk.email||'')}</div>`;
+}
+
 function nkaUnbekanntHinweisHTML(menge){
   if(!menge || !menge.size) return '';
   const liste = Array.from(menge).join(', ');
@@ -19813,6 +19886,7 @@ async function erstelleNKALiegenschaft(lgId, korrektur){
   const gesamtPers= leerstandUmlegen?(vollPM||sumPM):sumPM;
   const gesamtWE  = sumWEM;
 
+
   // Gruppen-Divisoren (Krefeld): Flächen-Monate je Gruppe
   const gruppenFM={inrather:0, wilmendyk:0};
   mieter.forEach(m=>{
@@ -19830,6 +19904,13 @@ async function erstelleNKALiegenschaft(lgId, korrektur){
       kostenMap[k.id]=parseBetrag(document.getElementById('nkaLg_'+k.id)?.value);
     }
   });
+
+  /* v367 (C1): siehe Einzelabrechnung - hier ueber alle Haeuser der
+     Liegenschaft, weil auch der Divisor sie alle umfasst. */
+  const _flaechenKosten = vorlage.kosten
+    .filter(k => k.schluessel==='wfl' || k.schluessel==='wfl_gruppe')
+    .reduce((sum,k) => sum + (Number(kostenMap[k.id])||0), 0);
+  const _deckung = nkaDeckungPruefen(lg.objektIds, mieter, von, bis, gesamtWFL, _flaechenKosten);
 
   // Reparaturen im Zeitraum (für automatische Kleinreparaturen)
   const alleReps=await idbGetAll('reparaturen');
@@ -20084,7 +20165,8 @@ async function erstelleNKALiegenschaft(lgId, korrektur){
       : '';
     if(_abw >= 0.01) console.error('NKA-Kontrollsumme', m.id, zeilenSumme, _sollSumme);
     /* v366 (F8): siehe Einzelabrechnung. */
-    const kontrollHinweisGesamt = kontrollHinweis + nkaUnbekanntHinweisHTML(_unbekannteSchluessel);
+    const kontrollHinweisGesamt = kontrollHinweis + nkaUnbekanntHinweisHTML(_unbekannteSchluessel)
+      + nkaDeckungHinweisHTML(_deckung);   // v367 (C1)
     /* v347: Stammdatenpruefung zusaetzlich zur Rechenkontrolle. */
     const _pruefHinweis = nkaPruefHinweisHTML(nkaPruefungMieter(m, von, bis));
 
@@ -20104,12 +20186,7 @@ async function erstelleNKALiegenschaft(lgId, korrektur){
     <div class="pagebreak">
       <div class="bk-box">
         <div class="bk-left" style="order:2;text-align:right;padding-top:5mm">
-          <svg width="230" height="86" viewBox="0 0 1000 200" xmlns="http://www.w3.org/2000/svg" style="display:inline-block">
-            <text x="160" y="130" font-family="Georgia,serif" font-size="56px" font-weight="400" letter-spacing="1.8px" fill="#0C447C">NADIG PFAU</text>
-            <line x1="130" y1="140" x2="850" y2="140" stroke="#185FA5" stroke-width="0.6" opacity="0.15"/>
-            <text x="160" y="165" font-family="Arial,Helvetica,sans-serif" font-size="12px" letter-spacing="1.4px" fill="#888780">HAUSVERWALTUNG</text>
-          </svg>
-          <div style="font-size:8px;color:#555;margin-top:4px;line-height:1.5">${esc(bk.strasse)} · ${esc(bk.ort)}<br>Tel: ${bk.tel}<br>${esc(bk.email||'')}</div>
+          ${nkaKopfHTML(bk)}
         </div>
         <div class="bk-right" style="order:1;text-align:left">
           <div class="bk-absender">${esc(bk.absender||bk.name)} · ${esc(bk.strasse)} · ${esc(bk.ort)}</div>
@@ -20217,7 +20294,11 @@ async function erstelleNKALiegenschaft(lgId, korrektur){
 <title>Nebenkostenabrechnung ${jahr} – ${vorlage.label}</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:Arial,sans-serif;font-size:10px;color:#111;padding:16px}
+/* v367 (C5): Georgia wie in allen uebrigen Schreiben (v157). Die Ziffern
+     der Tabellen bleiben bei Arial - Georgia setzt Mediaevalziffern, die in
+     Betragsspalten unruhig laufen und unterschiedlich hoch sind. */
+  body{font-family:Georgia,'Times New Roman',serif;font-size:10px;color:#111;padding:16px}
+  table,.uebersicht-table,.pos-table{font-family:Arial,Helvetica,sans-serif}
 h1{font-size:13px;font-weight:700;margin-bottom:6px}
 h2{font-size:11px;font-weight:700;color:#1F4E79}
 .pagebreak{page-break-after:always;padding-bottom:20px;margin-bottom:20px}
@@ -20293,7 +20374,11 @@ ${briefeHTML}
     if(!einzel) console.error('NKA: Einzelbrief nicht herausloesbar, Mieter', m.id);
     await archiviereMieterDokument({
       mieterId:m.id, objektId:m.objektId, typ:'nka',
-      name:`Nebenkostenabrechnung ${jahr} – ${vorlage.label}${korrektur?' (Korrektur)':''}`,
+      festeId: mieterDokumentId('nka', m.id, von, bis),   // v367 (C3)
+      /* v367 (C3): Name aus Mietersicht. "alle Haeuser (Kyffhaeuser 28/30/32)"
+         beschreibt die Abrechnungseinheit, nicht das, was im Dokument steht -
+         der Mieter findet dort ausschliesslich seinen eigenen Brief. */
+      name:`Nebenkostenabrechnung ${jahr} – ${getObj(m.objektId)?.name||''}${m.weNr?' · WE '+m.weNr:''}${korrektur?' (Korrektur)':''}`,
       html: einzel || nkaHtml,
     });
   }
@@ -24043,8 +24128,9 @@ function getNKAZeitraum(objektId) {
 ═══════════════════════════════════════════════════════════ */
 async function renderNKAArchiv(el, objektId) {
   if (!istVerwalter()) { el.innerHTML = '<div class="empty"><i class="ti ti-lock"></i><p>Nur für Verwalter.</p></div>'; return; }
-  const alle = (await idbGetAll('nka_archiv','objektId',objektId))
-    .sort((a,b)=>b.erstellt.localeCompare(a.erstellt));
+  // v367 (C2): dieselbe Auswahl wie beim Knopf "Letzte NKA" - eine Funktion.
+  const alle = ((await nkaArchivFuerObjekt(objektId)) || [])
+    .sort((a,b)=>String(b.erstellt||'').localeCompare(String(a.erstellt||'')));
 
   let h = `<div class="s-hdr" style="margin-bottom:10px">
     <div class="s-title">NKA-Archiv (${alle.length})</div>
@@ -24098,10 +24184,30 @@ async function renderNKAArchiv(el, objektId) {
    Sortiert wird ueber 'erstellt' und damit genauso wie im Archiv selbst; zwei
    verschiedene Sortierungen fuer "die letzte" waeren wieder eine Stelle, an
    der zwei Wege auseinanderlaufen koennen. */
-async function oeffneLetzteNKA(objektId){
-  const alle = await idbGetAll('nka_archiv','objektId',objektId).catch(e=>{
+/* v367 (C2): Alle Abrechnungen, die dieses Objekt betreffen - die eigenen und
+   die der Liegenschaft, zu der es gehoert. Der Archiveintrag einer
+   Sammelabrechnung traegt objektId = erstes Haus der Liegenschaft; von den
+   uebrigen Haeusern aus war sie deshalb unauffindbar, obwohl ihre Mieter
+   darin abgerechnet werden.
+   Bewusst EINE Funktion fuer beide Aufrufer (Knopf "Letzte NKA" und das
+   Archiv-Register): zwei Suchwege fuer dieselbe Frage waeren wieder die
+   Stelle, an der etwas auseinanderlaeuft. */
+async function nkaArchivFuerObjekt(objektId){
+  const alle = await idbGetAll('nka_archiv').catch(e=>{
     console.error('NKA-Archiv nicht lesbar:', e && e.message); return null;
   });
+  if(alle===null) return null;
+  /* Zu welchen Liegenschaften gehoert dieses Objekt? */
+  const lgIds = Object.keys(NKA_LG_VORLAGEN||{}).filter(id=>{
+    const lg = NKA_LG_VORLAGEN[id];
+    return lg && Array.isArray(lg.objektIds) && lg.objektIds.includes(objektId);
+  });
+  return alle.filter(a =>
+    a.objektId===objektId || (a.istLiegenschaft && lgIds.includes(a.lgId)));
+}
+
+async function oeffneLetzteNKA(objektId){
+  const alle = await nkaArchivFuerObjekt(objektId);
   if(alle===null){ toast('Das NKA-Archiv konnte nicht gelesen werden.'); return; }
   if(!alle.length){ toast('Für dieses Objekt wurde noch keine Abrechnung erstellt.'); return; }
   const letzte = alle.slice().sort((a,b)=>String(b.erstellt||'').localeCompare(String(a.erstellt||'')))[0];
@@ -24356,6 +24462,88 @@ function nkaPruefungMieter(m, von, bis){
 }
 
 /* Gelber Kasten fuer die Ausgabe im Dokument; leere Liste -> leerer String. */
+/* v367 (C1): Deckt die Summe der abgerechneten Flaechenmonate die Wohnflaeche
+   der beteiligten Objekte ab?
+
+   Nicht abgedeckte Flaeche entsteht auf drei Wegen, die alle gleich aussehen:
+     - eine Wohnung stand leer,
+     - der Vormieter eines im Zeitraum eingezogenen Mieters wurde nicht erfasst,
+     - bei einem Mieter fehlt die Flaechenangabe.
+   Fuer die Abrechnung ist der Unterschied entscheidend: Leerstand traegt der
+   Vermieter (BGH VIII ZR 159/05), ein vergessener Vormieter dagegen gehoert
+   nachgetragen. Beides kann diese Funktion nicht unterscheiden - sie nennt die
+   Luecke und ueberlaesst die Entscheidung dem Menschen. Genau deshalb ist es
+   ein Hinweis und keine automatische Korrektur. */
+function nkaDeckungPruefen(objektIds, mieter, von, bis, sumFM, verteilteKosten){
+  try{
+    const monate = anzahlMonate(von, bis) || 12;
+    let objektFlaeche = 0, unbekannt = [];
+    for(const id of (objektIds||[])){
+      const o = getObj(id);
+      const f = parseFloat(o && o.wohnflaeche);
+      if(f > 0) objektFlaeche += f;
+      else unbekannt.push((o && o.name) || id);
+    }
+    /* Ohne hinterlegte Objektflaeche gibt es keinen Massstab. Das ist selbst
+       ein Befund - aber ein anderer, und er wird als solcher benannt. */
+    if(!(objektFlaeche > 0)){
+      return unbekannt.length
+        ? ['Für ' + unbekannt.join(', ') + ' ist keine Wohnfläche hinterlegt – die Deckung der '
+           + 'Abrechnung lässt sich deshalb nicht prüfen.']
+        : [];
+    }
+    const sollFM = objektFlaeche * monate;
+    const luecke = sollFM - (Number(sumFM) || 0);
+    /* Ein Cent-Bruchteil ist Rundung, keine Luecke. Erst ab einem halben
+       Quadratmeter-Monat wird gemeldet. */
+    if(luecke < 0.5) return [];
+
+    const anteil = luecke / sollFM;
+    const hinweise = [];
+    let txt = 'Nicht abgerechnete Wohnfläche: ' + (luecke/monate).toFixed(2).replace('.', ',')
+      + ' m² (' + luecke.toFixed(2).replace('.', ',') + ' Flächenmonate von '
+      + sollFM.toFixed(2).replace('.', ',') + '). Die flächenabhängigen Positionen werden dadurch '
+      + 'auf ' + (anteil*100).toFixed(1).replace('.', ',') + ' % weniger Fläche verteilt und fallen '
+      + 'entsprechend höher aus.';
+    if(verteilteKosten > 0){
+      txt += ' Das entspricht rund ' + fmtEur(verteilteKosten * anteil) + ', die die abgerechneten '
+           + 'Mieter zusätzlich tragen.';
+    }
+    hinweise.push(txt);
+
+    /* Die wahrscheinlichste Ursache gleich mitliefern, damit nicht gesucht
+       werden muss: Wohnungen ohne Wohnmonate im Zeitraum. */
+    const ohneMonate = (mieter||[]).filter(m => weMonate(m, von, bis) <= 0);
+    if(ohneMonate.length){
+      hinweise.push('Ohne Wohnmonate im Zeitraum: '
+        + ohneMonate.map(m => (m.weNr ? 'WE ' + m.weNr : (m.mieter||'?'))).join(', ')
+        + ' – fehlt hier ein Vormieter?');
+    }
+    const ohneFlaeche = (mieter||[]).filter(m => weMonate(m, von, bis) > 0 && !(parseFloat(m.flaeche) > 0));
+    if(ohneFlaeche.length){
+      hinweise.push('Wohnmonate ohne Flächenangabe: '
+        + ohneFlaeche.map(m => (m.weNr ? 'WE ' + m.weNr : (m.mieter||'?'))).join(', ')
+        + ' – diese Mieter zahlen bei allen flächenabhängigen Positionen 0,00 €.');
+    }
+    return hinweise;
+  }catch(e){
+    console.error('Deckungsprüfung fehlgeschlagen:', e && e.message);
+    return [];
+  }
+}
+
+/* Auffaellige Darstellung fuer die Deckungspruefung. Bewusst nicht der gelbe
+   Pruefhinweis: dieser Befund kostet Geld und richtet sich gegen den Versand. */
+function nkaDeckungHinweisHTML(hinweise){
+  if(!hinweise || !hinweise.length) return '';
+  return '<div style="margin:6px 0;padding:6px 9px;border:1.5px solid #C0392B;border-radius:4px;'
+    + 'background:#FDECEA;color:#8B1E13;font-size:10px">'
+    + '<b>Deckungspr\u00fcfung \u2013 vor dem Versand kl\u00e4ren:</b>'
+    + '<ul style="margin:3px 0 0 14px;padding:0">'
+    + hinweise.map(h=>'<li>'+esc(h)+'</li>').join('')
+    + '</ul></div>';
+}
+
 function nkaPruefHinweisHTML(hinweise){
   if(!hinweise || !hinweise.length) return '';
   return '<div style="margin:6px 0;padding:6px 9px;border:1.5px solid #B8860B;'
@@ -32590,13 +32778,20 @@ function anlageRahmen(titel, untertitel, innerHtml, fussSeiten, bodyClass){
   body.sepa-kompakt .sig .anerk{margin-bottom:9px;font-size:8.5pt}
   body.sepa-kompakt .sigrow{margin-top:20px}
   body.sepa-kompakt .foot{margin-top:8px}
-  /* Datenschutz kompakt – auf 1 Seite */
-  body.ds-kompakt{font-size:9pt;line-height:1.32}
+  /* Datenschutz kompakt – auf 1 Seite.
+     v367 (C6): Bis v366 rutschte die Unterschriftszeile auf eine zweite, sonst
+     leere Seite. Am ausgelieferten Vertrag gemessen fehlten 18,4 mm bei 263,8 mm
+     Inhaltshoehe, also 6,98 %. Verteilt auf drei Stellschrauben, damit keine
+     einzelne den Text zusammendrueckt; die Schriftgroesse bleibt bei 9pt. */
+  body.ds-kompakt{font-size:9pt;line-height:1.27}
   body.ds-kompakt h1{font-size:14pt}
-  body.ds-kompakt .sub{margin-bottom:8px}
-  body.ds-kompakt h2{margin:6px 0 2px;font-size:10pt;padding-bottom:1px}
-  body.ds-kompakt p{margin:0 0 4px}
-  body.ds-kompakt .sig{margin-top:10px}
+  body.ds-kompakt .sub{margin-bottom:6px}
+  body.ds-kompakt h2{margin:4px 0 2px;font-size:10pt;padding-bottom:1px}
+  body.ds-kompakt p{margin:0 0 3px}
+  body.ds-kompakt .sig{margin-top:8px}
+  /* Der Unterschriftsblock darf nicht fuer sich allein umbrechen: entweder er
+     passt mit dem Text auf die Seite, oder der Fehler faellt sofort auf. */
+  body.ds-kompakt .sig{break-inside:avoid;page-break-inside:avoid}
   body.ds-kompakt .sig .anerk{margin-bottom:10px}
   body.ds-kompakt .sigrow{margin-top:20px}
   body.ds-kompakt .foot{margin-top:8px}
