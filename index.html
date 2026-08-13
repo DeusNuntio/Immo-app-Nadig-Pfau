@@ -1094,7 +1094,7 @@ body.printing-active #printRoot{display:block!important}
 
 <!-- MODAL -->
 <div class="modal-bg" id="modalBg">
-  <div class="modal" id="modalBox">
+  <div class="modal" id="modalBox" role="dialog" aria-modal="true" tabindex="-1">
     <div class="m-handle"></div>
     <button class="m-close" type="button" data-action-click="closeModal" aria-label="Dialog schließen (ohne Speichern)"><i class="ti ti-x"></i></button>
     <div id="modalBody"></div>
@@ -1269,7 +1269,48 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=35;   // v242: +buch_journal (F4 GoBD)
-const APP_VERSION = '2026-08-12-v361';
+const APP_VERSION = '2026-08-13-v366';
+/* v364 (12.08.2026) – offene Punkte abgearbeitet.
+   1) D1/XLSX_SRI: Der im Code hinterlegte PowerShell-Befehl war FALSCH und
+      konnte nie funktionieren - Invoke-WebRequest liefert unter .Content einen
+      String, ComputeHash erwartet Bytes. Wer ihn ausfuehrte, bekam einen
+      Fehler und liess die Konstante leer; so blieb der Punkt seit Monaten
+      offen. Befehl korrigiert (laeuft in PowerShell 5.1 und 7).
+   2) NEU xlsxSriGueltig(): prueft die FORM des eingetragenen Hashes. Ein
+      falscher Hash ist schlimmer als gar keiner - der Browser verwirft die
+      Datei, der Excel-Export faellt aus, und niemand sieht warum. Jetzt wird
+      eine unbrauchbare Angabe ignoriert und im Protokoll benannt.
+   3) mail-imap.js: Die Fehlermeldung des Postfachabrufs ist die einzige im
+      Projekt, die in den Antwortkoerper geht (fuer die Fehlersuche
+      unverzichtbar). Postfachname und Servername werden jetzt vorher daraus
+      entfernt - eine Ausnahme von der Regel soll so eng wie moeglich bleiben.
+      ACHTUNG: mail-imap.js muss dafuer erneut deployt werden. */
+/* v363 (12.08.2026) – Bildvorschau fuer Anhaenge (kleine Stufe auf Wunsch).
+   Als DATEI mitgeschickte Bilder werden in der Detailansicht angezeigt; ein
+   Klick oeffnet sie gross. Die Mail selbst bleibt reiner Text.
+   BEWUSST NICHT: kein fremdes HTML (Grundsatz 2, Lehre aus R34) und nichts aus
+   dem Netz, was der Absender bestimmt - die Bilder kommen aus dem eigenen
+   Blob-Container ueber die 15-Minuten-SAS. Damit gibt es keine Zaehlpixel: der
+   Absender erfaehrt nicht, ob und wann gelesen wurde. "data:"-Bilder aus dem
+   Textteil (IONOS-Fall) bleiben "[Bild]" - sie waren nie eine Datei.
+   postfachAnhangUrl() ist jetzt die EINE Quelle fuer die kurzlebige Adresse;
+   Oeffnen und Vorschau nutzen sie gemeinsam. Faellt ein Bild aus, verschwindet
+   sein Platz wieder und der Knopf zum Oeffnen bleibt. */
+/* v362 (12.08.2026) – zwei Nutzerbefunde am laufenden Postfach:
+   1) "Antworten funktioniert nicht" (Website-Nachrichten). Der Knopf war ein
+      mailto:-Link; in der installierten App oeffnet das nichts, wenn kein
+      Mailprogramm registriert ist - der Klick verpuffte wortlos. Die App kann
+      laengst selbst senden (Reiter Mieter-Mail ueber /api/send-mail). Der
+      Knopf fuehrt jetzt dorthin und belegt Empfaenger, Betreff und Anrede vor.
+      Nebenbei: esc() stand in einem href-Attribut - dort gehoert escAttr()
+      hin; jetzt entfaellt das Attribut ganz.
+   2) Die IONOS-Rechnungsmail erschien als seitenlange Kette von
+      "data:image/png;base64,...". Der Absender hatte die Bildquellen in den
+      text/plain-Teil gepackt; htmlZuText() im Backend sieht diesen Teil nie,
+      weil er bereits reiner Text ist. mailTextLesbar() ersetzt solche Ketten
+      in der ANZEIGE durch "[Bild]" und kuerzt uebrige Endloszeichenfolgen.
+      Die abgelegte Nachricht bleibt unveraendert - der Urtext steht weiterhin
+      im IONOS-Postfach. */
 /* v361 (12.08.2026) – Postfachabruf: die App sagt, WORAN es liegt.
    Nutzerbefund: Die Liste laedt (Endpunkt vorhanden, Speicher erreichbar), nur
    der Abruf scheitert - gemeldet wurde "Abruf fehlgeschlagen - Zugangsdaten und
@@ -2675,31 +2716,70 @@ function idbPut(store,obj,opts){
         obj.updatedAt = new Date().toISOString();
       }
     }
-    const tx=idb.transaction(store,'readwrite');
-    const req=tx.objectStore(store).put(obj);
-    req.onsuccess=()=>res(req.result);
-    req.onerror=()=>{
-      const err=req.error;
-      // v195 (A2): Speicher voll klar melden statt still zu scheitern
-      if(err && (err.name==='QuotaExceededError' || /quota/i.test(err.message||''))){
-        try{ toast('Speicher voll! Aenderung NICHT gespeichert - bitte Fotos auslagern oder alte Daten bereinigen.', 6000); }catch(_){}
-      }
+    /* v365 (F1): Aufgeloest wird erst bei tx.oncomplete, nicht bei
+       req.onsuccess. Nach der IndexedDB-Spezifikation ist ein Schreibvorgang
+       erst mit dem Commit dauerhaft; dazwischen kann die Transaktion noch
+       abbrechen. Bis v364 meldete die App in diesem Fall Erfolg, obwohl nichts
+       gespeichert war - genau die Fehlerklasse "funktioniert technisch,
+       erzeugt falschen Zustand". Der haeufigste reale Abbruchgrund ist ein
+       Speicherueberlauf beim Commit; die v195-Meldung hing bisher nur am
+       Request und griff dort nicht. */
+    let tx, req;
+    try { tx = idb.transaction(store,'readwrite'); }
+    catch(e){ rej(e); return; }
+    try { req = tx.objectStore(store).put(obj); }
+    catch(e){ rej(e); return; }
+    let fehler = null;
+    req.onerror = ()=>{ fehler = req.error; };
+    tx.oncomplete = ()=>res(req.result);
+    tx.onabort = tx.onerror = ()=>{
+      const err = fehler || tx.error || new Error('Speichern abgebrochen');
+      idbQuotaMelden(err);
       rej(err);
     };
   });
 }
+
+/* v365 (F1): Eine Stelle fuer die Speicher-voll-Meldung. Sie wird aus dem
+   Abbruchpfad ALLER Schreibfunktionen aufgerufen - zwei Fassungen derselben
+   Meldung waeren wieder das Muster, das dieses Projekt mehrfach getroffen hat. */
+function idbQuotaMelden(err){
+  if(!err) return;
+  const txt = String(err.name||'') + ' ' + String(err.message||'');
+  if(/Quota/i.test(txt)){
+    try{ toast('Speicher voll! Aenderung NICHT gespeichert - bitte Fotos auslagern oder alte Daten bereinigen.', 6000); }catch(_){}
+  }
+}
 function idbDelete(store,id){
   return new Promise((res,rej)=>{
-    const tx=idb.transaction(store,'readwrite');
-    const req=tx.objectStore(store).delete(id);
-    req.onsuccess=()=>res();
-    req.onerror=()=>rej(req.error);
+    /* v365 (F1): wie idbPut - Bestaetigung erst nach dem Commit. Ein
+       "geloescht" ohne Commit ist besonders heikel, weil der Datensatz beim
+       naechsten Sync als vorhanden zurueckkehrt und wie ein Sync-Fehler aussieht. */
+    let tx;
+    try { tx = idb.transaction(store,'readwrite'); }
+    catch(e){ rej(e); return; }
+    try { tx.objectStore(store).delete(id); }
+    catch(e){ rej(e); return; }
+    tx.oncomplete = ()=>res();
+    tx.onabort = tx.onerror = ()=>{
+      const err = tx.error || new Error('Loeschen abgebrochen');
+      idbQuotaMelden(err);
+      rej(err);
+    };
   });
 }
 function idbClear(store){
   return new Promise((res,rej)=>{
-    const tx=idb.transaction(store,'readwrite');
-    tx.objectStore(store).clear().onsuccess=()=>res();
+    /* v365 (F1): Bis v364 gab es hier KEINEN Fehlerpfad - schlug das Leeren
+       fehl, blieb das Promise fuer immer offen und der Aufrufer
+       (Wiederherstellung/Import) blieb wortlos stehen. */
+    let tx;
+    try { tx = idb.transaction(store,'readwrite'); }
+    catch(e){ rej(e); return; }
+    try { tx.objectStore(store).clear(); }
+    catch(e){ rej(e); return; }
+    tx.oncomplete = ()=>res();
+    tx.onabort = tx.onerror = ()=>rej(tx.error || new Error('Leeren abgebrochen'));
   });
 }
 
@@ -7885,8 +7965,8 @@ async function modalWohnungsQR(objektId){
           <div style="font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(name)||'(belegt)'}</div>
           <div style="font-size:11px;color:var(--ink-40)">${esc(wohnungsKennung(objektId,we))}</div>
         </div>
-        <button class="btn btn-sm" title="Etikett speichern" onclick="wohnungsQrEtikett('${objektId}','${esc(we)}','speichern')"><i class="ti ti-download"></i></button>
-        <button class="btn btn-sm" title="Teilen / Drucker" onclick="wohnungsQrEtikett('${objektId}','${esc(we)}','teilen')"><i class="ti ti-share"></i></button>
+        <button class="btn btn-sm" title="Etikett speichern" onclick="wohnungsQrEtikett('${objektId}','${escJs(we)}','speichern')"><i class="ti ti-download"></i></button>
+        <button class="btn btn-sm" title="Teilen / Drucker" onclick="wohnungsQrEtikett('${objektId}','${escJs(we)}','teilen')"><i class="ti ti-share"></i></button>
       </div>`;
     }).join('');
     const niimbot = (typeof niimbotIstVerbunden==='function' && niimbotIstVerbunden())
@@ -8438,7 +8518,10 @@ async function renderMail(){
   if(tab==='sa')               await mailRenderSA(body);
   else if(tab==='postfach')    await mailRenderPostfach(body);
   else if(tab==='nachrichten') await mailRenderNachrichten(body);
-  else if(tab==='mieter')      await mailRenderMieterMail(body);
+  else if(tab==='mieter'){     await mailRenderMieterMail(body);
+                               /* v362: NACH dem Aufbau - vorher stehen die
+                                  Felder nicht im Dokument. */
+                               mailVorbelegungAnwenden(); }
   else if(tab==='papierkorb')  await mailRenderPapierkorb(body);
   else                         await mailRenderToken(body);
 }
@@ -8612,20 +8695,77 @@ async function postfachStatus(id, status){
 }
 
 /* Anhang: die URL entsteht erst hier und gilt 15 Minuten. */
-async function postfachAnhang(id, nr){
+/* v363: Die kurzlebige Adresse eines Anhangs holen. Oeffnen und Vorschau
+   benutzen dieselbe Funktion - zwei Wege zur selben Adresse waeren wieder die
+   Fehlerklasse, die diese Sitzung mehrfach beschaeftigt hat.
+   Wirft nicht, sondern liefert null; der Aufrufer entscheidet, wie laut er
+   wird (der Knopf meldet sich, die Vorschau bleibt still). */
+async function postfachAnhangUrl(id, nr){
   const key=(await idbGet('settings','backendKey').catch(()=>null))?.value;
-  if(!key){ toast('Kein Backend-Schlüssel hinterlegt.'); return; }
+  if(!key) return null;
   try{
     const r=await fetchMitTimeout(BACKEND_AZURE+'/api/mails/anhang?id='+encodeURIComponent(id)+'&n='+encodeURIComponent(nr),
       { headers:{'x-functions-key':key} });
     if(!r || !r.ok) throw new Error('HTTP '+(r?r.status:'ohne Antwort'));
     const d=await r.json().catch(()=>({}));
-    if(!d.url) throw new Error('keine URL');
-    window.open(d.url,'_blank','noopener');
+    return d && d.url ? d.url : null;
   }catch(e){
-    console.error('Anhang:', e);
-    toast('Anhang konnte nicht geöffnet werden.', 4000);
+    console.error('Anhang:', e && e.message);
+    return null;
   }
+}
+
+async function postfachAnhang(id, nr){
+  const url = await postfachAnhangUrl(id, nr);
+  if(!url){ toast('Anhang konnte nicht geöffnet werden.', 4000); return; }
+  window.open(url,'_blank','noopener');
+}
+
+/* Ist der Anhang ein Bild? Nach Dateityp, ersatzweise nach Endung - manche
+   Absender schicken alles als application/octet-stream. */
+function istBildAnhang(a){
+  if(!a) return false;
+  if(/^image\//i.test(String(a.typ||''))) return true;
+  return /\.(jpe?g|png|gif|webp|bmp|heic)$/i.test(String(a.name||''));
+}
+
+/* Vorschauen nachladen, nachdem die Nachricht aufgeklappt ist. Je Bild einzeln:
+   faellt eines aus, bleiben die uebrigen. Der Knopf zum Oeffnen bleibt in
+   jedem Fall bestehen - die Vorschau ist eine Zugabe, kein Ersatz. */
+async function postfachVorschauLaden(id, nummern){
+  for(const nr of (nummern||[])){
+    const ziel = document.getElementById('mailBild_'+id+'_'+nr);
+    if(!ziel) continue;
+    const url = await postfachAnhangUrl(id, nr);
+    if(!url){ ziel.remove(); continue; }
+    const img = new Image();
+    img.alt = 'Anhang';
+    img.style.cssText = 'max-width:100%;max-height:340px;border:1px solid var(--line);'
+      + 'border-radius:8px;display:block;margin-top:6px;cursor:pointer';
+    img.onclick = ()=>window.open(url,'_blank','noopener');
+    /* Laedt das Bild nicht (abgelaufene Adresse, kaputte Datei), verschwindet
+       der Platz wieder, statt einen leeren Rahmen stehen zu lassen. */
+    img.onerror = ()=>{ ziel.remove(); };
+    ziel.appendChild(img);
+  }
+}
+
+/* v362 (B2): Manche Absender packen die Bildquellen als data:-URI in den
+   text/plain-Teil - die IONOS-Rechnung fuellte damit in der App mehrere
+   Bildschirmseiten. htmlZuText() im Backend sieht diesen Teil nie, weil er
+   bereits reiner Text IST.
+   Hier wird nur die DARSTELLUNG bereinigt: die abgelegte Nachricht bleibt
+   unveraendert, und der Urtext steht weiterhin im IONOS-Postfach. Ersetzt wird
+   durch einen sichtbaren Platzhalter statt stillschweigend zu loeschen - der
+   Leser soll wissen, dass dort etwas stand. */
+function mailTextLesbar(text){
+  let t = String(text||'');
+  if(!t) return '';
+  t = t.replace(/data:[a-z0-9.+-]+\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]{80,}/gi, '[Bild]');
+  /* Was danach noch als endlose Zeichenkette ohne Leerzeichen uebrig ist
+     (Signaturen, Nachverfolgungsmarken), wird gekuerzt statt umbrochen. */
+  t = t.replace(/\S{300,}/g, m => m.slice(0,120) + ' […]');
+  return t.replace(/\n{4,}/g, '\n\n\n').trim();
 }
 
 function postfachDetailZeigen(id){
@@ -8637,12 +8777,19 @@ function postfachDetailZeigen(id){
     `<button class="btn btn-sm" onclick="postfachAnhang('${escJs(m.id)}',${Number(a.nr)})">`
     + `<i class="ti ti-paperclip"></i> ${esc(a.name||'Anhang')} `
     + `<span style="color:var(--ink-40)">(${Math.max(1,Math.round((a.bytes||0)/1024))} kB)</span></button>`).join(' ');
+  /* v363: Fuer jedes Bild ein Platz, der nach dem Aufklappen gefuellt wird. */
+  const bilder = (m.anhaenge||[]).filter(istBildAnhang);
+  const bildPlaetze = bilder.map(a=>
+    `<div id="mailBild_${esc(m.id)}_${Number(a.nr)}"></div>`).join('');
+
   ziel.innerHTML=`
     <div style="border-top:1px solid var(--line);margin-top:8px;padding-top:8px">
       <div style="font-size:12px;color:var(--ink-40);margin-bottom:6px">An: ${esc(m.an||'')}</div>
-      <div style="white-space:pre-wrap;font-size:13px;line-height:1.5">${esc(m.text||'(kein Text)')}</div>
+      <div style="white-space:pre-wrap;font-size:13px;line-height:1.5">${esc(mailTextLesbar(m.text)||'(kein Text)')}</div>
+      ${bildPlaetze}
       ${anh?`<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">${anh}</div>`:''}
     </div>`;
+  if(bilder.length) postfachVorschauLaden(m.id, bilder.map(a=>Number(a.nr)));
 }
 
 async function mailRenderPostfach(body){
@@ -8719,6 +8866,23 @@ async function mailRenderPostfach(body){
   body.innerHTML=html;
 }
 
+/* v362 (B1): Antworten auf eine Website-Nachricht.
+   Bis v361 war das ein mailto:-Link. In der installierten App oeffnet der
+   nichts, wenn kein Mailprogramm registriert ist - der Klick verpuffte
+   wortlos. Die App kann laengst selbst senden; der Knopf fuehrt jetzt in den
+   Reiter "Mieter-Mail" und belegt Empfaenger und Betreff vor.
+   Das Empfaengerfeld ist frei beschreibbar - ein Interessent steht ja nicht in
+   der Mieterliste. */
+function websiteNachrichtAntworten(email, name){
+  if(!email){ toast('Zu dieser Nachricht ist keine Adresse hinterlegt.'); return; }
+  window._mailVorbelegung = {
+    email: String(email),
+    betreff: 'Ihre Anfrage über nadigpfau.de',
+    anrede: name ? ('Guten Tag ' + name + ',') : 'Guten Tag,'
+  };
+  setMailTab('mieter');
+}
+
 // ── Website-Nachrichten (aus /api/inbox – Kontaktformular). Robust, falls Endpunkt fehlt. ──
 async function mailRenderNachrichten(body){
   const key=(await idbGet('settings','backendKey').catch(()=>null))?.value;
@@ -8748,7 +8912,7 @@ async function mailRenderNachrichten(body){
       ${n.objektName||n.objekt?`<div style="font-size:12px;color:var(--ink-60);margin-top:6px"><i class="ti ti-building"></i> ${esc(n.objektName||n.objekt)}</div>`:''}
       ${n.nachricht||n.text?`<div style="font-size:13px;color:var(--ink);margin-top:8px;white-space:pre-wrap;line-height:1.5">${esc(n.nachricht||n.text)}</div>`:''}
       <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
-        ${n.email?`<a class="btn btn-sm btn-primary" href="mailto:${esc(n.email)}"><i class="ti ti-mail-forward"></i> Antworten</a>`:''}
+        ${n.email?`<button class="btn btn-sm btn-primary" onclick="websiteNachrichtAntworten('${escJs(n.email)}','${escJs(n.name||'')}')"><i class="ti ti-mail-forward"></i> Antworten</button>`:''}
         <button class="btn btn-sm" onclick="mailNachrichtErledigt('${escJs(n.id||'')}', this)"><i class="ti ti-check"></i> Erledigt</button>
       </div>
     </div>`;
@@ -8883,6 +9047,23 @@ async function mailTokenSenden(){
    Versand über Backend /api/send-mail (Function-Key). Jede gesendete
    Mail wird im Store tenant_mails protokolliert (mit Sync).
    ════════════════════════════════════════════════════════════════ */
+/* v362: Vorbelegung aus "Antworten" uebernehmen. Laeuft NACH dem Aufbau der
+   Maske, weil die Felder vorher nicht im Dokument stehen. Die Vorbelegung wird
+   danach geloescht - sonst taucht sie beim naechsten Oeffnen wieder auf. */
+function mailVorbelegungAnwenden(){
+  const v = window._mailVorbelegung;
+  if(!v) return;
+  window._mailVorbelegung = null;
+  const mail = document.getElementById('tmMail');
+  const betr = document.getElementById('tmBetreff');
+  const text = document.getElementById('tmText');
+  if(mail) mail.value = v.email || '';
+  if(betr) betr.value = v.betreff || '';
+  if(text && !text.value) text.value = (v.anrede || '') + '\n\n';
+  if(text) text.focus();
+  toast('Empfänger übernommen – Text ergänzen und senden.');
+}
+
 async function mailRenderMieterMail(body){
   // Mieterliste mit E-Mail
   let mieter=[]; try{ mieter=await idbGetAll('mieter'); }catch(e){ mieter=[]; }
@@ -11923,7 +12104,7 @@ function rundgangStatusModal(seg, lgName, fertig){
     <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px">${punkte}</div>
     ${fertig?'':'<p style="font-size:12px;color:var(--ink-40);margin-bottom:12px">Den nächsten Wegpunkt anlaufen und dort den QR scannen.</p>'}
     ${fertig?'':'<button class="btn btn-copper btn-full" style="margin-bottom:6px" onclick="closeModal();scanTaetigkeitQR()"><i class="ti ti-qrcode"></i> Nächsten Wegpunkt scannen</button>'}
-    ${fertig?'':`<button class="btn btn-full" style="margin-bottom:6px;border-color:var(--red,#C0392B);color:var(--red,#C0392B)" onclick="rundgangQrDefektDialog('${seg.id}','${esc(lgName)}')"><i class="ti ti-qrcode-off"></i> QR-Code defekt / Vandalismus</button>`}
+    ${fertig?'':`<button class="btn btn-full" style="margin-bottom:6px;border-color:var(--red,#C0392B);color:var(--red,#C0392B)" onclick="rundgangQrDefektDialog('${seg.id}','${escJs(lgName)}')"><i class="ti ti-qrcode-off"></i> QR-Code defekt / Vandalismus</button>`}
     <button class="btn btn-full" data-action-click="closeModal">Schließen</button>`);
 }
 
@@ -11934,11 +12115,11 @@ function rundgangQrDefektDialog(segId, lgName){
     if(!seg){ toast('Rundgang nicht gefunden'); return; }
     const fehlen=rundgangFehlende(seg);
     if(!fehlen.length){ toast('Alle Wegpunkte bereits erfasst'); return; }
-    const optionen=fehlen.map(n=>`<button class="btn btn-full" style="margin-bottom:6px" onclick="rundgangWegpunktDefekt('${segId}','${esc(lgName)}',${n})">Wegpunkt ${n}</button>`).join('');
+    const optionen=fehlen.map(n=>`<button class="btn btn-full" style="margin-bottom:6px" onclick="rundgangWegpunktDefekt('${segId}','${escJs(lgName)}',${n})">Wegpunkt ${n}</button>`).join('');
     showModal(`<div class="m-title"><i class="ti ti-qrcode-off"></i> Defekter QR-Code</div>
       <p style="font-size:13px;color:var(--ink-60);margin-bottom:12px">Welcher QR-Code ist defekt oder fehlt? Es wird ein Mangel (Vandalismus) angelegt und ein Ersatz-Etikett zum Neudruck vorbereitet. Der Wegpunkt zählt anschließend als erledigt, damit du den Rundgang abschließen kannst.</p>
       ${optionen}
-      <button class="btn btn-full" style="margin-top:6px" onclick="rundgangStatusModalById('${segId}','${esc(lgName)}')">Zurück</button>`);
+      <button class="btn btn-full" style="margin-top:6px" onclick="rundgangStatusModalById('${segId}','${escJs(lgName)}')">Zurück</button>`);
   });
 }
 async function rundgangStatusModalById(segId, lgName){
@@ -11981,7 +12162,7 @@ async function rundgangWegpunktDefekt(segId, lgName, nr){
     </div>
     <p style="font-size:13px;color:var(--ink-60);margin-bottom:12px">Du kannst jetzt direkt ein Ersatz-Etikett für Wegpunkt ${nr} drucken und neu anbringen.</p>
     <button class="btn btn-copper btn-full" style="margin-bottom:6px" onclick="closeModal();druckeRundgangWegpunkt('${lgId}',${nr},${seg.wpGesamt||0})"><i class="ti ti-printer"></i> Ersatz-Etikett drucken</button>
-    ${fertig?'':`<button class="btn btn-full" style="margin-bottom:6px" onclick="rundgangStatusModalById('${segId}','${esc(lgName)}')">Rundgang fortsetzen</button>`}
+    ${fertig?'':`<button class="btn btn-full" style="margin-bottom:6px" onclick="rundgangStatusModalById('${segId}','${escJs(lgName)}')">Rundgang fortsetzen</button>`}
     <button class="btn btn-full" data-action-click="closeModal">Schließen</button>`);
 }
 
@@ -13668,7 +13849,7 @@ async function modalSchluessel(objektId, weNr){
     <div class="f" style="margin-top:8px"><label for="skNotiz">Schließanlage / Bemerkung (optional)</label>
       <textarea id="skNotiz" spellcheck="true" lang="de" style="min-height:44px" placeholder="z. B. Schließanlage Nr., Sicherungskarte beim Eigentümer">${esc(w?.schluesselNotiz||'')}</textarea></div>
     <div class="f-row" style="margin-top:12px">
-      <button class="btn btn-copper btn-full" onclick="saveSchluessel('${objektId}','${esc(String(weNr))}')"><i class="ti ti-check"></i> Speichern</button>
+      <button class="btn btn-copper btn-full" onclick="saveSchluessel('${objektId}','${escJs(String(weNr))}')"><i class="ti ti-check"></i> Speichern</button>
       <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
     </div>`);
 }
@@ -14059,8 +14240,8 @@ async function modalSchadenMelden(mangelId, store='maengel'){
       <i class="ti ti-info-circle"></i> Es wird ein E-Mail-Entwurf erstellt. Versand und endgültige Prüfung erfolgen durch Sie im Mailprogramm.
     </div>
     <div class="f-row">
-      <button class="btn btn-copper btn-full" onclick="schadenMailOeffnen('${mangelId}','${store}','${esc(mieterZeile)}')"><i class="ti ti-mail-forward"></i> E-Mail öffnen</button>
-      <button class="btn btn-full" onclick="schadenMailKopieren('${mangelId}','${store}','${esc(mieterZeile)}')"><i class="ti ti-copy"></i> Text kopieren</button>
+      <button class="btn btn-copper btn-full" onclick="schadenMailOeffnen('${mangelId}','${store}','${escJs(mieterZeile)}')"><i class="ti ti-mail-forward"></i> E-Mail öffnen</button>
+      <button class="btn btn-full" onclick="schadenMailKopieren('${mangelId}','${store}','${escJs(mieterZeile)}')"><i class="ti ti-copy"></i> Text kopieren</button>
     </div>
     <button class="btn btn-full" style="margin-top:8px" data-action-click="closeModal">Abbrechen</button>`);
 }
@@ -14489,7 +14670,7 @@ async function renderObjMieter(el){
         const etage=stamm.etage||vm?.etage||'';
         const flaeche=stamm.flaeche||vm?.flaeche||'';
         const sub=[etage?('Etage '+esc(String(etage))):'', flaeche?(qm(flaeche)+' m²'):''].filter(Boolean).join(' · ');
-        h+=`<div class="mieter-row" style="border-style:dashed;background:var(--ink-02)" onclick="modalLeerstandWE('${currentObjId}','${esc(String(we))}','${vm?vm.id:''}')">
+        h+=`<div class="mieter-row" style="border-style:dashed;background:var(--ink-02)" onclick="modalLeerstandWE('${currentObjId}','${escJs(String(we))}','${vm?vm.id:''}')">
           <div class="m-avatar" style="background:var(--ink-10);color:var(--ink-40)"><i class="ti ti-home-off"></i></div>
           <div class="m-body">
             <div class="m-name">Leerstand${sub?`<span style="font-weight:400;color:var(--ink-40);font-size:12px"> · ${sub}</span>`:''}</div>
@@ -15066,12 +15247,12 @@ ${nurTg?'':`
     <button class="btn btn-sm" onclick="druckeWohnungsgeberBescheinigung('${m.id}')"><i class="ti ti-file-certificate"></i> WGB</button>
     <button class="btn btn-sm" onclick="modalBrief('${m.id}','${m.objektId}')"><i class="ti ti-mail"></i> Brief</button>`;
     const gWohnung = `
-    ${istVerwalter()?`<button class="btn btn-sm" onclick="modalWohnungHeizNk('${m.objektId}','${esc(String(m.weNr||''))}')"><i class="ti ti-home-cog"></i> Wohnungsinfos</button>`:''}
-    <button class="btn btn-sm" onclick="modalWohnungGrundriss('${m.objektId}','${esc(String(m.weNr||''))}')"><i class="ti ti-map"></i> Grundriss</button>
-    <button class="btn btn-sm" onclick="modalWohnungsbilder('${m.objektId}','${esc(String(m.weNr||''))}')"><i class="ti ti-photo-scan"></i> Bilder</button>
+    ${istVerwalter()?`<button class="btn btn-sm" onclick="modalWohnungHeizNk('${m.objektId}','${escJs(String(m.weNr||''))}')"><i class="ti ti-home-cog"></i> Wohnungsinfos</button>`:''}
+    <button class="btn btn-sm" onclick="modalWohnungGrundriss('${m.objektId}','${escJs(String(m.weNr||''))}')"><i class="ti ti-map"></i> Grundriss</button>
+    <button class="btn btn-sm" onclick="modalWohnungsbilder('${m.objektId}','${escJs(String(m.weNr||''))}')"><i class="ti ti-photo-scan"></i> Bilder</button>
     <button class="btn btn-sm" data-action-click="modalAusstattung" data-arg="${m.objektId}" data-arg2="${esc(String(m.weNr||''))}"><i class="ti ti-tools"></i> Ausstattung</button>
-    ${istVerwalter()?`<button class="btn btn-sm" onclick="modalSchluessel('${m.objektId}','${esc(String(m.weNr||''))}')"><i class="ti ti-key"></i> Schlüssel</button>`:''}
-    ${(istVerwalter() && !m._vormieter && (m.leerstand || m.auszug || m.auszugISO))?`<button class="btn btn-sm" style="border-color:var(--copper);color:var(--copper-d)" onclick="modalAushangErstellen('${m.objektId}','${esc(String(m.weNr||''))}','${m.id}')"><i class="ti ti-printer"></i> Aushang „Wohnung frei“</button>`:''}`;
+    ${istVerwalter()?`<button class="btn btn-sm" onclick="modalSchluessel('${m.objektId}','${escJs(String(m.weNr||''))}')"><i class="ti ti-key"></i> Schlüssel</button>`:''}
+    ${(istVerwalter() && !m._vormieter && (m.leerstand || m.auszug || m.auszugISO))?`<button class="btn btn-sm" style="border-color:var(--copper);color:var(--copper-d)" onclick="modalAushangErstellen('${m.objektId}','${escJs(String(m.weNr||''))}','${m.id}')"><i class="ti ti-printer"></i> Aushang „Wohnung frei“</button>`:''}`;
     const gVerwaltung = `
     <button class="btn btn-sm" onclick="modalEditMieter('${m.id}')"><i class="ti ti-pencil"></i> Bearbeiten</button>
     ${m._vormieterId?`<button class="btn btn-sm" onclick="zeigeVormieter('${m._vormieterId}')"><i class="ti ti-history"></i> Vormieter</button>`:(istVerwalter()&&!m._vormieter&&!m._zukuenftig?`<button class="btn btn-sm" onclick="modalVormieterAnlegen('${m.id}')"><i class="ti ti-history"></i> Vormieter anlegen</button>`:'')}
@@ -15320,7 +15501,7 @@ async function mbVersandDialog(mbId){
     <label style="font-size:12px;color:var(--ink-60);display:block;margin-bottom:4px">Begleittext (editierbar)</label>
     <textarea id="mbVersandText" style="width:100%;min-height:150px;font-size:12.5px;padding:8px;border:1px solid var(--ink-10);border-radius:8px;line-height:1.5;font-family:inherit">${esc(text)}</textarea>
     <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:14px">
-      ${tel ? `<button class="btn btn-full" style="flex:1;background:#25D366;color:#fff;border-color:#25D366" onclick="mbVersandOeffne('wa','${esc(waNummer(tel))}')"><i class="ti ti-brand-whatsapp"></i> WhatsApp</button>` : ''}
+      ${tel ? `<button class="btn btn-full" style="flex:1;background:#25D366;color:#fff;border-color:#25D366" onclick="mbVersandOeffne('wa','${escJs(waNummer(tel))}')"><i class="ti ti-brand-whatsapp"></i> WhatsApp</button>` : ''}
       ${mail ? `<button class="btn btn-copper btn-full" style="flex:1" onclick="mbVersandOeffne('mail','${escAttr(mail)}')"><i class="ti ti-mail"></i> E-Mail</button>` : ''}
     </div>
     <div style="display:flex;gap:8px;margin-top:8px">
@@ -18578,6 +18759,9 @@ async function erstelleNKA(objektId, korrektur) {
     return verteilung;
   }
 
+  /* v366 (F8): Kostenarten, die dieser Pfad nicht verteilen kann. */
+  const _unbekannteSchluessel = new Set();
+
   function getAnteil(k, m) {
     if(k.perMieterOptIn) return 0;   // v294: laeuft separat über mieterExtras[m.id].wm
     const verteilt = anteileFuerPosition(k);
@@ -18590,7 +18774,20 @@ async function erstelleNKA(objektId, korrektur) {
       case 'personen_fest': return (k.preisProPers||0)*personen;
       case 'besonders':     return betrag;
       case 'einzeln':       return betrag[m.id]||0;
-      default:              return 0;
+      default: {
+        /* v366 (F8): Bis v365 wurde hier still 0 zurueckgegeben. Ein
+           Schluessel, den die Einzelabrechnung nicht kennt (z. B.
+           'wfl_gruppe' aus der Sammelvorlage), liess den ganzen Betrag
+           verschwinden - ohne Meldung und ohne dass die Rechenkontrolle
+           anschlagen konnte. Gemeldet wird nur, wenn tatsaechlich ein Betrag
+           dahintersteht; eine leere Position ist kein Fehler. */
+        const b = Number(betrag) || 0;
+        if(b !== 0){
+          _unbekannteSchluessel.add((k.name||k.id) + ' [' + (k.schluessel||'ohne Schlüssel') + ']');
+          console.error('NKA (Einzel): Verteilerschlüssel unbekannt', k.schluessel, k.id, b);
+        }
+        return 0;
+      }
     }
   }
 
@@ -18751,6 +18948,9 @@ async function erstelleNKA(objektId, korrektur) {
         + ' aus (Abweichung ' + fmtEur(_abw) + '). Diese Abrechnung bitte NICHT versenden.</div>'
       : '';
     if(_abw >= 0.01) console.error('NKA-Kontrollsumme (Einzel)', m.id, zeilenSumme, _sollSumme);
+    /* v366 (F8): zweiter, unabhaengiger Hinweis - er greift genau dort, wo die
+       Rechenkontrolle blind ist (beide Seiten null). */
+    const kontrollHinweisGesamt = kontrollHinweis + nkaUnbekanntHinweisHTML(_unbekannteSchluessel);
     const _pruefHinweis = nkaPruefHinweisHTML(nkaPruefungMieter(m, von, bis));
 
     briefeJeMieter[m.id] = `
@@ -18812,7 +19012,7 @@ async function erstelleNKA(objektId, korrektur) {
         </tr></thead>
         <tbody>${posZeilen}</tbody>
       </table>
-      ${kontrollHinweis}${_pruefHinweis}
+      ${kontrollHinweisGesamt}${_pruefHinweis}
 
       <table class="summen-table">
         <tr><td>Summe Nebenkosten</td><td>${fmtEur(nkAnteil-( kostenMap['heizung']?.[m.id]||0)-(ex.kr||0)-(ex.so||0))}</td></tr>
@@ -19018,6 +19218,25 @@ ${briefeHTML}
 
   // PDF-Fenster öffnen
   druckHTML(nkaHtml);
+}
+
+/* v366 (F8): Meldung ueber Kostenarten, deren Verteilerschluessel der
+   verwendete Abrechnungspfad nicht kennt. Bewusst EINE Funktion fuer beide
+   Generatoren - zwei Fassungen desselben Hinweises waeren wieder das Muster,
+   aus dem v345 entstanden ist.
+
+   Warum es diesen Hinweis braucht, obwohl es die Rechenkontrolle gibt: die
+   Kontrolle vergleicht die Summe der gedruckten Zeilen mit dem gerechneten
+   Anteil. Faellt eine Position auf null, sind BEIDE Seiten null - die
+   Abweichung ist null, und der Fehler bleibt unsichtbar. */
+function nkaUnbekanntHinweisHTML(menge){
+  if(!menge || !menge.size) return '';
+  const liste = Array.from(menge).join(', ');
+  return '<div style="margin:6px 0;padding:6px 9px;border:1.5px solid #C0392B;border-radius:4px;'
+    + 'background:#FDECEA;color:#8B1E13;font-size:10px;font-weight:600">'
+    + 'Nicht verteilte Kostenart: ' + esc(liste) + '. Der Verteilerschl\u00fcssel ist in dieser '
+    + 'Abrechnungsart nicht vorgesehen; der Betrag wurde auf niemanden umgelegt. '
+    + 'Diese Abrechnung bitte NICHT versenden.</div>';
 }
 
 function nkaZeile(name, schluessel, geteilt, betrag, anteil, preis, kosten) {
@@ -19692,6 +19911,10 @@ async function erstelleNKALiegenschaft(lgId, korrektur){
     return verteilung;
   }
 
+  /* v366 (F8): siehe Einzelabrechnung. Dieser Pfad kennt 'we', 'monate',
+     'we_fest', 'personen_fest' und 'besonders' nicht. */
+  const _unbekannteSchluessel = new Set();
+
   // Anteil eines Mieters an einer Kostenart
   function getAnteil(k, m){
     const verteilt = anteileFuerPositionLg(k);
@@ -19699,7 +19922,14 @@ async function erstelleNKALiegenschaft(lgId, korrektur){
     const betrag=kostenMap[k.id];
     switch(k.schluessel){
       case 'einzeln':    return betrag[m.id]||0;
-      default:           return 0;
+      default: {
+        const b = Number(betrag) || 0;
+        if(b !== 0){
+          _unbekannteSchluessel.add((k.name||k.id) + ' [' + (k.schluessel||'ohne Schlüssel') + ']');
+          console.error('NKA (Sammel): Verteilerschlüssel unbekannt', k.schluessel, k.id, b);
+        }
+        return 0;
+      }
     }
   }
 
@@ -19853,6 +20083,8 @@ async function erstelleNKALiegenschaft(lgId, korrektur){
         + ' aus (Abweichung ' + fmtEur(_abw) + '). Diese Abrechnung bitte NICHT versenden.</div>'
       : '';
     if(_abw >= 0.01) console.error('NKA-Kontrollsumme', m.id, zeilenSumme, _sollSumme);
+    /* v366 (F8): siehe Einzelabrechnung. */
+    const kontrollHinweisGesamt = kontrollHinweis + nkaUnbekanntHinweisHTML(_unbekannteSchluessel);
     /* v347: Stammdatenpruefung zusaetzlich zur Rechenkontrolle. */
     const _pruefHinweis = nkaPruefHinweisHTML(nkaPruefungMieter(m, von, bis));
 
@@ -19904,7 +20136,7 @@ async function erstelleNKALiegenschaft(lgId, korrektur){
         <thead><tr><th>Kostenart</th><th>Schlüssel</th><th>Betrag</th><th>Geteilt durch</th><th>Ihr Anteil</th><th>Preis/Anteil</th><th>Ihre Kosten</th></tr></thead>
         <tbody>${posZeilen}</tbody>
       </table>
-      ${kontrollHinweis}${_pruefHinweis}
+      ${kontrollHinweisGesamt}${_pruefHinweis}
       <table class="summen-table">
         <tr><td>Summe Nebenkosten</td><td>${fmtEur(nkAnteil-heiz-ex.kr-ex.so)}</td></tr>
         ${heiz>0?`<tr><td>Heiz-Warmwasserkosten</td><td>${fmtEur(heiz)}</td></tr>`:''}
@@ -20860,7 +21092,7 @@ async function modalWohnungHeizNk(objektId, weNr){
     <div id="whFotoGalerie" style="margin-top:10px"></div>
 
     <div class="f-row" style="margin-top:14px">
-      <button class="btn btn-copper btn-full" onclick="saveWohnungHeizNk('${objektId}','${esc(String(weNr||''))}')"><i class="ti ti-check"></i> Speichern</button>
+      <button class="btn btn-copper btn-full" onclick="saveWohnungHeizNk('${objektId}','${escJs(String(weNr||''))}')"><i class="ti ti-check"></i> Speichern</button>
       <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
     </div>`);
   // Foto-Arbeitsspeicher des Modals aus dem Stamm vorbefüllen
@@ -23516,7 +23748,7 @@ async function kqVersandDialog(kqId){
     <label style="font-size:12px;color:var(--ink-60);display:block;margin-bottom:4px" for="kqVersandText">Begleittext (editierbar)</label>
     <textarea id="kqVersandText" style="width:100%;min-height:150px;font-size:12.5px;padding:8px;border:1px solid var(--ink-10);border-radius:8px;line-height:1.5;font-family:inherit">${esc(text)}</textarea>
     <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:14px">
-      ${tel ? `<button class="btn btn-full" style="flex:1;background:#25D366;color:#fff;border-color:#25D366" onclick="kqVersandOeffne('wa','${esc(waNummer(tel))}')"><i class="ti ti-brand-whatsapp"></i> WhatsApp</button>`:''}
+      ${tel ? `<button class="btn btn-full" style="flex:1;background:#25D366;color:#fff;border-color:#25D366" onclick="kqVersandOeffne('wa','${escJs(waNummer(tel))}')"><i class="ti ti-brand-whatsapp"></i> WhatsApp</button>`:''}
       ${mail ? `<button class="btn btn-copper btn-full" style="flex:1" onclick="kqVersandOeffne('mail','${escAttr(mail)}')"><i class="ti ti-mail"></i> E-Mail</button>`:''}
     </div>
     <div style="display:flex;gap:8px;margin-top:8px">
@@ -26368,13 +26600,13 @@ async function modalWohnungGrundriss(objektId, weNr){
             : `<button class="btn btn-full" onclick="downloadDok('${planId}')"><i class="ti ti-file-type-pdf"></i> ${esc(plan.name||'Grundriss')} herunterladen</button>`)
         : `<div class="empty" style="padding:16px"><i class="ti ti-map-off"></i><p>Noch kein ${slot==='b'?'Grundriss der zweiten Ebene':'Grundriss'} hinterlegt.</p></div>`}
       </div>
-      <input type="file" id="wgrFile_${slot}" accept="image/*,.pdf" style="display:none" onchange="onWohnungGrundrissFile('${objektId}','${esc(String(weNr||''))}','${slot}')">
+      <input type="file" id="wgrFile_${slot}" accept="image/*,.pdf" style="display:none" onchange="onWohnungGrundrissFile('${objektId}','${escJs(String(weNr||''))}','${slot}')">
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">
         <button class="btn btn-sm btn-copper" onclick="document.getElementById('wgrFile_${slot}').click()">
           <i class="ti ti-upload"></i> ${plan?'Ersetzen':'Hochladen'}
         </button>
-        ${plan?`<button class="btn btn-sm" onclick="teileWohnungGrundriss('${objektId}','${esc(String(weNr||''))}','${slot}')"><i class="ti ti-share"></i> Weiterleiten</button>`:''}
-        ${plan?`<button class="btn btn-sm btn-danger" onclick="deleteWohnungGrundriss('${objektId}','${esc(String(weNr||''))}','${slot}')"><i class="ti ti-trash"></i></button>`:''}
+        ${plan?`<button class="btn btn-sm" onclick="teileWohnungGrundriss('${objektId}','${escJs(String(weNr||''))}','${slot}')"><i class="ti ti-share"></i> Weiterleiten</button>`:''}
+        ${plan?`<button class="btn btn-sm btn-danger" onclick="deleteWohnungGrundriss('${objektId}','${escJs(String(weNr||''))}','${slot}')"><i class="ti ti-trash"></i></button>`:''}
       </div>
     </div>`;
   };
@@ -26462,9 +26694,9 @@ async function modalWohnungsbilder(objektId, weNr){
         <div style="padding:8px 10px">
           <div style="font-size:13px;color:var(--ink)">${b.beschreibung?esc(b.beschreibung):'<span style="color:#888780">Ohne Beschreibung</span>'}</div>
           <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">
-            <button class="btn btn-sm" onclick="modalWohnungsbildEdit('${objektId}','${esc(String(weNr||''))}','${b.id}')"><i class="ti ti-pencil"></i> Beschreibung</button>
+            <button class="btn btn-sm" onclick="modalWohnungsbildEdit('${objektId}','${escJs(String(weNr||''))}','${b.id}')"><i class="ti ti-pencil"></i> Beschreibung</button>
             <button class="btn btn-sm" onclick="dokTeilen('${b.id}')"><i class="ti ti-share"></i></button>
-            <button class="btn btn-sm btn-danger" onclick="deleteWohnungsbild('${objektId}','${esc(String(weNr||''))}','${b.id}')"><i class="ti ti-trash"></i></button>
+            <button class="btn btn-sm btn-danger" onclick="deleteWohnungsbild('${objektId}','${escJs(String(weNr||''))}','${b.id}')"><i class="ti ti-trash"></i></button>
           </div>
         </div>
       </div>`;
@@ -26472,7 +26704,7 @@ async function modalWohnungsbilder(objektId, weNr){
     h+=`</div>`;
   }
   h+=`
-    <input type="file" id="wbFile" accept="image/*" style="display:none" onchange="onWohnungsbildFile('${objektId}','${esc(String(weNr||''))}')">
+    <input type="file" id="wbFile" accept="image/*" style="display:none" onchange="onWohnungsbildFile('${objektId}','${escJs(String(weNr||''))}')">
     <button class="btn btn-copper btn-full" style="margin-top:10px" onclick="document.getElementById('wbFile').click()">
       <i class="ti ti-upload"></i> Bild hinzufügen
     </button>
@@ -26517,8 +26749,8 @@ async function modalWohnungsbildEdit(objektId, weNr, bildId){
     <div class="f"><label for="wbBeschr">Beschreibung</label>
       <textarea spellcheck="true" lang="de" id="wbBeschr" style="min-height:70px" placeholder="z. B. Wohnzimmer mit Blick zum Hof, Laminat 2022 erneuert">${esc(b.beschreibung||'')}</textarea></div>
     <div class="f-row" style="margin-top:12px">
-      <button class="btn btn-copper btn-full" onclick="saveWohnungsbildBeschr('${objektId}','${esc(String(weNr||''))}','${bildId}')"><i class="ti ti-check"></i> Speichern</button>
-      <button class="btn btn-full" onclick="modalWohnungsbilder('${objektId}','${esc(String(weNr||''))}')">Zurück</button>
+      <button class="btn btn-copper btn-full" onclick="saveWohnungsbildBeschr('${objektId}','${escJs(String(weNr||''))}','${bildId}')"><i class="ti ti-check"></i> Speichern</button>
+      <button class="btn btn-full" onclick="modalWohnungsbilder('${objektId}','${escJs(String(weNr||''))}')">Zurück</button>
     </div>`);
 }
 
@@ -28963,7 +29195,7 @@ async function modalLeerstandWE(objektId, weNr, vormieterId){
     ${vm?`<button class="btn btn-full" style="margin-bottom:8px" onclick="closeModal();showMieter('${vm.id}')">
       <i class="ti ti-history"></i> Letzten Mieter (Vormieter) ansehen
     </button>`:''}
-    ${istVerwalter()?`<button class="btn btn-full" style="margin-bottom:8px;border-color:var(--copper);color:var(--copper-d)" onclick="closeModal();modalAushangErstellen('${objektId}','${esc(String(weNr))}','${vormieterId||''}')">
+    ${istVerwalter()?`<button class="btn btn-full" style="margin-bottom:8px;border-color:var(--copper);color:var(--copper-d)" onclick="closeModal();modalAushangErstellen('${objektId}','${escJs(String(weNr))}','${vormieterId||''}')">
       <i class="ti ti-printer"></i> Aushang „Wohnung frei" erstellen
     </button>`:''}
     <div id="leerstandODEl" style="margin-top:12px"></div>
@@ -29147,7 +29379,7 @@ async function modalAushangErstellen(objektId, weNr, vormieterId){
     </label>
 
     <div class="f-row" style="margin-top:14px">
-      <button class="btn btn-copper btn-full" onclick="aushangErzeugen('${objektId}','${esc(String(weNr))}')"><i class="ti ti-printer"></i> Aushang erzeugen</button>
+      <button class="btn btn-copper btn-full" onclick="aushangErzeugen('${objektId}','${escJs(String(weNr))}')"><i class="ti ti-printer"></i> Aushang erzeugen</button>
       <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
     </div>`);
 }
@@ -29203,16 +29435,35 @@ async function leerstandLoeschen(kennung){
 
    XLSX_SRI: Subresource Integrity. Ist der Hash gesetzt, fuehrt der Browser die
    Datei nur aus, wenn sie Byte fuer Byte stimmt - ein ausgetauschtes CDN-File
-   wird verworfen. Hash einmalig ermitteln (PowerShell):
+   wird verworfen.
 
-     $b=(Invoke-WebRequest 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js').Content
-     [Convert]::ToBase64String([System.Security.Cryptography.SHA384]::Create().ComputeHash($b))
+   v364: Der hier bisher notierte Befehl war FALSCH und konnte nie
+   funktionieren: Invoke-WebRequest liefert unter .Content einen String,
+   ComputeHash erwartet ein Byte-Array ("Cannot find an overload"). Wer ihn
+   ausfuehrte, bekam einen Fehler und liess die Konstante leer - so blieb sie
+   seit Monaten offen. Richtig, in Windows PowerShell 5.1 und 7 gleichermassen:
 
-   Ergebnis mit 'sha384-' davor unten eintragen. Solange XLSX_SRI leer ist,
-   wird ohne Pruefung geladen (bisheriges Verhalten) und einmal gewarnt -
-   der Export darf an einer fehlenden Konstante nicht scheitern. */
+     $u = 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js'
+     $f = "$env:TEMP\xlsx.js"
+     Invoke-WebRequest -Uri $u -OutFile $f -UseBasicParsing
+     $b = [IO.File]::ReadAllBytes($f)
+     'sha384-' + [Convert]::ToBase64String(
+        [Security.Cryptography.SHA384]::Create().ComputeHash($b))
+
+   Die Ausgabe VOLLSTAENDIG (mit 'sha384-') unten eintragen.
+   Solange XLSX_SRI leer ist, wird ohne Pruefung geladen (bisheriges Verhalten)
+   und einmal gewarnt - der Export darf an einer fehlenden Konstante nicht
+   scheitern. Steht dort etwas Unbrauchbares, wuerde der Browser die Datei
+   verwerfen und der Export waere tot; deshalb prueft xlsxSriGueltig() vorher
+   das Format. */
 const XLSX_URL = 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js';
 const XLSX_SRI = '';   // z. B. 'sha384-…' – siehe Kommentar oben
+/* v364: sha384 als Base64 sind immer genau 64 Zeichen. Geprueft wird nur die
+   FORM - ob der Hash zur Datei passt, kann allein der Browser entscheiden. */
+function xlsxSriGueltig(wert){
+  return /^sha384-[A-Za-z0-9+/]{64}={0,2}$/.test(String(wert||''));
+}
+
 let _xlsxLadeP = null;
 function xlsxLaden(){
   if(window.XLSX) return Promise.resolve(window.XLSX);
@@ -29220,7 +29471,12 @@ function xlsxLaden(){
   _xlsxLadeP = new Promise((res, rej)=>{
     const sc = document.createElement('script');
     sc.src = XLSX_URL;
-    if(XLSX_SRI){ sc.integrity = XLSX_SRI; sc.crossOrigin = 'anonymous'; }
+    /* v364: Ein falsch eingetragener Hash ist schlimmer als gar keiner - der
+       Browser verwirft die Datei und der Excel-Export faellt aus, ohne dass
+       jemand die Ursache sieht. Deshalb wird das Format geprueft. */
+    if(xlsxSriGueltig(XLSX_SRI)){ sc.integrity = XLSX_SRI; sc.crossOrigin = 'anonymous'; }
+    else if(XLSX_SRI) console.error('XLSX_SRI hat nicht das Format "sha384-" + 64 Base64-Zeichen '
+      + '- die Pruefsumme wird ignoriert. Bitte den Befehl im Kommentar erneut ausfuehren.');
     else console.warn('SheetJS ohne Integritaetspruefung geladen - XLSX_SRI ist nicht gesetzt.');
     sc.onload  = ()=> window.XLSX ? res(window.XLSX)
                                   : rej(new Error('XLSX nach dem Laden nicht verfuegbar'));
@@ -35951,7 +36207,7 @@ async function odBrowserOeffnen(gruppe, knoten, kategorie, gebaeude){
       (r.ordner||'').startsWith(stPfad+'/')).length;
     const items=gebs.map(g=>
       `<button class="btn btn-full" style="justify-content:flex-start;margin-bottom:6px"
-         onclick="odBrowserOeffnen('${gruppe}','','','${esc(g)}')">
+         onclick="odBrowserOeffnen('${gruppe}','','','${escJs(g)}')">
          <i class="ti ti-building"></i> ${esc(g)}</button>`).join('');
     const altBtn=altZahl?`<button class="btn btn-full" style="justify-content:flex-start;margin-bottom:6px;opacity:.85"
          onclick="odBrowserOeffnen('${gruppe}','','','(alt)')">
@@ -35975,7 +36231,7 @@ async function odBrowserOeffnen(gruppe, knoten, kategorie, gebaeude){
     const knoten=['Allgemein', ...wes.map(w=>'WE '+odSafeName(w))];
     const items=knoten.map(kn=>
       `<button class="btn btn-full" style="justify-content:flex-start;margin-bottom:6px"
-         onclick="odBrowserOeffnen('${gruppe}','${esc(kn)}','','${esc(gebaeude)}')">
+         onclick="odBrowserOeffnen('${gruppe}','${escJs(kn)}','','${escJs(gebaeude)}')">
          <i class="ti ${kn==='Allgemein'?'ti-archive':'ti-door'}"></i> ${esc(kn)}</button>`).join('');
     showModal(`
       <div class="m-title"><i class="ti ti-folder"></i> ${esc(st.ordner)} · ${istAlt?'Alt-Dateien':esc(gebaeude)}</div>
@@ -36004,18 +36260,18 @@ async function odBrowserOeffnen(gruppe, knoten, kategorie, gebaeude){
       const n=zaehl[odSafeName(k)]||zaehl[k]||0;
       const badge=n?` <span style="color:var(--ink-40);font-size:11px">· ${n}</span>`:'';
       return `<button class="btn btn-full" style="justify-content:flex-start;margin-bottom:6px"
-         onclick="odBrowserOeffnen('${gruppe}','${esc(knoten)}','${esc(k)}','${esc(gebaeude)}')">
+         onclick="odBrowserOeffnen('${gruppe}','${escJs(knoten)}','${escJs(k)}','${escJs(gebaeude)}')">
          <i class="ti ${ic}"></i> ${esc(k)}${badge}</button>`;
     }).join('');
     // Alt-Dateien direkt im Knoten (ohne Kategorie) nur anbieten, wenn vorhanden.
     const wurzelBtn = wurzel ? `<button class="btn btn-full" style="justify-content:flex-start;margin-bottom:6px;opacity:.85"
-         onclick="odBrowserOeffnen('${gruppe}','${esc(knoten)}','(wurzel)','${esc(gebaeude)}')">
+         onclick="odBrowserOeffnen('${gruppe}','${escJs(knoten)}','(wurzel)','${escJs(gebaeude)}')">
          <i class="ti ti-folder"></i> Ohne Kategorie <span style="color:var(--ink-40);font-size:11px">· ${wurzel}</span></button>` : '';
     showModal(`
       <div class="m-title"><i class="ti ti-folder"></i> ${istAlt?'Alt':esc(gebaeude)} · ${esc(knoten)}</div>
       <div style="margin:10px 0;max-height:50vh;overflow:auto">${items}${wurzelBtn}</div>
       <div style="display:flex;gap:8px;justify-content:space-between;margin-top:8px">
-        <button class="btn btn-sm" onclick="odBrowserOeffnen('${gruppe}','','','${esc(gebaeude)}')"><i class="ti ti-arrow-left"></i> Zurück</button>
+        <button class="btn btn-sm" onclick="odBrowserOeffnen('${gruppe}','','','${escJs(gebaeude)}')"><i class="ti ti-arrow-left"></i> Zurück</button>
         <button class="btn btn-sm" data-action-click="closeModal">Schließen</button>
       </div>`);
     return;
@@ -36051,8 +36307,8 @@ async function odBrowserOeffnen(gruppe, knoten, kategorie, gebaeude){
        onchange="odBrowserUpload(this)">
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
       ${uploadBtn}
-      <button class="btn btn-copper btn-sm" onclick="syncDateibaum(false).then(()=>odBrowserOeffnen('${gruppe}','${esc(knoten)}','${esc(kategorie)}','${esc(gebaeude)}'))"><i class="ti ti-refresh"></i> Synchronisieren</button>
-      <button class="btn btn-sm" onclick="odBrowserOeffnen('${gruppe}','${esc(knoten)}','','${esc(gebaeude)}')"><i class="ti ti-arrow-left"></i> Zurück</button>
+      <button class="btn btn-copper btn-sm" onclick="syncDateibaum(false).then(()=>odBrowserOeffnen('${gruppe}','${escJs(knoten)}','${escJs(kategorie)}','${escJs(gebaeude)}'))"><i class="ti ti-refresh"></i> Synchronisieren</button>
+      <button class="btn btn-sm" onclick="odBrowserOeffnen('${gruppe}','${escJs(knoten)}','','${escJs(gebaeude)}')"><i class="ti ti-arrow-left"></i> Zurück</button>
     </div>`);
 }
 
@@ -36216,12 +36472,37 @@ function showSyncInfo(){
 /* ═══════════════════════════════════════════════════════════
    MODAL
 ═══════════════════════════════════════════════════════════ */
+/* v366 (F7): Der Dialog traegt jetzt role="dialog"/aria-modal und bekommt beim
+   Oeffnen den Fokus; beim Schliessen geht er an das ausloesende Element
+   zurueck. Ohne das blieb der Fokus im Hintergrund stehen - fuer Tastatur- und
+   Screenreader-Bedienung war der Dialog schlicht nicht auffindbar.
+   Escape (v280) und die Android-Zurueck-Taste bleiben unveraendert; das
+   Schliessen per Klick daneben bleibt bewusst deaktiviert (v213, Datenverlust
+   in Formularen). */
+let _modalFokusVorher = null;
+
 function showModal(html){
+  const bg = document.getElementById('modalBg');
+  const box = document.getElementById('modalBox');
   document.getElementById('modalBody').innerHTML=html;
-  document.getElementById('modalBg').classList.add('open');
+  bg.classList.add('open');
+  try {
+    _modalFokusVorher = document.activeElement;
+    /* Erstes bedienbares Element im Inhalt, sonst der Dialog selbst. Nicht auf
+       den Schliessen-Knopf: ein versehentliches Enter wuerde den Dialog sofort
+       wieder zumachen. */
+    const ziel = document.getElementById('modalBody')
+      .querySelector('input:not([type=hidden]):not([disabled]), select, textarea, button, [href], [tabindex]:not([tabindex="-1"])');
+    (ziel || box).focus({ preventScroll: true });
+  } catch(e){ /* Fokus darf das Oeffnen nie verhindern */ }
 }
+
 function closeModal(){
   document.getElementById('modalBg').classList.remove('open');
+  try {
+    if(_modalFokusVorher && document.contains(_modalFokusVorher)) _modalFokusVorher.focus({ preventScroll: true });
+  } catch(e){}
+  _modalFokusVorher = null;
 }
 
 /* ── v280: Dialoge per Escape schliessen (Audit N4 / Barrierefreiheit) ──
@@ -42422,7 +42703,7 @@ async function modalRechnungDetail(id){
         <button class="btn" onclick="rechnBelegTeilen('${r.id}')" title="Über WhatsApp, E-Mail usw. weiterleiten"><i class="ti ti-share"></i></button>
       </div>`;
     } else {
-      belegHtml=`<img src="${r.beleg}" style="width:100%;border-radius:8px;cursor:pointer;margin-bottom:8px" onclick="openFoto('${r.beleg}','Beleg ${esc(r.lieferant||'')}')" alt="Beleg">`;
+      belegHtml=`<img src="${r.beleg}" style="width:100%;border-radius:8px;cursor:pointer;margin-bottom:8px" onclick="openFoto('${r.beleg}','Beleg ${escJs(r.lieferant||'')}')" alt="Beleg">`;
     }
   }
 
@@ -44453,6 +44734,77 @@ function showStartError(msg) {
   }
   console.error('ImmoApp Startfehler:', msg);
 }
+
+/* ═══════════════════════════════════════════════════════════
+   v365 (F4) – DOPPELKLICK-SPERRE
+   Zweiter Aufruf derselben Aktion mit denselben Argumenten, waehrend der
+   erste noch laeuft: es wird NICHT erneut ausgefuehrt, sondern das laufende
+   Ergebnis zurueckgegeben. Nach dem Ende bleibt der Eintrag kurz stehen
+   (EINMALIG_NACHLAUF), sonst rutscht der klassische Doppelklick auf eine
+   schnelle Funktion hindurch.
+   Absichtlich KEINE Blockade mit Rueckgabe undefined: Funktionen wie
+   erstelleNKA werden auch intern aufgerufen, und eine Blockade haette dort
+   eine legitime Kette still abgebrochen.
+═══════════════════════════════════════════════════════════ */
+const EINMALIG_NACHLAUF = 600;
+const _laufendeAktionen = new Map();
+
+function _aktionsSchluessel(name, args){
+  try { return name + '|' + JSON.stringify(Array.from(args)); }
+  catch(e){ return null; }   // zirkulaere/nicht serialisierbare Argumente: kein Zusammenfassen
+}
+
+function einmalig(name){
+  const orig = window[name];
+  if (typeof orig !== 'function') return false;
+  if (orig._einmalig) return true;
+  const huelle = function(...args){
+    const schluessel = _aktionsSchluessel(name, args);
+    if (schluessel === null) return orig.apply(this, args);
+    const laufend = _laufendeAktionen.get(schluessel);
+    if (laufend !== undefined){
+      console.warn('Doppelter Aufruf abgefangen:', name);
+      try { toast('Wird bereits ausgeführt …'); } catch(_){}
+      return laufend;
+    }
+    let erg;
+    try { erg = orig.apply(this, args); }
+    catch(e){ throw e; }      // synchroner Fehler: nichts merken, sofort weiterreichen
+    const fertig = ()=>setTimeout(()=>_laufendeAktionen.delete(schluessel), EINMALIG_NACHLAUF);
+    _laufendeAktionen.set(schluessel, erg);
+    if (erg && typeof erg.then === 'function') erg.then(fertig, fertig);
+    else fertig();
+    return erg;
+  };
+  huelle._einmalig = true;
+  window[name] = huelle;
+  return true;
+}
+
+/* Abgesichert werden Aktionen mit Aussenwirkung (Versand, Erzeugen, Anlegen,
+   Import/Export). Reine Anzeigefunktionen bleiben aussen vor - dort ist ein
+   zweiter Klick folgenlos. */
+const EINMALIG_AKTIONEN = [
+  'mailTokenSenden','saTokenSenden','tenantMailSenden','postfachAbrufen',
+  'erstelleNKA','erstelleNKALiegenschaft','erstelleKautionsquittung',
+  'erstelleKautionsEndabrechnung','erstelleMietbescheinigung','erzeugeEinzugsprotokoll',
+  'aushangErzeugen','mvErzeugen','wgbErzeugeUndDrucke','mbPdfErzeugen',
+  'saveNewMieter','saveNewUser','saveNeuerZaehler','saveNeuerStellplatz',
+  'saveNeuerTgMieter','saveVormieterAnlegen','saveInteressent','saveMangel',
+  'saveAufgabe','saveTermin','saveLagerArtikel','saveLagerort','saveReparatur',
+  'saveEinkauf','saveVersicherung','saveVersorger','saveWartung','saveSegment',
+  'saveVentilNeu','saveBranchenbuch','saveKaution','saveErstattung',
+  'rechnungSpeichern','saveZaehlerstand','importBackupAusfuehren','importExcel',
+  'exportBackup','wohnungenExportPush','zaExportSammellastschrift'
+];
+
+/* Erst nach dem Laden umhuellen: window.<name> existiert durch Hoisting zwar
+   sofort, aber ein Tippfehler in der Liste soll sichtbar werden - und das
+   Protokoll ist beim Start lesbar. */
+window.addEventListener('load', function(){
+  const fehlend = EINMALIG_AKTIONEN.filter(n=>!einmalig(n));
+  if (fehlend.length) console.warn('Doppelklick-Sperre: unbekannte Funktionsnamen:', fehlend.join(', '));
+});
 
 
 </script>
