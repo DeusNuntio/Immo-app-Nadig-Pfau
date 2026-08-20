@@ -1269,7 +1269,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=35;   // v242: +buch_journal (F4 GoBD)
-const APP_VERSION = '2026-08-13-v367';
+const APP_VERSION = '2026-08-13-v368';
 /* v364 (12.08.2026) – offene Punkte abgearbeitet.
    1) D1/XLSX_SRI: Der im Code hinterlegte PowerShell-Befehl war FALSCH und
       konnte nie funktionieren - Invoke-WebRequest liefert unter .Content einen
@@ -9152,7 +9152,14 @@ async function tenantMailSenden(){
     rec.status='fehler';
     st('<span style="color:#b91c1c;font-size:13px">Versand nicht möglich (Endpunkt /api/send-mail noch nicht aktiv). Protokolliert.</span>');
   }
-  try{ await idbPut('tenant_mails', rec); }catch(e){}
+  /* v368: Das Protokoll ist der Nachweis, dass die Mail hinausging. Scheitert
+     das Schreiben, ist die Mail beim Mieter und die Verwaltung weiss nichts
+     davon - beim naechsten Mal wird sie ein zweites Mal geschickt. */
+  try{ await idbPut('tenant_mails', rec); }
+  catch(e){
+    console.error('Mailprotokoll nicht gespeichert:', e && e.message);
+    toast('Die Mail wurde verarbeitet, ließ sich aber nicht protokollieren. Bitte notieren.', 8000);
+  }
   clearTimeout(window._syncTimer); window._syncTimer=setTimeout(()=>syncToOneDrive(),3000);
   if(rec.status==='gesendet'){
     ['tmBetreff','tmText'].forEach(id=>{ const e=document.getElementById(id); if(e) e.value=''; });
@@ -27832,7 +27839,7 @@ function openGlobalSearch() {
     <div class="search-bar" style="margin-bottom:12px">
       <div class="search-wrap" style="flex:1">
         <i class="ti ti-search"></i>
-        <input class="search-input" id="globalSearchQ" enterkeyhint="search" placeholder="Mieter, Objekt, Mangel, Aufgabe..."
+        <input class="search-input" id="globalSearchQ" enterkeyhint="search" placeholder="Mieter, Objekt, Rechnung, Dokument, Handwerker..."
           oninput="runGlobalSearch(this.value)" autofocus>
       </div>
     </div>
@@ -27917,20 +27924,111 @@ async function runGlobalSearch(q) {
       }
     }catch(_){ }
 
+    /* ── v368 (S2): die Datenarten, nach denen am haeufigsten gesucht wird ──
+       Jede Gruppe ist gedeckelt: bei 116 Wohnungen sind das heute nie mehr als
+       eine Handvoll Treffer, aber die Buchungen zeigen, wohin es fuehrt, wenn
+       ein Bestand waechst - die Liste soll den Dialog nicht sprengen. */
+    const MAX_JE_ART = 12;
+    const passt = (...felder) => felder.filter(Boolean).join(' ').toLowerCase().includes(ql);
+
+    // Objekte - der haeufigste Sucheinstieg ueberhaupt
+    myObj.forEach(o=>{
+      if (passt(o.name, o.strasse, o.ort, o.plz))
+        results.push({type:'objekt', icon:'ti-building', color:'var(--blue)',
+          label:o.name, sub:[o.strasse,o.ort].filter(Boolean).join(' · '),
+          action:`closeModal();showObjekt('${escJs(o.id)}')`});
+    });
+
+    // Rechnungen - Kreditor, Nummer, Betreff
+    try{
+      let n=0;
+      for(const r of await idbGetAll('rechnungen')){
+        if (n>=MAX_JE_ART) break;
+        if (!myIds.includes(r.objektId) && !istAllgemein(r.objektId)) continue;
+        if (!passt(r.lieferant, r.nummer, r.betreff, r.notiz)) continue;
+        n++;
+        results.push({type:'rechnung', icon:'ti-file-invoice', color:'var(--amber)',
+          label:(r.lieferant||'Rechnung')+(r.nummer?' · '+r.nummer:''),
+          sub:[fmtDate(r.datum), r.betrag!=null?fmtEur(r.betrag):''].filter(Boolean).join(' · '),
+          action:`closeModal();nav('rechnungen','Rechnungen')`});
+      }
+    }catch(_){}
+
+    // Dokumente
+    try{
+      let n=0;
+      for(const d of await idbGetAll('dokumente')){
+        if (n>=MAX_JE_ART) break;
+        if (d._geloescht) continue;
+        if (!passt(d.name, d.titel, d.typ)) continue;
+        n++;
+        const bez = getObj(d.objektId)?.name || '';
+        results.push({type:'dokument', icon:'ti-file-text', color:'var(--ink-60)',
+          label:d.name||d.titel||'Dokument', sub:[bez, fmtDate(d.erstellt)].filter(Boolean).join(' · '),
+          action:`closeModal();openArchivDok('${escJs(d.id)}')`});
+      }
+    }catch(_){}
+
+    // Termine
+    try{
+      let n=0;
+      for(const t of (await idbGetAll('termine')).sort((a,b)=>String(b.datum||'').localeCompare(String(a.datum||'')))){
+        if (n>=MAX_JE_ART) break;
+        if (!passt(t.titel, t.notiz, t.ort)) continue;
+        n++;
+        results.push({type:'termin', icon:'ti-calendar', color:'var(--green)',
+          label:t.titel||'Termin', sub:[fmtDate(t.datum), getObj(t.objektId)?.name].filter(Boolean).join(' · '),
+          action:`closeModal();nav('kalender','Kalender')`});
+      }
+    }catch(_){}
+
+    // Branchenbuch - Handwerker sucht man unter Zeitdruck
+    try{
+      let n=0;
+      for(const b of await idbGetAll('branchenbuch')){
+        if (n>=MAX_JE_ART) break;
+        if (!passt(b.firma, b.name, b.kategorie, b.telefon, b.email, b.notiz)) continue;
+        n++;
+        results.push({type:'firma', icon:'ti-address-book', color:'var(--copper)',
+          label:b.firma||b.name||'Eintrag', sub:[b.kategorie, b.telefon].filter(Boolean).join(' · '),
+          action:`closeModal();nav('branchenbuch','Branchenbuch')`});
+      }
+    }catch(_){}
+
+    // Interessenten
+    try{
+      let n=0;
+      for(const i of await idbGetAll('interessenten')){
+        if (n>=MAX_JE_ART) break;
+        if (!passt(i.name, i.vorname, i.nachname, i.email, i.telefon)) continue;
+        n++;
+        results.push({type:'interessent', icon:'ti-user-search', color:'var(--blue)',
+          label:[i.vorname,i.nachname].filter(Boolean).join(' ')||i.name||'Interessent',
+          sub:[getObj(i.objektId)?.name, i.status].filter(Boolean).join(' · '),
+          action:`closeModal();nav('objekt','Objekte')`});
+      }
+    }catch(_){}
+
     if (!el) return;
     if (!results.length) {
-      el.innerHTML = '<div style="text-align:center;color:var(--ink-40);padding:20px;font-size:13px"><i class="ti ti-search-off" style="font-size:28px;display:block;margin-bottom:6px"></i>Keine Ergebnisse für „'+q+'"</div>';
+      el.innerHTML = '<div style="text-align:center;color:var(--ink-40);padding:20px;font-size:13px"><i class="ti ti-search-off" style="font-size:28px;display:block;margin-bottom:6px"></i>Keine Ergebnisse für „'+esc(q)+'"</div>';
       return;
     }
 
-    el.innerHTML = '<div style="font-size:11px;color:var(--ink-40);margin-bottom:8px">'+results.length+' Ergebnis'+( results.length!==1?'se':'')+' für „'+q+'"</div>' +
+    /* v368 (S1): label und sub werden maskiert. Sie enthalten Verwendungszweck
+       und Buchungstext aus der importierten Bankdatei - Text, den nicht die
+       Verwaltung tippt. Ungeschuetzt liess sich damit Code im Frontend
+       ausfuehren, das Zugriff auf die gesamte Datenbank und das
+       OneDrive-Token hat (nachweis_a6.js). Auch der Suchbegriff selbst wird
+       maskiert: er steht in der Ueberschrift der Trefferliste. */
+    el.innerHTML = '<div style="font-size:11px;color:var(--ink-40);margin-bottom:8px">'+results.length+' Ergebnis'+( results.length!==1?'se':'')+' für „'+esc(q)+'"</div>' +
       results.map(r=>`<div style="display:flex;gap:10px;align-items:center;padding:9px 10px;border:1px solid var(--ink-10);border-radius:var(--radius);margin-bottom:6px;cursor:pointer;background:var(--white)" onclick="${r.action}">
-        <div style="width:34px;height:34px;border-radius:8px;background:var(--ink-05);display:flex;align-items:center;justify-content:center;flex-shrink:0;color:${r.color}">
-          <i class="ti ${r.icon}"></i>
+        <div style="width:34px;height:34px;border-radius:8px;background:var(--ink-05);display:flex;align-items:center;justify-content:center;flex-shrink:0;color:${esc(r.color)}">
+          <i class="ti ${esc(r.icon)}"></i>
         </div>
         <div style="flex:1;min-width:0">
-          <div style="font-size:13px;font-weight:600;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${r.label}</div>
-          <div style="font-size:11px;color:var(--ink-40);margin-top:1px">${r.sub}</div>
+          <div style="font-size:13px;font-weight:600;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(r.label)}</div>
+          <div style="font-size:11px;color:var(--ink-40);margin-top:1px">${esc(r.sub)}</div>
         </div>
         <i class="ti ti-chevron-right" style="color:var(--ink-20)"></i>
       </div>`).join('');
@@ -28938,8 +29036,18 @@ async function saveNewMieter(objektId) {
     neuerMieter._ersetztMieterId = vorhanden.id;
     neuerMieter._vormieterId = vorhanden.id;       // Vormieter-Bezug sofort sichtbar
     await idbPut('mieter', neuerMieter);
-    // Altmieter schon jetzt mit künftigem Nachmieter verknüpfen
-    try { vorhanden._nachmieterId = neuerMieter.id; await idbPut('mieter', vorhanden); } catch(_){}
+    /* Altmieter schon jetzt mit künftigem Nachmieter verknüpfen.
+       v368: Scheitert das, entsteht eine halbe Verkettung - der neue Mieter
+       kennt seinen Vormieter, der Vormieter aber nicht seinen Nachfolger.
+       Genau diese Lücke stand hinter der MG-Abrechnung, in der drei Wohnungen
+       ohne Vormieter dastanden und die Kosten dadurch 23,3 % zu hoch auf die
+       übrigen Mieter verteilt wurden. Ein solcher Fehler darf nicht schweigen. */
+    try { vorhanden._nachmieterId = neuerMieter.id; await idbPut('mieter', vorhanden); }
+    catch(e){
+      console.error('Nachmieter-Verknüpfung fehlgeschlagen:', e && e.message);
+      toast('Achtung: Der bisherige Mieter konnte nicht mit dem Nachfolger verknüpft werden. '
+        + 'Bitte in den Mieterdaten prüfen – sonst fehlt er später in der Nebenkostenabrechnung.', 9000);
+    }
     toast(`Zukünftiger Mieter erfasst – aktiv ab ${neuerMieter.einzug}`);
   } else {
     // Sofort aktiv: ggf. vorhandenen Mieter zum Vormieter machen
@@ -35207,7 +35315,14 @@ async function odSaveTokens(t) {
 // Bewusst NICHT im localStorage (XSS-exfiltrierbar) und NICHT im OneDrive-Sync.
 async function odPersistTokens() {
   if (!odTokens) return;
-  try { await idbPut('od_auth', { id:'tokens', ...odTokens }); } catch(e) {}
+  /* v368: Ohne gespeicherte Anmeldedaten meldet sich die App beim naechsten
+       Start wortlos von OneDrive ab. Der Abgleich steht dann still, und der
+     haeufigste Verdacht ist "die App spinnt" statt "Speicher voll". */
+  try { await idbPut('od_auth', { id:'tokens', ...odTokens }); }
+  catch(e) {
+    console.error('OneDrive-Anmeldedaten nicht gespeichert:', e && e.message);
+    toast('Die OneDrive-Anmeldung ließ sich nicht sichern – beim nächsten Start ist eine erneute Anmeldung nötig.', 8000);
+  }
 }
 async function odClearTokens() {
   try { await idbDelete('od_auth','tokens'); } catch(e) {}
@@ -35573,8 +35688,27 @@ async function syncToOneDrive() {
        fuer Schwelle und Anzeige wird jetzt die echte UTF-8-Groesse verwendet. */
     const jsonBytes = new TextEncoder().encode(json).length;
     if (jsonBytes > 18 * 1024 * 1024) {
-      console.warn('Sync-Datenmenge groß:', Math.round(jsonBytes/1048576) + ' MB');
-      try { toast('Hinweis: Datenmenge ' + Math.round(jsonBytes/1048576) + ' MB (Fotos). Sync kann länger dauern.'); } catch(_){}
+      /* v368: Bis hierher nannte die Warnung pauschal "(Fotos)" als Ursache.
+         Das stimmt heute, muss aber nicht so bleiben - gemessen tragen 25.000
+         Buchungen bereits 6,8 MB bei. Wer die Datei verkleinern soll, muss
+         wissen, wo sie herkommt; deshalb werden die drei groessten Bereiche
+         benannt statt geraten. */
+      let treiber = '';
+      try {
+        /* backup ist flach: backup[storename] = [...] (dazu updatedAt/updatedBy,
+           die unter der 0,5-MB-Schwelle ohnehin herausfallen). */
+        const groessen = Object.keys(backup || {})
+          .filter(k => Array.isArray(backup[k]))
+          .map(k => ({ k, mb: new TextEncoder().encode(JSON.stringify(backup[k])).length / 1048576 }))
+          .filter(x => x.mb >= 0.5)
+          .sort((a,b) => b.mb - a.mb)
+          .slice(0, 3);
+        if (groessen.length) treiber = ' – größte Bereiche: '
+          + groessen.map(x => x.k + ' ' + x.mb.toFixed(1) + ' MB').join(', ');
+      } catch(_){}
+      console.warn('Sync-Datenmenge groß:', Math.round(jsonBytes/1048576) + ' MB' + treiber);
+      try { toast('Hinweis: Datenmenge ' + Math.round(jsonBytes/1048576) + ' MB' + treiber
+        + '. Sync kann länger dauern.', 9000); } catch(_){}
     }
     const hash = json.length+'_'+json.slice(-30);
     if (hash === lastSyncHash) { setSyncStatus('ok', {richtung:'hochgeladen', hinweis:'keine Änderungen', bytes:jsonBytes}); syncInProgress=false; return; }   // v248/v254
