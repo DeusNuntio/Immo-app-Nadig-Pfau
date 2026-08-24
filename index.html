@@ -1225,7 +1225,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=35;   // v242: +buch_journal (F4 GoBD)
-const APP_VERSION = '2026-08-21-v370';
+const APP_VERSION = '2026-08-23-v377';
 /* v364 (12.08.2026) – offene Punkte abgearbeitet.
    1) D1/XLSX_SRI: Der im Code hinterlegte PowerShell-Befehl war FALSCH und
       konnte nie funktionieren - Invoke-WebRequest liefert unter .Content einen
@@ -13925,7 +13925,7 @@ async function modalGebaeudeStamm(objektId){
     <div class="f-section-title" style="margin-top:14px"><i class="ti ti-building-bank"></i> Bankverbindung für Mietzahlung (Mieterportal)</div>
     <div style="font-size:11px;color:var(--ink-40);margin:-4px 0 8px">Diese Bankzeile wird Mietern im Portal zur Überweisung angezeigt. Es wird kein Kontostand / Saldo veröffentlicht.</div>
     <div class="f"><label>Kontoinhaber / Empfänger</label>
-      <input type="text" id="gsKtoInhaber" value="${esc(s.ktoInhaber||'')}" placeholder="z. B. Alexander-Roland Nadig u. Anna-Alexandra Pfau GbR"></div>
+      <input type="text" id="gsKtoInhaber" value="${esc(s.ktoInhaber||'')}" placeholder="wie bei der Bank geführt, z. B. Alexander-Roland Nadig u. Anna-Alexandra Pfau"></div>
     <div class="f-row">
       <div class="f"><label for="gsKtoIban">IBAN</label>
         <input type="text" id="gsKtoIban" value="${esc(s.ktoIban||'')}" placeholder="DE.. .... .... .... .... .." autocomplete="off" data-iban></div>
@@ -16596,6 +16596,7 @@ async function setPortalTypDefault(typ, freigegeben){
 //   - portalFreigabe === true/false  → Einzel-Override gewinnt
 //   - portalFreigabe === undefined/null → Typ-Voreinstellung greift
 //   - Typ nicht portalfähig → immer false
+//   - Typ-Voreinstellung ist ab v376 für JEDEN Typ standardmäßig "gesperrt"
 function istPortalFreigegeben(dok, typDefaults){
   if(!dok || !dok.mieterId) return false;            // nur mieterbezogene Dok.
   // Entwürfe nie ausliefern (Brief-/MV-Entwürfe liegen i.d.R. in 'mv_entwuerfe';
@@ -16612,9 +16613,18 @@ function istPortalFreigegeben(dok, typDefaults){
   if(dok.portalFreigabe === false) return false;
   // Sensible Typen ohne Override: gesperrt.
   if(PORTAL_DOK_SENSIBEL.includes(dok.typ)) return false;
-  // Unkritische mieterbezogene Typen: automatisch sichtbar (P8 – „alles über sich außer Entwürfe").
-  if(PORTAL_DOK_TYPEN.includes(dok.typ)) return true;
-  // Unbekannter Typ: zur Sicherheit gesperrt, sofern kein expliziter Typ-Default greift.
+  /* v376: KEINE automatische Freigabe mehr. Bis v375 stand hier
+       if(PORTAL_DOK_TYPEN.includes(dok.typ)) return true;
+     und zwar VOR der Zeile darunter - `typDefaults` wurde fuer diese
+     Typen also nie erreicht. Damit waeren mit der Freischaltung des
+     Portals Vertraege, Nebenkostenabrechnungen, Briefe, Mieterhoehungen
+     und Protokolle sofort sichtbar gewesen, ohne dass jemand sie
+     freigegeben haette.
+     Jetzt gilt: sichtbar wird nur, was ausdruecklich freigegeben ist -
+     je Typ (Einstellungen -> Mieterportal) oder je Dokument
+     (togglePortalFreigabe). Das ist die datenschutzfreundliche
+     Voreinstellung nach Art. 25 Abs. 2 DSGVO.
+     Entschieden am 21.08.2026 nach der Aufarbeitung des NKA-Befunds. */
   return typDefaults[dok.typ] === true;
 }
 
@@ -16719,15 +16729,25 @@ async function archiviereMieterDokument({mieterId, objektId, typ, name, html, mi
    ═══════════════════════════════════════════════════════════ */
 
 /* Trennt den Dokumentkopf (DOCTYPE bis einschliesslich <body>) vom Rumpf ab.
-   Beide NKA-Vorlagen enden mit exakt "</style></head><body>"; kommt der
-   Marker nicht genau einmal vor, wird nichts geraten, sondern null geliefert
-   und der Aufrufer faellt auf das Gesamtdokument zurueck. Lieber ein zu
-   umfangreiches Archivdokument als ein zerschnittenes. */
+
+   v373, Teil 1: Bis v372 wurde die Zeichenkette "</style></head><body>"
+   EXAKT gesucht. Ein Zeilenumbruch zwischen den Tags, ein Leerzeichen oder
+   ein Attribut am <body>-Tag genuegte, und die Suche lief ins Leere
+   (nachweis_a7.js). Weil der Aufrufer damals auf das Gesamtdokument
+   zurueckfiel, landete daraufhin die Abrechnung ALLER Mieter in JEDER
+   Mieterakte - 51 Dokumente mit je 20 fremden Briefen.
+
+   Gesucht wird jetzt das oeffnende <body>-Tag per Muster, unabhaengig von
+   Attributen und Zwischenraum. Kommt es nicht genau einmal vor, wird
+   weiterhin nichts geraten - der Aufrufer legt dann KEIN Dokument ab
+   (Teil 2), statt das falsche abzulegen. */
 function nkaDokumentKopf(html){
-  const marker = '</style></head><body>';
-  const teile = String(html||'').split(marker);
-  if(teile.length !== 2) return null;
-  return teile[0] + marker;
+  const s = String(html||'');
+  const treffer = s.match(/<body\b[^>]*>/gi);
+  if(!treffer || treffer.length !== 1) return null;
+  const tag = treffer[0];
+  const i = s.indexOf(tag);
+  return s.slice(0, i + tag.length);
 }
 
 /* Einzelabrechnung eines Mieters als eigenstaendiges HTML. Ohne Deckblatt,
@@ -16736,6 +16756,40 @@ function nkaEinzeldokument(gesamtHtml, briefHtml){
   const kopf = nkaDokumentKopf(gesamtHtml);
   if(!kopf || !briefHtml) return null;
   return kopf + briefHtml + '</body></html>';
+}
+
+/* v373, Teil 2: Der Rueckfall auf das Gesamtdokument ist abgeschafft.
+   Laesst sich der eigene Brief nicht herausloesen, wird KEIN Dokument
+   abgelegt - ein fehlendes Dokument ist ein sichtbarer, behebbarer Mangel,
+   das Dokument aller Nachbarn in einer Mieterakte ist ein Datenschutz-
+   verstoss (Art. 5 Abs. 1 lit. c DSGVO), der niemandem auffaellt.
+
+   Damit der Fall nicht still bleibt, wird er hier gemeldet: sichtbar,
+   stehenbleibend und mit der Angabe, welche Wohnungen betroffen sind. */
+function nkaAblageFehlerMelden(betroffene){
+  const liste = (betroffene||[]).map(m =>
+    'WE ' + esc(String((m && m.weNr) || '?')) + ' · ' + esc(String((m && (m.mieter||m.name)) || ''))
+  ).join('<br>');
+  console.error('NKA-Ablage fehlgeschlagen fuer', (betroffene||[]).length, 'Mieter');
+  try{
+    showModal(`
+      <div class="m-title" style="color:var(--red,#c0392b)">
+        <i class="ti ti-alert-triangle"></i> Abrechnung nicht in die Mieterakte gelegt</div>
+      <p style="font-size:13px;line-height:1.6">Bei
+        <b>${(betroffene||[]).length} Wohnung(en)</b> liess sich der eigene Brief nicht
+        aus der Sammelabrechnung herausloesen. Diese Abrechnungen wurden
+        <b>bewusst nicht abgelegt</b> – andernfalls haetten die betroffenen Mieter
+        die Abrechnungsergebnisse ihrer Nachbarn in ihrer Akte.</p>
+      <div style="font-size:12px;background:var(--ink-05);border-radius:8px;padding:10px;margin:10px 0">${liste}</div>
+      <p style="font-size:12px;color:var(--ink-40);line-height:1.6">
+        Der Ausdruck ist vollstaendig und unveraendert – nur das Archiv ist
+        betroffen. Bitte melden Sie den Fall, bevor Sie die Abrechnung versenden;
+        die Ursache liegt im Aufbau der Vorlage, nicht in den Daten.</p>
+      <div class="m-actions"><button class="btn" data-action-click="closeModal">Verstanden</button></div>`);
+  }catch(e){
+    console.error('nkaAblageFehlerMelden:', e);
+    try{ toast('Abrechnung konnte fuer ' + (betroffene||[]).length + ' Wohnung(en) nicht abgelegt werden', 8000); }catch(_){}
+  }
 }
 
 /* Gesamtaufstellung beim OBJEKT ablegen - mieterId:null, wie beim Aushang.
@@ -18441,8 +18495,9 @@ async function modalNKA(objektId) {
     <div class="f-section-title" style="margin-top:8px"><i class="ti ti-building"></i> Gesamtkosten</div>
     <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;color:var(--ink-60);margin-bottom:8px">
       <input type="checkbox" id="nkaLeerstandUmlegen" style="width:15px;height:15px">
-      Leerstand auf Mieter umlegen (Standard: aus – Vermieter trägt den Leerstandsanteil)
+      Leerstand auf die Mieter umlegen (Standard: aus – der Vermieter trägt den Leerstandsanteil)
     </label>
+    <div style="font-size:11px;color:var(--ink-40);margin:-4px 0 8px 23px;line-height:1.5">Nicht anhaken, solange nach Fläche abgerechnet wird: Der auf leerstehende Wohnungen entfallende Anteil trägt der Vermieter (BGH VIII ZR 159/05).</div>
     ${kostenHTML}
     <div class="f-section-title" style="margin-top:8px"><i class="ti ti-playlist-add"></i> Eigene Kostenarten</div>
     <div id="nkaCustomList"></div>
@@ -18636,7 +18691,12 @@ async function erstelleNKA(objektId, korrektur) {
 
   // Leerstand-Umlage: aus = Vermieter trägt Leerstand (Divisor = Ist-Monate);
   // an = Mieter tragen Leerstand mit (Divisor = volle Jahres-/Periodensumme).
-  const leerstandUmlegen = document.getElementById('nkaLeerstandUmlegen')?.checked || false;
+  /* v375: Der Schalter heisst jetzt nach seiner Wirkung. Angehakt =
+     die Kosten werden nur auf die tatsaechlich belegten Wohnungen
+     verteilt, der Leerstand geht also zulasten der Mieter.
+     NICHT angehakt (Standard) = Umlage auf die volle Flaeche, der
+     Vermieter traegt den Leerstandsanteil (BGH VIII ZR 159/05). */
+  const leerstandAufMieter = document.getElementById('nkaLeerstandUmlegen')?.checked || false;
   const periodeMonate = anzahlMonate(von, bis) || 12;
 
   // Monatsbasierte Divisoren (Personen-, Flächen-, WE-Monate über alle Mieter)
@@ -18649,9 +18709,11 @@ async function erstelleNKA(objektId, korrektur) {
   const vollPM  = aktiv.reduce((s,m)=>s+(parseInt(m.personen)||1),0)*periodeMonate;
   const vollWEM = aktiv.length*periodeMonate;
   // Effektive Divisoren je nach Leerstand-Schalter
-  const gesamtPersonen = leerstandUmlegen ? (vollPM||sumPM)  : sumPM;
-  const gesamtWFL      = leerstandUmlegen ? (vollFM||sumFM)  : sumFM;
-  const gesamtWE       = leerstandUmlegen ? (vollWEM||sumWEM): sumWEM;
+  /* v375: Zweige getauscht. Bis v373 stand hier der volle Divisor im
+     ANGEHAKTEN Zweig - genau umgekehrt zur Beschriftung. */
+  const gesamtPersonen = leerstandAufMieter ? sumPM  : (vollPM||sumPM);
+  const gesamtWFL      = leerstandAufMieter ? sumFM  : (vollFM||sumFM);
+  const gesamtWE       = leerstandAufMieter ? sumWEM : (vollWEM||sumWEM);
   const gesamtMonate   = gesamtWE;
 
 
@@ -19191,15 +19253,17 @@ ${briefeHTML}
      Laesst sich der Brief nicht herausloesen (unerwartetes Dokumentgeruest),
      wird nichts geraten: dann bleibt es beim Gesamtdokument und der Fall wird
      protokolliert, damit er auffaellt statt still zu misslingen. */
+  const nkaNichtAbgelegt = [];
   for (const {m} of mieterErgebnisse) {
     const einzel = nkaEinzeldokument(nkaHtml, briefeJeMieter[m.id]);
-    if(!einzel) console.error('NKA: Einzelbrief nicht herausloesbar, Mieter', m.id);
+    /* v373: KEIN Rueckfall auf das Gesamtdokument. */
+    if(!einzel){ nkaNichtAbgelegt.push(m); continue; }
     await archiviereMieterDokument({
       mieterId: m.id, objektId,
       typ: 'nka',
       festeId: mieterDokumentId('nka', m.id, von, bis),   // v367 (C3)
       name: `Nebenkostenabrechnung ${jahr} – ${obj?.name||''}${m.weNr?' · WE '+m.weNr:''}`,
-      html: einzel || nkaHtml,
+      html: einzel,
     });
   }
 
@@ -19209,6 +19273,8 @@ ${briefeHTML}
     name: `Nebenkostenabrechnung ${jahr} – ${obj?.name||''} (Gesamtaufstellung)`,
     html: nkaHtml
   });
+
+  if(nkaNichtAbgelegt.length) nkaAblageFehlerMelden(nkaNichtAbgelegt);
 
   // PDF-Fenster öffnen
   druckHTML(nkaHtml);
@@ -19506,8 +19572,9 @@ async function modalNKALiegenschaft(lgId){
     <div class="f-section-title" style="margin-top:8px"><i class="ti ti-building"></i> Gesamtkosten</div>
     <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;color:var(--ink-60);margin-bottom:8px">
       <input type="checkbox" id="nkaLgLeerstand" style="width:15px;height:15px">
-      Leerstand auf Mieter umlegen (Standard: aus)
+      Leerstand auf die Mieter umlegen (Standard: aus – der Vermieter trägt den Leerstandsanteil)
     </label>
+    <div style="font-size:11px;color:var(--ink-40);margin:-4px 0 8px 23px;line-height:1.5">Nicht anhaken, solange nach Fläche abgerechnet wird: Der auf leerstehende Wohnungen entfallende Anteil trägt der Vermieter (BGH VIII ZR 159/05).</div>
     ${gesamtFelder}
     <div style="margin:8px 0">
       <button type="button" class="btn btn-sm btn-copper" onclick="nkaLgBuchPanelToggle('${lgId}')">
@@ -19822,7 +19889,8 @@ async function erstelleNKALiegenschaft(lgId, korrektur){
     if(geaendert){ m.geaendert=now(); await idbPut('mieter',m); }
   }
 
-  const leerstandUmlegen=document.getElementById('nkaLgLeerstand')?.checked||false;
+  /* v375: siehe Objektweg - angehakt = Leerstand zulasten der Mieter. */
+  const leerstandAufMieter=document.getElementById('nkaLgLeerstand')?.checked||false;
   const periodeMonate=anzahlMonate(von,bis)||12;
 
   // Divisoren (Flächen-/Personen-/WE-Monate) über alle Mieter
@@ -19832,8 +19900,9 @@ async function erstelleNKALiegenschaft(lgId, korrektur){
   const aktiv =mieter.filter(m=>!m._vormieter);
   const vollFM=aktiv.reduce((s,m)=>s+(parseFloat(m.flaeche)||0),0)*periodeMonate;
   const vollPM=aktiv.reduce((s,m)=>s+(parseInt(m.personen)||1),0)*periodeMonate;
-  const gesamtWFL = leerstandUmlegen?(vollFM||sumFM):sumFM;
-  const gesamtPers= leerstandUmlegen?(vollPM||sumPM):sumPM;
+  /* v375: Zweige getauscht, siehe Objektweg. */
+  const gesamtWFL = leerstandAufMieter?sumFM:(vollFM||sumFM);
+  const gesamtPers= leerstandAufMieter?sumPM:(vollPM||sumPM);
   const gesamtWE  = sumWEM;
 
 
@@ -20220,7 +20289,11 @@ async function erstelleNKALiegenschaft(lgId, korrektur){
     korrekturVon: korrektur?CU?.name||'':'',
     korrekturAm: korrektur?now():'',
     sigUserIds: (window._nkaLgSigIds||[]).slice(0,2),
-    leerstandUmlegen,
+    /* v375: Neues Feld mit eindeutiger Bedeutung. `leerstandUmlegen`
+       wird nicht mehr geschrieben - sein Wert bedeutete bis v373 das
+       GEGENTEIL, und ein umgedeutetes Feld haette Altabrechnungen beim
+       Nachdruck anders rechnen lassen. */
+    leerstandAufMieter,
     kostenBetraege: Object.fromEntries(vorlage.kosten.filter(k=>k.schluessel!=='einzeln').map(k=>[k.id, document.getElementById('nkaLg_'+k.id)?.value||''])),
     heizBetraege: heizId?Object.fromEntries(mieter.map(m=>[m.id, document.getElementById('nkaLg_'+heizId+'_'+m.id)?.value||''])):{},
     mieterFelder: Object.fromEntries(mieter.map(m=>[m.id,{
@@ -20319,9 +20392,11 @@ ${briefeHTML}
 </body></html>`;
 
   /* v349: siehe Objektpfad - je Mieter nur der eigene Brief. */
+  const nkaNichtAbgelegt = [];
   for(const {m} of mieterErgebnisse){
     const einzel = nkaEinzeldokument(nkaHtml, briefeJeMieter[m.id]);
-    if(!einzel) console.error('NKA: Einzelbrief nicht herausloesbar, Mieter', m.id);
+    /* v373: KEIN Rueckfall auf das Gesamtdokument. */
+    if(!einzel){ nkaNichtAbgelegt.push(m); continue; }
     await archiviereMieterDokument({
       mieterId:m.id, objektId:m.objektId, typ:'nka',
       festeId: mieterDokumentId('nka', m.id, von, bis),   // v367 (C3)
@@ -20329,7 +20404,7 @@ ${briefeHTML}
          beschreibt die Abrechnungseinheit, nicht das, was im Dokument steht -
          der Mieter findet dort ausschliesslich seinen eigenen Brief. */
       name:`Nebenkostenabrechnung ${jahr} – ${getObj(m.objektId)?.name||''}${m.weNr?' · WE '+m.weNr:''}${korrektur?' (Korrektur)':''}`,
-      html: einzel || nkaHtml,
+      html: einzel,
     });
   }
 
@@ -20344,6 +20419,7 @@ ${briefeHTML}
   closeModal();
   toast(korrektur?'Korrektur gespeichert und wird gedruckt…':'NKA gespeichert und wird gedruckt…');
   druckHTML(nkaHtml);
+  if(nkaNichtAbgelegt.length) nkaAblageFehlerMelden(nkaNichtAbgelegt);
 }
 
 async function renderProtokollArchiv() {
@@ -20644,8 +20720,12 @@ const BRIEFKOPF_DEFAULTS = {
   // Freemail-Adressen zweier Miteigentümer. Gepflegt wird dieser Briefkopf
   // ausschliesslich unter Einstellungen → Briefköpfe; der Wert liegt in
   // settings['briefkopf_mg'] und wird über OneDrive synchronisiert.
-  // Die Gruppen kr/dus/pfau tragen Geschäftsdaten der GbR (auch im Impressum
-  // veröffentlicht) und bleiben deshalb als Startwert erhalten.
+  // Die Gruppen kr/dus/pfau tragen die im Impressum veröffentlichten
+  // Geschäftsdaten und bleiben deshalb als Startwert erhalten.
+  // v377 (R20): Hier stand bis v376 "Geschäftsdaten der GbR". Eine GbR
+  // besteht nicht - im Grundbuch stehen zwei natürliche Personen
+  // (Bruchteilsgemeinschaft, §§ 741 ff. BGB). "Nadig Pfau
+  // Immobilienverwaltung" ist eine Geschäftsbezeichnung, kein Rechtsträger.
   mg: {
     name:'', absender:'',
     zusatz:'',
@@ -20656,12 +20736,22 @@ const BRIEFKOPF_DEFAULTS = {
   kr: {
     name:'Immobilienverwaltung Alexander-Roland Nadig und Anna-Alexandra Pfau', absender:'Nadig Pfau Immobilienverwaltung',
     zusatz:'',
+    // v377: Rechtsform der Eigentuemerseite. Im Grundbuch stehen zwei
+    // natuerliche Personen; das ist eine Bruchteilsgemeinschaft nach
+    // §§ 741 ff. BGB, keine GbR. Das Feld wird ausschliesslich im
+    // Datenschutzhinweis (Art. 13 Abs. 1 lit. a DSGVO) ausgegeben.
+    gemeinschaft:'Grundstücksgemeinschaft Nadig-Pfau',
     strasse:VERWALTER_STRASSE, ort:VERWALTER_ORT,
     tel:'0177 / 2509710', email:'info@nadigpfau.de',
   },
   dus: {
     name:'Immobilienverwaltung Alexander-Roland Nadig und Anna-Alexandra Pfau', absender:'Nadig Pfau Immobilienverwaltung',
     zusatz:'',
+    // v377: Rechtsform der Eigentuemerseite. Im Grundbuch stehen zwei
+    // natuerliche Personen; das ist eine Bruchteilsgemeinschaft nach
+    // §§ 741 ff. BGB, keine GbR. Das Feld wird ausschliesslich im
+    // Datenschutzhinweis (Art. 13 Abs. 1 lit. a DSGVO) ausgegeben.
+    gemeinschaft:'Grundstücksgemeinschaft Nadig-Pfau',
     strasse:VERWALTER_STRASSE, ort:VERWALTER_ORT,
     tel:'0177 / 2509710', email:'info@nadigpfau.de',
   },
@@ -20800,18 +20890,38 @@ function getBriefkopf(objektId) {
 // Einstellungs-UI für die drei Gruppen-Briefköpfe
 const PORTAL_TYP_LABEL = {
   vertrag:'Mietvertrag', nka:'Nebenkostenabrechnung', abrechnung:'Abrechnung',
-  wgb:'Wohnungsgeberbescheinigung', brief:'Schreiben / Briefe', mieterhoehung:'Mieterhöhung'
+  wgb:'Wohnungsgeberbescheinigung', brief:'Schreiben / Briefe', mieterhoehung:'Mieterhöhung',
+  /* v376: ergaenzt - in der Schalterliste stuenden sonst die Rohschluessel. */
+  protokoll:'Übergabeprotokoll', wohnungsbild:'Wohnungsfotos', foto:'Fotos',
+  sonstiges:'Sonstige Dokumente', ausweis:'Ausweiskopie', lastschrift:'SEPA-Lastschriftmandat'
 };
 
 async function renderPortalFreigabe(){
-  // P8 – neue Freigabe-Politik (Default-Deny für sensible Daten, Auto-Frei für eigene Dokumente).
-  const autoTypen = PORTAL_DOK_TYPEN.map(t=>PORTAL_TYP_LABEL[t]||t).join(', ');
+  /* v376: Die Freigabe ist jetzt bedienbar. Bis v375 erzeugte diese Funktion
+     reinen Beschreibungstext; onPortalTypToggle() existierte, wurde aber von
+     nirgendwo aufgerufen. Zusammen mit der abgeschafften Automatik waere
+     ohne diesen Schritt gar nichts mehr freigebbar gewesen.
+
+     Der Typschluessel in onchange stammt aus der festen Liste
+     PORTAL_DOK_TYPEN im Quelltext, nicht aus Fremddaten - die a1-Lehre
+     (esc() wirkt in Ereignisattributen nicht) greift hier nicht. */
+  const defs = await getPortalTypDefaults();
   const sensTypen = PORTAL_DOK_SENSIBEL.map(t=>PORTAL_TYP_LABEL[t]||t).join(', ');
+  const schalter = PORTAL_DOK_TYPEN.map(t => `
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;padding:3px 0;font-size:12px">
+          <input type="checkbox" style="width:15px;height:15px" ${defs[t]?'checked':''}
+                 onchange="onPortalTypToggle('${t}',this.checked)">
+          <span>${esc(PORTAL_TYP_LABEL[t]||t)}</span>
+          <span style="margin-left:auto;font-size:11px;color:${defs[t]?'var(--success)':'var(--ink-40)'}">${defs[t]?'freigegeben':'gesperrt'}</span>
+        </label>`).join('');
+  const freigegeben = PORTAL_DOK_TYPEN.filter(t=>defs[t]).length;
   return `
   <div style="font-size:13px;color:var(--ink);line-height:1.6">
     <div style="background:var(--white);border:1px solid var(--ink-10);border-radius:var(--radius);padding:12px 14px;margin-bottom:8px">
-      <div style="font-weight:700;margin-bottom:6px"><i class="ti ti-lock-open" style="color:var(--success)"></i> Mit Token automatisch sichtbar</div>
-      <div style="font-size:12px;color:var(--ink-60)">Der angemeldete Mieter sieht alle ihn betreffenden Dokumente dieser Art: ${esc(autoTypen)}. Zusätzlich der Grundriss seiner Wohnung. Brief- und Vertragsentwürfe sind ausgeschlossen.</div>
+      <div style="font-weight:700;margin-bottom:6px"><i class="ti ti-shield-check" style="color:var(--success)"></i> Freigabe je Dokumentart</div>
+      <div style="font-size:12px;color:var(--ink-60);margin-bottom:8px">Nichts ist automatisch sichtbar. Der angemeldete Mieter sieht nur Dokumentarten, die hier freigegeben sind – und davon nur die ihn selbst betreffenden. Zusätzlich immer den Grundriss seiner Wohnung.</div>
+      ${schalter}
+      <div style="font-size:11px;color:${freigegeben?'var(--ink-40)':'var(--success)'};margin-top:8px">${freigegeben?freigegeben+' von '+PORTAL_DOK_TYPEN.length+' Dokumentarten freigegeben.':'Zurzeit ist keine Dokumentart freigegeben – das Portal zeigt keine Dokumente.'}</div>
     </div>
     <div style="background:var(--white);border:1px solid var(--ink-10);border-radius:var(--radius);padding:12px 14px;margin-bottom:8px">
       <div style="font-weight:700;margin-bottom:6px"><i class="ti ti-shield-lock" style="color:var(--amber)"></i> Gesperrt (nur per Einzelfreigabe)</div>
@@ -20821,7 +20931,7 @@ async function renderPortalFreigabe(){
       <div style="font-weight:700;margin-bottom:6px"><i class="ti ti-photo" style="color:var(--copper)"></i> Immer öffentlich (ohne Token)</div>
       <div style="font-size:12px;color:var(--ink-60)">Grundrisse und Aushänge zur Wohnungsvermarktung – diese enthalten keine personenbezogenen Mieterdaten.</div>
     </div>
-    <div style="font-size:11px;color:var(--ink-40);margin-top:10px;line-height:1.5"><i class="ti ti-info-circle"></i> Einzelne Dokumente kannst du in der jeweiligen Mieterakte gezielt freigeben oder sperren (Override). Vor dem Echtbetrieb des Mieterportals sollte das Datenschutzkonzept anwaltlich geprüft werden.</div>
+    <div style="font-size:11px;color:var(--ink-40);margin-top:10px;line-height:1.5"><i class="ti ti-info-circle"></i> Eine Freigabe je Dokumentart wirkt auf alle Dokumente dieser Art. Einzelne Dokumente kannst du in der jeweiligen Mieterakte gezielt freigeben oder sperren (Override). Vor dem Echtbetrieb des Mieterportals sollte das Datenschutzkonzept anwaltlich geprüft werden.</div>
   </div>`;
 }
 
@@ -24230,7 +24340,14 @@ async function starteNKAKorrektur(nkaId){
     const jahrSel=document.getElementById('nkaLgJahr');
     if(jahrSel && nka.jahr){ jahrSel.value=String(nka.jahr); }
     setVal('nkaLgVon', nka.von); setVal('nkaLgBis', nka.bis);
-    const leer=document.getElementById('nkaLgLeerstand'); if(leer) leer.checked=!!nka.leerstandUmlegen;
+    /* v375: Altbestand traegt `leerstandUmlegen` mit der INVERSEN
+       Bedeutung - dort hiess "an" volle Flaeche (Vermieter traegt),
+       also neu: NICHT auf die Mieter umgelegt. Fehlt das Feld ganz,
+       galt der alte Standard "aus" = Mieter trugen alles = neu true. */
+    const leer=document.getElementById('nkaLgLeerstand');
+    if(leer) leer.checked = ('leerstandAufMieter' in nka)
+      ? !!nka.leerstandAufMieter
+      : !nka.leerstandUmlegen;
     Object.entries(nka.kostenBetraege||{}).forEach(([k,v])=>setVal('nkaLg_'+k, v));
     const vorlage=getNKALgVorlage(nka.lgId);
     const heizId=(vorlage?.kosten.find(k=>k.schluessel==='einzeln')||{}).id;
@@ -25417,7 +25534,7 @@ async function ewSeiteFuer(m, opt){
     ? `<p>mit diesem Schreiben möchten wir uns Ihnen als neue Eigentümer der Wohnhäuser Inrather Straße 181, 183, 185 sowie Wilmendyk 7, 9, 11 und 13 in Krefeld vorstellen.</p>
     <p>Mit Wirkung zum 1. Juli 2026 haben wir, Alexander-Roland Nadig und Anna-Alexandra Pfau, die Immobilien übernommen. Die Verwaltung der Wohnhäuser übernehmen wir künftig selbst unter der Bezeichnung „Nadig Pfau Immobilienverwaltung“. Dadurch haben Sie bei allen Fragen rund um Ihr Mietverhältnis direkte Ansprechpartner und kurze Entscheidungswege.</p>
     <p>Uns ist es wichtig, die Wohnhäuser langfristig mit Sorgfalt zu betreuen und für unsere Mieterinnen und Mieter erreichbar zu sein. Wir sind überzeugt, dass ein gutes Mietverhältnis auf gegenseitigem Respekt, offener Kommunikation und einer zuverlässigen Verwaltung beruht.</p>`
-    : `<p>wir, ${esc(empfaenger)}, haben Ihr Wohnhaus übernommen und verwalten es künftig selbst. Sie haben damit direkte Ansprechpartner und kurze Wege.</p>`;
+    : `<p>wir, ${esc(bk.name || bk.absender || empfaenger)}, haben Ihr Wohnhaus übernommen und verwalten es künftig selbst. Sie haben damit direkte Ansprechpartner und kurze Wege.</p>`;
   const postanschrift = [bk.name, bk.strasse, bk.ort].filter(Boolean).join(', ');
   const perPost = postanschrift
     ? ` Sie können sie stattdessen auch in einem verschlossenen Umschlag an uns senden: ${esc(postanschrift)}.`
@@ -25475,6 +25592,9 @@ async function ewSeiteFuer(m, opt){
     </tr></table>
     <p class="ew-klein">Mit der Banking-App scannen: Empfänger, IBAN, Betrag und Verwendungszweck werden übernommen; die meisten Apps bieten an, die Überweisung als Dauerauftrag zu speichern.</p>
 
+    <div class="ew-umbruch"></div>
+    <div class="ew-fortsetzung">${adressPostalischEW(m).replace(/<br>/g, ' · ')} · ${esc(obj.name||'')} · Wohnung ${esc(String(m.weNr||''))} · Seite 2</div>
+
     <div class="ew-h2">Ihr Mieterportal – bitte einmalig E-Mail-Adresse hinterlegen</div>
     <table class="ew-kasten"><tr>
       <td class="ew-qr">${portalBild?`<img src="${portalBild}" alt="Portal-QR"><span class="ew-wohnung">Wohnung <span class="ew-mono">${esc(String(m.weNr||''))}</span></span><span class="ew-schluessel">Schlüssel: <span class="ew-mono">${esc(regCodeFormat(code))}</span></span>`:''}</td>
@@ -25484,20 +25604,17 @@ async function ewSeiteFuer(m, opt){
       </td>
     </tr></table>
 
-    <div class="ew-umbruch"></div>
-    <div class="ew-fortsetzung">${adressPostalischEW(m).replace(/<br>/g, ' · ')} · ${esc(obj.name||'')} · Wohnung ${esc(String(m.weNr||''))} · Seite 2</div>
-
-    <!-- v330: Diese Fussnote stand bis v329 am Fuss von Seite 1. Dort war
-         keine Reserve mehr: jede zusaetzliche Empfaengerzeile schob den
-         Portal-Kasten ueber die Seitenkante. Hier oben auf Seite 2 traegt
-         sie denselben Inhalt, ohne den Umbruch zu gefaehrden. -->
-    <p class="ew-klein">Warum wir Ihre E-Mail-Adresse brauchen: Wir müssen Ihnen monatlich Ihren Heiz- und Warmwasserverbrauch mitteilen (§ 6a HeizkostenV). Digital bekommen Sie diese Übersicht über das A+S-Portal; ohne E-Mail-Adresse müssen wir sie jeden Monat drucken und zustellen – die Kosten der Verbrauchsinformation sind umlagefähige Betriebskosten und belasten Ihre Abrechnung.</p>
+    <!-- v330: Diese Fussnote stand bis v329 am Fuss von Seite 1; dort war
+         keine Reserve mehr. v371: Sie steht jetzt unmittelbar unter dem
+         Portal-Kasten, auf den sie sich bezieht - beide liegen seit v371
+         gemeinsam auf Seite 2. -->
+    <p class="ew-klein">Warum wir Ihre E-Mail-Adresse brauchen: Wir müssen Ihnen monatlich Ihren Heiz- und Warmwasserverbrauch mitteilen (§ 6a HeizkostenV). Digital bekommen Sie diese Übersicht über das A+S-Portal; ohne E-Mail-Adresse müssen wir sie jeden Monat drucken und zustellen – die Kosten der Verbrauchsinformation sind umlagefähige Betriebskosten und belasten Ihre Nebenkostenabrechnung.</p>
 
 
     <div class="ew-h2">Ihre Ansprechpartner</div>
     <table class="ew-kasten"><tr><td>
       <table class="ew-daten">
-        <tr><td>Verwaltung</td><td><b>${esc(empfaenger)}</b>${bk.strasse?'<br>'+esc(bk.strasse):''}${bk.ort?', '+esc(bk.ort):''}${bk.tel?'<br>Telefon '+esc(telAnzeige(bk.tel)):''}${bk.email?'<br>'+esc(bk.email):''}</td></tr>
+        <tr><td>Verwaltung</td><td><b>${esc(bk.name || bk.absender || empfaenger)}</b>${bk.strasse?'<br>'+esc(bk.strasse):''}${bk.ort?', '+esc(bk.ort):''}${bk.tel?'<br>Telefon '+esc(telAnzeige(bk.tel)):''}${bk.email?'<br>'+esc(bk.email):''}</td></tr>
         ${istKrefeld?`<tr><td>Hausmeister</td><td><b>Herr Dirk Nicolay</b><br>Wilmendyk 11, 47803 Krefeld<br>Telefon +49 / 176 21 37 00 40</td></tr>`:''}
       </table>
     </td></tr></table>
@@ -25505,9 +25622,9 @@ async function ewSeiteFuer(m, opt){
 
     <div class="ew-h2">Was jetzt zu tun ist</div>
     <ol class="ew-liste ew-schritte">
-      <li><b>Dauerauftrag anpassen</b> – ab dem ${esc(opt.fmtD(opt.zahlAb))} auf die oben genannte Bankverbindung. Am schnellsten geht es, indem Sie den QR-Code im Kasten „Neue Bankverbindung“ auf Seite 1 mit Ihrer Banking-App scannen. Zahlen Sie bisher per Lastschrift, senden Sie stattdessen das beiliegende SEPA-Mandat unterschrieben zurück.</li>
-      <li><b>Kontaktdaten hinterlegen</b> – QR-Code im Kasten „Ihr Mieterportal“ auf Seite 1 scannen oder die beiliegende Rückantwort ausfüllen.</li>
-      <li><b>Aufkleber anbringen</b> – nach der Anmeldung innen an den Sicherungskasten; er enthält keinen Schlüssel und hilft Ihnen, den Zugang später wiederzufinden.</li>
+      <li><b>Dauerauftrag anpassen</b> – auf die oben genannte Bankverbindung. Am schnellsten geht es, indem Sie den QR-Code im Kasten „Neue Bankverbindung“ auf Seite 1 mit Ihrer Banking-App scannen. Zahlen Sie bisher per Lastschrift, senden Sie stattdessen das beiliegende SEPA-Mandat unterschrieben zurück.</li>
+      <li><b>Kontaktdaten hinterlegen</b> – QR-Code im Kasten „Ihr Mieterportal“ weiter oben auf dieser Seite scannen oder die beiliegende Rückantwort ausfüllen.</li>
+      <li><b>Aufkleber anbringen</b> – nach der Anmeldung innen an den Sicherungskasten; er hilft Ihnen, den Zugang später wiederzufinden.</li>
     </ol>
 
     <p>Lieber auf Papier? ${rueckgabeSatz}${beiliegend}</p>
@@ -25583,7 +25700,7 @@ function ewRueckantwortSeite(m, opt){
         <td><div class="ew-feldlabel">Vorname</div><div class="ew-linie-name">${esc(t.vor)}</div></td>
         <td><div class="ew-feldlabel">Nachname</div><div class="ew-linie-name">${esc(t.nach)}</div></td>
       </tr></table>
-      <div class="ew-feldlabel">E-Mail (bitte in Druckbuchstaben, Fortsetzung in der zweiten Zeile)</div>
+      <div class="ew-feldlabel">E-Mail (bitte in DRUCKBUCHSTABEN, Fortsetzung in der zweiten Zeile)</div>
       ${ewKaesten(28)}${ewKaesten(28)}
       <div class="ew-feldlabel">Telefon</div>${ewKaesten(28)}
     </div>`;
@@ -25595,9 +25712,9 @@ function ewRueckantwortSeite(m, opt){
       <td class="ew-r">${bk.strasse?esc(bk.strasse)+'<br>':''}${bk.ort?esc(bk.ort)+'<br>':''}${bk.tel?'Tel. '+esc(telAnzeige(bk.tel))+'<br>':''}${bk.email?esc(bk.email):''}</td>
     </tr></table>
     <div class="ew-h1">RÜCKANTWORT</div>
-    <div class="ew-klein">${esc(obj.name||'')} · Wohnung ${esc(String(m.weNr||''))} · ${esc(m.mieter||m.name||'')} · bitte bis zum ${esc(opt.fmtD(opt.frist))} zurückgeben</div>
+    <div class="ew-klein">${esc(obj.name||'')} · Wohnung ${esc(String(m.weNr||''))} · ${esc(m.mieter||m.name||'')} · bitte bis zum ${esc(opt.fmtD(opt.frist))} zurückschicken</div>
     <div class="ew-h2">Kontaktdaten der Mieter</div>
-    <p class="ew-klein">Bitte tragen Sie alle erwachsenen Personen ein, die in der Wohnung wohnen, und füllen Sie in DRUCKBUCHSTABEN aus – ein einziges falsch gelesenes Zeichen genügt, und die E-Mail erreicht Sie nicht. Jede Person mit E-Mail-Adresse erhält die monatliche Heizkostenübersicht und später den eigenen Portalzugang.</p>
+    <p class="ew-klein">Bitte tragen Sie alle erwachsenen Personen ein, die in der Wohnung wohnen, und füllen Sie in DRUCKBUCHSTABEN aus – ein einziges falsch gelesenes Zeichen genügt, und die E-Mail erreicht Sie nicht. Jede Person mit E-Mail-Adresse erhält die monatliche Heizkostenübersicht und später den eigenen Mieterportalzugang.</p>
     ${person(1,'')}
     ${person(2,'(falls eine weitere Person in der Wohnung wohnt)')}
     ${person(3,'(falls eine dritte Person in der Wohnung wohnt)')}
@@ -25768,7 +25885,11 @@ function ewStil(){
     .ew-anlagen{font-size:7.5pt;color:#777;margin-top:1.5mm}
     /* v304: Der Brief ist bewusst zweiseitig. Der Umbruch wird gesetzt statt
        dem Zufall des Textflusses ueberlassen - sonst wandert er mit jeder
-       Namenslaenge und jedem zusaetzlichen Stellplatz. Seite 2 traegt eine
+       Namenslaenge und jedem zusaetzlichen Stellplatz.
+       v371: Der Umbruch liegt jetzt VOR dem Portal-Block, nicht dahinter.
+       Mit dem dreiabsaetzigen Vorstellungstext aus v369 lief Seite 1 sonst
+       ueber: die Ueberschrift stand unten, der Kasten allein auf einem
+       Zwischenblatt (Geraetedruck 21.08.2026, WE 1 Inrather Str. 181). Seite 2 traegt eine
        Fortsetzungszeile mit Empfaenger und Wohnung, damit bei getrennt
        liegenden Blaettern die Zuordnung eindeutig bleibt. */
     .ew-umbruch{page-break-before:always;break-before:page;height:0}
@@ -33131,20 +33252,49 @@ function anlageSepaHtml(daten, autoDruck){
   return anlageRahmen('SEPA-Lastschriftmandat', '', inner, null, 'sepa-kompakt');
 }
 
+/* ── VERANTWORTLICHER (Art. 4 Nr. 7, Art. 13 Abs. 1 lit. a DSGVO) ──
+   Verantwortlicher ist die natuerliche oder juristische Person, die ueber
+   Zwecke und Mittel der Verarbeitung entscheidet. "Nadig Pfau
+   Immobilienverwaltung" ist eine Geschaeftsbezeichnung und kein
+   Rechtstraeger - bis v376 stand sie allein im Datenschutzhinweis, weil
+   bk.absender Vorrang vor bk.name hatte. Seit v377 traegt bk.name (die
+   natuerlichen Personen) den Vorrang; eine vorangestellte
+   Geschaeftsbezeichnung wird abgeschnitten, die Bezeichnung selbst wird
+   als solche gekennzeichnet ausgegeben.
+
+   OFFEN: Fuer die Gruppe 'mg' ist im Quelltext bewusst kein Briefkopf
+   hinterlegt (R23); greift die Rueckfallzeile, nennt der Hinweis die
+   Krefelder Personen. Der MG-Briefkopf ist deshalb in den Einstellungen
+   zu pflegen, bevor ein MG-Datenschutzhinweis gedruckt wird. */
+function dsVerantwortliche(bk){
+  const roh = String((bk && (bk.name || bk.absender)) || '').trim();
+  const basis = roh || 'Alexander-Roland Nadig und Anna-Alexandra Pfau';
+  const personen = basis.replace(/^(Immobilienverwaltung|Hausverwaltung|Grundstücksgemeinschaft)\s+/i, '').trim() || basis;
+  const bezeichnung = (bk && bk.absender && bk.absender.trim() !== personen) ? bk.absender.trim() : '';
+  return {
+    personen,
+    gemeinschaft: (bk && bk.gemeinschaft) ? String(bk.gemeinschaft).trim() : '',
+    bezeichnung,
+    mehrere: / und |, /.test(personen),
+  };
+}
+
 // ── DATENSCHUTZHINWEIS (Art. 13 DSGVO) ────────────────────
 function anlageDatenschutzHtml(objektId, weNr, autoDruck, opt){
   const ohneUnterschrift = !!(opt && opt.ohneUnterschrift);
   const bk = objektId ? getBriefkopf(objektId) : null;
-  const verantwortlich = (bk && (bk.absender||bk.name)) ? (bk.absender||bk.name) : 'Nadig Pfau Immobilienverwaltung';
+  const V = dsVerantwortliche(bk);
   const anschrift = (bk && bk.strasse) ? [bk.strasse, bk.ort].filter(Boolean).join(', ') : VERWALTER_ANSCHRIFT;
   const mail = (bk && bk.email) ? bk.email : 'info@nadigpfau.de';
+  const tel  = (bk && bk.tel) ? String(bk.tel).trim() : '';
   const inner = `
     <div class="eyebrow">Anlage zum Mietvertrag – Datenschutz</div>
     <h1>DATENSCHUTZHINWEIS</h1>
     <div class="sub">Informationen zur Verarbeitung Ihrer personenbezogenen Daten nach Art. 13 DSGVO</div>
     <h2>1. Verantwortlicher</h2>
-    <p>Verantwortlich für die Verarbeitung Ihrer personenbezogenen Daten ist:<br>
-    <b>${esc(verantwortlich)}</b><br>${esc(anschrift)}<br>E-Mail: ${esc(mail)}</p>
+    <p>Verantwortlich für die Verarbeitung Ihrer personenbezogenen Daten ${V.mehrere?'sind gemeinsam':'ist'}:<br>
+    <b>${esc(V.personen)}</b><br>${V.gemeinschaft?esc(V.gemeinschaft)+'<br>':''}${esc(anschrift)}<br>${tel?'Telefon: '+esc(tel)+'<br>':''}E-Mail: ${esc(mail)}</p>
+    ${V.bezeichnung?`<p>Die Immobilien werden unter der Geschäftsbezeichnung „${esc(V.bezeichnung)}“ verwaltet. Ihre Rechte nach Abschnitt 9 können Sie unter den vorstehenden Kontaktdaten geltend machen.</p>`:''}
     <h2>2. Zwecke und Rechtsgrundlagen der Verarbeitung</h2>
     <p>Wir verarbeiten Ihre personenbezogenen Daten zur Begründung, Durchführung und Beendigung des Mietverhältnisses. Rechtsgrundlage ist die Erfüllung des Mietvertrages sowie die Anbahnung des Vertragsverhältnisses (Art. 6 Abs. 1 lit. b DSGVO). Soweit wir gesetzlich zur Verarbeitung verpflichtet sind – etwa zur Erstellung von Betriebskostenabrechnungen, zur Erfüllung steuer- und handelsrechtlicher Aufbewahrungspflichten oder zur Wohnungsgeberbestätigung nach § 19 BMG – erfolgt die Verarbeitung auf Grundlage von Art. 6 Abs. 1 lit. c DSGVO. In Einzelfällen stützen wir die Verarbeitung auf unser berechtigtes Interesse (Art. 6 Abs. 1 lit. f DSGVO), etwa zur Geltendmachung, Ausübung oder Verteidigung von Rechtsansprüchen.</p>
     <h2>3. Kategorien verarbeiteter Daten</h2>
