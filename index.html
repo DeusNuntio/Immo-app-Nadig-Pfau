@@ -1225,7 +1225,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=35;   // v242: +buch_journal (F4 GoBD)
-const APP_VERSION = '2026-08-25-v385';
+const APP_VERSION = '2026-08-25-v386';
 /* v364 (12.08.2026) – offene Punkte abgearbeitet.
    1) D1/XLSX_SRI: Der im Code hinterlegte PowerShell-Befehl war FALSCH und
       konnte nie funktionieren - Invoke-WebRequest liefert unter .Content einen
@@ -8087,7 +8087,20 @@ async function qrSeitePdfBytes(qrText, titel, untertitel){
 }
 
 // Alle WE eines Objekts (belegt + Leerstand) ermitteln.
-// Quelle: Mieter-weNr (inkl. Vormieter → deckt leere WE ab) ∪ objekt_stamm.wohneinheiten (1..N).
+// Quelle: Mieter-weNr (inkl. Vormieter → deckt leere WE ab), ergänzt um
+// objekt_stamm.wohneinheiten (1..N) — aber nur bei lokaler Nummerierung.
+/* v386: Die Ergänzung um 1..N lief bis v385 BEDINGUNGSLOS. Sie unterstellt,
+   dass jedes Objekt seine Wohnungen bei 1 durchzählt. In Krefeld sind die
+   WE-Nummern jedoch objektübergreifend fortlaufend vergeben (181 = 1–12,
+   183 = 13–20, 185 = 21–36, Wilmendyk 7 = 37–46, 9 = 47–54, 11 = 55–62,
+   13 = 63–70). Zu jeder echten Nummer kam dadurch ein voller Satz 1..N hinzu:
+   Der QR-Export lieferte 129 statt 70 Blätter, und der OneDrive-Ordnerbaum
+   legte dieselben Geisterwohnungen als Ordner an.
+   Jetzt greift die Ergänzung nur, wenn die höchste bekannte Nummer die Anzahl
+   der Wohneinheiten nicht überschreitet — dann zählt das Objekt tatsächlich
+   lokal, und der ursprüngliche Zweck (Leerstand ohne Mieterakte abdecken)
+   bleibt erhalten. Bei fortlaufender Nummerierung wird nicht mehr geraten;
+   dort sind die Mieterakten die einzige verlässliche Quelle. */
 async function alleWeVonObjekt(objektId, mieterAlle){
   const set=new Set();
   (mieterAlle||[]).forEach(m=>{
@@ -8097,11 +8110,30 @@ async function alleWeVonObjekt(objektId, mieterAlle){
   });
   try{
     const s=await idbGet('objekt_stamm', objektId);
-    const anz=parseInt(s&&s.wohneinheiten); 
-    if(!isNaN(anz)&&anz>0){ for(let i=1;i<=anz;i++) set.add(String(i)); }
+    const anz=parseInt(s&&s.wohneinheiten);
+    if(!isNaN(anz)&&anz>0){
+      const zahlen=[...set].map(Number).filter(n=>!isNaN(n));
+      const hoechste=zahlen.length?Math.max(...zahlen):0;
+      if(hoechste<=anz){ for(let i=1;i<=anz;i++) set.add(String(i)); }
+    }
   }catch(_){}
   return [...set].sort((a,b)=>{ const na=Number(a),nb=Number(b);
     return (!isNaN(na)&&!isNaN(nb))?na-nb:String(a).localeCompare(String(b),'de'); });
+}
+
+/* v386: Plausibilitätsprobe gegen objekt_stamm.wohneinheiten. Meldet, wenn aus
+   den Mieterakten MEHR Wohneinheiten hervorgehen als das Objekt hat — das sind
+   Tippfehler in weNr, die kein Automatismus erkennen kann (bei Inrather Str.
+   181 die WE 31 und 61 neben den echten 1–12). Ändert keine Daten. */
+async function weAbweichung(objektId, weListe){
+  try{
+    const s=await idbGet('objekt_stamm', objektId);
+    const anz=parseInt(s&&s.wohneinheiten);
+    if(isNaN(anz)||anz<=0) return null;
+    if(weListe.length<=anz) return null;
+    const sortiert=[...weListe].sort((a,b)=>Number(a)-Number(b));
+    return { anz, gefunden: weListe.length, verdaechtig: sortiert.slice(anz) };
+  }catch(_){ return null; }
 }
 
 // Export EINER Dashboard-Gruppe (Standort) als ZIP.
@@ -8110,11 +8142,15 @@ async function wohnungsQrStandortZip(gruppenId){
   if(!grp){ toast('Standort nicht gefunden'); return; }
   toast('Erzeuge QR-PDFs für '+grp.label+' …');
   const mieterAlle=await idbGetAll('mieter');
-  const eintraege=[];
+  const eintraege=[], auffaellig=[];
   for(const objektId of grp.objektIds){
     const obj=getObj(objektId)||{};
     const objName=obj.name||objektId;
     const weListe=await alleWeVonObjekt(objektId, mieterAlle);
+    /* v386: Auffällige WE-Nummern sammeln, statt stillschweigend Blätter
+       dafür zu drucken. */
+    const abw=await weAbweichung(objektId, weListe);
+    if(abw) auffaellig.push(`${objName}: ${abw.gefunden} statt ${abw.anz} (${abw.verdaechtig.map(w=>'WE '+w).join(', ')})`);
     for(const we of weListe){
       const qrText=wohnungsPortalUrl(objektId, we);           // URL nur im QR
       const titel='WE '+we;
@@ -8132,6 +8168,12 @@ async function wohnungsQrStandortZip(gruppenId){
   document.body.appendChild(a); a.click();
   setTimeout(()=>{ document.body.removeChild(a); URL.revokeObjectURL(url); }, 1500);
   toast(grp.label+': '+eintraege.length+' PDF(s) in ZIP gespeichert ✓');
+  /* v386: Der Hinweis steht bewusst NACH der Erfolgsmeldung und länger — ein
+     Zahlendreher in weNr fällt sonst erst beim Aufkleben auf. */
+  if(auffaellig.length){
+    setTimeout(()=>toast('Mehr Wohneinheiten als im Stamm hinterlegt – bitte WE-Nummern prüfen: '
+      + auffaellig.join(' · '), 12000), 1200);
+  }
 }
 
 // Auswahl-Dialog: je Standort ein ZIP.
