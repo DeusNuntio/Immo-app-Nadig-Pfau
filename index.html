@@ -1225,7 +1225,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=35;   // v242: +buch_journal (F4 GoBD)
-const APP_VERSION = '2026-08-25-v380';
+const APP_VERSION = '2026-08-25-v381';
 /* v364 (12.08.2026) – offene Punkte abgearbeitet.
    1) D1/XLSX_SRI: Der im Code hinterlegte PowerShell-Befehl war FALSCH und
       konnte nie funktionieren - Invoke-WebRequest liefert unter .Content einen
@@ -17385,6 +17385,10 @@ async function dokVollstaendigLoeschen(dokId){
 }
 
 /* Anzeigbare Quelle eines Dokuments (dataURL ODER kurzlebiger OneDrive-Link).
+   v381: Der Stern-Schraegstrich fehlte. Der Kommentar lief bis zum Banner der
+   Nebenkostenabrechnung durch und verschluckte dokQuelle, saveDok, deleteDok
+   und downloadDok - Loeschen, Hochladen und Herunterladen von Dokumenten
+   waren dadurch ohne Wirkung. */
 async function dokQuelle(d){
   if(!d) return '';
   if(d.data) return d.data;
@@ -17471,18 +17475,23 @@ async function dokTeilen(id) {
 }
 
 async function deleteDok(id) {
+  /* v381: Zuordnung VOR dem Loeschen merken. Bisher wurde das bereits
+     geloeschte Dokument gelesen, um objektId/mieterId zu ermitteln - das
+     schlug zwangslaeufig fehl, und die Liste wurde auf "Keine Dokumente"
+     gesetzt, obwohl weitere Dokumente vorhanden waren. */
+  const dok = await idbGet('dokumente', id).catch(()=>null);
+  if (!dok) { toast('Dokument nicht gefunden'); return; }
   if (!confirm('Dokument wirklich löschen?')) return;
   await dokVollstaendigLoeschen(id);
   clearTimeout(window._syncTimer);
   window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
   toast('Dokument gelöscht');
-  // Liste neu laden
-  const el = document.getElementById('objTabContent') || document.getElementById('mieterDokEl');
-  if (el) {
-    const dok = await idbGet('dokumente', id).catch(()=>null);
-    if (dok) await renderDokumente(el, dok.objektId, dok.mieterId);
-    else el.innerHTML = '<div class="empty"><i class="ti ti-files"></i><p>Keine Dokumente</p></div>';
-  }
+  /* v381: Der Dialog gewinnt vor der Objektansicht. Ist der Mieterdialog
+     offen, liegt objTabContent im Hintergrund weiterhin im DOM - bisher wurde
+     deshalb die verdeckte Liste neu gezeichnet und die sichtbare blieb
+     unveraendert. Gleiche Reihenfolge wie in togglePortalFreigabe. */
+  const el = document.getElementById('mieterDokEl') || document.getElementById('objTabContent');
+  if (el) await renderDokumente(el, dok.objektId, dok.mieterId || null);
 }
 
 // Bild-Overlay für Dokumente
