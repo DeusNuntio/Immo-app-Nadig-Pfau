@@ -1225,7 +1225,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=35;   // v242: +buch_journal (F4 GoBD)
-const APP_VERSION = '2026-08-25-v381';
+const APP_VERSION = '2026-08-25-v382';
 /* v364 (12.08.2026) – offene Punkte abgearbeitet.
    1) D1/XLSX_SRI: Der im Code hinterlegte PowerShell-Befehl war FALSCH und
       konnte nie funktionieren - Invoke-WebRequest liefert unter .Content einen
@@ -29887,6 +29887,231 @@ async function leerstandLoeschen(kennung){
   }catch(e){ return false; }
 }
 
+/* ══ WEBSITE – FREIE WOHNUNGEN: Übersicht, Bearbeiten, Bilder, Entfernen (v382) ══
+   Bis v381 gab es KEINE Stelle, an der sichtbar war, was auf nadigpfau.de steht.
+   Der Status hing allein am vorbelegten Häkchen im Aushang-Dialog je Wohnung,
+   und der lokale settings-Record wich vom Backend ab, sobald eine Übertragung
+   fehlschlug (siehe hpLokalBereinigen).
+
+   Quelle dieser Übersicht ist deshalb GET /api/leerstand - dieselbe anonyme
+   Route, aus der die Website ihre Angebote zieht. Angezeigt wird damit der
+   tatsächliche Live-Stand, nicht die lokale Vormerkung.
+
+   Der POST-Endpunkt behält vorhandene Blob-URLs und lädt nur neue Base64-Bilder
+   hoch (A1-Fix im Backend). Bilder ergänzen heißt daher: bestehende URLs
+   mitsenden und die neuen anhängen. Fällt eine URL weg, räumt das Backend den
+   verwaisten Blob selbst auf. */
+
+let _hpListe = [];
+
+async function hpLaden(){
+  const res = await fetchMitTimeout(BACKEND_AZURE + '/api/leerstand', { method:'GET' });
+  if(!res.ok) throw new Error('Status ' + res.status);
+  const liste = await res.json();
+  return Array.isArray(liste) ? liste : [];
+}
+
+/* Lokale Vormerkung an den Live-Stand angleichen. Trägt Kennungen aus, die das
+   Backend nicht mehr kennt - sonst bleibt ein Häkchen gesetzt, dem online
+   nichts entspricht. */
+async function hpLokalBereinigen(liste){
+  try{
+    const rec = await idbGet('settings','homepage_leerstand').catch(()=>null);
+    if(!rec || !rec.value) return 0;
+    const online = new Set(liste.map(x => String(x.id||'')));
+    let weg = 0;
+    for(const k of Object.keys(rec.value)) if(!online.has(k)){ delete rec.value[k]; weg++; }
+    if(weg){ rec.geaendert = nowIso(); await idbPut('settings', rec); syncSoon(); }
+    return weg;
+  }catch(e){ console.warn('hpLokalBereinigen:', e); return 0; }
+}
+
+/* Bild auf Websitemaß bringen. Das Backend nimmt bis 8 MB, aber ein
+   Handyfoto mit 4000 px hilft im Angebot niemandem und verlängert jeden
+   weiteren Upsert, weil die URL-Liste mitwächst. */
+function hpBildVerkleinern(datei, maxKante = 1600, guete = 0.82){
+  return new Promise((fertig, fehler) => {
+    const leser = new FileReader();
+    leser.onerror = () => fehler(new Error('Datei nicht lesbar'));
+    leser.onload = () => {
+      const bild = new Image();
+      bild.onerror = () => fehler(new Error('Kein gültiges Bild'));
+      bild.onload = () => {
+        const f = Math.min(1, maxKante / Math.max(bild.width, bild.height));
+        const c = document.createElement('canvas');
+        c.width  = Math.round(bild.width  * f);
+        c.height = Math.round(bild.height * f);
+        c.getContext('2d').drawImage(bild, 0, 0, c.width, c.height);
+        fertig(c.toDataURL('image/jpeg', guete));
+      };
+      bild.src = leser.result;
+    };
+    leser.readAsDataURL(datei);
+  });
+}
+
+/* Einen Eintrag zurückschreiben. Fotos und Grundriss werden unverändert
+   mitgegeben, damit das Backend sie behält. */
+async function hpSpeichern(eintrag){
+  return await leerstandPushen({
+    id: eintrag.id, titel: eintrag.titel||'', stadt: eintrag.stadt||'', adr: eintrag.adr||'',
+    flaeche: eintrag.flaeche||'', zimmer: eintrag.zimmer||'', miete: eintrag.miete||'',
+    nk: eintrag.nk||'', status: eintrag.status||'frei', energie: eintrag.energie||'',
+    frei_ab: eintrag.frei_ab||'', empfehlung: '', sichtbar: true,
+    fotos: Array.isArray(eintrag.fotos) ? eintrag.fotos : [],
+    grundriss: eintrag.grundriss||''
+  });
+}
+
+function hpEintrag(kennung){ return _hpListe.find(x => String(x.id) === String(kennung)); }
+
+async function modalHomepageWohnungen(){
+  if(!istVerwalter()){ toast('Nur für Admins'); return; }
+  showModal(`
+    <div class="m-title"><i class="ti ti-world"></i> Website – freie Wohnungen</div>
+    <div style="font-size:12px;color:var(--ink-40);margin-bottom:10px">
+      Zeigt, was gerade auf nadigpfau.de steht – direkt von dort gelesen, nicht aus der lokalen Vormerkung.
+    </div>
+    <div id="hpListe"><div style="padding:18px 0;text-align:center;color:var(--ink-40)">Wird geladen …</div></div>
+    <button class="btn btn-full" style="margin-top:12px" data-action-click="closeModal">Schließen</button>`);
+  await hpNeuZeichnen();
+}
+
+async function hpNeuZeichnen(){
+  const el = document.getElementById('hpListe');
+  if(!el) return;
+  try{
+    _hpListe = await hpLaden();
+  }catch(e){
+    el.innerHTML = `<div style="padding:14px;border:1px solid var(--ink-10);border-radius:8px;font-size:13px">
+      <b>Website nicht erreichbar.</b><br><span style="color:var(--ink-40)">${esc(e.message||'')}</span><br>
+      <button class="btn btn-sm" style="margin-top:8px" onclick="hpNeuZeichnen()"><i class="ti ti-refresh"></i> Erneut versuchen</button></div>`;
+    return;
+  }
+  const weg = await hpLokalBereinigen(_hpListe);
+  if(!_hpListe.length){
+    el.innerHTML = `<div class="empty"><i class="ti ti-home-off"></i><p>Zurzeit steht keine Wohnung auf der Website.</p></div>`;
+    return;
+  }
+  el.innerHTML =
+    `<div style="font-size:12px;color:var(--ink-40);margin-bottom:8px">${_hpListe.length} Wohnung(en) online${weg?` · ${weg} veraltete Vormerkung(en) lokal bereinigt`:''}</div>`
+    + _hpListe.map(x => hpKarte(x)).join('');
+}
+
+function hpKarte(x){
+  const k = esc(String(x.id||''));
+  const fotos = (Array.isArray(x.fotos)?x.fotos:[]).map((u,i) =>
+    `<div style="position:relative;flex:0 0 auto">
+       <img src="${esc(u)}" alt="Foto ${i+1}" style="width:72px;height:72px;object-fit:cover;border-radius:8px;border:1px solid var(--ink-10)">
+       <button class="btn btn-sm btn-danger" title="Bild von der Website entfernen"
+         onclick="hpBildEntfernen('${escJs(String(x.id))}','${escJs(u)}')"
+         style="position:absolute;top:-6px;right:-6px;width:22px;height:22px;padding:0;border-radius:50%;line-height:1">
+         <i class="ti ti-x"></i></button>
+     </div>`).join('');
+  const feld = (id, label, wert, breite) =>
+    `<div class="f" style="${breite||''}"><label for="hp_${id}_${k}">${label}</label>
+       <input type="text" id="hp_${id}_${k}" value="${esc(wert||'')}"></div>`;
+  return `
+  <div style="border:1px solid var(--ink-10);border-radius:10px;padding:12px;margin-bottom:12px">
+    <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+      <b>${esc(x.titel||x.id)}</b>
+      <span class="ew-mono" style="font-size:11px;color:var(--ink-40)">${k}</span>
+      <span style="margin-left:auto;font-size:11px;color:var(--success)"><i class="ti ti-point-filled"></i> online</span>
+    </div>
+    <div style="font-size:12px;color:var(--ink-40);margin-bottom:8px">${esc(x.adr||'')}${x.stadt?' · '+esc(x.stadt):''}</div>
+    <div class="f-row">
+      ${feld('zimmer','Zimmer', x.zimmer,'flex:0 0 90px')}
+      ${feld('flaeche','Fläche', x.flaeche)}
+      ${feld('miete','Kaltmiete', x.miete)}
+      ${feld('nk','NK', x.nk)}
+    </div>
+    <div class="f-row">
+      ${feld('frei_ab','Bezugsfrei ab', x.frei_ab)}
+      ${feld('titel','Überschrift', x.titel)}
+    </div>
+    ${feld('energie','Energieausweis (§ 87 GEG)', x.energie)}
+    <div style="font-size:12px;font-weight:600;margin:10px 0 6px">Bilder (${(x.fotos||[]).length})</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">${fotos || '<span style="font-size:12px;color:var(--ink-40)">Keine Bilder</span>'}</div>
+    <input type="file" id="hpDatei_${k}" accept="image/jpeg,image/png,image/webp" multiple style="display:none"
+           onchange="hpBilderHinzufuegen('${escJs(String(x.id))}')">
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn btn-sm" onclick="document.getElementById('hpDatei_${k}').click()"><i class="ti ti-photo-plus"></i> Bilder hinzufügen</button>
+      <button class="btn btn-sm btn-copper" onclick="hpAendernSpeichern('${escJs(String(x.id))}')"><i class="ti ti-device-floppy"></i> Änderungen speichern</button>
+      <button class="btn btn-sm btn-danger" style="margin-left:auto" onclick="hpEintragEntfernen('${escJs(String(x.id))}')"><i class="ti ti-world-off"></i> Von der Website nehmen</button>
+    </div>
+  </div>`;
+}
+
+async function hpAendernSpeichern(kennung){
+  const x = hpEintrag(kennung);
+  if(!x){ toast('Eintrag nicht gefunden'); return; }
+  const lies = id => (document.getElementById('hp_'+id+'_'+kennung)?.value || '').trim();
+  const neu = { ...x,
+    zimmer: lies('zimmer'), flaeche: lies('flaeche'), miete: lies('miete'), nk: lies('nk'),
+    frei_ab: lies('frei_ab'), titel: lies('titel'), energie: lies('energie') };
+  /* § 87 GEG: Ohne Pflichtangaben darf die Anzeige nicht laufen. Beim Anlegen
+     prüft der Aushang-Dialog das bereits; hier darf sie nicht nachträglich
+     entfernt werden können. */
+  if(!neu.energie){ toast('Energieausweis-Angabe ist Pflicht (§ 87 GEG) – bitte ausfüllen.'); return; }
+  toast('Wird gespeichert …');
+  const ok = await hpSpeichern(neu);
+  if(ok){ toast('Auf der Website aktualisiert ✓'); await hpNeuZeichnen(); }
+}
+
+async function hpBilderHinzufuegen(kennung){
+  const x = hpEintrag(kennung);
+  const inp = document.getElementById('hpDatei_'+kennung);
+  if(!x || !inp || !inp.files || !inp.files.length) return;
+  const dateien = Array.from(inp.files);
+  inp.value = '';
+  toast(dateien.length + ' Bild(er) werden übertragen …');
+  const neue = [];
+  for(const d of dateien){
+    try{ neue.push(await hpBildVerkleinern(d)); }
+    catch(e){ toast('Übersprungen: ' + d.name + ' (' + (e.message||'Fehler') + ')'); }
+  }
+  if(!neue.length) return;
+  /* Bestehende Blob-URLs mitsenden - das Backend behält sie und lädt nur die
+     neuen Base64-Bilder hoch. */
+  const ok = await hpSpeichern({ ...x, fotos: [ ...(x.fotos||[]), ...neue ] });
+  if(ok){ toast(neue.length + ' Bild(er) hinzugefügt ✓'); await hpNeuZeichnen(); }
+}
+
+async function hpBildEntfernen(kennung, url){
+  const x = hpEintrag(kennung);
+  if(!x) return;
+  if(!confirm('Dieses Bild von der Website entfernen?')) return;
+  const rest = (x.fotos||[]).filter(u => u !== url);
+  const ok = await hpSpeichern({ ...x, fotos: rest });
+  if(ok){ toast('Bild entfernt ✓'); await hpNeuZeichnen(); }
+}
+
+/* Von der Website nehmen. Anders als der Schalter im Aushang-Dialog wird die
+   lokale Vormerkung NUR bei bestätigter Löschung ausgetragen - sonst stünde
+   die Wohnung weiter online, ohne dass die App noch davon wüsste. */
+async function hpEintragEntfernen(kennung){
+  const x = hpEintrag(kennung);
+  if(!x) return;
+  if(!confirm(`„${x.titel||kennung}" von der Website nehmen?\n\nDer Eintrag und seine Bilder werden gelöscht.`)) return;
+  const ok = await leerstandLoeschen(kennung);
+  if(!ok){ toast('Löschen fehlgeschlagen – Eintrag bleibt online. Backend-Schlüssel und Verbindung prüfen.'); return; }
+  try{
+    const rec = await idbGet('settings','homepage_leerstand').catch(()=>null);
+    if(rec && rec.value && rec.value[kennung]){
+      delete rec.value[kennung];
+      rec.geaendert = nowIso();
+      await idbPut('settings', rec);
+      syncSoon();
+    }
+  }catch(e){ console.warn('Vormerkung entfernen:', e); }
+  toast('Von der Website genommen ✓');
+  await hpNeuZeichnen();
+}
+
+registerActions({ modalHomepageWohnungen, hpNeuZeichnen, hpAendernSpeichern,
+                  hpBilderHinzufuegen, hpBildEntfernen, hpEintragEntfernen });
+
+
 /* ── v328 (S1): Excel-Bibliothek erst bei Bedarf laden ─────────────────────
    Bis v327 stand SheetJS als blockierendes <script> im Kopf. Zwei Nachteile:
    (a) Fremdcode mit vollem Zugriff auf IndexedDB, od_auth und settings lief
@@ -30135,13 +30360,22 @@ async function aushangErzeugen(objektId, weNr){
     try{
       const rec = await idbGet('settings','homepage_leerstand').catch(()=>null);
       if(rec && rec.value && rec.value[kennung]){
-        delete rec.value[kennung];
-        rec.geaendert = nowIso();
-        await idbPut('settings', rec);
-        clearTimeout(window._syncTimer);
-        window._syncTimer = setTimeout(()=>syncToOneDrive(), 2500);
+        /* v382: ERST loeschen, DANN austragen. Bis v381 wurde die lokale
+           Vormerkung bedingungslos entfernt - schlug die Backend-Loeschung
+           fehl (kein Netz, kein Function-Key, Fehlerstatus), blieb die Wohnung
+           online, waehrend die App sie als nicht veroeffentlicht fuehrte. Der
+           Schalter griff dann nicht mehr, weil der Record fehlte. */
         const ok = await leerstandLoeschen(kennung);
-        if(ok) toast('Von der Homepage entfernt.');
+        if(!ok){
+          toast('Entfernen fehlgeschlagen – die Wohnung steht weiter auf der Homepage. Bitte Backend-Schlüssel und Verbindung prüfen.');
+        } else {
+          delete rec.value[kennung];
+          rec.geaendert = nowIso();
+          await idbPut('settings', rec);
+          clearTimeout(window._syncTimer);
+          window._syncTimer = setTimeout(()=>syncToOneDrive(), 2500);
+          toast('Von der Homepage entfernt.');
+        }
       }
     }catch(e){ console.warn('Homepage-Entfernung:', e); }
   }
@@ -33762,6 +33996,15 @@ async function renderSettings(){
       <button class="btn btn-full" data-action-click="wohnungenExportPush"><i class="ti ti-cloud-up"></i> Direkt ans Backend senden</button>
       <button class="btn btn-full" style="margin-top:8px" data-action-click="wohnungenAdressenHolen"><i class="ti ti-cloud-down"></i> Neue Adressen aus dem Portal übernehmen</button>
       <div id="wohnungsExportStatus" style="margin-top:10px"></div>
+    </div>`:''}
+
+    ${istVerwalter()?`<div class="settings-card" data-tab="daten">
+      <div class="card-hdr"><i class="ti ti-world"></i> Website – freie Wohnungen</div>
+      <p style="font-size:13px;color:var(--ink-40);margin-bottom:12px;line-height:1.6">
+        Übersicht der Wohnungen, die gerade auf nadigpfau.de beworben werden – direkt von dort gelesen.
+        Eckdaten ändern, Bilder ergänzen oder entfernen und Angebote von der Website nehmen.
+      </p>
+      <button class="btn btn-primary btn-full" data-action-click="modalHomepageWohnungen"><i class="ti ti-list-details"></i> Übersicht öffnen</button>
     </div>`:''}
 
     ${istSysAdmin?`<div class="settings-card" data-tab="daten">
