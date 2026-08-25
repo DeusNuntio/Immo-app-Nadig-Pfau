@@ -1225,7 +1225,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=35;   // v242: +buch_journal (F4 GoBD)
-const APP_VERSION = '2026-08-25-v383';
+const APP_VERSION = '2026-08-25-v385';
 /* v364 (12.08.2026) – offene Punkte abgearbeitet.
    1) D1/XLSX_SRI: Der im Code hinterlegte PowerShell-Befehl war FALSCH und
       konnte nie funktionieren - Invoke-WebRequest liefert unter .Content einen
@@ -8021,7 +8021,15 @@ function zipStore(eintraege){
    deutlich ueber den 30 mm, unter denen Scanner-Apps bei dichten Codes
    scheitern (siehe ewQrBild). Die Schrift wird auf die Blattbreite eingepasst,
    damit lange Objektnamen nicht ueberstehen. */
-const QR_BLATT = { randMm: 4, qrMm: 60, titelMm: 5.5, untertitelMm: 3.6, abstandMm: 3.5 };
+/* v384: randMm 4 -> 0. Das Blatt endet an der Kante des Codes.
+   Die Ruhezone des Codes bleibt davon unberuehrt - QRENC.svg zeichnet vier
+   weisse Module rings um das Muster (quiet=4). Sie gehoeren zum Bild, nicht
+   zum Blattrand; ohne sie findet kein Scanner die Begrenzung. Bei 60 mm sind
+   das rund 5 mm Weissraum, die im Code enthalten bleiben.
+   textLuftMm faengt die Unterlaengen der letzten Zeile auf (g, y, ß) - sonst
+   schneidet die Blattkante sie an. Typografie, kein Rand. */
+const QR_BLATT = { randMm: 0, qrMm: 60, titelMm: 5.5, untertitelMm: 3.6,
+                   abstandMm: 3.5, textLuftMm: 1.2 };
 
 async function qrSeitePdfBytes(qrText, titel, untertitel){
   const dpi=200, mmPx=dpi/25.4;
@@ -8032,6 +8040,9 @@ async function qrSeitePdfBytes(qrText, titel, untertitel){
   let hoeheMm = K.randMm + K.qrMm;
   if(t1) hoeheMm += K.abstandMm + K.titelMm;
   if(t2) hoeheMm += K.abstandMm*0.6 + K.untertitelMm;
+  /* Ohne Beschriftung endet das Blatt exakt am Code. Mit Beschriftung kommt
+     nur die Unterlaengenluft dazu. */
+  if(t1 || t2) hoeheMm += (K.textLuftMm || 0);
   hoeheMm += K.randMm;
 
   const wPx=Math.round(breiteMm*mmPx), hPx=Math.round(hoeheMm*mmPx);
@@ -30459,12 +30470,14 @@ async function aushangErzeugen(objektId, weNr){
   // abrufbar/weiterleitbar, gesynct). Nicht blockierend fürs Drucken.
   archiviereAushangDokument({objektId, weNr, html, zimmerTitel});
 
-  // Druckfenster öffnen
-  const w = window.open('', '_blank');
-  if(!w){ toast('Bitte Pop-ups erlauben, um den Aushang zu drucken.'); return; }
-  w.document.write(html);
-  w.document.close();
+  /* v385: Vorschau im eigenen Overlay statt window.open. In der installierten
+     App blockiert der Browser Popups zuverlaessig - der Aushang wurde dadurch
+     nie ausgegeben, obwohl er fertig erzeugt und bereits archiviert war.
+     druckHTML() ist der seit v214 fuer alle anderen Dokumente genutzte Weg und
+     bietet zugleich Drucken, Teilen und Speichern. */
   closeModal();
+  druckHTML(html, 'Aushang – ' + (zimmerTitel || ('WE ' + weNr)),
+            'Aushang ' + (adrObjekt || '') + ' WE ' + weNr);
 }
 
 // reines HTML-Template (eine A4-Seite)
