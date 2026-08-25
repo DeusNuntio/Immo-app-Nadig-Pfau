@@ -1225,7 +1225,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=35;   // v242: +buch_journal (F4 GoBD)
-const APP_VERSION = '2026-08-25-v378';
+const APP_VERSION = '2026-08-25-v379';
 /* v364 (12.08.2026) – offene Punkte abgearbeitet.
    1) D1/XLSX_SRI: Der im Code hinterlegte PowerShell-Befehl war FALSCH und
       konnte nie funktionieren - Invoke-WebRequest liefert unter .Content einen
@@ -25256,13 +25256,17 @@ async function serienbriefEigentuemerwechsel(){
      bisherige Meldung listete Mieternamen und liess offen, welcher
      Gebaeudestamm zu ergaenzen ist - bei 60 uebersprungenen Namen unbrauchbar.
      Set, damit jedes Haus nur einmal erscheint. */
-  const ohneKonto = new Set(), ohneGlaeubigerId = new Set();
+  const ohneKonto = new Set(), ohneGlaeubigerId = new Set(), blattZahlen = new Set();
   const objName = oid => (getObj(oid)||{}).name || String(oid||'');
   for(const m of alleMieter){
     const seite = await ewSeiteFuer(m, {datum, frist, zahlAb, sigListe, neueCodes, fmtD, anl, gleicheIban});
     if(!seite){ ohneKonto.add(objName(m.objektId)); continue; }
     const anhang = await ewAnlagenFuer(m, anl, {frist, fmtD, anl});
     if(anl.sepa && !anhang.mitSepa) ohneGlaeubigerId.add(objName(m.objektId));
+    /* v379: Blattzahl mitfuehren, damit die Meldung sie nennen kann. Weichen
+       Briefe eines Laufs voneinander ab, ist das ein Hinweis auf fehlende
+       Glaeubiger-IDs - nicht auf einen Fehler der Auffuellung. */
+    blattZahlen.add(anhang.blatt);
     seiten.push({m, html: seite + anhang.html});
   }
   if(!seiten.length){
@@ -25325,7 +25329,11 @@ async function serienbriefEigentuemerwechsel(){
       + (ohneGlaeubigerId.size ? `<div style="color:var(--amber-d,#9a6b00);margin-top:6px"><i class="ti ti-alert-triangle"></i> Ohne SEPA-Mandat (keine Gläubiger-ID im Gebäudestamm): ${esc([...ohneGlaeubigerId].join(', '))}</div>` : '')
       + `<div style="margin-top:8px">Danach bitte „Portal-Verzeichnis übertragen“ ausführen – erst dann sind die Registrierschlüssel im Backend gültig.</div>`;
   }
-  toast(seiten.length+' Brief(e) in '+_ewDrucke.length+' Gebäude(n) erzeugt');
+  /* v379: Blattzahl nennen - sie ist immer gerade, damit der beidseitige
+     Druck im Takt bleibt. Mehrere Werte = unterschiedlich bestueckte Briefe. */
+  const bz = [...blattZahlen].sort((a,b)=>a-b);
+  toast(seiten.length+' Brief(e) in '+_ewDrucke.length+' Gebäude(n) erzeugt · '
+        + (bz.length===1 ? bz[0]+' Blatt je Brief' : 'Blatt je Brief: '+bz.join(' / ')));
 }
 
 /* Fertige Druckdokumente der letzten Erzeugung, je Gebaeude eines. Bewusst
@@ -25643,6 +25651,39 @@ async function ewSeiteFuer(m, opt){
 /* Anlagenseiten je Mieter. Rückgabe {html, mitSepa} - die Zahl der wirklich
    erzeugten Mandate wird gemeldet, weil ein Mandat ohne Gläubiger-ID nicht
    erzeugt wird (v285-Regel: lieber keines als eines mit falscher Kennung). */
+/* v379: Blattzahl je Baustein im EW-Druckkontext. GEMESSEN, nicht geschaetzt
+   (mess_ew_blaetter.py + mess_rueck.py, Chromium A4):
+     Brief 2 · Rueckantwort 1 · SEPA 1 · Datenschutz 2 · Hausordnung 2
+   Diese Werte sind von ANLAGE_DRUCKSEITEN getrennt zu halten: jene gelten im
+   MIETVERTRAGS-Kontext (andere Schrifteinbettung, siehe v343), diese im
+   Brief-Kontext. Zufaellige Gleichheit ist keine Verbindung.
+   WICHTIG BEIM AENDERN: Wird ein Anlagentext laenger oder kuerzer, muessen die
+   Messskripte erneut laufen und die Zahl hier angepasst werden - sonst sitzt
+   die Auffuellung falsch. Ein Fehler faellt am Vermerk der Leerseite auf.
+   Datenschutz = 2: mit vollstaendigem Briefkopf nachgemessen. Eine Messung mit
+   leerer objektId ergibt 1 Blatt (kuerzere Rueckfallzeile) und ist NICHT der
+   Praxisfall - der in v357 notierte Wert 2 ist damit bestaetigt. */
+const EW_BLATT = { brief: 2, rueck: 1, sepa: 1, dsgvo: 2, hausordnung: 2 };
+
+/* Blattzahl EINES Briefes samt gewaehlter Anlagen. mitSepa statt anl.sepa:
+   ohne Glaeubiger-ID im Gebaeudestamm entsteht kein Mandat, obwohl es
+   angehakt ist - genau diese Briefe wichen bisher aus dem Duplex-Takt. */
+function ewBlattzahl(anl, mitSepa){
+  let n = EW_BLATT.brief;
+  if(anl.rueck)               n += EW_BLATT.rueck;
+  if(anl.sepa && mitSepa)     n += EW_BLATT.sepa;
+  if(anl.dsgvo)               n += EW_BLATT.dsgvo;
+  if(anl.hausordnung)         n += EW_BLATT.hausordnung;
+  return n;
+}
+
+/* Bewusst freigelassenes Blatt - mit Vermerk, damit beim Zusammenheften
+   erkennbar ist, dass nichts fehlt, und eine falsch gerechnete Auffuellung
+   auffaellt statt unbemerkt zu bleiben. Gleiches Vorgehen wie mv-leerseite. */
+function ewLeerseite(){
+  return '<div class="ew-leerseite"></div>';
+}
+
 async function ewAnlagenFuer(m, anl, opt){
   let html = '', mitSepa = false;
   if(anl.rueck) html += ewRueckantwortSeite(m, opt);
@@ -25682,7 +25723,13 @@ async function ewAnlagenFuer(m, anl, opt){
      Unterschriftsblock und ohne die Aussage, die Hausordnung sei
      Vertragsbestandteil. Begruendung im Kopf von anlageHausordnungHtml. */
   if(anl.hausordnung) html += einbetten(anlageHausordnungHtml(m.objektId, m.weNr, false, {information:true}));
-  return {html, mitSepa};
+
+  /* v379: Auffuellung auf gerade Blattzahl. Ohne sie beginnt beim beidseitigen
+     Druck der naechste Brief auf der Rueckseite des vorigen und der gesamte
+     Stapel verrutscht. */
+  const blatt = ewBlattzahl(anl, mitSepa);
+  if(blatt % 2 === 1) html += ewLeerseite();
+  return {html, mitSepa, blatt: blatt + (blatt % 2)};
 }
 
 /* Rückantwort auf Papier. Kästchen statt Linien: auf einer Linie schreibt
@@ -25804,6 +25851,19 @@ function ewStil(){
        jeder Brief endete mit einem leeren Blatt. :last-of-type prueft nur unter
        den Div-Geschwistern und trifft daher das tatsaechlich letzte Blatt. */
     .ew-seite:last-of-type{page-break-after:auto}
+    /* v379: Duplex-Leerseite. Feste Hoehe, damit sie im Druck tatsaechlich ein
+       Blatt belegt - ein leeres Div ohne Hoehe erzeugt keines. 255 mm wie beim
+       Mietvertrag (mv-leerseite), passt in den Satzspiegel von 269 mm.
+       page-break-after wie bei ew-seite: fuer alle ausser dem letzten Element
+       des Dokuments, sonst haengt der Ausdruck ein zusaetzliches Blatt an
+       (v308-Muster). */
+    .ew-leerseite{page-break-before:always;page-break-after:always;height:255mm;position:relative}
+    .ew-leerseite:last-of-type{page-break-after:auto}
+    .ew-leerseite:after{
+      content:'Diese Seite bleibt aus drucktechnischen Gründen frei.';
+      position:absolute;top:50%;left:0;right:0;text-align:center;
+      font-size:8pt;color:#bbb;font-style:italic;
+    }
     /* v318: Der Kopf bekommt eine FESTE Hoehe. Bis v317 ergab sich die Lage
        des Anschriftfeldes aus dem Textfluss - mit dem groesseren Logo waere es
        nach unten gewandert und aus dem Umschlagfenster gelaufen.
