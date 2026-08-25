@@ -1225,7 +1225,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=35;   // v242: +buch_journal (F4 GoBD)
-const APP_VERSION = '2026-08-25-v382';
+const APP_VERSION = '2026-08-25-v383';
 /* v364 (12.08.2026) – offene Punkte abgearbeitet.
    1) D1/XLSX_SRI: Der im Code hinterlegte PowerShell-Befehl war FALSCH und
       konnte nie funktionieren - Invoke-WebRequest liefert unter .Content einen
@@ -8014,27 +8014,62 @@ function zipStore(eintraege){
 
 // A4-PDF (Hochformat) mit einem großen, zentrierten QR + Klartext darunter.
 // KEINE URL sichtbar. Rückgabe: Uint8Array (PDF-Bytes).
+/* v383: Blatt auf den Inhalt zugeschnitten statt A4 mit grossem Weissraum.
+   Bis v382 lag ein 110-mm-Code mittig auf A4; zum Einfuegen in ein anderes
+   Dokument musste jedes Blatt von Hand beschnitten werden (Nutzerbefund).
+   Jetzt: 4 mm Rand ringsum, 60 mm QR, Beschriftung darunter. 60 mm liegen
+   deutlich ueber den 30 mm, unter denen Scanner-Apps bei dichten Codes
+   scheitern (siehe ewQrBild). Die Schrift wird auf die Blattbreite eingepasst,
+   damit lange Objektnamen nicht ueberstehen. */
+const QR_BLATT = { randMm: 4, qrMm: 60, titelMm: 5.5, untertitelMm: 3.6, abstandMm: 3.5 };
+
 async function qrSeitePdfBytes(qrText, titel, untertitel){
   const dpi=200, mmPx=dpi/25.4;
-  const wPx=Math.round(210*mmPx), hPx=Math.round(297*mmPx); // A4 hochkant
+  const K=QR_BLATT;
+  const t1=String(titel||'').trim(), t2=String(untertitel||'').trim();
+
+  const breiteMm = K.qrMm + 2*K.randMm;
+  let hoeheMm = K.randMm + K.qrMm;
+  if(t1) hoeheMm += K.abstandMm + K.titelMm;
+  if(t2) hoeheMm += K.abstandMm*0.6 + K.untertitelMm;
+  hoeheMm += K.randMm;
+
+  const wPx=Math.round(breiteMm*mmPx), hPx=Math.round(hoeheMm*mmPx);
   const cv=document.createElement('canvas'); cv.width=wPx; cv.height=hPx;
   const ctx=cv.getContext('2d');
   ctx.fillStyle='#fff'; ctx.fillRect(0,0,wPx,hPx);
-  const qrSize=Math.round(110*mmPx);
-  const qrX=Math.round((wPx-qrSize)/2), qrY=Math.round(55*mmPx);
+
+  const qrSize=Math.round(K.qrMm*mmPx);
+  const qrX=Math.round((wPx-qrSize)/2), qrY=Math.round(K.randMm*mmPx);
   const qrImg=await qrImage(qrText, 600);
   ctx.imageSmoothingEnabled=false;
   ctx.drawImage(qrImg, qrX, qrY, qrSize, qrSize);
+
+  /* Schriftgrad so weit verkleinern, dass der Text in die Satzbreite passt.
+     Ohne das liefe "Mindener Straße 23 und 25" ueber den Blattrand hinaus. */
+  const maxBreite = (breiteMm - 2*K.randMm) * mmPx;
+  const einpassen = (text, grundMm, fett) => {
+    let px = grundMm*mmPx;
+    for(let i=0;i<12;i++){
+      ctx.font=(fett?'bold ':'')+Math.round(px)+'px Arial, sans-serif';
+      if(ctx.measureText(text).width <= maxBreite) break;
+      px *= 0.92;
+    }
+  };
+
   ctx.textAlign='center'; ctx.textBaseline='top';
-  const cx=wPx/2; let y=qrY+qrSize+Math.round(12*mmPx);
-  ctx.fillStyle='#0B3D6E'; ctx.font='bold '+Math.round(11*mmPx)+'px Arial, sans-serif';
-  ctx.fillText(String(titel||''), cx, y); y+=Math.round(16*mmPx);
-  if(untertitel){
-    ctx.fillStyle='#555'; ctx.font=Math.round(7*mmPx)+'px Arial, sans-serif';
-    ctx.fillText(String(untertitel), cx, y);
+  const cx=wPx/2; let y=qrY+qrSize+Math.round(K.abstandMm*mmPx);
+  if(t1){
+    ctx.fillStyle='#0B3D6E'; einpassen(t1, K.titelMm, true);
+    ctx.fillText(t1, cx, y); y+=Math.round((K.titelMm+K.abstandMm*0.6)*mmPx);
   }
-  const jpegB64=cv.toDataURL('image/jpeg',0.9).split(',')[1];
-  const pdfStr=buildLabelPdf(jpegB64, wPx, hPx, 210, 297);
+  if(t2){
+    ctx.fillStyle='#555'; einpassen(t2, K.untertitelMm, false);
+    ctx.fillText(t2, cx, y);
+  }
+
+  const jpegB64=cv.toDataURL('image/jpeg',0.92).split(',')[1];
+  const pdfStr=buildLabelPdf(jpegB64, wPx, hPx, breiteMm, hoeheMm);
   const bytes=new Uint8Array(pdfStr.length);
   for(let i=0;i<pdfStr.length;i++) bytes[i]=pdfStr.charCodeAt(i)&0xff;
   return bytes;
@@ -29657,6 +29692,9 @@ async function modalLeerstandWE(objektId, weNr, vormieterId){
     ${vm?`<button class="btn btn-full" style="margin-bottom:8px" onclick="closeModal();showMieter('${vm.id}')">
       <i class="ti ti-history"></i> Letzten Mieter (Vormieter) ansehen
     </button>`:''}
+    ${istVerwalter()?`<button class="btn btn-full" style="margin-bottom:8px" onclick="closeModal();modalWohnungHeizNk('${objektId}','${escJs(String(weNr))}')">
+      <i class="ti ti-home-cog"></i> Wohnungsinfos & Fotos
+    </button>`:''}
     ${istVerwalter()?`<button class="btn btn-full" style="margin-bottom:8px;border-color:var(--copper);color:var(--copper-d)" onclick="closeModal();modalAushangErstellen('${objektId}','${escJs(String(weNr))}','${vormieterId||''}')">
       <i class="ti ti-printer"></i> Aushang „Wohnung frei" erstellen
     </button>`:''}
@@ -33291,12 +33329,24 @@ function anlageRahmen(titel, untertitel, innerHtml, fussSeiten, bodyClass){
      leere Seite. Am ausgelieferten Vertrag gemessen fehlten 18,4 mm bei 263,8 mm
      Inhaltshoehe, also 6,98 %. Verteilt auf drei Stellschrauben, damit keine
      einzelne den Text zusammendrueckt; die Schriftgroesse bleibt bei 9pt. */
-  body.ds-kompakt{font-size:9pt;line-height:1.27}
+  /* v383: 1.27 -> 1.22. Der Hinweis fuellte 207,9 mm; die Kippgrenze liegt je
+     nach Druckertreiber zwischen 203 und 208 mm. Derselbe Text ergab ueber
+     "Microsoft Print To PDF" ein Blatt, ueber Chrome/Skia zwei - im zweiten
+     Fall stand auf dem Folgeblatt nur die Fusszeile, und der Brief hatte neun
+     statt acht Blatt. Mit 1.22 sind es 200,7 mm und damit in beiden Faellen
+     ein Blatt. Schriftgroesse und Wortlaut bleiben unveraendert.
+     BEIM AENDERN DES TEXTES: mess_ds_varianten.py laufen lassen. */
+  body.ds-kompakt{font-size:9pt;line-height:1.22}
   body.ds-kompakt h1{font-size:14pt}
   body.ds-kompakt .sub{margin-bottom:6px}
   body.ds-kompakt h2{margin:4px 0 2px;font-size:10pt;padding-bottom:1px}
   body.ds-kompakt p{margin:0 0 3px}
   body.ds-kompakt .sig{margin-top:8px}
+  /* v383: Eine Fusszeile allein auf einem Blatt ist immer ein Fehler - sie
+     gehoert unter den Text, auf den sie sich bezieht. Verhindert den
+     Umbruch unmittelbar davor; reicht der Platz wirklich nicht, wandert
+     stattdessen der letzte Absatz mit. */
+  .anlage-vt .foot{page-break-before:avoid;break-before:avoid}
   /* Der Unterschriftsblock darf nicht fuer sich allein umbrechen: entweder er
      passt mit dem Text auf die Seite, oder der Fehler faellt sofort auf. */
   body.ds-kompakt .sig{break-inside:avoid;page-break-inside:avoid}
