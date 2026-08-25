@@ -1225,7 +1225,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=35;   // v242: +buch_journal (F4 GoBD)
-const APP_VERSION = '2026-08-23-v377';
+const APP_VERSION = '2026-08-25-v378';
 /* v364 (12.08.2026) – offene Punkte abgearbeitet.
    1) D1/XLSX_SRI: Der im Code hinterlegte PowerShell-Befehl war FALSCH und
       konnte nie funktionieren - Invoke-WebRequest liefert unter .Content einen
@@ -25170,6 +25170,8 @@ async function modalSerienbriefEigentuemerwechsel(){
       <label style="font-size:12px;display:block"><input type="checkbox" id="ewAnlRueck" checked> Rückantwort (Kontaktdaten, bis drei Personen)</label>
       <label style="font-size:12px;display:block"><input type="checkbox" id="ewAnlSepa" checked> SEPA-Lastschriftmandat</label>
       <label style="font-size:12px;display:block"><input type="checkbox" id="ewAnlDs" checked> Datenschutzhinweis (Art. 13 DSGVO)</label>
+      <label style="font-size:12px;display:block"><input type="checkbox" id="ewAnlHo"> Hausordnung (Informationsfassung, 2 Blatt)</label>
+      <div style="font-size:11px;color:var(--ink-40);margin:2px 0 0">Ohne Unterschriftszeile und ohne die Aussage, sie sei Vertragsbestandteil – eine bestehende Hausordnung im Mietvertrag lässt sich einseitig nicht ersetzen (§ 566 BGB). Verlängert jeden Brief um zwei Seiten.</div>
     </div>
     <div class="f"><label style="font-size:12px"><input type="checkbox" id="ewGleicheIban"> IBAN bleibt unverändert – nur der Empfänger ist neu</label>
       <div style="font-size:11px;color:var(--ink-40);margin:2px 0 8px">Nur ankreuzen, wenn die Kontonummer des Gebäudes tatsächlich dieselbe geblieben ist. Der Brief weist dann ausdrücklich darauf hin, dass im Dauerauftrag nur der Empfängername zu ändern ist.</div>
@@ -25236,14 +25238,17 @@ async function serienbriefEigentuemerwechsel(){
     rueck: !!document.getElementById('ewAnlRueck')?.checked,
     sepa:  !!document.getElementById('ewAnlSepa')?.checked,
     dsgvo: !!document.getElementById('ewAnlDs')?.checked,
-    /* v311: Die Hausordnung geht bei einem Eigentuemerwechsel NICHT mit.
-       Sie bezeichnet sich in § 1 als Bestandteil des Mietvertrages und endet
-       mit einer Anerkennungsunterschrift. Der Erwerber tritt nach § 566 BGB in
-       den BESTEHENDEN Vertrag ein und kann keinen neuen Vertragsbestandteil
+    /* v311 hatte die Hausordnung hier fest auf false gesetzt: Sie bezeichnete
+       sich in § 1 als Bestandteil des Mietvertrages und endete mit einer
+       Anerkennungsunterschrift. Der Erwerber tritt nach § 566 BGB in den
+       BESTEHENDEN Vertrag ein und kann keinen neuen Vertragsbestandteil
        einseitig einfuehren - das widerspraeche auch der Zusage im Brief, dass
-       sich am Mietverhaeltnis nichts aendert. Fuer Neuvertraege bleibt sie im
-       Mietvertrags-Generator erhalten. */
-    hausordnung: false,
+       sich am Mietverhaeltnis nichts aendert.
+       v378: Der Einwand galt der FASSUNG, nicht der Beilage. Mit der
+       Informationsfassung (siehe anlageHausordnungHtml) entfaellt er; die
+       Anlage ist damit waehlbar. Bewusst NICHT vorausgewaehlt - sie belegt
+       zwei zusaetzliche Blatt je Brief. */
+    hausordnung: !!document.getElementById('ewAnlHo')?.checked,
   };
 
   const seiten = [];
@@ -25673,7 +25678,10 @@ async function ewAnlagenFuer(m, anl, opt){
      Kenntnis nehmen, nicht unterschreiben - eine Unterschrift sähe nach
      Einwilligung aus, und die wäre jederzeit widerruflich. */
   if(anl.dsgvo) html += einbetten(anlageDatenschutzHtml(m.objektId, m.weNr, false, {ohneUnterschrift:true}));
-  if(anl.hausordnung) html += einbetten(anlageHausordnungHtml(m.objektId, m.weNr, false));
+  /* v378: Bestandsmieter erhalten die Informationsfassung - ohne
+     Unterschriftsblock und ohne die Aussage, die Hausordnung sei
+     Vertragsbestandteil. Begruendung im Kopf von anlageHausordnungHtml. */
+  if(anl.hausordnung) html += einbetten(anlageHausordnungHtml(m.objektId, m.weNr, false, {information:true}));
   return {html, mitSepa};
 }
 
@@ -33012,18 +33020,33 @@ function anlageMetaZeile(objektId, weNr){
 }
 
 // ── HAUSORDNUNG ───────────────────────────────────────────
-function anlageHausordnungHtml(objektId, weNr, autoDruck){
+/* v378: Zwei Fassungen aus EINEM Text.
+   - Vertragsfassung (Voreinstellung, unveraendert seit v285): Bestandteil des
+     Mietvertrages, mit Anerkennungsunterschrift. Gilt fuer Neuvertraege.
+   - Informationsfassung (opt.information): Beilage zu einem Anschreiben an
+     BESTANDSMIETER. Sie begruendet keine neuen Pflichten, sondern konkretisiert
+     die schon bestehenden aus §§ 535, 241 Abs. 2 BGB und dem Mietvertrag.
+     Ohne Unterschriftsblock - eine Unterschrift saehe nach Zustimmung zu einer
+     Vertragsaenderung aus, die einseitig gar nicht moeglich ist (v311).
+     Betroffen sind vier Stellen: Untertitel, § 1, § 4 (Pflichtenuebertragung)
+     und § 10 (Aenderungsvorbehalt) - genau die Passagen, die etwas ANORDNEN
+     statt zu beschreiben. Der uebrige Wortlaut ist in beiden Fassungen gleich. */
+function anlageHausordnungHtml(objektId, weNr, autoDruck, opt){
+  const info = !!(opt && opt.information);
   const meta = anlageMetaZeile(objektId, weNr);
   const inner = `
-    <div class="eyebrow">Anlage zum Mietvertrag – Hausordnung</div>
+    <div class="eyebrow">${info?'Anlage zum Anschreiben – Hausordnung':'Anlage zum Mietvertrag – Hausordnung'}</div>
     <h1>HAUSORDNUNG</h1>
-    <div class="sub">Anlage und Bestandteil des Wohnraum-Mietvertrages</div>
+    <div class="sub">${info?'Zusammenstellung der geltenden Regeln des Zusammenlebens':'Anlage und Bestandteil des Wohnraum-Mietvertrages'}</div>
     ${meta}
     <h2>§ 1 Geltung und Bedeutung</h2>
-    <p>Diese Hausordnung ist Bestandteil des Mietvertrages. Sie regelt das Zusammenleben aller Hausbewohner und dient dem Schutz des Hausfriedens, der Sicherheit und der Werterhaltung des Gebäudes. Jeder Mieter ist verpflichtet, sie einzuhalten und dafür Sorge zu tragen, dass auch Haushaltsangehörige, Besucher und beauftragte Dritte sie beachten.</p>
-    <p>Ein schuldhafter Verstoß stellt einen vertragswidrigen Gebrauch der Mietsache dar. Der Vermieter kann ihn abmahnen; bei fortgesetzten oder schwerwiegenden Verstößen kommt nach erfolgloser Abmahnung eine ordentliche oder außerordentliche Kündigung nach den §§ 543, 569, 573 BGB in Betracht.</p>
+    ${info
+      ? `<p>Diese Hausordnung fasst die Regeln des Zusammenlebens im Haus zusammen. Sie konkretisiert Pflichten, die bereits aus Ihrem Mietvertrag und aus dem Gesetz folgen – insbesondere die Pflicht zum vertragsgemäßen Gebrauch der Mietsache (§ 535 BGB) und zur gegenseitigen Rücksichtnahme (§ 241 Abs. 2 BGB). <b>Neue oder weitergehende Verpflichtungen werden dadurch nicht begründet; Ihr Mietvertrag bleibt unverändert.</b> Eine Unterschrift ist nicht erforderlich.</p>
+    <p>Wir bitten Sie, die nachstehenden Regeln zu beachten und darauf hinzuwirken, dass auch Haushaltsangehörige, Besucher und beauftragte Dritte sie beachten. Ein schuldhafter Verstoß gegen die zugrunde liegenden vertraglichen oder gesetzlichen Pflichten stellt einen vertragswidrigen Gebrauch der Mietsache dar und kann abgemahnt werden (§ 541 BGB).</p>`
+      : `<p>Diese Hausordnung ist Bestandteil des Mietvertrages. Sie regelt das Zusammenleben aller Hausbewohner und dient dem Schutz des Hausfriedens, der Sicherheit und der Werterhaltung des Gebäudes. Jeder Mieter ist verpflichtet, sie einzuhalten und dafür Sorge zu tragen, dass auch Haushaltsangehörige, Besucher und beauftragte Dritte sie beachten.</p>
+    <p>Ein schuldhafter Verstoß stellt einen vertragswidrigen Gebrauch der Mietsache dar. Der Vermieter kann ihn abmahnen; bei fortgesetzten oder schwerwiegenden Verstößen kommt nach erfolgloser Abmahnung eine ordentliche oder außerordentliche Kündigung nach den §§ 543, 569, 573 BGB in Betracht.</p>`}
     <h2>§ 2 Ruhezeiten und Lärmschutz</h2>
-    <p>Auf die Ruhe und das berechtigte Ruhebedürfnis der Mitbewohner ist jederzeit Rücksicht zu nehmen. Verbindlich gelten folgende Ruhezeiten, die den allgemeinen gesetzlichen Regelungen vorgehen:</p>
+    <p>Auf die Ruhe und das berechtigte Ruhebedürfnis der Mitbewohner ist jederzeit Rücksicht zu nehmen. ${info?'Es gelten die folgenden Ruhezeiten:':'Verbindlich gelten folgende Ruhezeiten, die den allgemeinen gesetzlichen Regelungen vorgehen:'}</p>
     <ul>
       <li>Nachtruhe: täglich von 22:00 bis 6:00 Uhr</li>
       <li>Mittagsruhe: werktags von 13:00 bis 15:00 Uhr</li>
@@ -33037,8 +33060,10 @@ function anlageHausordnungHtml(objektId, weNr, autoDruck){
     <p>Fahrräder, E-Scooter, Kinderwagen und ähnliche Gegenstände dürfen nur an den dafür vorgesehenen Stellen abgestellt werden. Mopeds, Motorräder und sonstige motorisierte Fahrzeuge dürfen nicht in der Wohnung, im Treppenhaus, in Fluren oder in Kellerräumen abgestellt werden.</p>
     <p>Verunreinigungen der Gemeinschaftsflächen sind von dem Verursacher unverzüglich zu beseitigen. Schäden an gemeinschaftlichen Einrichtungen sind dem Vermieter umgehend anzuzeigen.</p>
     <h2>§ 4 Reinigung und Winterdienst</h2>
-    <p>Soweit die Reinigung des Treppenhauses oder bestimmter Bereiche nicht über die Betriebskosten beauftragt ist, obliegt sie den Mietern nach der im Haus üblichen Reihenfolge. Zu reinigen sind insbesondere der eigene Treppenabschnitt, der Zugangsbereich vor der Wohnung sowie zugewiesene Gemeinschaftsbereiche.</p>
-    <p>Ist der Winterdienst (Schnee- und Eisbeseitigung auf den Zugangswegen) den Mietern übertragen, ist er in der üblichen Reihenfolge und in zumutbarem Umfang zu erfüllen. Balkone und zugängliche Außenflächen sind bei Schnee gefahrlos zu räumen.</p>
+    ${info
+      ? `<p>Ob die Reinigung des Treppenhauses und der Winterdienst über die Betriebskosten beauftragt sind oder den Mietern obliegen, richtet sich allein nach Ihrem Mietvertrag. Wo sie den Mietern übertragen sind, erfolgen sie in der im Haus üblichen Reihenfolge und in zumutbarem Umfang. Balkone und zugängliche Außenflächen sind bei Schnee gefahrlos zu räumen.</p>`
+      : `<p>Soweit die Reinigung des Treppenhauses oder bestimmter Bereiche nicht über die Betriebskosten beauftragt ist, obliegt sie den Mietern nach der im Haus üblichen Reihenfolge. Zu reinigen sind insbesondere der eigene Treppenabschnitt, der Zugangsbereich vor der Wohnung sowie zugewiesene Gemeinschaftsbereiche.</p>
+    <p>Ist der Winterdienst (Schnee- und Eisbeseitigung auf den Zugangswegen) den Mietern übertragen, ist er in der üblichen Reihenfolge und in zumutbarem Umfang zu erfüllen. Balkone und zugängliche Außenflächen sind bei Schnee gefahrlos zu räumen.</p>`}
     <h2>§ 5 Müllentsorgung</h2>
     <p>Abfälle sind getrennt und ausschließlich in die dafür vorgesehenen Behälter zu entsorgen. Neben den Tonnen abgestellte Abfälle sind unverzüglich zu beseitigen. Sperrmüll, Elektrogeräte und Sonderabfälle sind vom Mieter eigenverantwortlich und auf eigene Kosten ordnungsgemäß zu entsorgen; sie dürfen nicht im Haus, im Keller oder bei den Mülltonnen abgestellt werden.</p>
     <h2>§ 6 Sicherheit, Haustür und Brandschutz</h2>
@@ -33063,12 +33088,14 @@ function anlageHausordnungHtml(objektId, weNr, autoDruck){
     <h2>§ 9 Tierhaltung</h2>
     <p>Die Tierhaltung richtet sich nach den Vereinbarungen im Mietvertrag. Von gehaltenen Tieren dürfen keine unzumutbaren Störungen, Verunreinigungen oder Gefährdungen ausgehen. Verunreinigungen durch Tiere in Gemeinschaftsbereichen sind sofort zu beseitigen.</p>
     <h2>§ 10 Haftung und Schlussbestimmung</h2>
-    <p>Der Mieter haftet im Rahmen der gesetzlichen Bestimmungen für Schäden, die durch schuldhafte Verstöße gegen diese Hausordnung entstehen. Die Hausordnung kann bei berechtigtem Interesse und unter Wahrung der gesetzlichen Vorgaben angepasst werden; Änderungen werden den Mietern in Textform mitgeteilt.</p>
+    ${info
+      ? `<p>Für Schäden, die durch schuldhafte Verletzung der vertraglichen oder gesetzlichen Pflichten entstehen, haftet der Mieter nach den gesetzlichen Bestimmungen. Eine Änderung dieser Zusammenstellung berührt Ihren Mietvertrag nicht; Anpassungen teilen wir Ihnen in Textform mit.</p>`
+      : `<p>Der Mieter haftet im Rahmen der gesetzlichen Bestimmungen für Schäden, die durch schuldhafte Verstöße gegen diese Hausordnung entstehen. Die Hausordnung kann bei berechtigtem Interesse und unter Wahrung der gesetzlichen Vorgaben angepasst werden; Änderungen werden den Mietern in Textform mitgeteilt.</p>`}
     <p>Sollte eine Bestimmung dieser Hausordnung unwirksam sein, bleibt die Wirksamkeit der übrigen Bestimmungen unberührt; an die Stelle der unwirksamen Bestimmung treten die gesetzlichen Vorschriften.</p>
-    <div class="sig">
+    ${info ? '' : `<div class="sig">
       <p class="anerk">Der Mieter bestätigt mit seiner Unterschrift, diese Hausordnung erhalten zu haben und sie als Bestandteil des Mietvertrages anzuerkennen.</p>
       <div class="sigrow"><div class="sigline">Ort, Datum</div><div class="sigline">Mieter</div></div>
-    </div>
+    </div>`}
     <div class="foot">Nadig Pfau Immobilienverwaltung · Hausordnung</div>
     ${autoDruck?anlageAutoDruck():''}`;
   return anlageRahmen('Hausordnung', '', inner, null, 'ho-kompakt');
