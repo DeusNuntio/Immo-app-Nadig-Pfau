@@ -1230,7 +1230,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=36;   // v391: +benachrichtigungen
-const APP_VERSION = '2026-08-27-v391';
+const APP_VERSION = '2026-08-27-v392';
 /* v364 (12.08.2026) – offene Punkte abgearbeitet.
    1) D1/XLSX_SRI: Der im Code hinterlegte PowerShell-Befehl war FALSCH und
       konnte nie funktionieren - Invoke-WebRequest liefert unter .Content einen
@@ -25057,6 +25057,16 @@ function adressVollNamenVertrag(m){
 }
 
 // ── Briefeditor ──────────────────────────────────────────────
+/* v392: Fettschrift im Brieftext. Bewusst eine Auszeichnung im Text
+   (**so markiert**) und kein Formatierungseditor: ein contenteditable-Feld
+   braeuchte eine HTML-Bereinigung fuer alles, was aus Word oder einer Mail
+   hineinkopiert wird, und die Entwuerfe muessten HTML statt Text speichern.
+   Reihenfolge ist wichtig - erst maskieren, dann auszeichnen, sonst liesse
+   sich ueber den Brieftext beliebiges HTML einschleusen. */
+function briefTextHTML(roh){
+  return esc(String(roh||'')).replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+}
+
 async function modalBrief(mieterId, objektId) {
   let mieter = [];
   if (mieterId) {
@@ -25086,7 +25096,8 @@ async function modalBrief(mieterId, objektId) {
     <div class="f"><label for="briefAnrede">Anrede</label>
       <input type="text" id="briefAnrede" value="${mieterId&&mieter[0]?getAnredeVertragNachname(mieter[0]):'Sehr geehrte Damen und Herren'}"></div>
     <div class="f"><label for="briefText">Inhalt *</label>
-      <textarea spellcheck="true" lang="de" id="briefText" style="min-height:140px" placeholder="Text des Schreibens..."></textarea></div>
+      <textarea spellcheck="true" lang="de" id="briefText" style="min-height:140px" placeholder="Text des Schreibens..."></textarea>
+      <div style="font-size:10px;color:var(--ink-40);margin-top:3px">Fett gedruckt wird, was zwischen zwei Sternchen steht: <code>**wichtiger Hinweis**</code></div></div>
     <div class="f"><label for="briefGruss">Grußformel</label>
       <input type="text" id="briefGruss" value="Mit freundlichen Grüßen"></div>
     <div class="f-section-title" style="margin-top:10px"><i class="ti ti-signature"></i> Unterschrift (optional)</div>
@@ -25095,6 +25106,9 @@ async function modalBrief(mieterId, objektId) {
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="druckeBrief('${mieterId||''}','${objektId||''}')">
         <i class="ti ti-printer"></i> Brief drucken
+      </button>
+      <button class="btn btn-full" onclick="druckeBrief('${mieterId||''}','${objektId||''}',{word:true})">
+        <i class="ti ti-file-type-doc"></i> Als Word speichern
       </button>
       <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
     </div>`);
@@ -25193,7 +25207,8 @@ function anredeMitKomma(a){
   return t + ',';
 }
 
-async function druckeBrief(mieterId, objektId) {
+async function druckeBrief(mieterId, objektId, opt) {
+  opt = opt || {};   // v392
   const betreff = document.getElementById('briefBetreff')?.value?.trim();
   const text    = document.getElementById('briefText')?.value?.trim();
   if (!betreff || !text) { toast('Bitte Betreff und Inhalt eingeben'); return; }
@@ -25263,11 +25278,17 @@ async function druckeBrief(mieterId, objektId) {
         <td class="bk-r">${abs.strasse?esc(abs.strasse)+'<br>':''}${abs.ort?esc(abs.ort)+'<br>':''}${abs.tel?'Tel: '+esc(abs.tel)+'<br>':''}${abs.email?esc(abs.email):''}</td>
       </tr></table>
       <div class="bk-abs">${esc(absRueck)}</div>
-      <div class="bk-anschrift"><strong>${esc(adressVollNamenVertrag(m))}</strong><br>${anschrift}</div>
-      <div class="bk-datum">${esc(obj&&obj.ort?obj.ort.replace(/^\d+\s*/,''):'')}${obj&&obj.ort?', den ':''}${esc(fmtD(datum))}</div>
+      <!-- v392: KEIN esc() um adressVollNamenVertrag - die Funktion liefert
+           bereits maskiertes HTML samt <br>. Das zweite esc() machte aus dem
+           Zeilenumbruch sichtbaren Text; betraf jeden Brief mit zwei
+           Vertragspartnern. -->
+      <div class="bk-anschrift"><strong>${adressVollNamenVertrag(m)}</strong><br>${anschrift}</div>
+      <!-- v392: Ausstellungsort ist der Sitz der Verwaltung, nicht die Lage
+           der Wohnung. Bisher stand hier der Objektort. -->
+      <div class="bk-datum">Hilden, den ${esc(fmtD(datum))}</div>
       <div class="bk-betreff">${esc(betreff)}</div>
       <div class="bk-anrede">${esc(empfAnrede)}</div>
-      <div class="bk-text">${esc(text)}</div>
+      <div class="bk-text">${briefTextHTML(text)}</div>
       <div class="bk-gruss">${esc(gruss)}</div>
       ${sigHTML?`<div class="bk-sigimg">${sigHTML}</div>`:''}
       <div class="bk-sig">${esc(abs.name||'')}</div>
@@ -25276,24 +25297,42 @@ async function druckeBrief(mieterId, objektId) {
 
   const style = `<style>
     *{margin:0;padding:0;box-sizing:border-box}
-    body{font-family:Arial,sans-serif;font-size:12px;color:#111;padding:18mm 20mm;max-width:210mm}
+    /* v392: Raender ueber @page statt body-padding. Das padding wirkt nur
+       EINMAL oben - deshalb klebte der Text auf Seite 2 am Blattrand.
+       @page-Raender greifen auf jeder Seite. */
+    body{font-family:Arial,sans-serif;font-size:12px;color:#111}
     .brief-seite{page-break-after:always}
     .brief-seite:last-child{page-break-after:auto}
-    .bk-kopf{width:100%;border-collapse:collapse;margin-bottom:2mm}
+    /* v392: Geometrie wie beim Eigentuemerwechsel-Brief, damit beide in
+       denselben Umschlag passen. 14 mm Seitenrand oben + 31 mm Kopfhoehe
+       ergeben den Beginn der Ruecksendeangabe bei genau 45 mm; das
+       Anschriftfeld nach DIN 5008 Form B (45-85 mm) liegt damit vollstaendig
+       im Sichtfenster. Gemessen zuvor: Fliesstext begann bei 104,4 mm.
+       Diese Angaben nicht aendern, ohne die Fensterlage neu zu rechnen. */
+    .bk-kopf{width:100%;border-collapse:collapse;height:31mm}
     .bk-kopf td{vertical-align:top;padding:0}
     .bk-kopf .bk-l{width:60%}
     .bk-kopf .bk-r{width:40%;text-align:right;font-size:8px;color:#555}
     .bk-sigimg{margin:2mm 0 4mm}
-    .bk-abs{font-size:7px;color:#777;text-decoration:underline;margin:10mm 0 1mm}
-    .bk-anschrift{font-size:12px;line-height:1.45;min-height:22mm}
-    .bk-datum{text-align:right;font-size:11px;color:#333;margin:6mm 0 8mm}
+    /* 7 pt ist die Mindestgroesse der Post fuer die Ruecksendeangabe. */
+    .bk-abs{font-size:7pt;color:#777;border-bottom:1px solid #ccc;padding-bottom:1mm;margin:0 0 2mm;white-space:nowrap;overflow:hidden}
+    /* min-height, nicht height: bei drei Vertragspartnern mit verschiedenen
+       Nachnamen darf das Feld wachsen, statt die Ortszeile in die Datumszeile
+       laufen zu lassen (Messbefund v330 am EW-Brief). */
+    .bk-anschrift{font-size:10.5pt;line-height:1.4;min-height:18mm;width:85mm}
+    /* Der Abstand haengt am Datum, nicht an der Feldhoehe - min-height wirkt
+       im Geraetedruck nicht zuverlaessig (Messbefund v331). */
+    .bk-datum{text-align:right;font-size:10pt;color:#333;margin:8mm 0 5mm}
     .bk-betreff{font-weight:700;font-size:12px;margin-bottom:6mm}
     .bk-anrede{font-size:12px;margin-bottom:4mm}
     .bk-text{font-size:12px;line-height:1.6;white-space:pre-wrap;margin-bottom:8mm}
     .bk-gruss{font-size:12px;margin-bottom:14mm}
     .bk-sig{font-size:12px}
-    @page{margin:0;size:A4}
-    @media print{body{padding:18mm 20mm;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+    /* v392: Seitenzahl unten mittig. Wird nur eingesetzt, wenn der Brief
+       mehr als eine Seite hat - 'Seite 1 von 1' ist keine Information. */
+    .bk-pz{position:absolute;left:0;right:0;text-align:center;font-size:8pt;color:#777}
+    @page{margin:14mm 18mm 14mm 20mm;size:A4}
+    @media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
   </style>`;
 
   // Auto-Print-Snippet (wird von druckHTML entfernt, im Archiv-Dokument bleibt es weg)
@@ -25303,8 +25342,44 @@ async function druckeBrief(mieterId, objektId) {
   let briefeHTML = '';
   for(const m of empfaenger){ briefeHTML += seiteFuer(m); }
   const dokKopf = `<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8"><title>Brief – ${esc(betreff)}</title>${style}</head><body>`;
-  const druckDok = dokKopf + briefeHTML + autoPrint + '</body></html>';
-  druckHTML(druckDok);
+
+  /* v392: Seitenzahlen. Chromium kennt kein counter(pages) in @page, deshalb
+     misst dieses Skript im fertigen Dokument die Hoehe jedes Briefes und legt
+     die Fusszeilen ab. Nutzflaeche = 297 mm minus 14 mm Rand oben und unten.
+     Bleibt es bei einer Seite, wird nichts gesetzt. */
+  const pzSkript = '<scr'+'ipt>(function(){try{'
+    + 'var mm=(function(){var d=document.createElement("div");d.style.width="100mm";'
+    + 'd.style.position="absolute";d.style.visibility="hidden";document.body.appendChild(d);'
+    + 'var w=d.getBoundingClientRect().width;d.remove();return w/100;})();'
+    + 'var NUTZ=269*mm;'
+    + 'Array.prototype.forEach.call(document.querySelectorAll(".brief-seite"),function(el){'
+    + 'var n=Math.ceil(el.getBoundingClientRect().height/NUTZ);if(n<2)return;'
+    + 'el.style.position="relative";'
+    + 'for(var i=1;i<=n;i++){var f=document.createElement("div");f.className="bk-pz";'
+    + 'f.style.top=((i*NUTZ)-6*mm)+"px";f.textContent="Seite "+i+" von "+n;el.appendChild(f);}'
+    + '});}catch(e){}})()</scr'+'ipt>';
+
+  const druckDok = dokKopf + briefeHTML + pzSkript + autoPrint + '</body></html>';
+
+  /* Word: dieselbe Vorlage, nur als Datei. Ein echtes .docx braeuchte eine
+     Fremdbibliothek, die die App bisher nicht laedt; Word oeffnet HTML mit
+     dieser Kennzeichnung zuverlaessig und behaelt Fettung und Umbrueche.
+     Die Seitenzahlen entfallen dort - sie entstehen erst beim Druck, und
+     Word setzt eigene. */
+  if(opt.word){
+    const wordDok = '<!DOCTYPE html><html xmlns:w="urn:schemas-microsoft-com:office:word" lang="de">'
+      + `<head><meta charset="UTF-8"><title>${esc(betreff)}</title>${style}</head><body>`
+      + briefeHTML + '</body></html>';
+    const blob = new Blob(['\ufeff' + wordDok], {type:'application/msword'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = (betreff.replace(/[^\wäöüÄÖÜß -]/g,'').trim() || 'Brief') + '.doc';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(a.href), 4000);
+    toast('Word-Datei gespeichert ✓');
+  } else {
+    druckHTML(druckDok);
+  }
 
   // Jeden Brief einzeln archivieren (vollständiges Dokument inkl. Auto-Print für späteres Öffnen)
   for(const m of empfaenger){
