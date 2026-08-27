@@ -1218,14 +1218,19 @@ const STORE_DEFS = {
   buch_regeln:         { sync:true, merge:true, index:['schluessel','kontoId'] },
   buchungs_batches:    { sync:true, merge:true, index:['kontoId'] },
   buch_journal:        { sync:true, merge:true, index:['buchungId','kontoId'] },   // v242 (F4, GoBD)
+  /* v391: Meldungen an die Verwaltung. EIN Store fuer beide Arten
+     ('aenderungsvorschlag', 'briefkopie') - unterschieden ueber 'art'.
+     Zwei Stores waeren doppelte Pflege bei Anlage, Sync, Merge, Backup
+     und Zaehlung, und der Dashboard-Hinweis muesste beide addieren. */
+  benachrichtigungen:  { sync:true, merge:true, index:['status','art','mieterId'] },   // v391
 };
 /* Abgeleitete Listen – NIE separat pflegen. */
 const STORES_ALLE  = Object.keys(STORE_DEFS);                                     // DB-Anlage
 const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);                 // Backup + Sync + Snapshot
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
-const DB_NAME='immo_v2', DB_VER=35;   // v242: +buch_journal (F4 GoBD)
-const APP_VERSION = '2026-08-25-v386';
+const DB_NAME='immo_v2', DB_VER=36;   // v391: +benachrichtigungen
+const APP_VERSION = '2026-08-27-v391';
 /* v364 (12.08.2026) – offene Punkte abgearbeitet.
    1) D1/XLSX_SRI: Der im Code hinterlegte PowerShell-Befehl war FALSCH und
       konnte nie funktionieren - Invoke-WebRequest liefert unter .Content einen
@@ -3133,6 +3138,7 @@ registerActions({ selbstAusblenden, elternAusblenden, alsManuellMarkieren });
    unten im Skript stehen und hier noch nicht deklariert sind. */
 document.addEventListener('DOMContentLoaded', () => {
   registerActions({ closeModal, nav, objTab, switchSettingsTab, openFoto });
+  registerActions({ modalBenachrichtigungen });   // v391
 });
 /* v297 (R11 Etappe 2): 196 Handler ohne Argumente. Die Namen werden zur
    Laufzeit aufgeloest - eine fest verdrahtete Liste waere beim naechsten
@@ -4063,6 +4069,29 @@ async function renderDash() {
       </div></div>`;
   }
 
+  /* v391: Offene Meldungen der Hausmeister - Aenderungsvorschlaege und
+     Briefkopien. Nur fuer Verwalter, und nur wenn es welche gibt. */
+  if (istVerwalter()) {
+    const _bn = await benachrichtigungenOffen();
+    if (_bn.length) {
+      const _vor = _bn.filter(x=>x.art==='aenderungsvorschlag').length;
+      const _bri = _bn.filter(x=>x.art==='briefkopie').length;
+      const _teile = [];
+      if(_vor) _teile.push(_vor+' Änderungsvorschlag'+(_vor===1?'':'e'));
+      if(_bri) _teile.push(_bri+' Briefkopie'+(_bri===1?'':'n'));
+      html += `<div class="card" style="cursor:pointer;margin-bottom:10px;border-left:4px solid var(--copper)"
+                    data-action-click="modalBenachrichtigungen">
+        <div style="display:flex;align-items:center;gap:10px">
+          <i class="ti ti-bell" style="font-size:20px;color:var(--copper)"></i>
+          <div style="flex:1">
+            <div style="font-weight:600;font-size:13px">${esc(_teile.join(' · '))}</div>
+            <div style="font-size:11px;color:var(--ink-40)">vom Hausmeister &middot; tippen zum Öffnen</div>
+          </div>
+          <i class="ti ti-chevron-right" style="color:var(--ink-40)"></i>
+        </div></div>`;
+    }
+  }
+
   if (setting) {
     html += `<div style="font-size:11px;color:var(--ink-40);margin-bottom:10px;display:flex;align-items:center;gap:4px">
       <i class="ti ti-refresh" style="font-size:12px"></i> ${setting.value}
@@ -4360,6 +4389,35 @@ async function getMyObjekte(){
 ═══════════════════════════════════════════════════════════ */
 function istVerwalter(u){ const r=(u||CU)?.role; return r==='admin'||r==='eigentuemer'; }
 function istSystemAdmin(u){ return (u||CU)?.role==='admin'; }
+function istHausmeister(u){ return (u||CU)?.role==='hm'; }
+
+/* ── v389: Zwei Rechte, die bis v388 nur an der Oberflaeche haengen ──────
+   Der Hausmeister arbeitet operativ am Objekt. Die Mieterakte enthaelt
+   daneben Vertrags- und Nachweisunterlagen, die ihn nichts angehen:
+   Mietvertraege, Bescheinigungen, Schriftverkehr. Bis v388 fuehrte der
+   Knopf 'Archiv & Dokumente' ihn dort hinein, und die
+   Wohnungsgeberbescheinigung (§ 19 BMG) konnte er selbst ausstellen -
+   eine Erklaerung des VERMIETERS gegenueber der Meldebehoerde, fuer die er
+   nicht einstehen kann.
+
+   Beide Funktionen pruefen ab v389 selbst. Der ausgeblendete Knopf allein
+   ist keine Berechtigung: die Aufrufe stehen als Zeichenkette im Dokument
+   und lassen sich von Hand ausloesen. */
+function darfMieterDokumente(u){ return istVerwalter(u); }
+function darfBescheinigungen(u){ return istVerwalter(u); }
+
+/* Wessen Unterschrift darf unter ein Dokument?
+   Verwalter: alle hinterlegten Admin-Unterschriften (unveraendert).
+   Hausmeister: ausschliesslich die eigene - eine fremde Unterschrift unter
+   ein Schreiben zu setzen, ist keine Frage der Bequemlichkeit.
+   Als Praedikat gebaut, damit es sowohl in filter() als auch in den
+   Sammelstellen dieselbe Antwort gibt; die Sammelstellen pruefen erneut,
+   weil die Auswahl-Ids im Fensterobjekt liegen. */
+function sigErlaubt(u){
+  if(!u || !u.signatur) return false;
+  if(istVerwalter()) return u.role==='admin';
+  return !!(CU && u.id === CU.id);
+}
 
 /* ── v336 (R50): Gerätebindung ──────────────────────────────────────
    Ist eine Bindung gesetzt, kann sich auf DIESEM Gerät nur der gebundene
@@ -8136,6 +8194,90 @@ async function weAbweichung(objektId, weListe){
   }catch(_){ return null; }
 }
 
+/* ══ WE-NUMMERN: HARTE SPERRE GEGEN VERSEHENTLICHE NEUANLAGE (v387) ══════
+   Anlass: In den Mieterakten von Inrather Str. 181 standen WE 31 und WE 61
+   neben den echten 1–12 – vertippte weNr, die niemand bemerkt hat. Sie
+   erzeugten überzählige QR-Blätter, OneDrive-Ordner und Einträge in der
+   Zahlungszuordnung. Der Fehler entsteht bei der EINGABE; dort gehört er
+   abgefangen.
+
+   Maßstab ist objekt_stamm.wohneinheiten. Eine WE-Nr., die es im Objekt noch
+   nicht gibt, wird nur angenommen, solange diese Anzahl nicht ausgeschöpft
+   ist. Für eine echte zusätzliche Wohnung ist zuerst die Anzahl in den
+   Objekt-Stammdaten zu erhöhen – ein bewusster Schritt statt eines
+   unbemerkten Zahlendrehers. */
+
+/* Bestand der WE eines Objekts aus den Mieterakten – bewusst INKLUSIVE
+   Vormieter und Leerstand: eine Wohnung ist nicht "neu", nur weil sie gerade
+   unvermietet ist. */
+async function weBestandVonObjekt(objektId){
+  const alle = await idbGetAll('mieter').catch(()=>[]);
+  const set = new Set();
+  for(const m of (alle||[])){
+    if(!m || String(m.objektId||'') !== String(objektId)) continue;
+    const w = String(m.weNr||'').trim();
+    if(w && w!=='undefined') set.add(w);
+  }
+  return [...set].sort((a,b)=>{ const na=Number(a), nb=Number(b);
+    return (!isNaN(na)&&!isNaN(nb)) ? na-nb : String(a).localeCompare(String(b),'de'); });
+}
+
+/* Lesbare Kurzform des Bestands: "WE 1–12" bei lückenloser Folge, sonst eine
+   Aufzählung. Steht in der Fehlermeldung, damit sofort erkennbar ist, welche
+   Nummern das Objekt überhaupt führt. */
+function weBereichText(bestand){
+  const zahlen = bestand.map(Number).filter(n=>!isNaN(n)).sort((a,b)=>a-b);
+  if(zahlen.length !== bestand.length || zahlen.length === 0) return 'WE ' + bestand.join(', ');
+  const lueckenlos = zahlen.every((n,i)=> i===0 || n === zahlen[i-1]+1);
+  return lueckenlos && zahlen.length > 1
+    ? `WE ${zahlen[0]}–${zahlen[zahlen.length-1]}`
+    : 'WE ' + zahlen.join(', ');
+}
+
+/* Prüfung vor dem Speichern. {ok:true} oder {ok:false, grund}. */
+async function wePruefung(objektId, weNr){
+  const w = String(weNr||'').trim();
+  if(!w) return {ok:false, grund:'Bitte eine WE-Nr. angeben.'};
+  const bestand = await weBestandVonObjekt(objektId);
+  if(bestand.includes(w)) return {ok:true};           // vorhandene Wohnung
+  const s = await idbGet('objekt_stamm', objektId).catch(()=>null);
+  const anz = parseInt(s && s.wohneinheiten);
+  if(isNaN(anz) || anz <= 0){
+    return {ok:false, grund:'Für dieses Objekt ist keine Anzahl Wohneinheiten hinterlegt. '
+      + 'Bitte zuerst in den Objekt-Stammdaten eintragen, dann die Wohnung anlegen.'};
+  }
+  if(bestand.length >= anz){
+    return {ok:false, grund:`WE ${w} gibt es in diesem Objekt nicht. Vorhanden sind `
+      + `${bestand.length} von ${anz} Wohneinheiten (${weBereichText(bestand)}). `
+      + 'Für eine zusätzliche Wohnung zuerst die Anzahl in den Objekt-Stammdaten erhöhen.'};
+  }
+  return {ok:true};
+}
+
+/* Füllt das WE-Auswahlfeld im Bearbeiten-Dialog. Bewusst OHNE Option
+   "neue Wohneinheit": Beim Bearbeiten ordnet man einen Mieter einer anderen
+   BESTEHENDEN Wohnung zu. Eine zusätzliche Wohnung entsteht über "Neuen
+   Mieter anlegen" – dort ist der Schritt sichtbar und wird geprüft. */
+async function weSelectFuellen(objektId, aktuell){
+  const sel = document.getElementById('mWeNr');
+  if(!sel || sel.tagName !== 'SELECT') return;
+  const bestand = await weBestandVonObjekt(objektId);
+  const akt = String(aktuell||'').trim();
+  if(akt && !bestand.includes(akt)) bestand.push(akt);   // Altbestand nie verlieren
+  const alle = await idbGetAll('mieter').catch(()=>[]);
+  const belegt = {};
+  for(const m of (alle||[])){
+    if(!m || String(m.objektId||'') !== String(objektId)) continue;
+    const w = String(m.weNr||'').trim();
+    if(!w || m._vormieter) continue;
+    if(!belegt[w] && m.mieter && !m.leerstand) belegt[w] = String(m.mieter);
+  }
+  sel.innerHTML = bestand.map(w =>
+    `<option value="${esc(w)}"${w===akt?' selected':''}>WE ${esc(w)}`
+    + (belegt[w] ? ' · ' + esc(belegt[w].slice(0,28)) : ' · frei') + '</option>').join('');
+}
+
+
 // Export EINER Dashboard-Gruppe (Standort) als ZIP.
 async function wohnungsQrStandortZip(gruppenId){
   const grp=DASH_GRUPPEN.find(g=>g.id===gruppenId);
@@ -8542,15 +8684,18 @@ async function renderMail(){
     el.innerHTML = '<div class="empty"><i class="ti ti-lock"></i><p>Der Posteingang ist nur für Verwalter verfügbar.</p></div>';
     return;
   }
-  const tab = window._mailTab || 'sa';
+  /* v389: Reihenfolge nach Nutzungshaeufigkeit - das Postfach zuerst, dann
+     die Website-Nachrichten, dann die Selbstauskuenfte. Startreiter ist
+     jetzt das Postfach; 'sa' bleibt als Wert gueltig. */
+  const tab = window._mailTab || 'postfach';
   el.innerHTML = `
     <div class="tab-bar" style="margin-bottom:12px">
-      <button class="tab-btn ${tab==='sa'?'active':''}" onclick="setMailTab('sa')"><i class="ti ti-file-description"></i> Selbstauskünfte <span id="mailCountSa"></span></button>
       <button class="tab-btn ${tab==='postfach'?'active':''}" onclick="setMailTab('postfach')"><i class="ti ti-mail"></i> E-Mail <span id="mailCountMail"></span></button>
       <button class="tab-btn ${tab==='nachrichten'?'active':''}" onclick="setMailTab('nachrichten')"><i class="ti ti-message"></i> Website-Nachrichten <span id="mailCountMsg"></span></button>
+      <button class="tab-btn ${tab==='sa'?'active':''}" onclick="setMailTab('sa')"><i class="ti ti-file-description"></i> Selbstauskünfte <span id="mailCountSa"></span></button>
       <button class="tab-btn ${tab==='mieter'?'active':''}" onclick="setMailTab('mieter')"><i class="ti ti-mail-fast"></i> Mieter-Mail</button>
       <button class="tab-btn ${tab==='token'?'active':''}" onclick="setMailTab('token')"><i class="ti ti-send"></i> Link senden</button>
-      <button class="tab-btn ${tab==='papierkorb'?'active':''}" onclick="setMailTab('papierkorb')"><i class="ti ti-trash"></i> Papierkorb</button>
+      <button class="tab-btn ${tab==='papierkorb'?'active':''}" onclick="setMailTab('papierkorb')"><i class="ti ti-archive"></i> Ablage</button>
     </div>
     <div id="mailBody"><p style="font-size:13px;color:var(--ink-40)">Lade …</p></div>`;
   const body = document.getElementById('mailBody');
@@ -8957,7 +9102,8 @@ async function mailRenderNachrichten(body){
       ${n.nachricht||n.text?`<div style="font-size:13px;color:var(--ink);margin-top:8px;white-space:pre-wrap;line-height:1.5">${esc(n.nachricht||n.text)}</div>`:''}
       <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
         ${n.email?`<button class="btn btn-sm btn-primary" onclick="websiteNachrichtAntworten('${escJs(n.email)}','${escJs(n.name||'')}')"><i class="ti ti-mail-forward"></i> Antworten</button>`:''}
-        <button class="btn btn-sm" onclick="mailNachrichtErledigt('${escJs(n.id||'')}', this)"><i class="ti ti-check"></i> Erledigt</button>
+        <button class="btn btn-sm" onclick="mailNachrichtAblegen('${escJs(n.id||'')}','erledigt',this)"><i class="ti ti-check"></i> Erledigt</button>
+        <button class="btn btn-sm" onclick="mailNachrichtAblegen('${escJs(n.id||'')}','geloescht',this)"><i class="ti ti-trash"></i> Papierkorb</button>
       </div>
     </div>`;
   }
@@ -8967,7 +9113,16 @@ async function mailRenderNachrichten(body){
 // Website-Nachricht als gelesen/verarbeitet markieren (optimistisch).
 // Backend-Route /api/inbox-mark-read. Seit v272 (P8-A) wird der HTTP-Status geprüft:
 // bei Fehlschlag wird das optimistische Ausblenden zurückgenommen (Kommentar war veraltet).
-async function mailNachrichtErledigt(id, btn){
+/* v389: 'Erledigt' und 'Papierkorb' fuehren serverseitig in dieselbe
+   Ablage-Tabelle, unterschieden ueber das Feld 'ablage' (Backend v376).
+   Getrennte Tabellen waeren die zweite Wahrheit ueber denselben Vorgang -
+   dasselbe Muster, das beim Postfach ueber einen Ordnerwert geloest ist.
+   Ein aelteres Backend ignoriert das Feld; dann verhaelt sich beides wie
+   bisher, und es geht nichts verloren. */
+async function mailNachrichtAblegen(id, ablage, btn){
+  return mailNachrichtErledigt(id, btn, ablage);
+}
+async function mailNachrichtErledigt(id, btn, ablage){
   if(!id){ toast('Keine ID'); return; }
   const karte = btn && btn.closest ? btn.closest('div[style*="border"]') : null;
   // optimistisch ausblenden
@@ -8982,17 +9137,17 @@ async function mailNachrichtErledigt(id, btn){
          Ausblenden jetzt zurückgenommen und KEIN Erfolg gemeldet. */
       const r = await fetchMitTimeout(BACKEND_AZURE+'/api/inbox-mark-read',{
         method:'POST', headers:{'Content-Type':'application/json','x-functions-key':key},
-        body:JSON.stringify({ id })
+        body:JSON.stringify({ id, ablage: (ablage==='geloescht' ? 'geloescht' : 'erledigt') })
       });
       if(!r || !r.ok) throw new Error('HTTP '+(r ? r.status : 'ohne Antwort'));
     }catch(err){
       console.warn('Nachricht als erledigt markieren:', err);   // v244 (R26)
       if(karte) karte.style.display='';
-      toast('„Erledigt“ konnte am Server nicht gespeichert werden – bitte später erneut versuchen.', 5000);
+      toast('Die Ablage konnte am Server nicht gespeichert werden – bitte später erneut versuchen.', 5000);
       return;
     }
   }
-  toast('Als erledigt markiert ✓');
+  toast(ablage==='geloescht' ? 'In den Papierkorb ✓' : 'Als erledigt markiert ✓');
   _mailBadgeLetzter = 0;            // Badge sofort neu zählen lassen
   updateMailBadge();
 }
@@ -9212,8 +9367,9 @@ async function tenantMailSenden(){
 }
 
 /* ── Papierkorb: gelöschte Website-Nachrichten (serverseitig via /api/inbox-trash) ── */
+function setMailAblageSicht(v){ window._mailAblageSicht = v; renderMail(); }
 async function mailRenderPapierkorb(body){
-  body.innerHTML='<p style="font-size:13px;color:var(--ink-40)">Lade Papierkorb …</p>';
+  body.innerHTML='<p style="font-size:13px;color:var(--ink-40)">Lade Ablage …</p>';
   const key=(await idbGet('settings','backendKey').catch(()=>null))?.value;
   let liste=[];
   try{
@@ -9221,12 +9377,22 @@ async function mailRenderPapierkorb(body){
     if(res.ok) liste=await res.json().catch(()=>[]);
   }catch(e){ console.warn('Papierkorb laden:', e); }   // v244 (R26)
   if(!Array.isArray(liste)) liste=[];
+  /* v389: Nachrichten, die als 'erledigt' abgelegt wurden, stehen in
+     derselben Tabelle wie die geloeschten. Der Umschalter trennt beide
+     Sichten; Eintraege aus der Zeit vor v389 tragen kein Feld 'ablage' und
+     gelten als erledigt - so, wie der einzige Knopf damals hiess. */
+  const sicht = window._mailAblageSicht || 'erledigt';
+  const kopf = `<div style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap">
+      <button class="btn btn-sm ${sicht==='erledigt'?'btn-primary':''}" onclick="setMailAblageSicht('erledigt')"><i class="ti ti-check"></i> Erledigt</button>
+      <button class="btn btn-sm ${sicht==='geloescht'?'btn-primary':''}" onclick="setMailAblageSicht('geloescht')"><i class="ti ti-trash"></i> Papierkorb</button>
+    </div>`;
+  liste = (liste||[]).filter(n => ((n && n.ablage) || 'erledigt') === sicht);
   if(!liste.length){
-    body.innerHTML=`<div class="empty"><i class="ti ti-trash"></i><p>Papierkorb ist leer.</p>
+    body.innerHTML=kopf+`<div class="empty"><i class="ti ti-trash"></i><p>${sicht==='geloescht'?'Papierkorb ist leer.':'Nichts als erledigt abgelegt.'}</p>
       <p style="font-size:11px;color:var(--ink-40)">Erledigte/gelöschte Nachrichten erscheinen hier 30 Tage lang und können wiederhergestellt werden. Setzt den Endpunkt <code>/api/inbox-trash</code> voraus.</p></div>`;
     return;
   }
-  body.innerHTML=liste.map(n=>`
+  body.innerHTML=kopf+liste.map(n=>`
     <div style="background:var(--white);border:1px solid var(--ink-10);border-radius:10px;padding:11px 13px;margin-bottom:7px">
       <div style="font-size:13px;font-weight:600">${esc(n.name||n.email||'Nachricht')}</div>
       <div style="font-size:12px;color:var(--ink-60);margin:4px 0">${esc((n.nachricht||n.text||'').slice(0,200))}</div>
@@ -15258,7 +15424,7 @@ ${nurTg?'':`
       ${nurTg&&tgListe.length?`<div class="det-field"><label>TG-Miete gesamt</label><span>${fmtEur(tgListe.reduce((a,sp)=>a+(Number(sp.miete)||0),0))}/Mon.</span></div>`:''}
       ${m.uebergabe?`<div class="det-field"><label>Übergabe</label><span>${esc(m.uebergabe)}</span></div>`:''}
       ${istVerwalter()&&m.vertragsmodell?`<div class="det-field"><label>Vertragsmodell</label><span>${esc(m.vertragsmodell)}</span></div>`:''}
-      ${istVerwalter()&&m.krKlausel==='Ja'?`<div class="det-field"><label>KR-Klausel</label><span>${fmtEur(m.krHoehe)} je Fall · ${m.krProzent?m.krProzent+'%':'–'}${m.krMaxEuro?' (max. '+fmtEur(m.krMaxEuro)+'/Jahr)':' p.a.'}</span></div>`:''}
+      ${istVerwalter()&&(m.krKlausel==='Ja'||(!m.krKlausel&&(m.krHoehe||m.krProzent||m.krMaxEuro)))?`<div class="det-field"><label>KR-Klausel${!m.krKlausel?' · <span style="color:var(--amber)">ungeprüft</span>':''}</label><span>${fmtEur(m.krHoehe)} je Fall · ${m.krProzent?m.krProzent+'%':'–'}${m.krMaxEuro?' (max. '+fmtEur(m.krMaxEuro)+'/Jahr)':' p.a.'}</span></div>`:''}
       ${m.telefon?`<div class="det-field"><label>Telefon</label><span><a href="${telHref(m.telefon)}">${esc(m.telefon)}</a></span></div>`:''}
       ${m.email?`<div class="det-field"><label>E-Mail</label><span><a href="${mailHref(m.email)}">${esc(m.email)}</a></span></div>`:''}
     </div>
@@ -15313,9 +15479,9 @@ ${nurTg?'':`
     ${istVerwalter()?`<button class="btn btn-sm" onclick="modalKautionsquittung('${m.id}')"><i class="ti ti-receipt"></i> Kautionsquittung</button>`:''}
     ${istVerwalter()?`<button class="btn btn-sm" onclick="modalKautionsabrechnung('${m.id}')"><i class="ti ti-file-invoice"></i> Kautionsabrechnung</button>`:''}`;
     const gDokumente = `
-    <button class="btn btn-sm" onclick="showMieterDokumente('${m.id}')"><i class="ti ti-paperclip"></i> Archiv & Dokumente</button>
+    ${darfMieterDokumente()?`<button class="btn btn-sm" onclick="showMieterDokumente('${m.id}')"><i class="ti ti-paperclip"></i> Archiv & Dokumente</button>`:''}
     ${istVerwalter()?`<button class="btn btn-sm" onclick="modalMietbescheinigung('${m.id}')"><i class="ti ti-receipt-2"></i> Mietbescheinigung</button>`:''}
-    <button class="btn btn-sm" onclick="druckeWohnungsgeberBescheinigung('${m.id}')"><i class="ti ti-file-certificate"></i> WGB</button>
+    ${darfBescheinigungen()?`<button class="btn btn-sm" onclick="druckeWohnungsgeberBescheinigung('${m.id}')"><i class="ti ti-file-certificate"></i> WGB</button>`:''}
     <button class="btn btn-sm" onclick="modalBrief('${m.id}','${m.objektId}')"><i class="ti ti-mail"></i> Brief</button>`;
     const gWohnung = `
     ${istVerwalter()?`<button class="btn btn-sm" onclick="modalWohnungHeizNk('${m.objektId}','${escJs(String(m.weNr||''))}')"><i class="ti ti-home-cog"></i> Wohnungsinfos</button>`:''}
@@ -15329,7 +15495,7 @@ ${nurTg?'':`
     ${m._vormieterId?`<button class="btn btn-sm" onclick="zeigeVormieter('${m._vormieterId}')"><i class="ti ti-history"></i> Vormieter</button>`:(istVerwalter()&&!m._vormieter&&!m._zukuenftig?`<button class="btn btn-sm" onclick="modalVormieterAnlegen('${m.id}')"><i class="ti ti-history"></i> Vormieter anlegen</button>`:'')}
     ${m._vormieter?`<button class="btn btn-sm" onclick="modalNeueAdresse('${m.id}')"><i class="ti ti-map-pin"></i> Neue Anschrift</button>`:''}
     ${(m._vormieter&&istVerwalter())?`<button class="btn btn-sm btn-copper" onclick="mieterReaktivieren('${m.id}')"><i class="ti ti-rotate-2"></i> Als aktuellen Mieter reaktivieren</button>`:''}
-    <button class="btn btn-sm btn-danger" onclick="deleteMieterConfirm('${m.id}')"><i class="ti ti-trash"></i></button>`;
+    ${istVerwalter()?`<button class="btn btn-sm btn-danger" onclick="deleteMieterConfirm('${m.id}')"><i class="ti ti-trash"></i></button>`:''}`;
     const grp = (label, html) => html.trim()
       ? `<div style="font-size:10.5px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-40);margin:0 0 5px">${label}</div><div style="display:flex;gap:7px;flex-wrap:wrap;margin-bottom:11px">${html}</div>`
       : '';
@@ -17062,6 +17228,10 @@ function fmtBytes(b) {
 }
 
 async function showMieterDokumente(mieterId) {
+  /* v389: Der Hausmeister sieht die Mieterakte, aber nicht ihre Unterlagen.
+     Geprueft wird hier und nicht nur am Knopf - der Aufruf steht als
+     Zeichenkette im Dokument. */
+  if(!darfMieterDokumente()){ toast('Archiv und Dokumente sind den Verwaltern vorbehalten'); return; }
   const m = await idbGet('mieter', mieterId);
   if (!m) return;
   const obj = getObj(m.objektId);
@@ -18708,7 +18878,7 @@ async function populateNkaSigPick(){
   const wrap=document.getElementById('nkaSigPick');
   if(!wrap) return;
   const users=await idbGetAll('users');
-  const admins=users.filter(u=>u.role==='admin'&&u.signatur);
+  const admins=users.filter(sigErlaubt);   // v389
   if(!admins.length){
     wrap.innerHTML='<div style="font-size:11px;color:var(--amber)">Keine hinterlegten Unterschriften gefunden. Unter „Mein Profil“ kann eine Unterschrift hinterlegt werden.</div>';
     window._nkaSigUserIds=[];
@@ -18746,7 +18916,7 @@ async function nkaGewaehlteSignaturen(){
   const out=[];
   for(const id of ids){
     const u=await idbGet('users',id).catch(()=>null);
-    if(u&&u.signatur) out.push({name:u.name||'', signatur:await sigDruckbild(u)});
+    if(sigErlaubt(u)) out.push({name:u.name||'', signatur:await sigDruckbild(u)});   // v389
   }
   return out;
 }
@@ -19752,7 +19922,7 @@ async function populateNkaLgSigPick(){
   const wrap=document.getElementById('nkaLgSigPick');
   if(!wrap) return;
   const users=await idbGetAll('users');
-  const admins=users.filter(u=>u.role==='admin'&&u.signatur);
+  const admins=users.filter(sigErlaubt);   // v389
   if(!admins.length){ wrap.innerHTML='<div style="font-size:11px;color:var(--amber)">Keine hinterlegten Unterschriften.</div>'; window._nkaLgSigIds=[]; return; }
   if(!window._nkaLgSigIds.length && admins.some(u=>u.id===CU?.id)) window._nkaLgSigIds=[CU.id];
   wrap.innerHTML=admins.map(u=>`
@@ -19774,7 +19944,7 @@ function nkaLgSigToggle(userId, checked){
 async function nkaLgGewaehlteSignaturen(){
   const ids=(window._nkaLgSigIds||[]).slice(0,2); const out=[];
   const _uMap=new Map((await idbGetAll('users').catch(()=>[])).map(u=>[u.id,u]));  // B6: einmal laden
-  for(const id of ids){ const u=_uMap.get(id); if(u&&u.signatur) out.push({name:u.name||'',signatur:await sigDruckbild(u)}); }
+  for(const id of ids){ const u=_uMap.get(id); if(sigErlaubt(u)) out.push({name:u.name||'',signatur:await sigDruckbild(u)}); }   // v389
   return out;
 }
 
@@ -23005,6 +23175,9 @@ const WOGG_LAGE2=['Vorne','Hinten','Flügel','Anbau'];
 
 // ── Mietbescheinigung §23 Abs.3 WoGG: Dialog ──
 async function modalMietbescheinigung(mieterId){
+  /* v389: war bereits nur ueber Verwalter-Knoepfe erreichbar - jetzt auch
+     gegen den direkten Aufruf abgesichert. */
+  if(!darfBescheinigungen()){ toast('Die Mietbescheinigung stellt die Verwaltung aus'); return; }
   if(!istVerwalter()){ toast('Nur für Admins'); return; }
   const m=await idbGet('mieter',mieterId); if(!m){ toast('Mieter nicht gefunden'); return; }
   const obj=getObj(m.objektId);
@@ -23025,7 +23198,7 @@ async function modalMietbescheinigung(mieterId){
   if(!w.warmwasser){ const _ww=mbWarmwasserAusVariante(_mbHeizVar); if(_ww) w.warmwasser=_ww; }
   // Punkt 2.2: Unterschriften-Auswahl wie bei der WGB (max. 2 hinterlegte Admin-Signaturen)
   const _users=await idbGetAll('users').catch(()=>[]);
-  const _admins=_users.filter(u=>u.role==='admin' && u.signatur);
+  const _admins=_users.filter(sigErlaubt);   // v389
   window._mbSigUserIds=(_admins.some(u=>u.id===CU?.id))?[CU.id]:[];
   const mbSigListe=_admins.length
     ? _admins.map(u=>`
@@ -23162,7 +23335,7 @@ async function mbGewaehlteSignaturen(){
   const ids=(window._mbSigUserIds||[]).slice(0,2);
   const out=[];
   const _uMap=new Map((await idbGetAll('users').catch(()=>[])).map(u=>[u.id,u]));  // B6: einmal laden
-  for(const id of ids){ const u=_uMap.get(id); if(u&&u.signatur) out.push({name:u.name||'', signatur:await sigDruckbild(u)}); }
+  for(const id of ids){ const u=_uMap.get(id); if(sigErlaubt(u)) out.push({name:u.name||'', signatur:await sigDruckbild(u)}); }   // v389
   return out;
 }
 
@@ -24013,11 +24186,15 @@ async function kqVersandKopiere(){
 }
 
 async function druckeWohnungsgeberBescheinigung(mieterId){
+  /* v389: Die Wohnungsgeberbescheinigung nach § 19 BMG ist eine Erklaerung
+     des Vermieters gegenueber der Meldebehoerde. Sie darf nicht vom
+     Hausmeister ausgestellt werden. */
+  if(!darfBescheinigungen()){ toast('Die Wohnungsgeberbescheinigung stellt die Verwaltung aus'); return; }
   if(!istVerwalter()){ toast('Nur für Admins'); return; }
   const m = await idbGet('mieter', mieterId);
   if(!m){ toast('Mieter nicht gefunden'); return; }
   const users = await idbGetAll('users').catch(()=>[]);
-  const admins = users.filter(u=>u.role==='admin' && u.signatur);
+  const admins = users.filter(sigErlaubt);   // v389
   // Vorauswahl: eingeloggter Admin, falls Signatur vorhanden
   window._wgbSigUserIds = (admins.some(u=>u.id===CU?.id)) ? [CU.id] : [];
   const liste = admins.length
@@ -24089,7 +24266,7 @@ async function wgbGewaehlteSignaturen(){
   const ids=(window._wgbSigUserIds||[]).slice(0,2);
   const out=[];
   const _uMap=new Map((await idbGetAll('users').catch(()=>[])).map(u=>[u.id,u]));  // B6: einmal laden
-  for(const id of ids){ const u=_uMap.get(id); if(u&&u.signatur) out.push({name:u.name||'', signatur:await sigDruckbild(u)}); }
+  for(const id of ids){ const u=_uMap.get(id); if(sigErlaubt(u)) out.push({name:u.name||'', signatur:await sigDruckbild(u)}); }   // v389
   return out;
 }
 
@@ -24935,7 +25112,7 @@ async function populateBriefSigPick(){
   const wrap=document.getElementById('briefSigPick');
   if(!wrap) return;
   const users=await idbGetAll('users');
-  const admins=users.filter(u=>u.role==='admin'&&u.signatur);
+  const admins=users.filter(sigErlaubt);   // v389
   if(!admins.length){
     wrap.innerHTML='<div style="font-size:11px;color:var(--amber)">Keine hinterlegten Unterschriften gefunden. Unter „Mein Profil“ kann eine Unterschrift hinterlegt werden.</div>';
     window._briefSigUserIds=[];
@@ -24963,7 +25140,7 @@ async function briefGewaehlteSignaturen(){
   const ids=(window._briefSigUserIds||[]).slice(0,2);
   const out=[];
   const _uMap=new Map((await idbGetAll('users').catch(()=>[])).map(u=>[u.id,u]));  // B6: einmal laden
-  for(const id of ids){ const u=_uMap.get(id); if(u&&u.signatur) out.push({name:u.name||'',signatur:await sigDruckbild(u)}); }
+  for(const id of ids){ const u=_uMap.get(id); if(sigErlaubt(u)) out.push({name:u.name||'',signatur:await sigDruckbild(u)}); }   // v389
   return out;
 }
 
@@ -25132,12 +25309,31 @@ async function druckeBrief(mieterId, objektId) {
   // Jeden Brief einzeln archivieren (vollständiges Dokument inkl. Auto-Print für späteres Öffnen)
   for(const m of empfaenger){
     const einzelHtml = dokKopf + seiteFuer(m) + autoPrint + '</body></html>';
-    await archiviereMieterDokument({
+    const dokId = await archiviereMieterDokument({
       mieterId: m.id, objektId: m.objektId,
       typ: 'brief',
       name: `${betreff} (${fmtD(datum)})`,
       html: einzelHtml,
     });
+    /* v391: Briefe des Hausmeisters melden sich bei der Verwaltung. Der Brief
+       wird NICHT ein zweites Mal gespeichert - die Meldung verweist auf die
+       Archivkopie beim Mieter. Ein zweiter Ablageort waere die zweite
+       Wahrheit ueber dasselbe Schreiben, und beim Loeschen bliebe eine
+       Karteileiche zurueck. Verwalterbriefe erzeugen keine Meldung: sie
+       waere an den Absender selbst gerichtet. */
+    if(!istVerwalter()){
+      try{
+        await benachrichtigungAnlegen({
+          art:'briefkopie',
+          mieterId: m.id, objektId: m.objektId,
+          mieterName: m.mieter || '', weNr: m.weNr || '',
+          betreff, dokId: dokId || null
+        });
+      }catch(e){
+        console.error('Briefkopie melden:', e && e.message);
+        toast('Der Brief wurde erstellt, die Verwaltung konnte aber nicht benachrichtigt werden.', 7000);
+      }
+    }
   }
 }
 
@@ -25293,7 +25489,7 @@ async function modalSerienbriefEigentuemerwechsel(){
      vorausgewaehlt. */
   window._briefSigUserIds = [];
   try{
-    const admins = (await idbGetAll('users')).filter(u => u && u.role==='admin' && u.signatur);
+    const admins = (await idbGetAll('users')).filter(sigErlaubt);   // v389
     window._briefSigUserIds = admins.slice(0,2).map(u => u.id);
   }catch(e){ console.warn('Unterschriften laden:', e); }
   populateBriefSigPick();
@@ -26223,29 +26419,67 @@ async function wohnungenAdressenHolen(){
   }
 
   const alle = await idbGetAll('mieter');
-  let uebernommen=0, unbekannt=[], schonDa=0;
+  let uebernommen=0, unbekannt=[], schonDa=0, telNeu=0, telAbweichend=[];
   for(const w of (daten.wohnungen||[])){
-    if(!w.email) continue;
+    /* v388: Die Rufnummer liefert das Portal erst ab Backend-Stand v375
+       (Feld 'telefon' bzw. 'personenMieter'). Fehlt sie, laeuft alles wie
+       bisher - der Abgleich darf an einem aelteren Backend nicht scheitern. */
+    const wMail = String(w.email||'').trim();
+    const wTel  = String(w.telefon||'').trim()
+      || (Array.isArray(w.personenMieter)
+            ? w.personenMieter.map(p=>String(p&&p.telefon||'').trim()).filter(Boolean).join(' / ')
+            : '');
+    if(!wMail && !wTel) continue;
     const treffer = alle.filter(m => m && !m._vormieter && !m._zukuenftig && !m.leerstand
       && wohnungsKennung(m.objektId, m.weNr) === String(w.kennung||'').toUpperCase());
     if(!treffer.length){ unbekannt.push(w.kennung); continue; }
     /* Nur die erste Person der Wohnung bekommt die führende Adresse - die
        übrigen stehen im Posteingang und werden dort zugeordnet. Eine bereits
-       gepflegte, abweichende Adresse wird NICHT überschrieben: sie könnte die
+       gepflegte, abweichende Angabe wird NICHT überschrieben: sie könnte die
        vertraglich vereinbarte sein. */
     const m = treffer[0];
-    if(String(m.email||'').trim().toLowerCase() === String(w.email).trim().toLowerCase()){ schonDa++; continue; }
-    if(String(m.email||'').trim()){ unbekannt.push(w.kennung+' (abweichende Adresse bereits gepflegt)'); continue; }
-    m.email = String(w.email).trim();
-    await idbPut('mieter', m);
-    uebernommen++;
+    let geaendert = false;
+
+    if(wMail){
+      const alt = String(m.email||'').trim();
+      if(alt.toLowerCase() === wMail.toLowerCase()){
+        /* Bereits aktuell - trotzdem an der Person nachtragen, falls sie dort
+           noch fehlt (Uebernahmen aus v301..v387 fuellten nur den Spiegel). */
+        setzePersonKontakt(m, 'email', wMail);
+        schonDa++; geaendert = true;
+      } else if(alt){
+        unbekannt.push(w.kennung+' (abweichende Adresse bereits gepflegt)');
+      } else {
+        m.email = wMail; setzePersonKontakt(m, 'email', wMail);
+        uebernommen++; geaendert = true;
+      }
+    }
+
+    /* Rufnummer: uebernehmen nur in eine leere Akte. Eine abweichende Nummer
+       wird gemeldet, nie ueberschrieben - welche die richtige ist, kann die
+       App nicht wissen, und die Angabe aus dem Portal ist Selbstauskunft. */
+    if(wTel){
+      const alt = String(m.telefon||'').trim();
+      if(!alt){
+        m.telefon = wTel; setzePersonKontakt(m, 'telefon', wTel);
+        telNeu++; geaendert = true;
+      } else if(normTelefon(alt) !== normTelefon(wTel)){
+        telAbweichend.push(w.kennung+': Portal '+wTel+' · Akte '+alt);
+      } else {
+        setzePersonKontakt(m, 'telefon', alt);
+        geaendert = true;
+      }
+    }
+
+    if(geaendert) await idbPut('mieter', m);
   }
   if(st){
-    st.innerHTML = `<div style="font-size:12px;color:var(--green)"><i class="ti ti-circle-check"></i> ${uebernommen} Adresse(n) übernommen, ${schonDa} bereits aktuell.</div>`
+    st.innerHTML = `<div style="font-size:12px;color:var(--green)"><i class="ti ti-circle-check"></i> ${uebernommen} Adresse(n) und ${telNeu} Rufnummer(n) übernommen, ${schonDa} Adresse(n) bereits aktuell.</div>`
+      + (telAbweichend.length?`<div style="font-size:12px;color:var(--amber-d,#9a6b00);margin-top:4px"><i class="ti ti-phone"></i> Abweichende Rufnummer – bitte in der Mieterakte prüfen: ${esc(telAbweichend.join(' | '))}</div>`:'')
       + (unbekannt.length?`<div style="font-size:12px;color:var(--amber-d,#9a6b00);margin-top:4px"><i class="ti ti-alert-triangle"></i> Nicht zugeordnet: ${esc(unbekannt.join(', '))}</div>`:'')
       + ((daten.verwaisteRowkeys||[]).length?`<div style="font-size:12px;color:var(--amber-d,#9a6b00);margin-top:4px">Veraltete Einträge im Portal (Kleinschreibung): ${esc(daten.verwaisteRowkeys.join(', '))}</div>`:'');
   }
-  toast(uebernommen+' Adresse(n) übernommen');
+  toast(uebernommen+' Adresse(n), '+telNeu+' Rufnummer(n) übernommen');
 }
 
 // ── Aushang ──────────────────────────────────────────────────
@@ -28904,16 +29138,143 @@ function personenZeileHTML(p, i){
     </div>`;
 }
 
+/* ═══════════════════════════════════════════════════════════
+   v388 – Gespiegelte Kontaktdaten und Kleinreparaturklausel
+
+   telefon/email am Mieterdatensatz sind ein SPIEGEL der ersten
+   Vertragspartei (siehe saveEditMieter/saveNewMieter). Traegt der Mieter
+   seine Adresse selbst ueber das Portal ein, wird nur dieser Spiegel
+   gefuellt - die Personenzeile bleibt leer. Im Bearbeiten-Dialog stand die
+   Adresse dann in der Kopfzeile, war aber weder zu aendern noch zu loeschen.
+   Formular und Speicherlogik muessen dieselbe Person treffen, sonst wandert
+   die Angabe beim Speichern auf eine andere Zeile.
+═══════════════════════════════════════════════════════════ */
+
+/* Erste Vertragspartei: bevorzugt lebend und im Vertrag genannt. */
+function hauptPersonIdx(liste){
+  const L = Array.isArray(liste) ? liste : [];
+  let i = L.findIndex(p => p && !p.verstorben && p.vertragspartner);
+  if(i < 0) i = L.findIndex(p => p && !p.verstorben);
+  if(i < 0) i = L.length ? 0 : -1;
+  return i;
+}
+
+/* Personenliste fuers Formular: Kopie, damit ein Abbrechen nichts hinterlaesst.
+   Fuehrt KEINE Person eine Angabe, wird der Spiegelwert des Mieters in die
+   erste Vertragspartei gesetzt - genau der Fall der Portal-Registrierung. */
+function personenMitSpiegel(m){
+  m = m || {};
+  const L = (m.personen_liste && m.personen_liste.length)
+    ? m.personen_liste.map(p => Object.assign({}, p))
+    : (m.mieter
+        ? [{name:m.mieter, anrede:m.anrede||'Herr', telefon:m.telefon||'', email:m.email||'', vertragspartner:true}]
+        : [{vertragspartner:true}]);
+  const i = hauptPersonIdx(L);
+  if(i >= 0){
+    if(!L.some(p => String(p && p.email   || '').trim()) && String(m.email  ||'').trim()) L[i].email   = String(m.email).trim();
+    if(!L.some(p => String(p && p.telefon || '').trim()) && String(m.telefon||'').trim()) L[i].telefon = String(m.telefon).trim();
+  }
+  return L;
+}
+
+/* Kontaktangabe zusaetzlich an der ersten Vertragspartei fuehren. Ohne diesen
+   Schritt steht sie nur im Spiegelfeld - sichtbar, aber nicht pflegbar. Eine
+   bereits gefuellte Angabe wird nicht angetastet. */
+function setzePersonKontakt(m, feld, wert){
+  if(!m || !wert) return;
+  if(!Array.isArray(m.personen_liste) || !m.personen_liste.length){
+    m.personen_liste = [{name:m.mieter||'', anrede:m.anrede||'', vertragspartner:true}];
+  }
+  const i = hauptPersonIdx(m.personen_liste);
+  if(i < 0) return;
+  if(!String(m.personen_liste[i][feld] || '').trim()) m.personen_liste[i][feld] = wert;
+}
+
+/* Rufnummern vergleichbar machen: +49 173 …, 0173…, 0049173… sind dieselbe
+   Nummer. Wird nur zum VERGLEICHEN benutzt, gespeichert wird die Schreibweise
+   des Nutzers bzw. des Mieters. */
+function normTelefon(s){
+  const d = String(s||'').replace(/[^0-9]/g,'');
+  if(!d) return '';
+  if(d.indexOf('00') === 0) return d.slice(2);
+  if(d.charAt(0) === '0')   return '49' + d.slice(1);
+  return d;
+}
+
+/* ── Kleinreparaturklausel ──────────────────────────────────────────
+   Sie gehoert zum MIETVERTRAG, nicht zur Wohnung: Instandhaltung ist
+   Vermietersache (§ 535 Abs. 1 S. 2 BGB), die Klausel ist die eng begrenzte
+   Ausnahme und wirkt nur, wenn sie im Vertrag DIESES Mieters steht.
+   Geprueft in v388: keine Codestelle traegt sie von einem Vormieter fort -
+   weder saveNewMieter, noch mieterZuVormieter, saveVormieterAnlegen,
+   zaAltMieterAnlegen oder weMerkmaleVonWohnung. Bestandswerte stammen aus
+   dem Krefeld-Import (Mieterliste des Voreigentuemers) und sind hier von
+   Hand zu pruefen.
+   Textfelder statt type=number: Bestandswerte aus dem Import koennen ein
+   Dezimalkomma tragen ("7,41"); ein Zahlenfeld zeigt sie leer an, und beim
+   naechsten Speichern waere der Wert weg. */
+function krFormHTML(m){
+  m = m || {};
+  if(!istVerwalter()) return '';
+  const kz = m.krKlausel || '';
+  return `
+    <div class="f-section-title"><i class="ti ti-tool"></i> Kleinreparaturklausel (nur Admin)</div>
+    <div style="font-size:11px;color:var(--ink-40);margin-bottom:8px;line-height:1.5">
+      Gilt nur, wenn sie im Mietvertrag <strong>dieses</strong> Mieters vereinbart ist. Instandhaltung ist
+      Vermietersache (§ 535 Abs. 1 S. 2 BGB); die Klausel ist die enge Ausnahme und wird <strong>nicht</strong>
+      vom Vormieter fortgeschrieben. Wirksam nur mit Doppelgrenze: Betrag je Fall <em>und</em> Jahresobergrenze.
+    </div>
+    <div class="f-row">
+      <div class="f"><label for="mKrKlausel">Klausel vereinbart</label>
+        <select id="mKrKlausel">
+          <option value=""     ${!kz          ?'selected':''}>– noch nicht geprüft –</option>
+          <option value="Ja"   ${kz==='Ja'    ?'selected':''}>Ja</option>
+          <option value="Nein" ${kz==='Nein'  ?'selected':''}>Nein</option>
+        </select></div>
+      <div class="f"><label for="mKrHoehe">Betrag je Fall (€)</label>
+        <input type="text" inputmode="decimal" id="mKrHoehe" value="${escAttr(m.krHoehe||'')}" placeholder="z. B. 100"></div>
+    </div>
+    <div class="f-row">
+      <div class="f"><label for="mKrProzent">Anteil Jahresmiete (%)</label>
+        <input type="text" inputmode="decimal" id="mKrProzent" value="${escAttr(m.krProzent||'')}" placeholder="z. B. 8"></div>
+      <div class="f"><label for="mKrMaxEuro">Höchstbetrag je Jahr (€)</label>
+        <input type="text" inputmode="decimal" id="mKrMaxEuro" value="${escAttr(m.krMaxEuro||'')}" placeholder="z. B. 400"></div>
+    </div>
+    <div style="font-size:10px;color:var(--ink-40);margin:-4px 0 8px">
+      Steht im Vertrag nichts, bitte „Nein“ setzen – dann bleibt die Position bei der Nebenkostenabrechnung außen vor.
+    </div>`;
+}
+
+/* Werte aus dem Formular. Eine Quelle fuer Anlegen und Bearbeiten, damit die
+   Normalisierung nicht auseinanderlaeuft. Liefert null, wenn der Block gar
+   nicht im Formular stand (Hausmeister-Ansicht) - dann wird nichts geschrieben. */
+function krAusFormular(){
+  const el = document.getElementById('mKrKlausel');
+  if(!el) return null;
+  const z = v => { const n = parseFloat(String(v==null?'':v).replace(',','.')); return (isFinite(n) && n > 0) ? n : ''; };
+  return {
+    krKlausel: el.value || '',
+    krHoehe:   z(document.getElementById('mKrHoehe')   && document.getElementById('mKrHoehe').value),
+    krProzent: z(document.getElementById('mKrProzent') && document.getElementById('mKrProzent').value),
+    krMaxEuro: z(document.getElementById('mKrMaxEuro') && document.getElementById('mKrMaxEuro').value)
+  };
+}
+
 function mieterFormHTML(obj, m={}) {
-  // Personen-Liste aufbauen (min. 1 Zeile). Einzige Quelle: personen_liste.
-  let personen = (m.personen_liste && m.personen_liste.length)
-    ? m.personen_liste
-    : (m.mieter ? [{name:m.mieter, anrede:m.anrede||'Herr', telefon:m.telefon||'', email:m.email||'', vertragspartner:true}] : [{vertragspartner:true}]);
+  /* Personen-Liste aufbauen (min. 1 Zeile). Einzige Quelle: personen_liste.
+     v388: gespiegelte Kontaktdaten werden in die erste Vertragspartei
+     vorbelegt, wenn dort nichts steht - sonst bleibt eine ueber das Portal
+     eingetragene Adresse unaenderbar. */
+  let personen = personenMitSpiegel(m);
   const personenRows = personen.map((p,i)=>personenZeileHTML(p,i)).join('');
 
   return `
-    <div class="f"><label>WE-Nr. *</label>
-      <input type="number" inputmode="decimal" id="mWeNr" value="${m.weNr||''}" placeholder="1"></div>
+    <div class="f"><label for="mWeNr">Wohneinheit *</label>
+      <!-- v387: Auswahl statt freier Zahl. Die Liste füllt weSelectFuellen()
+           nach dem Öffnen; der aktuelle Wert steht als Rückfall schon hier,
+           damit das Feld nie leer ist. -->
+      <select id="mWeNr"><option value="${esc(String(m.weNr||''))}" selected>WE ${esc(String(m.weNr||''))}</option></select>
+      <div style="font-size:11px;color:var(--ink-40);margin-top:2px">Eine zusätzliche Wohnung entsteht über „Neuen Mieter anlegen“ – und nur, solange die im Objektstamm hinterlegte Anzahl nicht erreicht ist.</div></div>
     <div style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:${m.leerstand?'var(--amber-l)':'var(--ink-05)'};border-radius:8px;margin-bottom:8px">
       <input type="checkbox" id="mLeerstand" ${m.leerstand?'checked':''} style="width:18px;height:18px;cursor:pointer">
       <label for="mLeerstand" style="font-size:13px;font-weight:500;cursor:pointer;color:${m.leerstand?'var(--amber)':'var(--ink-60)'}">
@@ -28952,6 +29313,7 @@ function mieterFormHTML(obj, m={}) {
         <input type="number" inputmode="decimal" id="mPersonen" value="${m.personen||personen.filter(p=>!p.verstorben).length||1}" min="1" max="20" oninput="mPersonenManuell(this)"${(parseInt(m.personen)||0) > personen.filter(p=>!p.verstorben).length ? ' data-manuell="1"' : ''}>
         <div style="font-size:10px;color:var(--ink-40);margin-top:2px">${istPersonenObjekt(obj?.id)?'Dieses Objekt rechnet Nebenkosten nach Personen ab. ':''}Wird beim Speichern aus der Zahl lebender Personen abgeleitet, sofern hier nicht abweichend gesetzt.</div></div>
     </div>
+    ${istVerwalter()?`
     <div class="f-row">
       <div class="f"><label for="mMiete">Miete (€)</label>
         <input type="number" inputmode="decimal" id="mMiete" value="${m.miete||''}" step="0.01"></div>
@@ -28968,18 +29330,18 @@ function mieterFormHTML(obj, m={}) {
         <div id="vzHistList"></div>
         <button type="button" class="btn btn-sm" data-action-click="vzHistAdd"><i class="ti ti-plus"></i> Änderung hinzufügen</button>
       </div>
-    </div>
+    </div>`:''}
     <div class="f-row">
       <div class="f"><label>Einzug</label>
         <input type="date" id="mEinzug" value="${m.einzug && m.einzug.includes('.')?
           m.einzug.split('.').reverse().join('-'):m.einzug||''}"></div>
-      <div class="f"><label for="mKaution">Kaution (€)</label>
-        <input type="number" inputmode="decimal" id="mKaution" value="${m.kaution||''}" step="0.01"></div>
+      ${istVerwalter()?`<div class="f"><label for="mKaution">Kaution (€)</label>
+        <input type="number" inputmode="decimal" id="mKaution" value="${m.kaution||''}" step="0.01"></div>`:''}
     </div>
     <div class="f-row">
-      <div class="f"><label for="mGekuendigt">Gekündigt am</label>
+      ${istVerwalter()?`<div class="f"><label for="mGekuendigt">Gekündigt am</label>
         <input type="date" id="mGekuendigt" value="${m.gekuendigtAm||''}" onchange="mEditKuendigungChange()">
-        <div style="font-size:10px;color:var(--ink-40);margin-top:2px">Eingang der Mieter-Kündigung. Berechnet das Auszugsdatum automatisch (§ 573c Abs. 1 BGB, 3 Monate).</div></div>
+        <div style="font-size:10px;color:var(--ink-40);margin-top:2px">Eingang der Mieter-Kündigung. Berechnet das Auszugsdatum automatisch (§ 573c Abs. 1 BGB, 3 Monate).</div></div>`:''}
       <div class="f"><label for="mAuszug">Auszug</label>
         <input type="date" id="mAuszug" value="${m.auszug && m.auszug.includes('.')?
           m.auszug.split('.').reverse().join('-'):m.auszug||''}">
@@ -28992,22 +29354,23 @@ function mieterFormHTML(obj, m={}) {
     <div class="f"><label>Tiefgaragen-Stellplätze</label>
       <div id="mTgBlock" style="font-size:12px;color:var(--ink-60)">wird geladen …</div>
     </div>
-    <div class="f-row">
+    ${istVerwalter()?`<div class="f-row">
       <div class="f"><label>Vertragsmodell / Vertragswerk</label>
         <input type="text" id="mVertragsmodell" value="${m.vertragsmodell||''}" placeholder="z. B. Nadig Neu, Patrizia, Allianz">
         <div style="font-size:10px;color:var(--ink-40);margin-top:2px">Vertragswerk des Mietvertrags (bei Bestandsübernahme: Voreigentümer).</div></div>
-    </div>
-    <div class="f-row">
+    </div>`:''}
+    ${krFormHTML(m)}
+    ${istVerwalter()?`<div class="f-row">
       <div class="f"><label for="mMieteSeit">Aktuelle Miete gezahlt seit</label>
         <input type="date" id="mMieteSeit" value="${m.mieteSeitISO||''}">
         <div style="font-size:10px;color:var(--ink-40);margin-top:2px">Datum, seit dem die aktuelle Gesamtmiete gezahlt wird (z. B. nach Mieterhöhung). Wird für die Mietbescheinigung übernommen. Leer = Einzugsdatum.</div></div>
-    </div>
+    </div>`:''}
     <div class="f-row">
       <div class="f"><label for="mUebergabe">Übergabezustand (Freitext)</label>
         <input type="text" id="mUebergabe" value="${esc(m.uebergabe||'')}" placeholder="z. B. renoviert übergeben">
         <div style="font-size:10px;color:var(--ink-40);margin-top:2px">Erscheint in der Mieterakte unter „Übergabe“. Freitext (meist aus der Bestandsübernahme) – hier änder- oder löschbar. Nicht identisch mit dem Übergabezustand (§ 7) des Mietvertrags.</div></div>
     </div>
-    <div class="f" style="margin-top:2px">
+    ${istVerwalter()?`<div class="f" style="margin-top:2px">
       <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px">
         <input type="checkbox" id="mfChk" onchange="mfToggle(this)" ${(m.mietfrei&&m.mietfrei.length)?'checked':''} style="width:16px;height:16px">
         Mietfreie Zeit vereinbart (z. B. Ausgleich für unrenovierte Wohnung)
@@ -29017,7 +29380,7 @@ function mieterFormHTML(obj, m={}) {
         <div id="mfList"></div>
         <button type="button" class="btn btn-sm" data-action-click="mfAdd"><i class="ti ti-plus"></i> Zeitraum hinzufügen</button>
       </div>
-    </div>
+    </div>`:''}
     ${istVerwalter()?`
     <div class="f-section-title"><i class="ti ti-building-bank"></i> Bankverbindung / Zahlung (nur Admin)</div>
     <div class="f-row">
@@ -29175,6 +29538,8 @@ async function modalAddMieter(objektId) {
     <div class="f"><label for="mTgNr">TG-Stellplatz Nr.</label><input type="text" id="mTgNr"></div>
     <div style="font-size:10px;color:var(--ink-40);margin-top:-2px">Telefon &amp; E-Mail werden je Bewohner oben erfasst.</div>
 
+    ${krFormHTML({})}
+
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="saveNewMieter('${objektId}')">
         <i class="ti ti-check"></i> Speichern
@@ -29239,6 +29604,10 @@ async function saveNewMieter(objektId) {
   if (sel === '__neu') {
     weNr = document.getElementById('mWeNrNeu')?.value?.trim();
     if (!weNr) { toast('Bitte WE-Nr. für die neue Wohneinheit eingeben'); return; }
+    /* v387: Harte Sperre. Eine WE-Nr., die es im Objekt nicht gibt, wird nur
+       angenommen, solange objekt_stamm.wohneinheiten nicht ausgeschöpft ist. */
+    const _pr = await wePruefung(objektId, weNr);
+    if (!_pr.ok) { toast(_pr.grund, 9000); return; }
     flaeche = document.getElementById('mFlaecheNeu')?.value || '';
     etage   = document.getElementById('mEtageNeu')?.value || '';
   } else {
@@ -29283,6 +29652,14 @@ async function saveNewMieter(objektId) {
     tgNr:    document.getElementById('mTgNr')?.value||'',
     leerstand: false,
   };
+  /* v388: Kleinreparaturklausel ausschliesslich aus dem Formular. Sie gehoert
+     zum Mietvertrag dieses Mieters und wird bewusst NICHT vom Vormieter
+     uebernommen (§ 535 Abs. 1 S. 2 BGB) - anders als Flaeche, Etage und Lage,
+     die der Wohnung gehoeren und deshalb fortgeschrieben werden. */
+  {
+    const _kr = krAusFormular();
+    if(_kr){ Object.assign(neuerMieter, _kr); }
+  }
 
   if (istZukunft && vorhanden && vorhanden.mieter && !vorhanden.leerstand) {
     // Zukünftiger Mieter: noch nicht aktiv, alter Mieter bleibt vorerst sichtbar
@@ -29429,22 +29806,291 @@ async function mieterZuVormieter(alt, neu) {
   // neu wird vom Aufrufer gespeichert
 }
 
+/* ═══════════════════════════════════════════════════════════
+   v391 – AENDERUNGSVORSCHLAEGE UND BRIEFKOPIEN
+
+   Der Hausmeister arbeitet an der Wohnung, nicht an der Akte. Bis v390
+   schrieb sein Speichern unmittelbar in den Mieterdatensatz - eine
+   versehentlich geleerte Rufnummer oder ein falsch getipptes Auszugsdatum
+   war damit sofort im Bestand und wanderte beim naechsten Sync auf alle
+   Geraete. Ab v391 entsteht stattdessen ein VORSCHLAG: alter Wert, neuer
+   Wert, Bemerkung. Am Mieter aendert sich bis zur Uebernahme nichts.
+
+   Bewusst kein Teil-Schreibrecht ("Telefon ja, Auszug nein"): eine Grenze
+   mitten durch dieselbe Maske waere schwer zu erklaeren und noch schwerer
+   zu pruefen. Entweder die Verwaltung sieht die Aenderung - oder es gibt
+   keine.
+═══════════════════════════════════════════════════════════ */
+
+/* Welche Felder ein Vorschlag ueberhaupt tragen kann. Reihenfolge = Reihenfolge
+   in der Gegenueberstellung. Nur Felder, die im Hausmeister-Formular stehen -
+   die kaufmaennischen sind seit v390 gar nicht erst da. */
+const VORSCHLAG_FELDER = [
+  {feld:'weNr',      label:'Wohneinheit'},
+  {feld:'etage',     label:'Etage / Lage'},
+  {feld:'flaeche',   label:'Wohnfläche (m²)'},
+  {feld:'personen',  label:'Personen (Anzahl)'},
+  {feld:'mieter',    label:'Name'},
+  {feld:'telefon',   label:'Telefon'},
+  {feld:'email',     label:'E-Mail'},
+  {feld:'einzugISO', label:'Einzug'},
+  {feld:'auszugISO', label:'Auszug'},
+  {feld:'uebergabe', label:'Übergabezustand'},
+  {feld:'tgNr',      label:'TG-Stellplatz (Altfeld)'},
+];
+
+function vorschlagWertText(feld, wert){
+  if(wert===undefined || wert===null || wert==='') return '—';
+  if(feld==='einzugISO' || feld==='auszugISO'){
+    const d = new Date(wert);
+    return isNaN(d.getTime()) ? String(wert) : d.toLocaleDateString('de-DE');
+  }
+  return String(wert);
+}
+
+/* Personen werden als ganze Zeile verglichen, nicht Feld fuer Feld: eine
+   hinzugefuegte Person verschiebt sonst alle folgenden Indizes, und die
+   Gegenueberstellung zeigte lauter Scheinaenderungen. */
+function personenZeilenText(liste){
+  return (Array.isArray(liste)?liste:[]).map(p=>{
+    const t = [p && p.name, p && p.telefon, p && p.email].filter(Boolean).join(' · ');
+    return t + ((p && p.verstorben) ? ' (verstorben)' : '') + ((p && p.vertragspartner) ? ' [VP]' : '');
+  }).filter(Boolean);
+}
+
+/* Unterschiede zwischen altem Datensatz und Formulareingabe. Liefert nur
+   tatsaechliche Abweichungen; ist die Liste leer, gibt es nichts vorzuschlagen. */
+function vorschlagDiff(alt, neu){
+  const out = [];
+  for(const f of VORSCHLAG_FELDER){
+    if(!(f.feld in neu)) continue;
+    const a = alt[f.feld], b = neu[f.feld];
+    if(String(a===undefined||a===null?'':a) === String(b===undefined||b===null?'':b)) continue;
+    out.push({feld:f.feld, label:f.label, alt:vorschlagWertText(f.feld,a), neu:vorschlagWertText(f.feld,b), wert:b});
+  }
+  const pa = personenZeilenText(alt.personen_liste).join(' | ');
+  const pb = personenZeilenText(neu.personen_liste).join(' | ');
+  if(pa !== pb){
+    out.push({feld:'personen_liste', label:'Bewohner', alt:pa||'—', neu:pb||'—', wert:neu.personen_liste});
+  }
+  const za = alt.zusatzkontakt ? [alt.zusatzkontakt.name, alt.zusatzkontakt.rolle, alt.zusatzkontakt.telefon, alt.zusatzkontakt.email].filter(Boolean).join(' · ') : '';
+  const zb = neu.zusatzkontakt ? [neu.zusatzkontakt.name, neu.zusatzkontakt.rolle, neu.zusatzkontakt.telefon, neu.zusatzkontakt.email].filter(Boolean).join(' · ') : '';
+  if(za !== zb){
+    out.push({feld:'zusatzkontakt', label:'Pflege-/Zusatzkontakt', alt:za||'—', neu:zb||'—', wert:neu.zusatzkontakt||null});
+  }
+  return out;
+}
+
+async function benachrichtigungAnlegen(rec){
+  const eintrag = Object.assign({
+    id: uid(),
+    status: 'offen',
+    von: (CU && CU.name) || '',
+    vonId: (CU && CU.id) || '',
+    erstellt: now(),
+    geaendert: now()
+  }, rec || {});
+  await idbPut('benachrichtigungen', eintrag);
+  clearTimeout(window._syncTimer);
+  window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
+  return eintrag;
+}
+
+async function benachrichtigungenOffen(){
+  try{
+    const alle = await idbGetAll('benachrichtigungen');
+    return (alle||[]).filter(x => x && !x._papierkorb && (x.status||'offen')==='offen');
+  }catch(e){
+    console.warn('Benachrichtigungen laden:', e && e.message);
+    return [];
+  }
+}
+
+/* Liste der offenen Meldungen. Bewusst ohne Filter je Objekt: es sind wenige,
+   und sie gehen die Verwaltung insgesamt an. */
+async function modalBenachrichtigungen(){
+  if(!istVerwalter()){ toast('Nur für Verwalter'); return; }
+  const liste = (await benachrichtigungenOffen())
+    .sort((a,b)=>String(b.erstellt||'').localeCompare(String(a.erstellt||'')));
+  let h = `<div class="m-title"><i class="ti ti-bell"></i> Meldungen an die Verwaltung</div>`;
+  if(!liste.length){
+    h += `<div class="empty"><i class="ti ti-check"></i><p>Keine offenen Meldungen.</p></div>`;
+  } else {
+    for(const n of liste){
+      const dt = n.erstellt ? new Date(n.erstellt).toLocaleString('de-DE') : '';
+      if(n.art==='briefkopie'){
+        h += `<div class="card" style="margin-bottom:8px;border-left:3px solid var(--copper)">
+          <div style="font-weight:600;font-size:13px"><i class="ti ti-mail"></i> Brief an ${esc(n.mieterName||'')}</div>
+          <div style="font-size:12px;color:var(--ink-60);margin-top:3px">${esc(n.betreff||'')}</div>
+          <div style="font-size:11px;color:var(--ink-40);margin-top:3px">${esc(n.von||'')} · ${esc(dt)}</div>
+          <div style="display:flex;gap:6px;margin-top:9px;flex-wrap:wrap">
+            ${n.mieterId?`<button class="btn btn-sm" onclick="closeModal();showMieterDokumente('${escJs(n.mieterId)}')"><i class="ti ti-paperclip"></i> Im Archiv ansehen</button>`:''}
+            <button class="btn btn-sm" onclick="benachrichtigungErledigt('${escJs(n.id)}')"><i class="ti ti-check"></i> Zur Kenntnis</button>
+          </div></div>`;
+        continue;
+      }
+      const zeilen = (n.felder||[]).map(f=>`<tr>
+          <td style="padding:4px 6px;color:var(--ink-60);font-size:12px">${esc(f.label||f.feld)}</td>
+          <td style="padding:4px 6px;font-size:12px;color:var(--ink-40);text-decoration:line-through">${esc(f.alt)}</td>
+          <td style="padding:4px 6px;font-size:12px;font-weight:600">${esc(f.neu)}</td>
+        </tr>`).join('');
+      h += `<div class="card" style="margin-bottom:8px;border-left:3px solid var(--amber)">
+        <div style="font-weight:600;font-size:13px"><i class="ti ti-pencil"></i> Änderungsvorschlag · ${esc(n.mieterName||'')}${n.weNr?' · WE '+esc(String(n.weNr)):''}</div>
+        <div style="font-size:11px;color:var(--ink-40);margin:3px 0 7px">${esc(n.von||'')} · ${esc(dt)}</div>
+        <table style="width:100%;border-collapse:collapse;background:var(--ink-05);border-radius:6px">
+          <tr><th style="text-align:left;padding:4px 6px;font-size:10px;color:var(--ink-40);text-transform:uppercase">Feld</th>
+              <th style="text-align:left;padding:4px 6px;font-size:10px;color:var(--ink-40);text-transform:uppercase">bisher</th>
+              <th style="text-align:left;padding:4px 6px;font-size:10px;color:var(--ink-40);text-transform:uppercase">neu</th></tr>
+          ${zeilen}
+        </table>
+        ${n.bemerkung?`<div style="font-size:12px;color:var(--ink);margin-top:8px;white-space:pre-wrap;line-height:1.5"><i class="ti ti-message-2"></i> ${esc(n.bemerkung)}</div>`:''}
+        <div style="display:flex;gap:6px;margin-top:10px;flex-wrap:wrap">
+          <button class="btn btn-sm btn-copper" onclick="vorschlagUebernehmen('${escJs(n.id)}')"><i class="ti ti-check"></i> Übernehmen</button>
+          <button class="btn btn-sm" onclick="vorschlagAblehnen('${escJs(n.id)}')"><i class="ti ti-x"></i> Ablehnen</button>
+          ${n.mieterId?`<button class="btn btn-sm" onclick="closeModal();showMieter('${escJs(n.mieterId)}')"><i class="ti ti-user"></i> Zur Mieterakte</button>`:''}
+        </div></div>`;
+    }
+  }
+  h += `<div class="f-row" style="margin-top:12px"><button class="btn btn-full" data-action-click="closeModal">Schließen</button></div>`;
+  showModal(h);
+}
+
+async function benachrichtigungErledigt(id){
+  if(!istVerwalter()){ toast('Nur für Verwalter'); return; }
+  const n = await idbGet('benachrichtigungen', id);
+  if(!n) return;
+  n.status='erledigt'; n.erledigtAm=now(); n.erledigtVon=(CU&&CU.name)||''; n.geaendert=now();
+  await idbPut('benachrichtigungen', n);
+  clearTimeout(window._syncTimer); window._syncTimer=setTimeout(()=>syncToOneDrive(),3000);
+  await modalBenachrichtigungen();
+  await renderDash();
+}
+
+async function vorschlagAblehnen(id){
+  if(!istVerwalter()){ toast('Nur für Verwalter'); return; }
+  const n = await idbGet('benachrichtigungen', id);
+  if(!n) return;
+  if(!confirm('Diesen Änderungsvorschlag ablehnen?\n\nAm Mieterdatensatz ändert sich nichts.')) return;
+  n.status='abgelehnt'; n.erledigtAm=now(); n.erledigtVon=(CU&&CU.name)||''; n.geaendert=now();
+  await idbPut('benachrichtigungen', n);
+  clearTimeout(window._syncTimer); window._syncTimer=setTimeout(()=>syncToOneDrive(),3000);
+  toast('Vorschlag abgelehnt');
+  await modalBenachrichtigungen();
+  await renderDash();
+}
+
+/* Uebernahme. Der Vorschlag traegt die Werte selbst, es wird also nicht neu
+   aus einem Formular gelesen. Geaenderte Felder werden einzeln gesetzt -
+   ein Object.assign des ganzen Datensatzes wuerde alles ueberschreiben, was
+   die Verwaltung in der Zwischenzeit gepflegt hat. */
+async function vorschlagUebernehmen(id){
+  if(!istVerwalter()){ toast('Nur für Verwalter'); return; }
+  const n = await idbGet('benachrichtigungen', id);
+  if(!n || n.art!=='aenderungsvorschlag') return;
+  const m = await idbGet('mieter', n.mieterId).catch(()=>null);
+  if(!m){ toast('Der Mieterdatensatz ist nicht mehr vorhanden.'); return; }
+  const _alt = JSON.parse(JSON.stringify(m));
+
+  for(const f of (n.felder||[])){
+    if(f.feld==='weNr'){
+      /* v387-Sperre gilt auch hier: eine Wohnung, die es nicht gibt, entsteht
+         nicht durch einen Vorschlag. */
+      const pr = await wePruefung(m.objektId, f.wert);
+      if(!pr.ok){ toast(pr.grund, 9000); return; }
+    }
+    m[f.feld] = f.wert;
+  }
+  if(m.einzugISO) m.einzug = new Date(m.einzugISO).toLocaleDateString('de-DE');
+  if(m.auszugISO) m.auszug = new Date(m.auszugISO).toLocaleDateString('de-DE'); else m.auszug='';
+  if(Array.isArray(m.personen_liste) && m.personen_liste.length){
+    m.mieter = hauptmieterNachnamen(m) || m.mieter;
+  }
+  m.geaendert = now();
+  erfasseLeerungen(_alt, m);
+  await idbPut('mieter', m);
+
+  n.status='uebernommen'; n.erledigtAm=now(); n.erledigtVon=(CU&&CU.name)||''; n.geaendert=now();
+  await idbPut('benachrichtigungen', n);
+  clearTimeout(window._syncTimer); window._syncTimer=setTimeout(()=>syncToOneDrive(),3000);
+  toast('Änderung übernommen ✓');
+  await modalBenachrichtigungen();
+  await renderDash();
+}
+
+/* Speichern aus dem Hausmeister-Formular: kein Schreiben, sondern ein
+   Vorschlag. Wird von saveEditMieter aufgerufen, bevor irgendetwas am
+   Datensatz veraendert wurde. */
+async function vorschlagAusFormular(mieterId){
+  const m = await idbGet('mieter', mieterId);
+  if(!m) return;
+  const persListe = getPersonenFromForm();
+  if(!persListe.length){ toast('Mindestens eine Person mit Namen erforderlich'); return; }
+
+  const el = id => document.getElementById(id);
+  const neu = { personen_liste: persListe };
+  if(el('mWeNr'))    neu.weNr    = el('mWeNr').value || m.weNr;
+  if(el('mEtage'))   neu.etage   = el('mEtage').value;
+  if(el('mFlaeche')) neu.flaeche = el('mFlaeche').value;
+  if(el('mEinzug'))  neu.einzugISO = el('mEinzug').value || '';
+  if(el('mAuszug'))  neu.auszugISO = el('mAuszug').value || '';
+  if(el('mUebergabe')) neu.uebergabe = (el('mUebergabe').value||'').trim();
+  if(el('mTgNr'))    neu.tgNr    = el('mTgNr').value;
+  {
+    const lebend = persListe.filter(p=>!p.verstorben);
+    const haupt  = lebend.filter(p=>p.vertragspartner)[0] || lebend[0] || persListe[0] || {};
+    neu.mieter  = hauptmieterNachnamen({personen_liste:persListe}) || m.mieter;
+    neu.telefon = (haupt.telefon||'').trim() || (lebend.find(p=>String(p.telefon||'').trim())?.telefon||'').trim();
+    neu.email   = (haupt.email  ||'').trim() || (lebend.find(p=>String(p.email  ||'').trim())?.email  ||'').trim();
+    const _pf = el('mPersonen');
+    neu.personen = (_pf && _pf.dataset.manuell==='1')
+      ? (parseInt(_pf.value)||lebend.length||persListe.length||1)
+      : (lebend.length||persListe.length||1);
+  }
+  const zkName = el('zkName') ? (el('zkName').value||'').trim() : '';
+  neu.zusatzkontakt = zkName ? {
+    name: zkName,
+    rolle: (el('zkRolle')?.value||'').trim() || 'Zusatzkontakt',
+    telefon: (el('zkTel')?.value||'').trim(),
+    email: (el('zkMail')?.value||'').trim()
+  } : null;
+
+  const felder = vorschlagDiff(m, neu);
+  if(!felder.length){ toast('Keine Änderung erkannt – es gibt nichts vorzuschlagen.'); return; }
+
+  const bemerkung = (el('mVorschlagBem')?.value||'').trim();
+  await benachrichtigungAnlegen({
+    art:'aenderungsvorschlag',
+    mieterId: m.id, objektId: m.objektId,
+    mieterName: m.mieter || '', weNr: m.weNr || '',
+    felder, bemerkung
+  });
+  closeModal();
+  toast(felder.length+' Änderung(en) vorgeschlagen – die Verwaltung prüft sie.', 6000);
+}
+
 async function modalEditMieter(id) {
   const m = await idbGet('mieter', id);
   if (!m) return;
   const obj = getObj(m.objektId);
+  const _vorschlag = !istVerwalter();   // v391
   showModal(`
-    <div class="m-title"><i class="ti ti-pencil"></i> Mieter bearbeiten</div>
+    <div class="m-title"><i class="ti ti-pencil"></i> ${_vorschlag?'Änderung vorschlagen':'Mieter bearbeiten'}</div>
+    ${_vorschlag?`<div style="background:var(--amber-l);border-radius:8px;padding:10px 12px;margin-bottom:10px;font-size:12px;color:var(--ink-60);line-height:1.5">
+      <i class="ti ti-info-circle"></i> Deine Eingaben ändern den Mieterdatensatz nicht sofort. Sie gehen als Vorschlag an die Verwaltung, die ihn mit dem bisherigen Stand vergleicht und übernimmt oder ablehnt.
+    </div>`:''}
     ${mieterFormHTML(obj, m)}
+    ${_vorschlag?`<div class="f" style="margin-top:8px"><label for="mVorschlagBem">Bemerkung für die Verwaltung</label>
+      <textarea spellcheck="true" lang="de" id="mVorschlagBem" style="min-height:60px" placeholder="Woher stammt die Angabe? z. B. „Neue Nummer beim Ortstermin am 26.08. erhalten“"></textarea></div>`:''}
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="saveEditMieter('${id}')">
-        <i class="ti ti-check"></i> Speichern
+        <i class="ti ti-${_vorschlag?'send':'check'}"></i> ${_vorschlag?'Vorschlag senden':'Speichern'}
       </button>
       <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
     </div>`);
   vzHistInit(m); vzHistRender();
   mfInit(m); mfRender();
   mTgBlockRender(id);
+  weSelectFuellen(m.objektId, m.weNr);   // v387
 }
 
 /* v277: Stellplaetze im Bearbeiten-Dialog anzeigen. Miete und Nummer werden
@@ -29469,6 +30115,11 @@ async function mTgBlockRender(mieterId){
 }
 
 async function saveEditMieter(id) {
+  /* v391: Ohne kaufmaennische Rechte wird nicht geschrieben, sondern
+     vorgeschlagen. Die Abzweigung steht ganz vorne - danach beginnt der
+     Schreibpfad, und ein spaeterer Ausstieg haette einen halb geaenderten
+     Datensatz hinterlassen. */
+  if(!istVerwalter()) return vorschlagAusFormular(id);
   const m = await idbGet('mieter', id);
   if (!m) return;
   const _altSnapshot = JSON.parse(JSON.stringify(m)); // Stand vor Bearbeitung (für Tombstones)
@@ -29481,7 +30132,8 @@ async function saveEditMieter(id) {
     persListe.forEach(p=>{ if(!p.ab) p.ab=einzug; });
   }
   m.leerstand = document.getElementById('mLeerstand')?.checked||false;
-  m.gekuendigtAm = document.getElementById('mGekuendigt')?.value||'';
+  /* v390: fehlt das Feld (Hausmeister-Formular), bleibt der Wert stehen. */
+  { const _fG = document.getElementById('mGekuendigt'); if(_fG) m.gekuendigtAm = _fG.value||''; }
   m.personen_liste = persListe;
   // Anzeigename = Nachname(n) der Vertragspartner; sonst erste lebende Person.
   const lebend = persListe.filter(p=>!p.verstorben);
@@ -29490,10 +30142,15 @@ async function saveEditMieter(id) {
   const vpListe = lebend.filter(p=>p.vertragspartner);
   const haupt = vpListe[0] || lebend[0] || persListe[0];
   if(haupt?.anrede) m.anrede = haupt.anrede;
-  // Gespiegelte Hauptkontaktdaten: bevorzugt aus der Person; eine bereits
-  // vorhandene Hauptnummer NICHT durch einen leeren Personen-Wert löschen.
-  m.telefon = (haupt?.telefon || '').trim() || (m.telefon || '');
-  m.email   = (haupt?.email   || '').trim() || (m.email   || '');
+  /* Gespiegelte Hauptkontaktdaten. v388: Das Formular belegt die erste
+     Vertragspartei jetzt mit dem Spiegelwert vor (personenMitSpiegel), wenn
+     keine Person eine Angabe fuehrt. Ein leeres Feld ist damit eine bewusste
+     Loeschung und keine fehlende Eingabe mehr - bis v387 liess sich eine aus
+     dem Portal uebernommene Adresse nicht mehr entfernen. Der Rueckfall auf
+     eine andere Person bleibt, damit die Angabe nicht verschwindet, nur weil
+     sie an der zweiten Zeile steht. */
+  m.telefon = (haupt?.telefon || '').trim() || (lebend.find(p=>String(p.telefon||'').trim())?.telefon || '').trim();
+  m.email   = (haupt?.email   || '').trim() || (lebend.find(p=>String(p.email  ||'').trim())?.email   || '').trim();
   // Zusatzkontakt
   const zkName = document.getElementById('zkName')?.value?.trim()||'';
   if(zkName){
@@ -29512,18 +30169,43 @@ async function saveEditMieter(id) {
     m.personen = _manuell ? (parseInt(_pf.value)||lebend.length||persListe.length||1)
                           : (lebend.length||persListe.length||1);
   }
-  m.weNr    = document.getElementById('mWeNr').value || m.weNr;
+  /* v387: Beim Bearbeiten greift dieselbe Sperre. Ohne sie liesse sich ein
+     Mieter durch Aendern der Nummer in eine nicht existierende Wohnung
+     verschieben - genau so sind WE 31 und 61 entstanden. */
+  {
+    const _wNeu = document.getElementById('mWeNr').value;
+    if (_wNeu && String(_wNeu) !== String(m.weNr||'')) {
+      const _pr = await wePruefung(m.objektId, _wNeu);
+      if (!_pr.ok) { toast(_pr.grund, 9000); return; }
+    }
+    m.weNr = _wNeu || m.weNr;
+  }
   m.etage   = document.getElementById('mEtage').value;
   m.flaeche = document.getElementById('mFlaeche').value;
-  m.miete   = parseFloat(document.getElementById('mMiete').value)||m.miete||'';
-  m.nk      = parseFloat(document.getElementById('mNk').value)||m.nk||'';
-  if(document.getElementById('vzHistChk')?.checked){ const vh=vzHistCollect(); if(vh.length) m.vzHistorie=vh; else delete m.vzHistorie; } else { delete m.vzHistorie; }
-  { // v238: Mietfreie Zeit – nur schreiben, wenn der Formularblock vorhanden war
-    const _mfChk=document.getElementById('mfChk');
+  /* v390: Die kaufmaennischen Felder stehen nur im Verwalter-Formular. Sie
+     duerfen ausschliesslich geschrieben werden, wenn sie auch dastanden -
+     sonst haette der erste Speichervorgang des Hausmeisters Miete, NK und
+     Gesamtmiete geleert. Die beiden alten Zeilen haetten hier sogar
+     geworfen: '.value' ohne '?.' auf einem fehlenden Element.
+     Dasselbe Muster, das der v238-Kommentar bei der mietfreien Zeit
+     bereits festhaelt - jetzt fuer alle Felder desselben Blocks. */
+  {
+    const _fMiete = document.getElementById('mMiete');
+    const _fNk    = document.getElementById('mNk');
+    if(_fMiete) m.miete = parseFloat(_fMiete.value)||m.miete||'';
+    if(_fNk)    m.nk    = parseFloat(_fNk.value)||m.nk||'';
+    if(_fMiete || _fNk){
+      m.gesamt = (parseFloat(_fMiete && _fMiete.value)||0) +
+                 (parseFloat(_fNk    && _fNk.value)||0) || m.gesamt||'';
+    }
+    const _vzChk = document.getElementById('vzHistChk');
+    if(_vzChk){
+      if(_vzChk.checked){ const vh=vzHistCollect(); if(vh.length) m.vzHistorie=vh; else delete m.vzHistorie; }
+      else delete m.vzHistorie;
+    }
+    const _mfChk = document.getElementById('mfChk');   // v238
     if(_mfChk){ if(_mfChk.checked){ const mf=mfCollect(); if(mf.length) m.mietfrei=mf; else delete m.mietfrei; } else { delete m.mietfrei; } }
   }
-  m.gesamt  = (parseFloat(document.getElementById('mMiete').value)||0) +
-              (parseFloat(document.getElementById('mNk').value)||0) || m.gesamt||'';
   // Einzug/Auszug: sowohl Anzeige- (de-DE) als auch ISO-Feld pflegen.
   // Übersicht und Berechnungen lesen einzugISO mit Vorrang – ohne diese Zeile
   // wurde die Änderung beim nächsten Laden/Sync vom alten einzugISO überschrieben.
@@ -29531,11 +30213,27 @@ async function saveEditMieter(id) {
   else { m.einzug = ''; m.einzugISO = ''; }
   if(auszug){ m.auszug = new Date(auszug).toLocaleDateString('de-DE'); m.auszugISO = auszug; }
   else { m.auszug = ''; m.auszugISO = ''; }
-  m.kaution = parseFloat(document.getElementById('mKaution').value)||m.kaution||'';
-  m.tgNr    = document.getElementById('mTgNr').value;
-  m.mieteSeitISO = document.getElementById('mMieteSeit')?.value || '';
-  m.vertragsmodell = document.getElementById('mVertragsmodell')?.value || '';
-  m.uebergabe = document.getElementById('mUebergabe')?.value?.trim() || '';   // v258 (Bild 3): Freitext-Übergabezustand editier-/löschbar
+  {
+    const _fKau = document.getElementById('mKaution');
+    if(_fKau) m.kaution = parseFloat(_fKau.value)||m.kaution||'';
+    const _fTg = document.getElementById('mTgNr');
+    if(_fTg) m.tgNr = _fTg.value;
+    const _fSeit = document.getElementById('mMieteSeit');
+    if(_fSeit) m.mieteSeitISO = _fSeit.value || '';
+    const _fVm = document.getElementById('mVertragsmodell');
+    if(_fVm) m.vertragsmodell = _fVm.value || '';
+  }
+  /* v388: Kleinreparaturklausel. Nur schreiben, wenn der Block im Formular
+     stand - die Hausmeister-Ansicht enthaelt ihn nicht, und ein blindes
+     Schreiben wuerde die Werte bei jedem Speichern durch den Hausmeister
+     loeschen (dasselbe Muster wie beim Bankblock darunter). */
+  {
+    const _kr = krAusFormular();
+    if(_kr){ m.krKlausel = _kr.krKlausel; m.krHoehe = _kr.krHoehe; m.krProzent = _kr.krProzent; m.krMaxEuro = _kr.krMaxEuro; }
+  }
+  // v258 (Bild 3): Freitext-Übergabezustand editier-/löschbar.
+  // v390: nur, wenn das Feld dastand.
+  { const _fU = document.getElementById('mUebergabe'); if(_fU) m.uebergabe = (_fU.value||'').trim(); }
   // Bankverbindung / Zahlung (nur Admin sieht die Felder; HM-Formular enthält sie nicht)
   if(document.getElementById('mIban')){
     m.zahlweise    = document.getElementById('mZahlweise')?.value || m.zahlweise || '';
@@ -29567,6 +30265,11 @@ async function saveEditMieter(id) {
 }
 
 async function deleteMieterConfirm(id) {
+  /* v390: Das Loeschen eines Mieterdatensatzes wirkt bis in zurueckliegende
+     Nebenkostenabrechnungen hinein (Wohnmonate, Flaechenmonate) - genau der
+     Schaden, den die geloeschten Krefelder Vormieter angerichtet haben.
+     Das ist keine Hausmeisteraufgabe. */
+  if(!istVerwalter()){ toast('Mieterdatensätze löscht nur die Verwaltung'); return; }
   const m = await idbGet('mieter', id);
   if (!m) return;
   const obj = getObj(m.objektId);
@@ -32443,7 +33146,7 @@ async function populateSigAdminPick(){
   const wrap=document.getElementById('sigAdminPick');
   if(!wrap||!istVerwalter()) return;
   const users=await idbGetAll('users');
-  const admins=users.filter(u=>u.role==='admin'&&u.signatur);
+  const admins=users.filter(sigErlaubt);   // v389
   if(!admins.length){ wrap.innerHTML=''; return; }
   wrap.innerHTML=`<label style="font-size:12px;color:var(--ink-60);display:block;margin-bottom:4px">Hinterlegte Unterschrift verwenden</label>
     <select onchange="setSigVermieterFromAdmin(this.value)" style="width:100%;padding:8px;border:1.5px solid var(--ink-10);border-radius:8px;font-size:13px">

@@ -18,7 +18,7 @@
    ───────────────────────────────────────────────────────────────────────── */
 'use strict';
 
-const CACHE = 'nadigpfau-v386';
+const CACHE = 'nadigpfau-v391';
 
 /* v329 (R32): Wie lange die Navigation auf das Netz wartet, bevor die
    gecachte Fassung ausgeliefert wird. Siehe Kommentar am fetch-Handler. */
@@ -35,18 +35,30 @@ const CORE = [
 self.addEventListener('install', event => {
   event.waitUntil((async () => {
     const cache = await caches.open(CACHE);
-    // Tolerant: einzelne fehlende Dateien (z. B. abweichender Icon-Name)
-    // duerfen die Installation nicht scheitern lassen.
-    await Promise.allSettled(CORE.map(url => cache.add(url)));
+    /* Tolerant: einzelne fehlende Dateien (z. B. abweichender Icon-Name)
+       duerfen die Installation nicht scheitern lassen.
+       v391: {cache:'reload'} umgeht den HTTP-Cache des Browsers. Ohne das
+       darf dieser eine alte index.html liefern, die dann als 'neue' Fassung
+       im Worker-Cache landet - dieselbe Klasse Fehler wie der v301-Vorfall,
+       nur eine Ebene tiefer. */
+    await Promise.allSettled(
+      CORE.map(url => cache.add(new Request(url, { cache: 'reload' })))
+    );
     await self.skipWaiting();
   })());
 });
 
 self.addEventListener('activate', event => {
   event.waitUntil((async () => {
+    /* v391: Nur Caches DIESER App entfernen. Bis v353 stand hier
+       'n !== CACHE' - also jeder fremde Cache derselben Herkunft. Die App
+       liegt auf deusnuntio.github.io, einer Herkunft, die sich alle Repos
+       dieses Kontos teilen; der Worker haette dort die Caches anderer
+       Projekte mitgeloescht. */
     const namen = await caches.keys();
     await Promise.all(
-      namen.filter(n => n !== CACHE).map(n => caches.delete(n))
+      namen.filter(n => n.startsWith('nadigpfau-') && n !== CACHE)
+           .map(n => caches.delete(n))
     );
     await self.clients.claim();
   })());
