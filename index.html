@@ -1230,14 +1230,19 @@ const STORE_DEFS = {
      wieder frei. Kein eigenes Flag daneben, sonst gibt es zwei Wahrheiten
      darueber, ob ein Brief heraus ist. */
   brief_entwuerfe:     { sync:true, merge:true, index:['mieterId','objektId'] },        // v394
+  /* A398: Kostenerstattungen fuer Kleinreparaturen. Bewusst NICHT in
+     'rechnungen' - dort liegen EINGANGSrechnungen von Lieferanten mit OCR-
+     Feldern. Ein gemeinsamer Store haette jede Auswertung gezwungen, erst die
+     Richtung zu pruefen, und die Buchhaltung liest 'rechnungen' bereits. */
+  kr_abrechnungen:     { sync:true, merge:true, index:['mieterId','objektId'] },        // A398
 };
 /* Abgeleitete Listen – NIE separat pflegen. */
 const STORES_ALLE  = Object.keys(STORE_DEFS);                                     // DB-Anlage
 const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);                 // Backup + Sync + Snapshot
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
-const DB_NAME='immo_v2', DB_VER=37;   // v394: +brief_entwuerfe
-const APP_VERSION = '2026-08-28-v394';
+const DB_NAME='immo_v2', DB_VER=38;   // A398: +kr_abrechnungen
+const APP_VERSION = '2026-08-28-A399';
 /* v364 (12.08.2026) – offene Punkte abgearbeitet.
    1) D1/XLSX_SRI: Der im Code hinterlegte PowerShell-Befehl war FALSCH und
       konnte nie funktionieren - Invoke-WebRequest liefert unter .Content einen
@@ -15654,6 +15659,8 @@ ${nurTg?'':`
     h+=`<div class="card-hdr" style="margin-bottom:8px;margin-top:12px"><i class="ti ti-alert-triangle"></i> Offene Mängel (${maengel.length})</div>`;
     maengel.forEach(mg=>h+=mangelHTML(mg));
   }
+  h += await krBlockHTML(m);   // A398: Kostenerstattungen + Jahresstand
+
   if(reps.length){
     const offReps = reps.filter(r=>r.status!=='erledigt');
     const erlReps = reps.filter(r=>r.status==='erledigt');
@@ -21970,7 +21977,7 @@ function mvVertragHTML(d){
   // § 9
   h += '<h2>§ 9 Instandhaltung und Kleinreparaturen</h2>';
   h += '<p>1. Mängel oder Gefahren sind dem Vermieter unverzüglich anzuzeigen. Der Mieter behandelt die Einrichtungen pfleglich und haftet für schuldhaft verursachte Schäden, auch durch Haushaltsangehörige, Besucher und Beauftragte.</p>';
-  h += '<p>2. Kleinreparaturen an Gegenständen des häufigen Zugriffs (Elektrik, Wasser, Heizung, Fenster, Türen) trägt der Mieter, wenn der Aufwand im Einzelfall <b>' + mvEur(d.krEinzel) + ' EUR</b> nicht übersteigt. Die jährliche Gesamtbelastung ist auf <b>' + mvEsc(d.krJahr||'7,5') + ' %</b> der Jahresnettokaltmiete begrenzt. Übersteigt eine Reparatur den Einzelbetrag, trägt der Vermieter die gesamten Kosten.</p>';
+  h += '<p>2. Kleinreparaturen an Gegenständen des häufigen Zugriffs (Installationsgegenstände für Elektrizität, Wasser und Heizung, Fenster- und Türverschlüsse sowie Verschlussvorrichtungen von Fensterläden) trägt der Mieter, wenn der Aufwand im Einzelfall <b>' + mvEur(d.krEinzel) + ' EUR</b> nicht übersteigt. Die jährliche Gesamtbelastung ist auf <b>' + mvEsc(d.krJahr||'7,5') + ' %</b> der Jahresnettokaltmiete begrenzt. Übersteigt eine Reparatur den Einzelbetrag, trägt der Vermieter die gesamten Kosten. Der Mieter ist nicht verpflichtet, die Reparatur selbst zu veranlassen oder einen Handwerker zu beauftragen; er schuldet ausschließlich die Erstattung der tatsächlich angefallenen Kosten.</p>';
   h += '<p>3. Ungezieferbefall ist unverzüglich anzuzeigen; die Kosten der Beseitigung trägt der Mieter nur, soweit er ihn zu vertreten hat.</p>';
 
   // § 10
@@ -22549,10 +22556,11 @@ async function mvRenderGeneratorModal(){
 
       <div class="f-section-title" style="margin-top:8px"><i class="ti ti-tools"></i> Kleinreparaturen (§ 9)</div>
       <div class="f-row">
-        <div class="f"><label for="mvKrEinzel">Einzelbetrag (EUR)</label><input type="number" inputmode="decimal" id="mvKrEinzel" step="1" value="${esc(d.krEinzel!=null&&d.krEinzel!==''?d.krEinzel:100)}" oninput="mvWarnKr()"></div>
+        <div class="f"><label for="mvKrEinzel">Einzelbetrag (EUR)</label><input type="number" inputmode="decimal" id="mvKrEinzel" step="1" value="${esc(d.krEinzel!=null&&d.krEinzel!==''?d.krEinzel:120)}" oninput="mvWarnKr()"></div>
         <div class="f"><label for="mvKrJahr">Jahresanteil (%)</label><input type="number" inputmode="decimal" id="mvKrJahr" step="0.1" value="${esc(d.krJahr!=null&&d.krJahr!==''?d.krJahr:7.5)}"></div>
       </div>
-      <div id="mvKrWarn" style="display:none;font-size:11px;color:var(--amber);margin-top:-2px"><i class="ti ti-alert-triangle"></i> Einzelbetrag über 100 € gilt häufig als unangemessen (Risiko der Unwirksamkeit der Klausel).</div>
+      <div id="mvKrWarn" style="display:none;font-size:11px;color:var(--amber);margin-top:-2px"><i class="ti ti-alert-triangle"></i> Einzelbetrag über 120 € gilt als unangemessen (Risiko der Unwirksamkeit der gesamten Klausel).</div>
+      <div id="mvKrJahrWarn" style="display:none;font-size:11px;color:var(--amber);margin-top:-2px"><i class="ti ti-alert-triangle"></i> Jahresanteil über 8 % der Jahresnettokaltmiete gilt als unangemessen (Rechtsprechung: 6–8 %).</div>
 
       <div class="f-section-title" style="margin-top:8px"><i class="ti ti-trending-up"></i> Mietanpassung (§ 14)</div>
       <div class="f"><label for="mvMietanpassung">Art</label>
@@ -22632,7 +22640,12 @@ function mvBerechneGesamt(){
 }
 function mvWarnKr(){
   const v=parseFloat(String(document.getElementById('mvKrEinzel')?.value||'').replace(',','.'))||0;
-  mvToggle('mvKrWarn', v>100);
+  mvToggle('mvKrWarn', v>120);
+  /* A399: Der Jahresanteil war bisher ungeprueft. Ueber 8 % der
+     Jahresnettokaltmiete gilt als unangemessen; die Rechtsprechung bewegt
+     sich im Bereich 6-8 %. */
+  const j=parseFloat(String(document.getElementById('mvKrJahr')?.value||'').replace(',','.'))||0;
+  mvToggle('mvKrJahrWarn', j>8);
 }
 function mvOnHeizVarChange(){
   const sel=document.getElementById('mvHeizVar')?.value||'';
@@ -26758,6 +26771,143 @@ function ewAutoPrint(){
        + 'if(document.readyState===\'complete\'){p();}else{window.addEventListener(\'load\',p);}})();</scr'+'ipt>';
 }
 
+/* ── A396: Personenabgleich mit dem Portal ────────────────────────
+   Backend v395 liefert 'personenMieter' - die Personen, die sich selbst im
+   Portal eingetragen haben. Bis v394 wurden davon nur die Rufnummern
+   eingesammelt und an der ersten Person zusammengefasst; eine zweite Person
+   war damit nicht sichtbar zu machen.
+
+   Namensvergleich bewusst reihenfolgeunabhaengig: die App fuehrt
+   "Severino, Birgitt", der Mieter tippt "Birgitt Severino". Verglichen werden
+   die sortierten Wortbestandteile in Kleinschreibung. Das ist grob, aber der
+   Fehler faellt in die sichere Richtung - wer nicht erkannt wird, landet als
+   Vorschlag beim Verwalter statt still in der Akte. */
+function portalNameSchluessel(name){
+  return String(name||'')
+    .toLowerCase()
+    .replace(/[.,;]/g,' ')
+    .split(/\s+/)
+    .filter(t => t && !['herr','frau','dr','prof','von','van','de'].includes(t))
+    .sort()
+    .join(' ');
+}
+
+/* Gleicht die Portalpersonen gegen die Akte ab. Aendert den Mieter nur dort,
+   wo ein Feld LEER ist. Liefert zurueck, was gemeldet werden muss:
+     ergaenzt    - stillschweigend gefuellte Luecken (Zaehler)
+     abweichend  - Angabe steht bereits anders in der Akte (Text)
+     vorschlaege - Person ist der Akte unbekannt (zur Bestaetigung)
+   Es wird NICHT gespeichert; das macht der Aufrufer. */
+function portalPersonenAbgleich(m, personenMieter, kennung){
+  const ergebnis = { ergaenzt:0, abweichend:[], vorschlaege:[], geaendert:false };
+  if(!m || !Array.isArray(personenMieter) || !personenMieter.length) return ergebnis;
+
+  if(!Array.isArray(m.personen_liste) || !m.personen_liste.length){
+    m.personen_liste = [{name:m.mieter||'', anrede:m.anrede||'', vertragspartner:true}];
+    ergebnis.geaendert = true;
+  }
+
+  for(const p of personenMieter){
+    if(!p) continue;
+    const pName = String(p.name||'').trim();
+    const pMail = String(p.email||'').trim();
+    const pTel  = String(p.telefon||'').trim();
+    if(!pName && !pMail && !pTel) continue;
+
+    const schl = portalNameSchluessel(pName);
+    /* Zuordnung ueber den Namen, ersatzweise ueber eine bereits bekannte
+       E-Mail - manche tragen nur "Birgitt" ein. */
+    let idx = schl ? m.personen_liste.findIndex(x => x && portalNameSchluessel(x.name) === schl) : -1;
+    if(idx < 0 && pMail){
+      idx = m.personen_liste.findIndex(x => x && String(x.email||'').trim().toLowerCase() === pMail.toLowerCase());
+    }
+
+    if(idx < 0){
+      /* Unbekannt. NICHT anlegen: ob jemand Vertragspartei oder nur Bewohner
+         ist, ergibt sich aus dem Mietvertrag, nicht aus einem Webformular.
+         Der Verwalter entscheidet. */
+      ergebnis.vorschlaege.push({ kennung, mieterId:m.id, weNr:m.weNr,
+                                  name:pName, email:pMail, telefon:pTel });
+      continue;
+    }
+
+    const person = m.personen_liste[idx];
+    for(const [feld, wert] of [['email', pMail], ['telefon', pTel]]){
+      if(!wert) continue;
+      const alt = String(person[feld]||'').trim();
+      if(!alt){
+        person[feld] = wert;
+        ergebnis.ergaenzt++; ergebnis.geaendert = true;
+      } else {
+        const gleich = feld === 'telefon'
+          ? normTelefon(alt) === normTelefon(wert)
+          : alt.toLowerCase() === wert.toLowerCase();
+        if(!gleich){
+          ergebnis.abweichend.push(kennung + ' · ' + (pName||'Person') + ': Portal ' + wert + ' · Akte ' + alt);
+        }
+      }
+    }
+  }
+  return ergebnis;
+}
+
+/* Vorschlaege zur Bestaetigung. Angelegt wird als BEWOHNER, nicht als
+   Vertragspartei - alles andere waere eine Aussage ueber den Mietvertrag,
+   die dieses Formular nicht treffen kann. */
+async function modalPortalPersonen(){
+  const v = window._portalPersonenVorschlaege || [];
+  if(!v.length){ toast('Keine offenen Vorschläge'); return; }
+  showModal(`
+    <div class="m-title"><i class="ti ti-user-question"></i> Neue Personen aus dem Portal</div>
+    <div style="font-size:12px;color:var(--ink-60);margin-bottom:10px;line-height:1.5">
+      Diese Personen haben sich selbst im Portal eingetragen und sind in der Akte nicht bekannt.
+      Sie werden als <strong>Bewohner</strong> angelegt, nicht als Vertragspartei – ob jemand
+      Mietvertragspartei ist, ergibt sich aus dem Mietvertrag.
+    </div>
+    ${v.map((x,i)=>`<label style="display:flex;gap:8px;align-items:flex-start;padding:8px;border:1px solid var(--line);border-radius:8px;margin-bottom:6px;cursor:pointer">
+      <input type="checkbox" id="pv_${i}" checked style="width:16px;height:16px;margin-top:2px">
+      <div style="flex:1;min-width:0;font-size:12px">
+        <div style="font-weight:600">${esc(x.name||'(ohne Namen)')}</div>
+        <div style="color:var(--ink-40)">WE ${esc(x.weNr||'?')} · ${esc(x.kennung||'')}</div>
+        ${x.email?`<div style="color:var(--ink-40)"><i class="ti ti-mail"></i> ${esc(x.email)}</div>`:''}
+        ${x.telefon?`<div style="color:var(--ink-40)"><i class="ti ti-phone"></i> ${esc(x.telefon)}</div>`:''}
+      </div></label>`).join('')}
+    <div class="f-row" style="margin-top:10px">
+      <button class="btn btn-copper btn-full" data-action-click="portalPersonenUebernehmen">
+        <i class="ti ti-user-plus"></i> Ausgewählte anlegen</button>
+      <button class="btn btn-full" data-action-click="closeModal">Später</button>
+    </div>`);
+}
+
+async function portalPersonenUebernehmen(){
+  const v = window._portalPersonenVorschlaege || [];
+  let angelegt = 0;
+  for(let i = 0; i < v.length; i++){
+    if(!document.getElementById('pv_'+i)?.checked) continue;
+    const x = v[i];
+    const m = await idbGet('mieter', x.mieterId).catch(()=>null);
+    if(!m) continue;
+    if(!Array.isArray(m.personen_liste) || !m.personen_liste.length){
+      m.personen_liste = [{name:m.mieter||'', anrede:m.anrede||'', vertragspartner:true}];
+    }
+    // Doppelanlage verhindern, falls zwischenzeitlich schon eingetragen
+    const schl = portalNameSchluessel(x.name);
+    if(schl && m.personen_liste.some(p => p && portalNameSchluessel(p.name) === schl)) continue;
+    m.personen_liste.push({
+      name: x.name, anrede: '', email: x.email || '', telefon: x.telefon || '',
+      geburtsdatum: '', verstorben: false, vertragspartner: false, quelle: 'portal'
+    });
+    m.updatedAt = nowIso();
+    try{ await idbPut('mieter', m); angelegt++; }
+    catch(e){ console.warn('Portalperson anlegen:', e); }
+  }
+  window._portalPersonenVorschlaege = [];
+  closeModal();
+  toast(angelegt + ' Person(en) angelegt ✓');
+  clearTimeout(window._syncTimer);
+  window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
+}
+
 /* ── ADRESSEN AUS DEM PORTAL ZURÜCKHOLEN (v301) ──────────────
    Mieter tragen ihre Kontaktdaten selbst im Portal ein. Ohne diesen Weg müsste
    jede Registrierung von Hand aus dem Posteingang abgetippt werden - und beim
@@ -26781,6 +26931,8 @@ async function wohnungenAdressenHolen(){
 
   const alle = await idbGetAll('mieter');
   let uebernommen=0, unbekannt=[], schonDa=0, telNeu=0, telAbweichend=[];
+  let persErgaenzt=0;                          // A396
+  window._portalPersonenVorschlaege = [];      // A396
   for(const w of (daten.wohnungen||[])){
     /* v388: Die Rufnummer liefert das Portal erst ab Backend-Stand v375
        (Feld 'telefon' bzw. 'personenMieter'). Fehlt sie, laeuft alles wie
@@ -26832,16 +26984,37 @@ async function wohnungenAdressenHolen(){
       }
     }
 
+    /* A396: Personenabgleich. Laeuft NACH dem Spiegelfeld-Abgleich oben -
+       so bleibt das bisherige Verhalten fuer Person 1 unveraendert, und der
+       Abgleich ergaenzt nur, was dort nicht abgedeckt ist. */
+    if(Array.isArray(w.personenMieter) && w.personenMieter.length){
+      const erg = portalPersonenAbgleich(m, w.personenMieter, w.kennung);
+      persErgaenzt += erg.ergaenzt;
+      if(erg.abweichend.length) telAbweichend.push(...erg.abweichend);
+      if(erg.vorschlaege.length) window._portalPersonenVorschlaege.push(...erg.vorschlaege);
+      if(erg.geaendert){ m.updatedAt = nowIso(); geaendert = true; }
+    }
+
     if(geaendert) await idbPut('mieter', m);
   }
   if(st){
+    const _vz = (window._portalPersonenVorschlaege||[]).length;
     st.innerHTML = `<div style="font-size:12px;color:var(--green)"><i class="ti ti-circle-check"></i> ${uebernommen} Adresse(n) und ${telNeu} Rufnummer(n) übernommen, ${schonDa} Adresse(n) bereits aktuell.</div>`
+      + (persErgaenzt?`<div style="font-size:12px;color:var(--green);margin-top:4px"><i class="ti ti-users"></i> ${persErgaenzt} Kontaktangabe(n) bei weiteren Personen ergänzt.</div>`:'')
+      + (_vz?`<div style="font-size:12px;margin-top:6px;border:1px solid var(--copper);border-radius:8px;padding:8px">
+          <i class="ti ti-user-question"></i> ${_vz} Person(en) im Portal, die in der Akte nicht bekannt sind.
+          <button class="btn btn-sm btn-copper" style="margin-top:6px" data-action-click="modalPortalPersonen">Ansehen und anlegen</button>
+        </div>`:'')
       + (telAbweichend.length?`<div style="font-size:12px;color:var(--amber-d,#9a6b00);margin-top:4px"><i class="ti ti-phone"></i> Abweichende Rufnummer – bitte in der Mieterakte prüfen: ${esc(telAbweichend.join(' | '))}</div>`:'')
       + (unbekannt.length?`<div style="font-size:12px;color:var(--amber-d,#9a6b00);margin-top:4px"><i class="ti ti-alert-triangle"></i> Nicht zugeordnet: ${esc(unbekannt.join(', '))}</div>`:'')
       + ((daten.verwaisteRowkeys||[]).length?`<div style="font-size:12px;color:var(--amber-d,#9a6b00);margin-top:4px">Veraltete Einträge im Portal (Kleinschreibung): ${esc(daten.verwaisteRowkeys.join(', '))}</div>`:'');
   }
   toast(uebernommen+' Adresse(n), '+telNeu+' Rufnummer(n) übernommen');
 }
+
+registerActions({ modalPortalPersonen, portalPersonenUebernehmen });   // A396
+registerActions({ modalKrAbrechnung, krSpeichern, krVersendetSetzen, krLoeschen,
+                  krPosHinzu, krPosWeg, krNeuBerechnen, krArtGewechselt });  // A398/A399
 
 // ── Aushang ──────────────────────────────────────────────────
 async function modalAushang(objektId) {
@@ -45168,6 +45341,511 @@ async function shareFoto(){
 /* ═══════════════════════════════════════════════════════════
    MANGEL DETAIL – vollständig mit Foto-Galerie & Bearbeiten
 ═══════════════════════════════════════════════════════════ */
+/* ═══ A398: Kleinreparatur-Kostenerstattung ══════════════════════
+
+   KATALOG. Bewusst zweigeteilt: was unter die Klausel faellt und was nicht.
+   Die Sperrliste ist der wichtigere Teil - sie verhindert, dass ein Bauteil
+   abgerechnet wird, das dem haeufigen unmittelbaren Zugriff des Mieters
+   gerade NICHT ausgesetzt ist (BGH VIII ZR 91/88). Wer eine Fensterscheibe
+   ueber die Kleinreparaturklausel abrechnet, riskiert nicht nur diese
+   Forderung, sondern die Klausel im gesamten Bestand.
+
+   Die Liste ist bewusst kurz gehalten. Je mehr Einzelteile benannt werden,
+   desto groesser die Gefahr, versehentlich ein unzulaessiges aufzunehmen. */
+/* A399: Interne Personalkostenbasis je produktiver Arbeitsstunde.
+   43.614 EUR Jahrespersonalkosten / 1.680 produktive Stunden = 25,96 EUR.
+   KEIN Handwerker- oder Gewinnstundensatz, sondern die kalkulierten
+   Personalkosten. Zulaessig anzusetzen, weil die Reparaturstunden aus der
+   Hauswartposition der Betriebskostenabrechnung herausgerechnet werden;
+   waeren sie dort mit umgelegt, waere der Ansatz Doppelvereinnahmung. */
+const KR_STUNDENSATZ = 26;
+
+/* A399: Die drei Kostenarten. Sie unterscheiden sich in der Anspruchs-
+   grundlage - deshalb steuert die Art die Pruefungen. */
+const KR_ARTEN = {
+  kleinreparatur: { label:'Kleinreparatur',        norm:'§ 9 Mietvertrag',        grenzen:true,  brief:true  },
+  mieterschaden:  { label:'Mieterschaden',         norm:'§ 280 Abs. 1 BGB',       grenzen:false, brief:true  },
+  instandhaltung: { label:'Instandhaltung (Vermieter)', norm:'§ 535 Abs. 1 S. 2 BGB', grenzen:false, brief:false }
+};
+
+/* A399: Kategorien nach der anerkannten Systematik. 'sonstiges' fuehrt bei
+   einer Kleinreparatur zur Sperre - ausserhalb dieser Bereiche ist eine
+   Umlage nicht vorgesehen. */
+const KR_KATEGORIEN = ['Elektrizität','Wasser / Sanitär','Gas','Heizung',
+                       'Kocheinrichtung','Fenster','Türverschluss','Rollladen / Fensterladen','Sonstiges'];
+
+const KR_KATALOG = [
+  { gruppe:'Elektrizität', ok:[
+      'Lichtschalter','Steckdose','Dimmer','Klingeltaster','Antennendose','Anschlussdose'] },
+  { gruppe:'Wasser / Sanitär', ok:[
+      'Wasserhahn','Mischbatterie / Einhebelmischer','Absperrventil (zugänglich)',
+      'Duschkopf / Handbrause','Brauseschlauch','WC-Spülung / Betätigungsplatte',
+      'Spülkasten (offen zugänglich)'] },
+  { gruppe:'Gas', ok:['Gasabsperrhahn (zugänglich)','Bedienelement Gasinstallation'] },
+  { gruppe:'Heizung', ok:['Thermostatkopf','Heizkörperventil (bedienbar)','Regulierungsarmatur'] },
+  { gruppe:'Kocheinrichtung', ok:['Bedienknopf / Schalter Herd','Kochplatte'] },
+  { gruppe:'Fenster', ok:['Fenstergriff / Olive','Verschlussmechanismus','Riegel'] },
+  { gruppe:'Türen', ok:['Türklinke / Drücker','Schloss Wohnungstür','Riegel','Türklinke Innentür'] },
+  { gruppe:'Rollläden', ok:['Rollladengurt','Gurtwickler','Bedienvorrichtung'] }
+];
+
+/* Sperrliste. Wird gegen die freie Eingabe geprueft; Treffer sperrt die
+   Position. Bewusst als Wortstaemme, damit "Fensterscheibe" und "Scheibe
+   Fenster" gleichermassen greifen. */
+const KR_GESPERRT = [
+  'scheibe','isolierglas','verglasung','glas','rahmen','zarge','türblatt','fensterflügel',
+  'scharnier','band','dichtung','silikon','fuge','fliese',
+  'leitung','rohr','fallrohr','unterputz','sicherungskasten','fi-schalter','zähler',
+  'therme','heizkessel','brenner','umwälzpumpe','boiler','wärmetauscher','fußbodenheizung',
+  'dunstabzug','abluft','lüftungsanlage',
+  'haustür','hauseingang','treppenhaus','gemeinschaft'
+];
+
+/* Prueft eine Bezeichnung gegen die Sperrliste. Liefert den Grund oder ''. */
+function krGesperrtGrund(bez){
+  const t = String(bez||'').toLowerCase();
+  const treffer = KR_GESPERRT.find(w => t.includes(w));
+  return treffer ? treffer : '';
+}
+
+/* Beginn des laufenden MIETJAHRES (nicht Kalenderjahr - so steht es im
+   Vertrag: "in einem Mietjahr"). Faellt auf den 1. Januar zurueck, wenn kein
+   Einzugsdatum bekannt ist; das ist die konservative Richtung, weil ein
+   kuerzerer Zeitraum eher zu frueh warnt als zu spaet. */
+function krMietjahrBeginn(m, stichtag){
+  const heute = stichtag ? new Date(stichtag) : new Date();
+  const ein = _einzugISOvon(m);
+  if(!ein) return new Date(heute.getFullYear(), 0, 1);
+  const e = new Date(ein);
+  if(isNaN(e.getTime())) return new Date(heute.getFullYear(), 0, 1);
+  let start = new Date(heute.getFullYear(), e.getMonth(), e.getDate());
+  if(start > heute) start = new Date(heute.getFullYear()-1, e.getMonth(), e.getDate());
+  return start;
+}
+
+/* Jahresobergrenze in Euro. Vorrang hat ein von Hand gepflegter Eurobetrag
+   (krMaxEuro) - er ist eindeutig. Sonst Prozent der aktuellen Jahresnetto-
+   kaltmiete. Die Miete kann sich unterjaehrig aendern; deshalb wird der
+   verwendete Wert an jeder Abrechnung MITGESPEICHERT, sonst waere ein
+   spaeterer Jahresstand nicht mehr nachvollziehbar. */
+function krJahresGrenze(m){
+  const fest = parseFloat(String(m && m.krMaxEuro || '').replace(',','.'));
+  if(isFinite(fest) && fest > 0) return { betrag: fest, quelle: 'fest' };
+  const pro = parseFloat(String(m && m.krProzent || '').replace(',','.'));
+  const miete = parseFloat(String(m && m.miete || '').replace(',','.'));
+  if(isFinite(pro) && pro > 0 && isFinite(miete) && miete > 0){
+    return { betrag: Math.round(miete * 12 * pro) / 100, quelle: 'prozent' };
+  }
+  return { betrag: 0, quelle: '' };
+}
+
+function krEinzelGrenze(m){
+  const v = parseFloat(String(m && m.krHoehe || '').replace(',','.'));
+  return isFinite(v) && v > 0 ? v : 0;
+}
+
+/* Summe der bereits im laufenden Mietjahr abgerechneten Kostenerstattungen.
+   Es zaehlen nur VERSENDETE - ein Entwurf ist noch keine Forderung. */
+async function krJahresStand(mieterId, m){
+  let liste = [];
+  try{ liste = await idbGetAll('kr_abrechnungen','mieterId',mieterId); }
+  catch(e){ console.warn('krJahresStand:', e); return { summe:0, posten:[] }; }
+  const ab = krMietjahrBeginn(m);
+  /* A399: Nur Kleinreparaturen zaehlen auf den Jahresdeckel an. Ein
+     Schadensersatz nach § 280 BGB unterliegt der Klausel nicht und darf den
+     Deckel weder fuellen noch von ihm begrenzt werden. */
+  const posten = liste.filter(x => x && !x._geloescht && x.versendetAm
+    && (x.art || 'kleinreparatur') === 'kleinreparatur'
+    && new Date(x.versendetAm) >= ab);
+  return { summe: posten.reduce((a,x)=>a+(Number(x.summe)||0),0), posten, ab };
+}
+
+/* Bewertet eine Abrechnung gegen die Vertragsgrenzen.
+   sperre    - Betrag darf NICHT gefordert werden (Einzelfall ueberschritten)
+   warnung   - Jahresdeckel erreicht: Pflicht ruht bis Jahresende
+   Die Unterscheidung ist wesentlich: bei Ueberschreitung des Einzelbetrags
+   traegt der Vermieter die GESAMTEN Kosten, nicht anteilig die Grenze. */
+function krBewerten(m, summe, jahresStandSumme, art, kategorie, zugriff){
+  const einzel = krEinzelGrenze(m);
+  const jahr = krJahresGrenze(m);
+  const r = { sperre:'', warnung:'', hinweis:'', einzel, jahr, restJahr: null };
+  const a = art || 'kleinreparatur';
+
+  /* Instandhaltung: der Vermieter traegt. Keine Pruefung, kein Brief -
+     die Erfassung dient nur der Dokumentation. */
+  if(a === 'instandhaltung'){
+    r.hinweis = 'Instandhaltung nach § 535 Abs. 1 S. 2 BGB – die Kosten trägt der Vermieter. '
+      + 'Der Vorgang wird nur dokumentiert, es entsteht keine Forderung gegen den Mieter.';
+    return r;
+  }
+
+  /* Mieterschaden: Schadensersatz nach § 280 Abs. 1 BGB. Die Grenzen der
+     Kleinreparaturklausel gelten hier NICHT - eine Sperre bei 300 EUR waere
+     falsch. Dafuer haengt der Anspruch am Verschulden. */
+  if(a === 'mieterschaden'){
+    r.hinweis = 'Schadensersatz nach § 280 Abs. 1 BGB – die Grenzen der Kleinreparaturklausel '
+      + 'gelten hier nicht. Voraussetzung ist ein vom Mieter zu vertretender Schaden.';
+    r.warnung = 'Bitte Verschulden und Beweislage dokumentieren (Fotos, Übergabeprotokoll, Zeugen). '
+      + 'Bei ersetzten Teilen ist ein Abzug „neu für alt“ zu prüfen, soweit der Mieter dadurch '
+      + 'einen messbaren Vorteil erlangt.';
+    return r;
+  }
+
+  /* Ab hier ausschliesslich Kleinreparatur. */
+  if(kategorie === 'Sonstiges'){
+    r.sperre = 'Die Kategorie „Sonstiges“ liegt außerhalb der von der Rechtsprechung anerkannten '
+      + 'Gegenstandsbereiche. Eine Umlage als Kleinreparatur ist nicht vorgesehen – bitte als '
+      + 'Mieterschaden oder Instandhaltung erfassen.';
+    return r;
+  }
+  if(zugriff === false){
+    r.sperre = 'Der Gegenstand unterliegt nach eigener Prüfung nicht dem häufigen und unmittelbaren '
+      + 'Zugriff des Mieters. Damit ist er von der Kleinreparaturklausel nicht erfasst (BGH VIII ZR 91/88).';
+    return r;
+  }
+  if(String(m && m.krKlausel||'') !== 'Ja'){
+    r.sperre = (m && m.krKlausel === 'Nein')
+      ? 'Für diesen Mietvertrag ist keine Kleinreparaturklausel vereinbart. Eine Umlage ist nicht möglich (§ 535 Abs. 1 S. 2 BGB).'
+      : 'Die Kleinreparaturklausel dieses Vertrags ist noch nicht geprüft. Bitte zuerst in der Mieterakte eintragen.';
+    return r;
+  }
+  if(!einzel){ r.sperre = 'Kein Einzelbetrag in der Mieterakte hinterlegt.'; return r; }
+  if(summe > einzel + 0.004){
+    r.sperre = 'Der Einzelfall übersteigt die vereinbarte Grenze von '
+      + fmtEur(einzel) + '. Nach dem Mietvertrag trägt dann der Vermieter die '
+      + 'gesamten Kosten – auch nicht anteilig ' + fmtEur(einzel) + '.';
+    return r;
+  }
+  if(jahr.betrag > 0){
+    const rest = jahr.betrag - (Number(jahresStandSumme)||0);
+    r.restJahr = rest;
+    if(rest <= 0){
+      r.warnung = 'Die Jahresobergrenze von ' + fmtEur(jahr.betrag)
+        + ' ist im laufenden Mietjahr bereits ausgeschöpft. Die Verpflichtung des Mieters ruht bis zum Ende des Mietjahres.';
+    } else if(summe > rest + 0.004){
+      r.warnung = 'Mit dieser Position wird die Jahresobergrenze von '
+        + fmtEur(jahr.betrag) + ' überschritten – im Mietjahr sind nur noch '
+        + fmtEur(rest) + ' umlagefähig.';
+    }
+  }
+  return r;
+}
+
+/* Summe aus Positionen und Arbeitszeit. Rundung erst am Ende, damit sich
+   keine Centdifferenz gegenueber der gedruckten Aufstellung ergibt. */
+function krSumme(positionen, stunden, satz){
+  const p = (positionen||[]).reduce((a,x)=>a+(Number(x.betrag)||0),0);
+  const a = (Number(stunden)||0) * (Number(satz)||0);
+  return Math.round((p + a) * 100) / 100;
+}
+
+/* ── A398: Erfassungsmaske ──────────────────────────────────────── */
+
+async function modalKrAbrechnung(mieterId, mangelId, abrId){
+  if(!istVerwalter()){ toast('Nur für Verwalter'); return; }
+  const m = await idbGet('mieter', mieterId).catch(()=>null);
+  if(!m){ toast('Mieter nicht gefunden'); return; }
+  const alt = abrId ? await idbGet('kr_abrechnungen', abrId).catch(()=>null) : null;
+  const gesperrt = !!(alt && alt.versendetAm);
+  const mangel = mangelId ? await idbGet('maengel', mangelId).catch(()=>null) : null;
+
+  window._krPos = (alt && Array.isArray(alt.positionen)) ? alt.positionen.slice()
+                : [{ bezeichnung:'', betrag:'' }];
+  window._krCtx = { mieterId, mangelId: mangelId || (alt&&alt.mangelId) || '',
+                    abrId: alt ? alt.id : null, m };
+
+  const stand = await krJahresStand(mieterId, m);
+  const jahr = krJahresGrenze(m);
+  const einzel = krEinzelGrenze(m);
+
+  showModal(`
+    <div class="m-title"><i class="ti ti-receipt"></i> Kostenerstattung Kleinreparatur</div>
+    <div style="font-size:11px;color:var(--ink-40);margin-bottom:10px;line-height:1.5">
+      ${esc(m.mieter||'')} · WE ${esc(m.weNr||'?')} · Einzelfall bis <b>${fmtEur(einzel)}</b>
+      ${jahr.betrag?` · Mietjahr bis <b>${fmtEur(jahr.betrag)}</b> (davon ${fmtEur(stand.summe)} verbraucht)`:''}
+    </div>
+    ${gesperrt?`<div style="border:1px solid var(--copper);border-radius:8px;padding:8px 10px;margin-bottom:10px;font-size:12px;background:var(--copper-bg)">
+      <i class="ti ti-lock"></i> Als <b>versendet</b> gekennzeichnet am ${esc(fmtDate(String(alt.versendetAm).slice(0,10)))} – gesperrt.</div>`:''}
+
+    <div class="f"><label for="krArt">Vorgangsart *</label>
+      <select id="krArt" ${gesperrt?'disabled':''} onchange="krArtGewechselt()">
+        ${Object.entries(KR_ARTEN).map(([k,v])=>`<option value="${k}" ${(alt?alt.art:'kleinreparatur')===k?'selected':''}>${esc(v.label)} · ${esc(v.norm)}</option>`).join('')}
+      </select></div>
+    <div class="f" id="krKatWrap"><label for="krKategorie">Kategorie *</label>
+      <select id="krKategorie" ${gesperrt?'disabled':''} onchange="krNeuBerechnen()">
+        ${KR_KATEGORIEN.map(k=>`<option value="${escAttr(k)}" ${(alt&&alt.kategorie)===k?'selected':''}>${esc(k)}</option>`).join('')}
+      </select></div>
+    <label id="krZugriffWrap" style="display:flex;align-items:flex-start;gap:8px;font-size:12px;margin-bottom:10px;cursor:pointer">
+      <input type="checkbox" id="krZugriff" style="width:16px;height:16px;margin-top:2px" ${gesperrt?'disabled':''}
+        ${(!alt||alt.zugriff!==false)?'checked':''} onchange="krNeuBerechnen()">
+      <span>Der Gegenstand unterliegt dem <b>häufigen und unmittelbaren Zugriff</b> des Mieters
+        <span style="color:var(--ink-40)">– Voraussetzung jeder Kleinreparaturumlage</span></span></label>
+
+    <div class="f"><label for="krAnlass">Anlass / Bezeichnung *</label>
+      <input type="text" id="krAnlass" ${gesperrt?'readonly':''}
+        value="${escAttr(alt?alt.anlass:(mangel?mangel.titel:''))}" placeholder="z. B. Austausch Fenstergriff Küche"></div>
+    <div class="f-row">
+      <div class="f"><label for="krDatum">Datum der Reparatur</label>
+        <input type="date" id="krDatum" ${gesperrt?'readonly':''}
+          value="${escAttr(alt?alt.datum:today())}"></div>
+      <div class="f"><label for="krQuelle">Ausführung</label>
+        <select id="krQuelle" ${gesperrt?'disabled':''} onchange="krNeuBerechnen()">
+          <option value="fremd" ${(!alt||alt.quelle!=='eigen')?'selected':''}>Fremdfirma (Rechnung liegt bei)</option>
+          <option value="eigen" ${(alt&&alt.quelle==='eigen')?'selected':''}>Eigenleistung</option>
+        </select></div>
+    </div>
+    <div id="krEigenHinweis" style="display:none;font-size:11px;border:1px solid var(--amber);border-radius:8px;padding:8px;margin-bottom:8px;background:var(--amber-l)">
+      <i class="ti ti-alert-triangle"></i> <b>Eigenleistung:</b> Der Mieter schuldet die <em>entstandenen</em> Kosten.
+      Ohne beauftragten Handwerker ist ein selbst angesetzter Stundensatz erfahrungsgemäß schwer durchzusetzen.
+      Materialkosten sind dagegen unproblematisch, wenn ein Beleg vorliegt.
+      <div style="margin-top:5px">Vorgabe <b>${fmtEur(KR_STUNDENSATZ)}/Std.</b> = interne Personalkosten
+      je produktiver Arbeitsstunde. Setzt voraus, dass die Reparaturstunden aus der Hauswartposition
+      der Betriebskostenabrechnung herausgerechnet sind – bitte Stundenaufschreibung führen.</div>
+    </div>
+
+    <div class="f"><label for="krFehler">Fehlerbeschreibung</label>
+      <textarea id="krFehler" spellcheck="true" lang="de" style="min-height:52px" ${gesperrt?'readonly':''}
+        placeholder="z. B. Schalter rastet nicht mehr ein.">${esc(alt?alt.fehler:'')}</textarea></div>
+    <div class="f"><label for="krArbeiten">Durchgeführte Arbeiten</label>
+      <textarea id="krArbeiten" spellcheck="true" lang="de" style="min-height:52px" ${gesperrt?'readonly':''}
+        placeholder="z. B. Defekten Schalter ausgebaut, neuen eingebaut, Funktion geprüft.">${esc(alt?alt.arbeiten:'')}</textarea></div>
+
+    <div class="f-section-title"><i class="ti ti-list"></i> Positionen</div>
+    <div id="krPosListe"></div>
+    ${gesperrt?'':`<button class="btn btn-sm" style="margin-bottom:10px" onclick="krPosHinzu()"><i class="ti ti-plus"></i> Gegenstand hinzufügen</button>`}
+
+    <div class="f-row">
+      <div class="f"><label for="krStunden">Arbeitszeit (Std.)</label>
+        <input type="text" inputmode="decimal" id="krStunden" ${gesperrt?'readonly':''}
+          value="${escAttr(alt?alt.stunden:'')}" placeholder="0" oninput="krNeuBerechnen()"></div>
+      <div class="f"><label for="krSatz">Stundensatz (€)</label>
+        <input type="text" inputmode="decimal" id="krSatz" ${gesperrt?'readonly':''}
+          value="${escAttr(alt?alt.satz:KR_STUNDENSATZ)}" placeholder="0,00" oninput="krNeuBerechnen()"></div>
+    </div>
+
+    <div id="krSummeBox" style="border:1px solid var(--line);border-radius:8px;padding:10px;margin:10px 0"></div>
+    <div id="krHinweisBox"></div>
+
+    <div class="f-row" style="margin-top:8px">
+      ${gesperrt?'':`<button class="btn btn-copper btn-full" onclick="krSpeichern()"><i class="ti ti-device-floppy"></i> Als Entwurf speichern</button>`}
+      ${alt?`<button class="btn btn-full btn-danger" onclick="krLoeschen('${escJs(alt.id)}')"><i class="ti ti-trash"></i> Löschen</button>`:''}
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
+    </div>
+    ${alt?`<label style="display:flex;align-items:center;gap:8px;font-size:13px;margin-top:10px;cursor:pointer">
+      <input type="checkbox" style="width:16px;height:16px" ${gesperrt?'checked':''}
+        onchange="krVersendetSetzen('${escJs(alt.id)}', this.checked)">
+      <span>versendet – sperrt den Vorgang und zählt auf das Mietjahr an</span></label>`:''}`);
+
+  krPosZeichnen();
+  krArtGewechselt();
+}
+
+/* Positionszeilen. Die Bezeichnung ist frei, wird aber gegen die Sperrliste
+   geprueft - die Auswahlliste soll die Eingabe erleichtern, nicht erzwingen. */
+function krPosZeichnen(){
+  const w = document.getElementById('krPosListe');
+  if(!w) return;
+  const gesperrt = !!document.getElementById('krAnlass')?.readOnly;
+  const opt = KR_KATALOG.map(g =>
+    `<optgroup label="${escAttr(g.gruppe)}">`
+    + g.ok.map(x=>`<option value="${escAttr(x)}">${esc(x)}</option>`).join('')
+    + `</optgroup>`).join('');
+  w.innerHTML = (window._krPos||[]).map((p,i)=>`
+    <div style="border:1px solid var(--line);border-radius:8px;padding:8px;margin-bottom:6px">
+      <div class="f-row" style="margin-bottom:4px">
+        <div class="f" style="flex:2"><label for="krBez${i}">Gegenstand</label>
+          <input type="text" id="krBez${i}" list="krKatalog" ${gesperrt?'readonly':''}
+            value="${escAttr(p.bezeichnung||'')}" placeholder="auswählen oder eintippen"
+            oninput="krPosAendern(${i},'bezeichnung',this.value)"></div>
+        <div class="f"><label for="krBet${i}">Betrag (€)</label>
+          <input type="text" inputmode="decimal" id="krBet${i}" ${gesperrt?'readonly':''}
+            value="${escAttr(p.betrag||'')}" placeholder="0,00"
+            oninput="krPosAendern(${i},'betrag',this.value)"></div>
+        ${gesperrt?'':`<button class="btn btn-sm btn-danger" style="align-self:flex-end;margin-bottom:2px" onclick="krPosWeg(${i})"><i class="ti ti-x"></i></button>`}
+      </div>
+      <div id="krPosWarn${i}" style="font-size:11px"></div>
+    </div>`).join('')
+    + `<datalist id="krKatalog">${opt}</datalist>`;
+  (window._krPos||[]).forEach((p,i)=>krPosPruefen(i));
+}
+
+/* Prueft eine einzelne Position gegen die Sperrliste. Der Hinweis ersetzt
+   keine Sperre der Position - die Entscheidung bleibt beim Verwalter, aber
+   sie faellt bewusst. */
+function krPosPruefen(i){
+  const el = document.getElementById('krPosWarn'+i);
+  if(!el) return;
+  const grund = krGesperrtGrund((window._krPos[i]||{}).bezeichnung);
+  el.innerHTML = grund
+    ? `<span style="color:var(--amber-d,#9a6b00)"><i class="ti ti-alert-triangle"></i>
+       „${esc(grund)}“ gehört in der Regel <b>nicht</b> zu den Gegenständen des häufigen unmittelbaren
+       Zugriffs und ist damit nicht kleinreparaturfähig (BGH VIII ZR 91/88).</span>`
+    : '';
+}
+
+/* Blendet die nur fuer Kleinreparaturen sinnvollen Felder um. Kategorie und
+   Zugriffsfrage sind bei Schadensersatz ohne Bedeutung. */
+function krArtGewechselt(){
+  const art = document.getElementById('krArt')?.value || 'kleinreparatur';
+  const kr = art === 'kleinreparatur';
+  const kw = document.getElementById('krKatWrap');
+  const zw = document.getElementById('krZugriffWrap');
+  if(kw) kw.style.display = kr ? '' : 'none';
+  if(zw) zw.style.display = kr ? 'flex' : 'none';
+  krNeuBerechnen();
+}
+
+function krPosAendern(i, feld, wert){
+  if(!window._krPos[i]) return;
+  window._krPos[i][feld] = wert;
+  if(feld==='bezeichnung') krPosPruefen(i);
+  if(feld==='betrag') krNeuBerechnen();
+}
+function krPosHinzu(){ window._krPos.push({bezeichnung:'',betrag:''}); krPosZeichnen(); krNeuBerechnen(); }
+function krPosWeg(i){ window._krPos.splice(i,1); if(!window._krPos.length) window._krPos.push({bezeichnung:'',betrag:''}); krPosZeichnen(); krNeuBerechnen(); }
+
+function krZahl(id){
+  const v = String(document.getElementById(id)?.value||'').replace(',','.');
+  const n = parseFloat(v);
+  return isFinite(n) ? n : 0;
+}
+
+/* Live-Summe samt Bewertung. Laeuft bei jeder Eingabe - deshalb wird der
+   Jahresstand einmal beim Oeffnen ermittelt und hier nur noch verrechnet. */
+async function krNeuBerechnen(){
+  const ctx = window._krCtx; if(!ctx) return;
+  const eig = document.getElementById('krQuelle')?.value === 'eigen';
+  const hw = document.getElementById('krEigenHinweis'); if(hw) hw.style.display = eig ? 'block' : 'none';
+
+  const pos = (window._krPos||[]).map(p=>({
+    bezeichnung: p.bezeichnung,
+    betrag: parseFloat(String(p.betrag||'').replace(',','.'))||0 }));
+  const summe = krSumme(pos, krZahl('krStunden'), krZahl('krSatz'));
+  const stand = await krJahresStand(ctx.mieterId, ctx.m);
+  // Bei Bearbeitung eines bereits versendeten Vorgangs nicht doppelt zaehlen
+  const eigen = ctx.abrId ? stand.posten.filter(x=>x.id===ctx.abrId)
+                             .reduce((a,x)=>a+(Number(x.summe)||0),0) : 0;
+  const art = document.getElementById('krArt')?.value || 'kleinreparatur';
+  const kat = document.getElementById('krKategorie')?.value || '';
+  const zug = document.getElementById('krZugriff')?.checked !== false;
+  const b = krBewerten(ctx.m, summe, stand.summe - eigen, art, kat, zug);
+  window._krBewertung = b; window._krSumme = summe;
+
+  const box = document.getElementById('krSummeBox');
+  if(box) box.innerHTML = `
+    <div style="display:flex;justify-content:space-between;font-size:18px;font-weight:600">
+      <span>Gesamt</span><span>${fmtEur(summe)}</span></div>
+    ${b.restJahr!=null?`<div style="font-size:11px;color:var(--ink-40);margin-top:4px">
+      Im Mietjahr danach noch umlagefähig: ${fmtEur(Math.max(0,b.restJahr-summe))}</div>`:''}`;
+
+  const hb = document.getElementById('krHinweisBox');
+  if(hb) hb.innerHTML =
+      (b.hinweis?`<div style="border:1px solid var(--line);border-radius:8px;padding:8px;font-size:12px;margin-bottom:6px">
+         <i class="ti ti-info-circle"></i> ${esc(b.hinweis)}</div>`:'')
+    + (b.sperre?`<div style="border:1px solid var(--red,#c0392b);border-radius:8px;padding:8px;font-size:12px;margin-bottom:6px">
+         <i class="ti ti-ban"></i> <b>Nicht umlagefähig.</b> ${esc(b.sperre)}</div>`:'')
+    + (b.warnung?`<div style="border:1px solid var(--amber);border-radius:8px;padding:8px;font-size:12px;background:var(--amber-l)">
+         <i class="ti ti-alert-triangle"></i> ${esc(b.warnung)}</div>`:'');
+}
+
+async function krSpeichern(){
+  const ctx = window._krCtx; if(!ctx) return;
+  await krNeuBerechnen();
+  const b = window._krBewertung || {};
+  if(b.sperre){ toast('Nicht umlagefähig – bitte den Hinweis beachten.', 6000); return; }
+  const anlass = String(document.getElementById('krAnlass')?.value||'').trim();
+  if(!anlass){ toast('Bitte einen Anlass angeben'); return; }
+  const pos = (window._krPos||[]).filter(p=>p && (String(p.bezeichnung||'').trim() || p.betrag))
+    .map(p=>({ bezeichnung:String(p.bezeichnung||'').trim(),
+               betrag: parseFloat(String(p.betrag||'').replace(',','.'))||0 }));
+  const jahr = krJahresGrenze(ctx.m);
+  const alt = ctx.abrId ? await idbGet('kr_abrechnungen', ctx.abrId).catch(()=>null) : null;
+  const rec = {
+    id: ctx.abrId || uid(),
+    mieterId: ctx.mieterId, objektId: ctx.m.objektId||'', weNr: ctx.m.weNr||'',
+    mangelId: ctx.mangelId||'', anlass,
+    art: document.getElementById('krArt')?.value || 'kleinreparatur',
+    kategorie: document.getElementById('krKategorie')?.value || '',
+    zugriff: document.getElementById('krZugriff')?.checked !== false,
+    fehler: String(document.getElementById('krFehler')?.value||'').trim(),
+    arbeiten: String(document.getElementById('krArbeiten')?.value||'').trim(),
+    datum: document.getElementById('krDatum')?.value || today(),
+    quelle: document.getElementById('krQuelle')?.value || 'fremd',
+    positionen: pos, stunden: krZahl('krStunden'), satz: krZahl('krSatz'),
+    summe: window._krSumme || 0,
+    /* Grenzen MITSPEICHERN: die Miete kann sich aendern, ein spaeterer
+       Jahresstand waere sonst nicht mehr nachvollziehbar. */
+    grenzeEinzel: krEinzelGrenze(ctx.m), grenzeJahr: jahr.betrag, grenzeQuelle: jahr.quelle,
+    erstellt: (alt&&alt.erstellt) || nowIso(),
+    erstelltVon: (alt&&alt.erstelltVon) || CU?.id || '',
+    versendetAm: (alt&&alt.versendetAm) || '',
+    geaendert: nowIso()
+  };
+  try{ await idbPut('kr_abrechnungen', rec); }
+  catch(e){ console.warn('KR speichern:', e); toast('Speichern fehlgeschlagen.', 6000); return; }
+  toast('Als Entwurf gespeichert ✓');
+  closeModal();
+  if(typeof showMieterDetail==='function') showMieterDetail(ctx.mieterId);
+}
+
+async function krVersendetSetzen(id, ja){
+  const r = await idbGet('kr_abrechnungen', id).catch(()=>null);
+  if(!r){ toast('Vorgang nicht gefunden'); return; }
+  r.versendetAm = ja ? (r.versendetAm || nowIso()) : '';
+  r.geaendert = nowIso();
+  try{ await idbPut('kr_abrechnungen', r); }
+  catch(e){ console.warn('KR versendet:', e); toast('Konnte nicht gespeichert werden.', 6000); return; }
+  toast(ja ? 'Als versendet gekennzeichnet ✓' : 'Wieder freigegeben ✓');
+  closeModal();
+  modalKrAbrechnung(r.mieterId, r.mangelId, r.id);
+}
+
+async function krLoeschen(id){
+  if(!confirm('Diesen Vorgang endgültig löschen?')) return;
+  const r = await idbGet('kr_abrechnungen', id).catch(()=>null);
+  try{ await deleteMitTombstone('kr_abrechnungen', id); }
+  catch(e){ console.warn('KR löschen:', e); toast('Löschen fehlgeschlagen.', 6000); return; }
+  toast('Gelöscht');
+  closeModal();
+  if(r && typeof showMieterDetail==='function') showMieterDetail(r.mieterId);
+}
+
+/* Jahresstand und Historie fuer die Mieterakte. */
+async function krBlockHTML(m){
+  if(!istVerwalter() || !m) return '';
+  let liste = [];
+  try{ liste = await idbGetAll('kr_abrechnungen','mieterId',m.id); }catch(e){ return ''; }
+  liste = liste.filter(x=>x && !x._geloescht)
+               .sort((a,b)=>String(b.datum||'').localeCompare(String(a.datum||'')));
+  const stand = await krJahresStand(m.id, m);
+  const jahr = krJahresGrenze(m);
+  const rest = jahr.betrag ? jahr.betrag - stand.summe : null;
+  if(!liste.length && !jahr.betrag) return '';
+  const quote = jahr.betrag ? Math.min(100, Math.round(stand.summe / jahr.betrag * 100)) : 0;
+  return `<div class="card">
+    <div class="card-hdr"><i class="ti ti-receipt"></i> Kostenerstattungen Kleinreparatur (${liste.length})</div>
+    ${jahr.betrag?`<div style="font-size:12px;margin-bottom:6px">
+      Mietjahr seit ${esc(fmtDate(stand.ab.toISOString().slice(0,10)))}:
+      <b>${fmtEur(stand.summe)}</b> von ${fmtEur(jahr.betrag)}
+      ${rest<=0?`<span style="color:var(--amber-d,#9a6b00)"> · ausgeschöpft, Pflicht ruht</span>`
+               :`<span style="color:var(--ink-40)"> · noch ${fmtEur(rest)}</span>`}
+      <div style="height:6px;background:var(--ink-10);border-radius:3px;margin-top:5px;overflow:hidden">
+        <div style="height:100%;width:${quote}%;background:${quote>=100?'var(--amber)':'var(--green)'}"></div></div>
+    </div>`:''}
+    ${liste.map(x=>`<div style="display:flex;align-items:center;gap:8px;font-size:12px;padding:5px 0;border-bottom:1px solid var(--ink-10)">
+      <i class="ti ti-${x.versendetAm?'mail-check':'pencil'}" style="color:var(--ink-40)"></i>
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(x.anlass||'(ohne Anlass)')}</div>
+        <div style="font-size:11px;color:var(--ink-40)">${esc((KR_ARTEN[x.art||'kleinreparatur']||{}).label||'')} · ${esc(fmtDate(x.datum))}${x.versendetAm?' · versendet':' · Entwurf'}</div>
+      </div>
+      <div style="font-weight:600">${fmtEur(x.summe)}</div>
+      <button class="btn btn-sm" onclick="modalKrAbrechnung('${escJs(m.id)}','${escJs(x.mangelId||'')}','${escJs(x.id)}')">Öffnen</button>
+    </div>`).join('')}
+    <button class="btn btn-sm btn-copper" style="margin-top:8px" onclick="modalKrAbrechnung('${escJs(m.id)}','','')">
+      <i class="ti ti-plus"></i> Kostenerstattung erfassen</button>
+  </div>`;
+}
+
 async function showMangelDetail(id, store='maengel') {
   const m = await idbGet(store, id);
   if (!m) { // auch in reparaturen suchen
@@ -45285,6 +45963,7 @@ async function showMangelDetail(id, store='maengel') {
       </button>
       <button class="btn btn-sm" onclick="editMangel('${id}','${store}')"><i class="ti ti-pencil"></i> Bearbeiten</button>
       <button class="btn btn-sm" onclick="materialFuerMangel('${id}','${store}')"><i class="ti ti-package"></i> Material</button>
+      ${done && m.mieterId && istVerwalter()?`<button class="btn btn-sm" onclick="modalKrAbrechnung('${escJs(m.mieterId)}','${escJs(id)}','')"><i class="ti ti-receipt"></i> Kostenerstattung</button>`:''}
       <button class="btn btn-sm" onclick="mangelAnHandwerker('${id}','${store}')" style="background:#25D366;color:#fff;border-color:#25D366"><i class="ti ti-brand-whatsapp"></i> An Handwerker senden</button>
       <button class="btn btn-sm" onclick="modalSchadenMelden('${id}','${store}')"><i class="ti ti-shield-check"></i> An Versicherung melden</button>
       <button class="btn btn-sm" onclick="modalAddEinkauf('${id}','Mangel','',{objektId:'${m.objektId||''}',weNr:'${escJs(m.weNr||'')}',bezugText:'${escJs((m.nummer?m.nummer+' · ':'')+m.titel)}'})"><i class="ti ti-shopping-cart"></i></button>
