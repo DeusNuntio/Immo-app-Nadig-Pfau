@@ -1242,7 +1242,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=38;   // A398: +kr_abrechnungen
-const APP_VERSION = '2026-08-30-A401';
+const APP_VERSION = '2026-08-30-A403';
 /* v364 (12.08.2026) – offene Punkte abgearbeitet.
    1) D1/XLSX_SRI: Der im Code hinterlegte PowerShell-Befehl war FALSCH und
       konnte nie funktionieren - Invoke-WebRequest liefert unter .Content einen
@@ -8703,6 +8703,39 @@ async function saAlsInteressentImportieren(id){
       toast('Als gelesen markieren am Server fehlgeschlagen – beim nächsten Aufruf erscheint der Eintrag wieder.', 5000);
     }
   }
+/* A402: Selbstauskunft endgueltig loeschen.
+   Abgrenzung zu "als Interessent uebernehmen": dort bleibt der Datensatz
+   serverseitig als 'verarbeitet' erhalten. Hier verschwindet er ganz - der
+   Fall fuer Bewerber, aus denen kein Mietverhaeltnis geworden ist
+   (Art. 17 Abs. 1 lit. a DSGVO). */
+async function saLoeschen(id, name, tage){
+  const key = (await idbGet('settings','backendKey').catch(()=>null))?.value;
+  if(!key){ toast('Kein Backend-Schlüssel hinterlegt – Löschen nicht möglich.', 6000); return; }
+  if(!confirm('Selbstauskunft von ' + (name || 'dieser Person')
+      + (tage!=null ? ' (vor ' + tage + ' Tagen eingegangen)' : '')
+      + ' endgültig löschen?\n\n'
+      + 'Die Angaben werden auf dem Server vollständig entfernt. '
+      + 'Es gibt keinen Papierkorb und keine Wiederherstellung.')) return;
+  try{
+    const r = await fetchMitTimeout(BACKEND_AZURE+'/api/inbox-sa/delete',{
+      method:'POST', headers:{'Content-Type':'application/json','x-functions-key':key},
+      body:JSON.stringify({ id })
+    });
+    if(!r || !r.ok) throw new Error('HTTP '+(r ? r.status : 'ohne Antwort'));
+  }catch(err){
+    /* Nicht verschlucken - vgl. Befund R26, wo die Oberflaeche Erfolg meldete,
+       waehrend serverseitig nichts geschah. */
+    console.warn('Selbstauskunft löschen:', err);
+    toast('Löschen am Server fehlgeschlagen – der Eintrag ist weiterhin vorhanden.', 6000);
+    return;
+  }
+  toast('Selbstauskunft gelöscht ✓');
+  const karte = document.getElementById('saDetail_'+id);
+  const box = karte && karte.closest ? karte.closest('div[style*="border"]') : null;
+  if(box) box.style.display='none';
+  else if(karte && karte.parentElement) karte.parentElement.style.display='none';
+}
+
   toast('Als Interessent übernommen ✓');
   // aus der Liste entfernen
   const karte=document.getElementById('saDetail_'+id);
@@ -8858,9 +8891,15 @@ async function mailRenderSA(body){
         <div><b>${esc(e.anzeigeName||'(ohne Namen)')}</b><br>
           <span style="font-size:12px;color:var(--ink-40)">${esc(e.objektName||'')} · ${esc(dt)}${_tage!=null?' · vor '+_tage+' Tag'+(_tage===1?'':'en'):''}</span></div>
       </div>
-      ${_alt?`<div style="margin-top:8px;font-size:12px;border:1px solid var(--amber,#b8860b);border-radius:8px;padding:6px 8px">
+      ${_alt?`<div style="margin-top:8px;font-size:12px;border:1px solid var(--amber,#b8860b);border-radius:8px;padding:6px 8px;background:var(--amber-l)">
         <i class="ti ti-clock-exclamation"></i> Liegt seit ${_tage} Tagen vor. Wenn daraus kein Mietverhältnis
-        entstanden ist, sollte die Selbstauskunft gelöscht werden.</div>`:''}
+        entstanden ist, sollte die Selbstauskunft gelöscht werden.
+        <div style="margin-top:6px"><button class="btn btn-sm btn-danger"
+          onclick="saLoeschen('${escJs(e.id)}','${escJs(e.anzeigeName||'')}',${_tage})">
+          <i class="ti ti-trash"></i> Jetzt löschen</button></div></div>`
+       :`<div style="margin-top:6px"><button class="btn btn-sm"
+          onclick="saLoeschen('${escJs(e.id)}','${escJs(e.anzeigeName||'')}',${_tage==null?'null':_tage})">
+          <i class="ti ti-trash"></i> Löschen</button></div>`}
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
         <button class="btn btn-sm" onclick="saDetailZeigen('${e.id}')"><i class="ti ti-eye"></i> Anzeigen</button>
         <button class="btn btn-sm btn-primary" onclick="saAlsInteressentImportieren('${e.id}')"><i class="ti ti-user-plus"></i> Als Interessent</button>
@@ -27172,9 +27211,10 @@ async function wohnungenAdressenHolen(){
 }
 
 registerActions({ modalPortalPersonen, portalPersonenUebernehmen });   // A396
+registerActions({ saLoeschen });                                       // A402
 registerActions({ modalKrAbrechnung, krSpeichern, krVersendetSetzen, krLoeschen,
                   krPosHinzu, krPosWeg, krNeuBerechnen, krArtGewechselt,
-                  krBriefErzeugen });                                    // A398–A400
+                  krBriefErzeugen, krZeitUebernehmen });                 // A398–A403
 
 // ── Aushang ──────────────────────────────────────────────────
 async function modalAushang(objektId) {
@@ -45691,6 +45731,51 @@ function krBewerten(m, summe, jahresStandSumme, art, kategorie, zugriff){
   return r;
 }
 
+/* A403: Auf Viertelstunden runden. Kaufmaennisch, nicht aufgerundet -
+   zugunsten des Mieters zu runden muss man im Streitfall nicht erklaeren. */
+function krStundenRunden(minuten){
+  return Math.round((Number(minuten)||0) / 15) / 4;
+}
+
+/* Sammelt die auf einen Mangel gebuchten Zeitsegmente, nach Taetigkeit
+   gruppiert. Liefert ALLE Kategorien - die Vorauswahl trifft der Aufrufer.
+   Grund: der Hausmeister waehlt gelegentlich die falsche Taetigkeit, und
+   dann duerfen die Minuten nicht unsichtbar sein. */
+async function krZeitenZuMangel(mangelId){
+  if(!mangelId) return [];
+  let sitzungen = [], kats = [];
+  try{ sitzungen = await idbGetAll('arbeitszeit'); }catch(e){ return []; }
+  try{ kats = await idbGetAll('taetigkeit_kat'); }catch(e){ kats = []; }
+  const katVon = id => (kats||[]).find(k=>k && k.id===id)
+                    || (typeof TAETIGKEIT_STANDARD!=='undefined'
+                        ? TAETIGKEIT_STANDARD.find(k=>k.id===id) : null);
+
+  const proKat = new Map();
+  for(const sit of (sitzungen||[])){
+    for(const seg of (sit.segmente||[])){
+      if(!seg || seg.mangelId !== mangelId || !seg.ende) continue;
+      const min = Math.round((new Date(seg.ende) - new Date(seg.start))/60000);
+      if(!(min > 0)) continue;
+      const id = seg.katId || 'unbekannt';
+      const k = katVon(id);
+      const e = proKat.get(id) || {
+        katId: id,
+        name: (k && k.name) || seg.katName || 'Ohne Tätigkeit',
+        umlage: (k && k.umlage) || 'neutral',
+        minuten: 0, wer: new Set(), tage: new Set()
+      };
+      e.minuten += min;
+      if(sit.userName) e.wer.add(sit.userName);
+      if(sit.datum) e.tage.add(sit.datum);
+      proKat.set(id, e);
+    }
+  }
+  return [...proKat.values()]
+    .map(e => ({ ...e, wer:[...e.wer], tage:[...e.tage].sort(),
+                 stunden: krStundenRunden(e.minuten) }))
+    .sort((a,b)=>b.minuten-a.minuten);
+}
+
 /* Summe aus Positionen und Arbeitszeit. Rundung erst am Ende, damit sich
    keine Centdifferenz gegenueber der gedruckten Aufstellung ergibt. */
 function krSumme(positionen, stunden, satz){
@@ -45774,6 +45859,7 @@ async function modalKrAbrechnung(mieterId, mangelId, abrId){
     <div id="krPosListe"></div>
     ${gesperrt?'':`<button class="btn btn-sm" style="margin-bottom:10px" onclick="krPosHinzu()"><i class="ti ti-plus"></i> Gegenstand hinzufügen</button>`}
 
+    <div id="krZeitBox"></div>
     <div class="f-row">
       <div class="f"><label for="krStunden">Arbeitszeit (Std.)</label>
         <input type="text" inputmode="decimal" id="krStunden" ${gesperrt?'readonly':''}
@@ -45799,6 +45885,61 @@ async function modalKrAbrechnung(mieterId, mangelId, abrId){
 
   krPosZeichnen();
   krArtGewechselt();
+  krZeitenZeichnen(mangelId || (alt && alt.mangelId) || '', !alt);
+}
+
+/* Zeigt die auf den Mangel gebuchten Zeiten und laesst sie uebernehmen.
+   'vorbelegen' nur bei einem NEUEN Vorgang - bei einem gespeicherten waere es
+   ein stilles Ueberschreiben der Eingabe. */
+async function krZeitenZeichnen(mangelId, vorbelegen){
+  const box = document.getElementById('krZeitBox');
+  if(!box) return;
+  let zeiten = [];
+  try{ zeiten = await krZeitenZuMangel(mangelId); }
+  catch(e){ console.warn('Zeiten laden:', e); box.innerHTML=''; return; }
+  if(!zeiten.length){ box.innerHTML=''; return; }
+  window._krZeiten = zeiten;
+
+  const rep = zeiten.find(z=>z.katId==='reparatur');
+  if(vorbelegen && rep){
+    const f = document.getElementById('krStunden');
+    if(f && !String(f.value||'').trim()){
+      f.value = String(rep.stunden).replace('.',',');
+      krNeuBerechnen();
+    }
+  }
+
+  box.innerHTML = `<div class="f-section-title"><i class="ti ti-clock"></i> Gebuchte Arbeitszeit</div>`
+    + zeiten.map((z,i)=>{
+        const warn = z.umlage === 'ja';
+        return `<div style="display:flex;align-items:center;gap:8px;font-size:12px;padding:6px 8px;
+            border:1px solid ${warn?'var(--amber)':'var(--line)'};border-radius:8px;margin-bottom:6px;
+            ${warn?'background:var(--amber-l)':''}">
+          <div style="flex:1;min-width:0">
+            <div style="font-weight:600">${esc(z.name)} · ${String(z.stunden).replace('.',',')} Std.</div>
+            <div style="font-size:11px;color:var(--ink-40)">${z.minuten} Min.${z.wer.length?' · '+esc(z.wer.join(', ')):''}${z.tage.length?' · '+esc(z.tage[0])+(z.tage.length>1?' …':''):''}</div>
+            ${warn?`<div style="font-size:11px;margin-top:3px">
+              <i class="ti ti-alert-triangle"></i> Diese Tätigkeit ist über die Betriebskosten umgelegt –
+              zusätzlich berechnen wäre doppelt.</div>`:''}
+          </div>
+          <button class="btn btn-sm" onclick="krZeitUebernehmen(${i})">Übernehmen</button>
+        </div>`;
+      }).join('')
+    + `<div style="font-size:11px;color:var(--ink-40);margin:-2px 0 10px">
+        Auf Viertelstunden gerundet. Der Wert lässt sich im Feld darunter frei ändern –
+        etwa wenn eine Tätigkeit versehentlich falsch gestempelt wurde.</div>`;
+}
+
+function krZeitUebernehmen(i){
+  const z = (window._krZeiten||[])[i];
+  if(!z) return;
+  const f = document.getElementById('krStunden');
+  if(!f || f.readOnly) return;
+  f.value = String(z.stunden).replace('.',',');
+  if(z.umlage === 'ja'){
+    toast('Achtung: „' + z.name + '" ist über die Betriebskosten umgelegt.', 6000);
+  }
+  krNeuBerechnen();
 }
 
 /* Positionszeilen. Die Bezeichnung ist frei, wird aber gegen die Sperrliste
@@ -45933,6 +46074,10 @@ async function krSpeichern(){
     datum: document.getElementById('krDatum')?.value || today(),
     quelle: document.getElementById('krQuelle')?.value || 'fremd',
     positionen: pos, stunden: krZahl('krStunden'), satz: krZahl('krSatz'),
+    /* A403: Herkunft der Stunden festhalten. Das ist der Nachweis gegenueber
+       dem Mieter UND die Grundlage der Abgrenzung von der Hauswartposition. */
+    zeitNachweis: (window._krZeiten||[]).map(z=>({
+      katId:z.katId, name:z.name, umlage:z.umlage, minuten:z.minuten, tage:z.tage })),
     summe: window._krSumme || 0,
     /* Grenzen MITSPEICHERN: die Miete kann sich aendern, ein spaeterer
        Jahresstand waere sonst nicht mehr nachvollziehbar. */
