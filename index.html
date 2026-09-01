@@ -1242,7 +1242,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=38;   // A398: +kr_abrechnungen
-const APP_VERSION = '2026-08-30-A403';
+const APP_VERSION = '2026-08-30-A404';
 /* v364 (12.08.2026) – offene Punkte abgearbeitet.
    1) D1/XLSX_SRI: Der im Code hinterlegte PowerShell-Befehl war FALSCH und
       konnte nie funktionieren - Invoke-WebRequest liefert unter .Content einen
@@ -5400,6 +5400,26 @@ async function interessentWohnungsOptionen(objektId, selWe){
   return weSet.map(w=>`<option value="${esc(w)}" ${String(selWe)===w?'selected':''}>WE ${esc(w)}</option>`).join('');
 }
 
+/* Erst auf Wunsch anzeigen. Einkommen, Arbeitgeber und Familienstand sollen
+   nicht beilaeufig auf dem Bildschirm stehen, wenn jemand nur die Rufnummer
+   sucht - und schon gar nicht, wenn der Bewerber daneben steht. */
+async function saAuskunftUmschalten(interessentId){
+  const box = document.getElementById('saAufklapp_'+interessentId);
+  const btn = document.getElementById('saAufklappBtn_'+interessentId);
+  if(!box) return;
+  if(box.style.display !== 'none'){
+    box.style.display = 'none'; box.innerHTML = '';
+    if(btn) btn.innerHTML = '<i class="ti ti-file-description"></i> Vollständige Selbstauskunft anzeigen';
+    return;
+  }
+  const k = await idbGet('interessenten', interessentId).catch(()=>null);
+  const obj = await saAuskunftZuInteressent(k);
+  if(!obj){ toast('Keine Selbstauskunft hinterlegt'); return; }
+  box.innerHTML = saAuskunftHTML(obj);
+  box.style.display = 'block';
+  if(btn) btn.innerHTML = '<i class="ti ti-eye-off"></i> Selbstauskunft ausblenden';
+}
+
 async function modalInteressentNeu(objektId, id){
   if(!istVerwalter()){ toast('Nur für Admins'); return; }
   const k = id ? (await idbGet('interessenten', id).catch(()=>null))||{} : {};
@@ -5529,9 +5549,22 @@ async function saveInteressent(id){
   toast('Interessent gespeichert ✓');
 }
 
+/* A404: Holt die vollstaendige Selbstauskunft zu einem Interessenten.
+   Zuerst aus dem Datensatz selbst, ersatzweise aus dem Store - alte
+   Interessenten aus der Zeit vor v244 tragen das Feld nicht. */
+async function saAuskunftZuInteressent(k){
+  if(k && k.selbstauskunft) return k.selbstauskunft;
+  if(!k || !k.quelleId) return null;
+  try{
+    const arch = await idbGet('selbstauskuenfte', k.quelleId);
+    return (arch && arch.daten) || null;
+  }catch(e){ return null; }
+}
+
 async function modalInteressentDetail(id){
   const k = await idbGet('interessenten', id).catch(()=>null);
   if(!k){ toast('Nicht gefunden'); return; }
+  const _sa = await saAuskunftZuInteressent(k);
   const si = interessentStatusInfo(k.status);
   const z = (label, val) => val ? `<div class="det-field"><label>${label}</label><span>${esc(String(val))}</span></div>` : '';
   showModal(`
@@ -5556,6 +5589,14 @@ async function modalInteressentDetail(id){
       ${z('Quelle', k.quelle)}
     </div>
     ${k.notiz?`<div style="margin-top:10px;background:var(--ink-05);border-radius:8px;padding:10px 12px;font-size:13px;color:var(--ink-60)">${esc(k.notiz)}</div>`:''}
+    ${_sa?`<div style="margin-top:12px">
+      <button class="btn btn-sm" onclick="saAuskunftUmschalten('${escJs(k.id)}')" id="saAufklappBtn_${escAttr(k.id)}">
+        <i class="ti ti-file-description"></i> Vollständige Selbstauskunft anzeigen</button>
+      <div id="saAufklapp_${escAttr(k.id)}" style="display:none;margin-top:8px"></div>
+      <div style="font-size:11px;color:var(--ink-40);margin-top:6px">
+        <i class="ti ti-info-circle"></i> Bewerberangaben. Entsteht kein Mietverhältnis,
+        sind sie zu löschen (Art. 5 Abs. 1 lit. e DSGVO).</div>
+    </div>`:''}
     <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:14px">
       <button class="btn btn-sm" onclick="modalInteressentNeu('${k.objektId||''}','${k.id}')"><i class="ti ti-pencil"></i> Bearbeiten</button>
       ${k.status!=='uebernommen'?`<button class="btn btn-sm btn-copper" onclick="interessentZuMieter('${k.id}')"><i class="ti ti-user-check"></i> Als Mieter übernehmen</button>`:''}
@@ -8613,6 +8654,15 @@ async function saDetailZeigen(id){
     ziel.innerHTML='<span style="font-size:12px;color:var(--red,#c0392b)">Entschlüsselung fehlgeschlagen: '+esc(err.message)+'</span>';
     return;
   }
+  ziel.innerHTML = saAuskunftHTML(obj);
+}
+
+/* A404: Der Ausgabeteil, herausgeloest aus saDetailZeigen. Wird von dort UND
+   aus der Interessentenakte genutzt - ein zweiter Renderer waere genau die
+   Doppelung, die zum Befund gefuehrt hat.
+   Erwartet das entschluesselte Objekt {basis, selbstauskunft}. */
+function saAuskunftHTML(obj){
+  obj = obj || {};
   const b=obj.basis||{}, sa=obj.selbstauskunft||{}, p1=sa.person1||{}, p2=sa.person2||{};
   function z(label,wert){ return wert? `<div style="font-size:13px"><b>${esc(label)}:</b> ${esc(wert)}</div>`:''; }
   let h='<div style="background:var(--bg-soft,#f6f6f4);border-radius:8px;padding:10px;line-height:1.7">';
@@ -8640,7 +8690,40 @@ async function saDetailZeigen(id){
   h+=z('Keine Mietrückstände',sa.erkl_keineRueckstaende?'bestätigt':'');
   h+=z('Keine Vollstreckung',sa.erkl_keineVollstreckung?'bestätigt':'');
   h+='</div>';
-  ziel.innerHTML=h;
+  return h;
+}
+
+/* A402: Selbstauskunft endgueltig loeschen.
+   Abgrenzung zu "als Interessent uebernehmen": dort bleibt der Datensatz
+   serverseitig als 'verarbeitet' erhalten. Hier verschwindet er ganz - der
+   Fall fuer Bewerber, aus denen kein Mietverhaeltnis geworden ist
+   (Art. 17 Abs. 1 lit. a DSGVO). */
+async function saLoeschen(id, name, tage){
+  const key = (await idbGet('settings','backendKey').catch(()=>null))?.value;
+  if(!key){ toast('Kein Backend-Schlüssel hinterlegt – Löschen nicht möglich.', 6000); return; }
+  if(!confirm('Selbstauskunft von ' + (name || 'dieser Person')
+      + (tage!=null ? ' (vor ' + tage + ' Tagen eingegangen)' : '')
+      + ' endgültig löschen?\n\n'
+      + 'Die Angaben werden auf dem Server vollständig entfernt. '
+      + 'Es gibt keinen Papierkorb und keine Wiederherstellung.')) return;
+  try{
+    const r = await fetchMitTimeout(BACKEND_AZURE+'/api/inbox-sa/delete',{
+      method:'POST', headers:{'Content-Type':'application/json','x-functions-key':key},
+      body:JSON.stringify({ id })
+    });
+    if(!r || !r.ok) throw new Error('HTTP '+(r ? r.status : 'ohne Antwort'));
+  }catch(err){
+    /* Nicht verschlucken - vgl. Befund R26, wo die Oberflaeche Erfolg meldete,
+       waehrend serverseitig nichts geschah. */
+    console.warn('Selbstauskunft löschen:', err);
+    toast('Löschen am Server fehlgeschlagen – der Eintrag ist weiterhin vorhanden.', 6000);
+    return;
+  }
+  toast('Selbstauskunft gelöscht ✓');
+  const karte = document.getElementById('saDetail_'+id);
+  const box = karte && karte.closest ? karte.closest('div[style*="border"]') : null;
+  if(box) box.style.display='none';
+  else if(karte && karte.parentElement) karte.parentElement.style.display='none';
 }
 
 // Import als Interessent + serverseitig als verarbeitet markieren
@@ -8703,39 +8786,6 @@ async function saAlsInteressentImportieren(id){
       toast('Als gelesen markieren am Server fehlgeschlagen – beim nächsten Aufruf erscheint der Eintrag wieder.', 5000);
     }
   }
-/* A402: Selbstauskunft endgueltig loeschen.
-   Abgrenzung zu "als Interessent uebernehmen": dort bleibt der Datensatz
-   serverseitig als 'verarbeitet' erhalten. Hier verschwindet er ganz - der
-   Fall fuer Bewerber, aus denen kein Mietverhaeltnis geworden ist
-   (Art. 17 Abs. 1 lit. a DSGVO). */
-async function saLoeschen(id, name, tage){
-  const key = (await idbGet('settings','backendKey').catch(()=>null))?.value;
-  if(!key){ toast('Kein Backend-Schlüssel hinterlegt – Löschen nicht möglich.', 6000); return; }
-  if(!confirm('Selbstauskunft von ' + (name || 'dieser Person')
-      + (tage!=null ? ' (vor ' + tage + ' Tagen eingegangen)' : '')
-      + ' endgültig löschen?\n\n'
-      + 'Die Angaben werden auf dem Server vollständig entfernt. '
-      + 'Es gibt keinen Papierkorb und keine Wiederherstellung.')) return;
-  try{
-    const r = await fetchMitTimeout(BACKEND_AZURE+'/api/inbox-sa/delete',{
-      method:'POST', headers:{'Content-Type':'application/json','x-functions-key':key},
-      body:JSON.stringify({ id })
-    });
-    if(!r || !r.ok) throw new Error('HTTP '+(r ? r.status : 'ohne Antwort'));
-  }catch(err){
-    /* Nicht verschlucken - vgl. Befund R26, wo die Oberflaeche Erfolg meldete,
-       waehrend serverseitig nichts geschah. */
-    console.warn('Selbstauskunft löschen:', err);
-    toast('Löschen am Server fehlgeschlagen – der Eintrag ist weiterhin vorhanden.', 6000);
-    return;
-  }
-  toast('Selbstauskunft gelöscht ✓');
-  const karte = document.getElementById('saDetail_'+id);
-  const box = karte && karte.closest ? karte.closest('div[style*="border"]') : null;
-  if(box) box.style.display='none';
-  else if(karte && karte.parentElement) karte.parentElement.style.display='none';
-}
-
   toast('Als Interessent übernommen ✓');
   // aus der Liste entfernen
   const karte=document.getElementById('saDetail_'+id);
@@ -27212,6 +27262,7 @@ async function wohnungenAdressenHolen(){
 
 registerActions({ modalPortalPersonen, portalPersonenUebernehmen });   // A396
 registerActions({ saLoeschen });                                       // A402
+registerActions({ saAuskunftUmschalten });                             // A404
 registerActions({ modalKrAbrechnung, krSpeichern, krVersendetSetzen, krLoeschen,
                   krPosHinzu, krPosWeg, krNeuBerechnen, krArtGewechselt,
                   krBriefErzeugen, krZeitUebernehmen });                 // A398–A403
