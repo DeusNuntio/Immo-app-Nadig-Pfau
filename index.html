@@ -1242,7 +1242,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=38;   // A398: +kr_abrechnungen
-const APP_VERSION = '2026-08-30-A404';
+const APP_VERSION = '2026-09-02-A408';
 /* v364 (12.08.2026) – offene Punkte abgearbeitet.
    1) D1/XLSX_SRI: Der im Code hinterlegte PowerShell-Befehl war FALSCH und
       konnte nie funktionieren - Invoke-WebRequest liefert unter .Content einen
@@ -2463,12 +2463,14 @@ document.addEventListener('wheel', function(e){
       und "Kontakt teilen" im Kopfbereich wurden entfernt, da sie unten in der
       Bewohner-Sektion je Person bereits vorhanden sind. Der E-Mail-Button
       oben bleibt erhalten (unten kein eigener E-Mail-Button). Funktion
-      mieterKontaktTeilen bleibt fuer die Bewohner-Sektion bestehen.
+      Die Bewohner-Sektion nutzt personKontaktTeilen (v151); die alte
+      mieterKontaktTeilen ist in A407 als unerreichbar entfernt worden.
    Keine neuen Stores, DB_VER bleibt 30. */
 /* v153 (01.07.2026): Mietbescheinigung – vier Verbesserungen.
    1) Etage/Lage: Die Etage wird jetzt automatisch aus dem Mieterfeld
       "Etage / Lage" (m.etage) uebernommen. Neue Hilfsfunktionen
-      mbEtageZahl/mbEtageGrundlage/mbEtageOrdinal/mbLage2AusText/
+      mbEtageZahl/mbEtageGrundlage/mbLage2AusText/   (mbEtageOrdinal in A407
+      entfernt: die Beschriftung wird im Druckbogen inline gebildet)
       mbLageZusatz leiten Grundlage (EG/OG/DG), Etagenzahl (-> "2.
       Obergeschoss"), Zusatzlage (Vorne/Hinten/Fluegel/Anbau, sofern
       eindeutig) und Klartext-Zusatz (links/rechts/mitte) ab. Neue,
@@ -4425,7 +4427,7 @@ async function getMyObjekte(){
 ═══════════════════════════════════════════════════════════ */
 function istVerwalter(u){ const r=(u||CU)?.role; return r==='admin'||r==='eigentuemer'; }
 function istSystemAdmin(u){ return (u||CU)?.role==='admin'; }
-function istHausmeister(u){ return (u||CU)?.role==='hm'; }
+
 
 /* ── v389: Zwei Rechte, die bis v388 nur an der Oberflaeche haengen ──────
    Der Hausmeister arbeitet operativ am Objekt. Die Mieterakte enthaelt
@@ -8547,6 +8549,215 @@ async function portalWohnungEntfernen(kennung){
 }
 
 /* ═══════════════════════════════════════════════════════════
+   PORTAL-VERZEICHNIS (A408)
+   ───────────────────────────────────────────────────────────
+   Warum es diese Ansicht gibt: Der Push nach Azure ist ein UPSERT - er legt an
+   und aktualisiert, aber er loescht nichts. `sammleWohnungen()` filtert
+   Vormieter, Zukuenftige und Leerstand heraus; ein ausgezogener Mieter faellt
+   damit aus dem Push, bleibt aber im Portal-Verzeichnis stehen und koennte sich
+   weiter anmelden (Art. 5 Abs. 1 lit. e, Art. 17 DSGVO).
+   `portalWohnungEntfernen()` gibt es dafuer seit v299 - bis A407 hatte sie
+   keinen Aufrufer, weil die Bedienoberflaeche fehlte. Diese Ansicht ist der
+   fehlende Teil: sie zeigt, was tatsaechlich im Portal steht, gleicht es gegen
+   den eigenen Mieterbestand ab und macht das Entfernen ausloesbar.
+   Gelesen wird ueber GET /api/portal-sync (OHNE `nur=mieter`, sonst kaemen nur
+   die selbst eingetragenen Adressen). Die Antwort enthaelt zusaetzlich
+   `verwaisteRowkeys` - Datensaetze aus der Zeit vor dem Gross-/Klein-
+   schreibungsfix (v301), die das Backend ausdruecklich zum Loeschen meldet.
+   ═══════════════════════════════════════════════════════════ */
+
+let _portalVerz = null;      // letzte Antwort des Backends
+let _portalVerzNurAlt = false;
+
+// Rohdaten des Portal-Verzeichnisses holen. Wirft mit sprechendem Text,
+// damit die Ansicht den Grund zeigen kann statt nur "Fehler".
+async function portalVerzeichnisLaden(){
+  const key=(await idbGet('settings','backendKey').catch(()=>null))?.value;
+  if(!key) throw new Error('Kein Backend-Schlüssel hinterlegt (Einstellungen → Verbindung).');
+  const res=await fetchMitTimeout(BACKEND_AZURE+'/api/portal-sync',
+    { method:'GET', headers:{'x-functions-key':key} });
+  if(!res || !res.ok) throw new Error('Backend antwortet mit Status '+(res?res.status:'—')+'.');
+  const j=await res.json();
+  if(!j || !j.ok) throw new Error('Backend meldet einen Fehler.');
+  return j;
+}
+
+/* Abgleich Portal <-> eigener Bestand. Massgeblich ist dieselbe Kennung, die
+   auch der Push bildet (wohnungsKennung). Vormieter/Zukuenftige/Leerstand
+   zaehlen NICHT als aktiv - genau sie sind der Grund fuer diese Ansicht. */
+async function portalVerzeichnisAbgleich(wohnungen){
+  const alle = await idbGetAll('mieter').catch(()=>[]);
+  const aktiv = new Map();
+  for(const m of alle){
+    if(!m || m._vormieter || m._zukuenftig || m.leerstand) continue;
+    if(!m.objektId || m.weNr==null || m.weNr==='') continue;
+    aktiv.set(wohnungsKennung(m.objektId, m.weNr), m);
+  }
+  return (wohnungen||[]).map(w => {
+    const k = String(w.kennung||'').toUpperCase();
+    const m = aktiv.get(k) || null;
+    return { ...w, _aktiv: !!m, _mieterName: m ? (m.mieter||'') : '' };
+  });
+}
+
+async function modalPortalVerzeichnis(){
+  if(!istVerwalter()){ toast('Nur für Admins'); return; }
+  _portalVerzNurAlt = false;
+  showModal(`
+    <div class="m-title"><i class="ti ti-address-book"></i> Portal-Verzeichnis</div>
+    <div style="font-size:12px;color:var(--ink-40);margin-bottom:10px">
+      Was tatsächlich im Mieterportal hinterlegt ist – direkt aus dem Backend gelesen,
+      nicht aus dem lokalen Bestand. Der Push legt an und aktualisiert, er entfernt nichts:
+      Nach einem Auszug muss die Wohnung hier aktiv aus dem Portal genommen werden.
+    </div>
+    <div id="portalVerzListe"><div style="padding:18px 0;text-align:center;color:var(--ink-40)">Wird geladen …</div></div>
+    <button class="btn btn-full" style="margin-top:12px" data-action-click="closeModal">Schließen</button>`);
+  await portalVerzeichnisZeichnen();
+}
+
+async function portalVerzeichnisNeuLaden(){
+  _portalVerz = null;
+  await portalVerzeichnisZeichnen();
+}
+
+function portalVerzFilterUmschalten(){
+  _portalVerzNurAlt = !_portalVerzNurAlt;
+  portalVerzeichnisZeichnen();
+}
+
+async function portalVerzeichnisZeichnen(){
+  const el = document.getElementById('portalVerzListe');
+  if(!el) return;
+  if(!_portalVerz){
+    el.innerHTML = '<div style="padding:18px 0;text-align:center;color:var(--ink-40)">Wird geladen …</div>';
+    try { _portalVerz = await portalVerzeichnisLaden(); }
+    catch(e){
+      el.innerHTML = `<div style="padding:14px;border:1px solid var(--ink-10);border-radius:8px;font-size:13px">
+        <b>Portal-Verzeichnis nicht lesbar.</b><br>
+        <span style="color:var(--ink-40)">${esc(e.message||'')}</span><br>
+        <button class="btn btn-sm" style="margin-top:8px" data-action-click="portalVerzeichnisNeuLaden"><i class="ti ti-refresh"></i> Erneut versuchen</button>
+      </div>`;
+      return;
+    }
+  }
+
+  const liste = await portalVerzeichnisAbgleich(_portalVerz.wohnungen||[]);
+  const verwaist = (_portalVerz.verwaisteRowkeys||[]);
+  const ohneMv = liste.filter(x => !x._aktiv);
+  const registriert = liste.filter(x => x.registriert).length;
+
+  const kopf = `
+    <div style="display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--ink-40);margin-bottom:10px">
+      <span><b style="color:var(--ink)">${liste.length}</b> Einträge im Portal</span>
+      <span><b style="color:var(--ink)">${registriert}</b> registriert</span>
+      <span style="color:${ohneMv.length?'var(--amber-d,#9a6b00)':'var(--ink-40)'}">
+        <b>${ohneMv.length}</b> ohne aktives Mietverhältnis</span>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+      <button class="btn btn-sm" data-action-click="portalVerzFilterUmschalten">
+        <i class="ti ti-filter"></i> ${_portalVerzNurAlt?'Alle anzeigen':'Nur ohne Mietverhältnis'}</button>
+      <button class="btn btn-sm" data-action-click="portalVerzeichnisNeuLaden"><i class="ti ti-refresh"></i> Neu laden</button>
+    </div>`;
+
+  /* Die veralteten Kleinschreibungs-Zeilen meldet das Backend selbst. Sie sind
+     im Portal wirkungslos (die Suche laeuft ueber die kanonische Schreibweise),
+     stehen aber weiter mit verschluesselten Daten in der Tabelle. */
+  const altBlock = verwaist.length ? `
+    <div style="border:1px solid var(--amber,#e0a800);border-radius:10px;padding:12px;margin-bottom:12px">
+      <div style="font-weight:600;font-size:13px;margin-bottom:4px">
+        <i class="ti ti-alert-triangle"></i> ${verwaist.length} veraltete(r) Eintrag/Einträge (Kleinschreibung)</div>
+      <div style="font-size:12px;color:var(--ink-40);margin-bottom:8px">
+        Reste aus der Zeit vor v301. Für die Anmeldung wirkungslos, enthalten aber weiterhin
+        gespeicherte Daten – sie sollten entfernt werden.</div>
+      ${verwaist.map(k => `
+        <div style="display:flex;align-items:center;gap:8px;margin-top:6px">
+          <span style="font-size:12px;font-family:var(--mono)">${esc(k)}</span>
+          <button class="btn btn-sm btn-danger" style="margin-left:auto"
+            data-action-click="portalVerzeichnisEntfernen" data-arg="${escAttr(k)}">
+            <i class="ti ti-trash"></i> Entfernen</button>
+        </div>`).join('')}
+    </div>` : '';
+
+  const zeigen = _portalVerzNurAlt ? ohneMv : liste;
+  if(!zeigen.length){
+    el.innerHTML = kopf + altBlock + `<div class="empty"><i class="ti ti-check"></i><p>${
+      _portalVerzNurAlt ? 'Jeder Portal-Eintrag hat ein aktives Mietverhältnis.'
+                        : 'Im Portal ist zurzeit keine Wohnung hinterlegt.'}</p></div>`;
+    return;
+  }
+
+  el.innerHTML = kopf + altBlock + zeigen.map(x => portalVerzKarte(x)).join('');
+}
+
+function portalVerzKarte(x){
+  const k = String(x.kennung||'');
+  /* Drei Zustände, bewusst getrennt benannt: registriert (Mieter hat den
+     Registrierschlüssel eingelöst), Brief unterwegs (Schlüssel gedruckt, noch
+     nicht eingelöst), nur angelegt (weder noch). */
+  const status = x.registriert
+    ? `<span style="color:var(--green)"><i class="ti ti-circle-check"></i> registriert</span>`
+    : (x.regOffen
+        ? `<span style="color:var(--ink-40)"><i class="ti ti-mail-fast"></i> Brief verschickt, noch nicht eingelöst</span>`
+        : `<span style="color:var(--ink-40)"><i class="ti ti-point"></i> angelegt</span>`);
+  const mv = x._aktiv
+    ? `<span style="color:var(--green);font-size:11px"><i class="ti ti-home-check"></i> aktives Mietverhältnis</span>`
+    : `<span style="color:var(--amber-d,#9a6b00);font-size:11px"><i class="ti ti-home-off"></i> kein aktives Mietverhältnis</span>`;
+  const rahmen = x._aktiv ? 'var(--ink-10)' : 'var(--amber,#e0a800)';
+  return `
+  <div style="border:1px solid ${rahmen};border-radius:10px;padding:12px;margin-bottom:10px">
+    <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin-bottom:6px">
+      <span style="font-size:12px;font-weight:600;font-family:var(--mono)">${esc(k)}</span>
+      <span style="font-size:12px;color:var(--ink-40)">${esc(x.objektName||'')}</span>
+      <span style="margin-left:auto;font-size:11px">${status}</span>
+    </div>
+    <div style="font-size:13px;margin-bottom:2px">${esc(x.name||'—')}</div>
+    <div style="font-size:12px;color:var(--ink-40);margin-bottom:6px">${esc(x.email||'keine E-Mail hinterlegt')}${
+      x.emailQuelle==='mieter'?' · <i class="ti ti-user-check"></i> vom Mieter selbst eingetragen':''}</div>
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+      ${mv}
+      ${x._aktiv&&x._mieterName?`<span style="font-size:11px;color:var(--ink-40)">Akte: ${esc(x._mieterName)}</span>`:''}
+      <button class="btn btn-sm btn-danger" style="margin-left:auto"
+        data-action-click="portalVerzeichnisEntfernen" data-arg="${escAttr(k)}">
+        <i class="ti ti-trash"></i> Aus dem Portal entfernen</button>
+    </div>
+  </div>`;
+}
+
+/* Entfernen. Die Rueckfrage nennt die Folge ausdruecklich: Das Backend loescht
+   zusammen mit dem Verzeichniseintrag auch offene Sitzungen und Zugangscodes
+   derselben Kennung - ohne das koennte sich ein ausgezogener Mieter mit einer
+   laufenden Sitzung weiter anmelden. Bei einem noch aktiven Mietverhaeltnis
+   wird zusaetzlich gewarnt, weil der naechste Push den Eintrag zwar wieder
+   anlegt, der Mieter sich bis dahin aber nicht anmelden kann. */
+async function portalVerzeichnisEntfernen(kennung){
+  const k = String(kennung||'').trim();
+  if(!k) return;
+  const eintrag = ((_portalVerz && _portalVerz.wohnungen)||[]).find(w => String(w.kennung)===k);
+  const alle = await idbGetAll('mieter').catch(()=>[]);
+  const nochAktiv = alle.some(m => m && !m._vormieter && !m._zukuenftig && !m.leerstand
+    && m.objektId && m.weNr!=null && m.weNr!=='' && wohnungsKennung(m.objektId, m.weNr)===k.toUpperCase());
+
+  let frage = `Wohnung ${k} aus dem Portal entfernen?\n\n`
+    + `Der Verzeichniseintrag wird gelöscht, ebenso offene Sitzungen und Zugangscodes dieser Wohnung. `
+    + `Eine laufende Anmeldung endet damit sofort.`;
+  if(nochAktiv){
+    frage += `\n\nACHTUNG: Zu dieser Wohnung gibt es ein AKTIVES Mietverhältnis`
+      + (eintrag && eintrag.name ? ` (${eintrag.name})` : '')
+      + `. Der Mieter kann sich danach nicht mehr anmelden, bis Sie erneut „Direkt ans Backend senden" ausführen.`;
+  }
+  if(!confirm(frage)) return;
+
+  const ok = await portalWohnungEntfernen(k);
+  if(!ok){ toast('Entfernen fehlgeschlagen – der Eintrag bleibt im Portal. Backend-Schlüssel und Verbindung prüfen.'); return; }
+  toast('Aus dem Portal entfernt ✓');
+  _portalVerz = null;
+  await portalVerzeichnisZeichnen();
+}
+
+registerActions({ modalPortalVerzeichnis, portalVerzeichnisNeuLaden,
+                  portalVerzFilterUmschalten, portalVerzeichnisEntfernen });
+
+/* ═══════════════════════════════════════════════════════════
    SELBSTAUSKÜNFTE (Website) – Posteingang, Entschlüsselung, Import
    - Abruf über GET /api/inbox-sa (Function-Key)
    - Inhalte sind AES-256-GCM-verschlüsselt; Entschlüsselung lokal
@@ -10805,7 +11016,7 @@ const VERWALTUNG_STANDORTE=[
   {id:'st_mg',        name:'Mönchengladbach'},
   {id:'st_krefeld',   name:'Krefeld'},
 ];
-function verwaltungStandortName(id){ return VERWALTUNG_STANDORTE.find(s=>s.id===id)?.name || id; }
+
 
 async function modalTaetigkeitStart(){
   window._tsNeuerMangelId=null;
@@ -11545,22 +11756,7 @@ async function delTaetigkeitKat(katId){
   toast('Gelöscht');
 }
 
-async function modalTaetigkeitQR(){
-  const objekte=await getMyObjekte();
-  const kats=await getTaetigkeitKat(true);
-  showModal(`
-    <div class="m-title"><i class="ti ti-qrcode"></i> Tätigkeits-QR</div>
-    <div class="f"><label>Tätigkeit *</label>
-      <select id="tqKat">${kats.map(k=>`<option value="${k.id}">${esc(k.name)}</option>`).join('')}</select></div>
-    <div class="f"><label for="tqObj">Objekt *</label>
-      <select id="tqObj">${objekte.map(o=>`<option value="${o.id}">${esc(o.name)}</option>`).join('')}</select></div>
-    <div style="font-size:11px;color:var(--ink-40);margin-bottom:10px">
-      Der QR kodiert Tätigkeit und Objekt. Beim Scannen startet die Tätigkeit am gewählten Objekt.
-    </div>
-    <button class="btn btn-copper btn-full" style="margin-bottom:8px" onclick="taetigkeitQrErstellen('speichern')"><i class="ti ti-download"></i> Speichern (Download)</button>
-    <button class="btn btn-full" style="margin-bottom:8px" onclick="taetigkeitQrErstellen('teilen')"><i class="ti ti-share"></i> Teilen / an Drucker</button>
-    <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>`);
-}
+
 
 // Welche Tätigkeiten dürfen als QR gedruckt werden (man weiß, wohin man sie klebt)
 const QR_OBJEKT_ERLAUBT  = ['reinigung','kontrolle'];        // objektbezogen
@@ -11586,6 +11782,7 @@ async function modalTaetigkeitQRListe(){
       <button class="filter-chip active" id="qrModusEinzel" onclick="qrModusWechseln('einzel')">Objekt</button>
       <button class="filter-chip" id="qrModusAllg" onclick="qrModusWechseln('allgemein')">Allgemein</button>
       <button class="filter-chip" id="qrModusRundgang" onclick="qrModusWechseln('rundgang')">Müllrundgang</button>
+      <button class="filter-chip" id="qrModusSammel" onclick="qrModusWechseln('sammel')">Sammeldruck</button>
     </div>
 
     <!-- Objektbezogen: eine Tätigkeit + ein Objekt → 30×50 mm -->
@@ -11622,9 +11819,60 @@ async function modalTaetigkeitQRListe(){
       <div id="qrRgListe"></div>
     </div>
 
+    <!-- A405: Sammeldruck. Viele QR-Codes auf einem Bogen statt Etikett fuer
+         Etikett. Die Druck- und Vorschaulogik war seit v3xx fertig, nur diese
+         Oberflaeche fehlte - die Filterfunktionen suchten Elemente, die es
+         nicht gab. -->
+    <div id="qrSammelWrap" style="display:none">
+      <div style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap">
+        <button class="filter-chip active" id="qrSammelObj" onclick="qrSammelArtWechseln('objekt')">Objektbezogen</button>
+        <button class="filter-chip" id="qrSammelAllg" onclick="qrSammelArtWechseln('allgemein')">Allgemein</button>
+      </div>
+
+      <div id="qrSammelObjFilter">
+        <div class="f"><label for="qrFilterStandort">Standort</label>
+          <select id="qrFilterStandort" onchange="qrFilterAendern()">${standortOpts}</select></div>
+        <div class="f"><label for="qrFilterObjekt">Objekt</label>
+          <select id="qrFilterObjekt" onchange="qrFilterObjektAendern()">
+            <option value="all">Alle Objekte</option>
+            ${objekte.map(o=>`<option value="${escAttr(o.id)}">${esc(o.name)}</option>`).join('')}
+          </select></div>
+        <div id="qrVorschau" style="margin-bottom:10px"></div>
+      </div>
+
+      <div id="qrSammelAllgFilter" style="display:none">
+        <div class="f"><label for="qrFilterLg">Liegenschaft</label>
+          <select id="qrFilterLg" onchange="qrVorschauAktualisieren()">
+            <option value="all">Alle Liegenschaften</option>${lgOpts}</select></div>
+        <div id="qrVorschauAllg" style="margin-bottom:10px"></div>
+      </div>
+
+      <div style="font-size:11px;color:var(--ink-40);margin-bottom:10px">
+        Druckt alle QR-Codes der Auswahl auf einen Bogen. Für einzelne Etiketten
+        die Reiter „Objekt" oder „Allgemein" verwenden.</div>
+      <button class="btn btn-copper btn-full" style="margin-bottom:6px" onclick="qrAuswahlDrucken()">
+        <i class="ti ti-printer"></i> Auswahl drucken</button>
+    </div>
+
     <button class="btn btn-full" data-action-click="closeModal">Schließen</button>
   `);
+  window._qrFilter = { standort:'all', objekt:'all' };   // A405
+  window._qrSammelArt = 'objekt';                        // A405
   qrEinzelStandortAendern();
+}
+
+/* A405: Innerhalb des Sammeldrucks zwischen objektbezogen und allgemein
+   umschalten. Zwei getrennte Filterbloecke, weil objektbezogene Taetigkeiten
+   an einem Objekt haengen, allgemeine an einer Liegenschaft. */
+function qrSammelArtWechseln(art){
+  window._qrSammelArt = art;
+  window._qrModus = (art === 'allgemein') ? 'allgemein' : 'sammel';
+  document.getElementById('qrSammelObj')?.classList.toggle('active', art === 'objekt');
+  document.getElementById('qrSammelAllg')?.classList.toggle('active', art === 'allgemein');
+  const zeig = (id, v) => { const e = document.getElementById(id); if (e) e.style.display = v ? 'block' : 'none'; };
+  zeig('qrSammelObjFilter',  art === 'objekt');
+  zeig('qrSammelAllgFilter', art === 'allgemein');
+  qrVorschauAktualisieren();
 }
 
 // Objektliste nach Standort füllen
@@ -11720,6 +11968,9 @@ function qrModusWechseln(modus){
   show('qrEinzelWrap',   modus==='einzel');
   show('qrAllgWrap',     modus==='allgemein');
   show('qrRundgangWrap', modus==='rundgang');
+  show('qrSammelWrap',   modus==='sammel');          // A405
+  document.getElementById('qrModusSammel')?.classList.toggle('active', modus==='sammel');
+  if(modus==='sammel'){ qrSammelArtWechseln(window._qrSammelArt||'objekt'); }
   if(modus==='rundgang'){
     const sel=document.getElementById('qrRgLg');
     if(sel && !sel._bound){ sel.addEventListener('change', qrRgListe); sel._bound=true; }
@@ -11757,7 +12008,13 @@ async function qrSelektierteLiegenschaften(){
   return sel==='all'?lgs:lgs.filter(l=>l.id===sel);
 }
 async function qrVorschauAktualisieren(){
-  if(window._qrModus==='allgemein'){
+  /* A405: Im Sammeldruck entscheidet die Unterauswahl, nicht der Hauptmodus.
+     Ohne diese Zeile zeichnete die Vorschau im Sammelmodus nie den
+     allgemeinen Zweig. */
+  const _allg = (window._qrModus==='sammel')
+    ? (window._qrSammelArt==='allgemein')
+    : (window._qrModus==='allgemein');
+  if(_allg){
     const el=document.getElementById('qrVorschauAllg');
     if(!el) return;
     const lgs=await qrSelektierteLiegenschaften();
@@ -11788,7 +12045,10 @@ async function qrVorschauAktualisieren(){
 async function qrAuswahlDrucken(){
   const cells=[];
   let titel='';
-  if(window._qrModus==='allgemein'){
+  const _allg = (window._qrModus==='sammel')
+    ? (window._qrSammelArt==='allgemein')
+    : (window._qrModus==='allgemein');
+  if(_allg){
     const lgs=await qrSelektierteLiegenschaften();
     const kats=(await getTaetigkeitKat(true)).filter(k=>k.allgemein);
     if(!lgs.length||!kats.length){ toast('Nichts zu drucken'); return; }
@@ -11840,19 +12100,7 @@ async function qrAuswahlDrucken(){
   toast(`${cells.length} QR-Codes zum Druck erzeugt`);
 }
 
-async function taetigkeitQrErstellen(modus){
-  const katId=document.getElementById('tqKat')?.value;
-  const objId=document.getElementById('tqObj')?.value;
-  if(!katId||!objId){ toast('Bitte Tätigkeit und Objekt wählen'); return; }
-  const kats=await getTaetigkeitKat();
-  const kat=kats.find(k=>k.id===katId);
-  const obj=getObj(objId);
-  const qrText='TAETIGKEIT:'+katId+':'+objId;
-  const dateiname='TAET_'+katId+'_'+objId;
-  closeModal();
-  const fn = (modus==='teilen') ? etikettPdfTeilen : etikettPdfSpeichern;
-  await fn(qrText, dateiname, kat?.name||katId, obj?.name||objId, '');
-}
+
 
 /* ══════════════════════════════════════════════════════════
    STEMPELUHR – Arbeitszeiterfassung für Hausmeister
@@ -11958,10 +12206,6 @@ async function getSitzungenUser(userId){
   return (await idbGetAll('arbeitszeit','userId',userId).catch(()=>[]))
     .filter(x=>x.status==='beendet');
 }
-// Summe Arbeitsminuten gefiltert
-function summeMinuten(sitzungen, filterFn){
-  return sitzungen.filter(filterFn).reduce((sum,s)=>sum+sitzungMinuten(s),0);
-}
 /* ── v181 (Punkt 4): Pauschale 30-Minuten-Pause je Arbeitstag ──
    Einstellung 'zeit_pause_pauschal' (settings, synchronisiert): Ist sie aktiv,
    werden je Kalendertag mit erfasster Arbeitszeit einmalig 30 Minuten abgezogen –
@@ -11985,7 +12229,7 @@ function tagMinutenNetto(sitzungenTag){
   if(!window._pausePauschal || brutto<=0) return brutto;
   return Math.max(0, brutto - PAUSE_PAUSCHAL_MIN);
 }
-// Wie summeMinuten, aber mit Tagespauschale (je Kalendertag einmalig)
+// Summe Arbeitsminuten mit Tagespauschale (je Kalendertag einmalig)
 function summeMinutenPauschal(sitzungen, filterFn){
   const gefiltert=sitzungen.filter(filterFn);
   if(!window._pausePauschal) return gefiltert.reduce((sum,s)=>sum+sitzungMinuten(s),0);
@@ -12174,10 +12418,7 @@ function urlaubstageImZeitraum(vonStr, bisStr){
   }
   return n;
 }
-function tagSollStunden(user){
-  const ws=(user?.wochenSoll!=null?user.wochenSoll:40);
-  return ws/5;
-}
+
 async function getUrlaube(userId){
   return (await idbGetAll('abwesenheit','userId',userId).catch(()=>[]))
     .filter(a=>a.typ==='urlaub');
@@ -15431,16 +15672,6 @@ async function vcardTeilen(vcardText, dateiname){
   toast('Kontakt heruntergeladen ✓');
 }
 
-// Einzelnen Mieter als Kontakt (vCard) weiterleiten.
-async function mieterKontaktTeilen(id){
-  const m = await idbGet('mieter', id).catch(()=>null);
-  if(!m){ toast('Mieter nicht gefunden'); return; }
-  const vc = mieterVCard(m);
-  const {nachname}=splitName(m.mieter);
-  const fn=((nachname||m.mieter||'Mieter').replace(/[^a-zA-Z0-9äöüÄÖÜß _-]/g,'')||'Mieter');
-  await vcardTeilen(vc, 'Kontakt_'+fn+'.vcf');
-}
-
 // ── v151: Vor-/Nachname aus "Nachname, Vorname" ODER "Vorname Nachname" ──
 function personNameTeile(name){
   let n=(name||'').trim().replace(/\s+/g,' ');
@@ -15581,11 +15812,7 @@ async function mangelAnHandwerker(id, store){
 }
 
 // WhatsApp-Button-HTML für Branchenbuch/Kontakte (kleiner Button).
-function waBtnSm(tel, title){
-  const l=waLink(tel);
-  if(!l) return '';
-  return '<a href="'+l+'" target="_blank" rel="noopener" class="btn btn-sm" style="background:#25D366;color:#fff;border-color:#25D366" title="'+(title||'WhatsApp')+'"><i class="ti ti-brand-whatsapp"></i></a>';
-}
+
 
 
 async function showMieter(id){
@@ -21623,14 +21850,7 @@ async function saveBriefkopfOverride(key, ziel){
 }
 
 
-function getBriefkopfHTML(objektId) {
-  const b = getBriefkopf(objektId);
-  return `<div style="font-size:10px;color:#555;margin-bottom:8px;padding-bottom:6px;border-bottom:2px solid #1F4E79">
-    <strong style="font-size:11px;color:#1F4E79">${esc(b.name)}</strong>${b.zusatz?`<br>${esc(b.zusatz)}`:''}
-    <br>${esc(b.strasse)} · ${esc(b.ort)}
-    <br>Tel: ${b.tel}${b.email?` · ${esc(b.email)}`:''}
-  </div>`;
-}
+
 
 
 /* ═══════════════════════════════════════════════════════════
@@ -23368,12 +23588,6 @@ function mbEtageGrundlage(txt){
   if(/og|obergeschoss|stock|etage|geschoss/.test(t) || /^\s*\d/.test(t)) return 'Obergeschoss';
   return '';
 }
-// Beschriftung fuer die Obergeschoss-Zeile: "2. Obergeschoss", sonst "Obergeschoss".
-function mbEtageOrdinal(txt){
-  const g=mbEtageGrundlage(txt);
-  if(g==='Obergeschoss'){ const z=mbEtageZahl(txt); return z?(z+'. Obergeschoss'):'Obergeschoss'; }
-  return g||'';
-}
 // Zusatzlage laut amtlichem Formular (Vorne/Hinten/Fluegel/Anbau), sofern eindeutig.
 function mbLage2AusText(txt){
   const t=String(txt||'').toLowerCase();
@@ -24943,20 +25157,7 @@ function getAnrede(m) {
   return kopf + ', ' + teile.slice(0,-1).join(', ') + ' und ' + teile[teile.length-1];
 }
 
-function getAnredeKurz(m) {
-  const lebend = (m.personen_liste?.filter(p=>p.name && !p.verstorben)) || [];
-  if (lebend.length > 1) return 'die Bewohner';
-  if (lebend.length === 1) {
-    const p = lebend[0];
-    if (p.anrede === 'Frau')   return 'Frau ' + p.name;
-    if (p.anrede === 'Divers') return p.name;
-    return 'Herr ' + p.name;
-  }
-  const anrede = m.anrede || 'Herr';
-  if (anrede === 'Frau')   return 'Frau ' + m.mieter;
-  if (anrede === 'Divers') return m.mieter;
-  return 'Herr ' + m.mieter;
-}
+
 
 /* ── Vertragspartner-Logik (rechtsverbindliche Schreiben: NKA, Mieterhöhung) ──
    Liefert die als Vertragspartner markierten, lebenden Personen.
@@ -26319,20 +26520,66 @@ async function ewStapelAusArchiv(){
 
 /* Alle archivierten Eigentuemerwechsel-Briefe nach Erzeugungslauf gruppiert.
    Gemeinsame Grundlage fuer das Nachdrucken und das Aufraeumen. */
+/* A406: Datum mit Uhrzeit, damit zwei Laeufe am selben Tag unterscheidbar
+   sind. Ohne die Uhrzeit war genau das nicht moeglich. */
+function fmtDatumZeit(ms){
+  const d = new Date(ms);
+  if(isNaN(d.getTime())) return 'ohne Datum';
+  const zz = n => String(n).padStart(2,'0');
+  return zz(d.getDate())+'.'+zz(d.getMonth()+1)+'.'+d.getFullYear()
+       + ', ' + zz(d.getHours())+':'+zz(d.getMinutes());
+}
+
 async function ewLaeufeUebersicht(){
   const alle = await idbGetAll('dokumente');
   const briefe = (alle||[]).filter(d =>
     d && d.typ === 'brief' && String(d.name||'').startsWith(EW_ARCHIV_PRAEFIX));
-  const nachLauf = new Map();
-  for(const d of briefe){
-    const lauf = (String(d.name||'').match(/\(([\d.]+)\)\s*$/)||[])[1] || 'ohne Datum';
-    if(!nachLauf.has(lauf)) nachLauf.set(lauf, {lauf, ids:[], mieter:new Set(), neuest:0});
-    const e = nachLauf.get(lauf);
-    e.ids.push(d.id);
-    if(d.mieterId) e.mieter.add(d.mieterId);
-    if((d.erstellt||0) > e.neuest) e.neuest = d.erstellt||0;
+  /* A406: Nach dem tatsaechlichen Zeitstempel gruppieren, nicht nach dem
+     Datum im Dateinamen. Zwei Laeufe am selben Tag (12:29 und 14:44) trugen
+     dieselbe Zeichenkette und fielen zu einem Lauf zusammen - der aeltere war
+     dadurch nicht mehr einzeln loeschbar.
+
+     Ein Serienbrieflauf laeuft am Stueck durch; eine Pause von 30 Minuten
+     bedeutet zuverlaessig einen neuen Lauf. Briefe ohne `erstellt` (Altbestand)
+     landen ueber das Namensdatum in einer eigenen Gruppe. */
+  /* Objektnamen einmal aufloesen. Am Dokument steht nur `objektId`;
+     ohne diesen Schritt hiesse in der Aufschluesselung alles "Ohne Objekt". */
+  let objekte = [];
+  try{ objekte = await idbGetAll('objekte'); }catch(e){ objekte = []; }
+  const objName = new Map((objekte||[]).map(o => [o.id, o.name || o.adresse || o.id]));
+  for(const d of briefe){ d._objektName = objName.get(d.objektId) || 'Ohne Objekt'; }
+
+  const LUECKE = 30 * 60 * 1000;
+  const mitZeit = briefe.filter(d => d.erstellt).sort((a,b) => a.erstellt - b.erstellt);
+  const ohneZeit = briefe.filter(d => !d.erstellt);
+
+  const gruppen = [];
+  for(const d of mitZeit){
+    const letzte = gruppen[gruppen.length-1];
+    if(letzte && (d.erstellt - letzte.neuest) <= LUECKE){
+      letzte.ids.push(d.id);
+      letzte.dokumente.push(d);
+      if(d.mieterId) letzte.mieter.add(d.mieterId);
+      letzte.neuest = d.erstellt;
+    } else {
+      gruppen.push({ lauf: fmtDatumZeit(d.erstellt), schluessel: String(d.erstellt),
+                     ids:[d.id], dokumente:[d],
+                     mieter: new Set(d.mieterId ? [d.mieterId] : []),
+                     aeltest: d.erstellt, neuest: d.erstellt });
+    }
   }
-  return [...nachLauf.values()].sort((a,b) => b.neuest - a.neuest);
+  // Altbestand ohne Zeitstempel: nach dem Datum im Namen zusammenfassen
+  const nachName = new Map();
+  for(const d of ohneZeit){
+    const k = (String(d.name||'').match(/\(([\d.]+)\)\s*$/)||[])[1] || 'ohne Datum';
+    if(!nachName.has(k)) nachName.set(k, { lauf: k + ' (ohne Uhrzeit)', schluessel: 'alt:'+k,
+                                           ids:[], dokumente:[], mieter:new Set(),
+                                           aeltest: 0, neuest: 0 });
+    const e = nachName.get(k);
+    e.ids.push(d.id); e.dokumente.push(d);
+    if(d.mieterId) e.mieter.add(d.mieterId);
+  }
+  return [...gruppen, ...nachName.values()].sort((a,b) => b.neuest - a.neuest);
 }
 
 /* Testlaeufe entfernen. Beim Ausprobieren des Serienbriefs sammeln sich die
@@ -26342,12 +26589,16 @@ async function ewLaeufeUebersicht(){
    wiederaufersteht. */
 async function ewLaufLoeschen(lauf){
   const laeufe = await ewLaeufeUebersicht();
-  const treffer = laeufe.filter(l => lauf === '__alt__' ? l.lauf !== laeufe[0].lauf : l.lauf === lauf);
+  /* A406: ueber `schluessel` statt `lauf` vergleichen - der Anzeigetext ist
+     nicht mehr eindeutig, seit er die Uhrzeit enthaelt. */
+  const treffer = laeufe.filter(l => lauf === '__alt__'
+    ? l.schluessel !== laeufe[0].schluessel
+    : l.schluessel === lauf);
   const anzahl = treffer.reduce((a,l)=>a+l.ids.length, 0);
   if(!anzahl){ toast('Nichts zu löschen'); return; }
   const was = lauf === '__alt__'
     ? `alle ${anzahl} Briefe aus ${treffer.length} älteren Läufen`
-    : `alle ${anzahl} Briefe vom ${lauf}`;
+    : `alle ${anzahl} Briefe vom ${treffer[0] ? treffer[0].lauf : lauf}`;
   if(!confirm(`${was} endgültig löschen?\n\nDie Briefe verschwinden bei allen betroffenen Mietern und auf allen Geräten. Bereits verschickte Papierbriefe bleiben davon unberührt.`)) return;
   let n = 0;
   for(const l of treffer){
@@ -26369,11 +26620,25 @@ async function ewAufraeumenAnzeigen(){
     if(!laeufe.length){ info.innerHTML = '<span style="color:var(--ink-40)">Keine archivierten Eigentümerwechsel-Briefe vorhanden.</span>'; return; }
     const gesamt = laeufe.reduce((a,l)=>a+l.ids.length, 0);
     const alt = gesamt - laeufe[0].ids.length;
+    /* A406: Je Lauf aufklappbar, darunter die Objekte einzeln loeschbar.
+       Bisher liess sich nur ein ganzer Lauf entfernen - wer nur die
+       Duesseldorfer Briefe wegraeumen wollte, hatte keine Moeglichkeit. */
+    window._ewLaeufe = laeufe;
     info.innerHTML = `<div style="font-weight:600;margin-bottom:4px">${gesamt} archivierte Brief(e) in ${laeufe.length} Lauf/Läufen</div>`
-      + laeufe.map((l,i) =>
-          `<div style="display:flex;align-items:center;gap:8px;margin-top:4px">`
+      + laeufe.map((l,i) => {
+          const objekte = ewObjekteJeLauf(l);
+          return `<div style="border:1px solid var(--ink-10);border-radius:8px;padding:6px 8px;margin-top:6px">`
+          + `<div style="display:flex;align-items:center;gap:8px">`
           + `<span style="flex:1">${esc(l.lauf)}${i===0?' <b>(jüngster)</b>':''} – ${l.ids.length} Brief(e), ${l.mieter.size} Mieter</span>`
-          + `<button class="btn btn-sm btn-danger" data-action-click="ewLaufLoeschen" data-arg="${esc(l.lauf)}"><i class="ti ti-trash"></i></button></div>`).join('')
+          + `<button class="btn btn-sm" onclick="ewLaufAufklappen(${i})" id="ewAufBtn${i}"><i class="ti ti-chevron-down"></i></button>`
+          + `<button class="btn btn-sm btn-danger" data-action-click="ewLaufLoeschen" data-arg="${escAttr(l.schluessel)}"><i class="ti ti-trash"></i></button></div>`
+          + `<div id="ewAuf${i}" style="display:none;margin-top:6px">`
+          + objekte.map(o =>
+              `<div style="display:flex;align-items:center;gap:8px;font-size:12px;padding:3px 0 3px 10px">`
+              + `<span style="flex:1">${esc(o.name)} – ${o.ids.length} Brief(e)</span>`
+              + `<button class="btn btn-sm btn-danger" onclick="ewObjektLoeschen(${i}, '${escJs(o.name)}')"><i class="ti ti-trash"></i></button></div>`).join('')
+          + `</div></div>`;
+        }).join('')
       + (alt ? `<button class="btn btn-full btn-danger" style="margin-top:8px" data-action-click="ewLaufLoeschen" data-arg="__alt__">`
              + `<i class="ti ti-trash"></i> Alle ${alt} Briefe außer dem jüngsten Lauf löschen</button>` : '');
   }catch(e){
@@ -26381,7 +26646,48 @@ async function ewAufraeumenAnzeigen(){
     toast('Archiv konnte nicht gelesen werden');
   }
 }
-registerActions({ ewAufraeumenAnzeigen });
+/* Teilt die Briefe eines Laufs nach Objekt auf. Der Objektname steht im
+   Dokumentnamen nicht drin, und ein Feld `objektName` gibt es am Dokument
+   nicht - nur `objektId`. Der Name wird deshalb in ewLaeufeUebersicht()
+   einmal aufgeloest und als `_objektName` mitgefuehrt. */
+function ewObjekteJeLauf(lauf){
+  const nach = new Map();
+  for(const d of (lauf.dokumente||[])){
+    const name = d._objektName || 'Ohne Objekt';
+    if(!nach.has(name)) nach.set(name, { name, ids:[] });
+    nach.get(name).ids.push(d.id);
+  }
+  return [...nach.values()].sort((a,b)=>a.name.localeCompare(b.name,'de'));
+}
+
+function ewLaufAufklappen(i){
+  const box = document.getElementById('ewAuf'+i);
+  const btn = document.getElementById('ewAufBtn'+i);
+  if(!box) return;
+  const zu = box.style.display === 'none';
+  box.style.display = zu ? 'block' : 'none';
+  if(btn) btn.innerHTML = `<i class="ti ti-chevron-${zu?'up':'down'}"></i>`;
+}
+
+async function ewObjektLoeschen(i, objektName){
+  const lauf = (window._ewLaeufe||[])[i];
+  if(!lauf) return;
+  const gruppe = ewObjekteJeLauf(lauf).find(o => o.name === objektName);
+  if(!gruppe || !gruppe.ids.length){ toast('Nichts zu löschen'); return; }
+  if(!confirm(`${gruppe.ids.length} Brief(e) für „${objektName}" aus dem Lauf `
+    + `${lauf.lauf} endgültig löschen?\n\nDie Briefe verschwinden bei den `
+    + `betroffenen Mietern und auf allen Geräten. Bereits verschickte `
+    + `Papierbriefe bleiben davon unberührt.`)) return;
+  let n = 0;
+  for(const id of gruppe.ids){
+    try{ await dokVollstaendigLoeschen(id); n++; }
+    catch(e){ console.warn('Löschen:', e); }
+  }
+  toast(n + ' Brief(e) gelöscht');
+  await ewAufraeumenAnzeigen();
+}
+
+registerActions({ ewAufraeumenAnzeigen, ewLaufAufklappen, ewObjektLoeschen });
 
 async function ewArchivStapelLaden(){
   const info = document.getElementById('ewInfo');
@@ -28676,11 +28982,7 @@ function kappungsBasis(m, stichtagISO){
 }
 
 // Höchstzulässige neue Kaltmiete nach Kappungsgrenze (ohne Vergleichsmiete!)
-function kappungsObergrenze(m, obj, stichtagISO){
-  const basis = kappungsBasis(m, stichtagISO);
-  const grenze = kappungsgrenze(obj, stichtagISO);
-  return basis * (1 + grenze/100);
-}
+
 
 // Sperrfrist: letzte Mietänderung (egal welcher Grund außer Modernisierung?
 // Praxis: jede Miethöhe-Änderung löst Frist aus). Gibt Monate seit letzter
@@ -32203,54 +32505,9 @@ async function zeigeVormieter(vormieterId) {
 }
 
 // Neue Anschrift eines (Vor-)Mieters erfassen/ändern – z. B. für Nachsendung von NKA
-/* ═══════════════════════════════════════════════════════════
-   MIETER – PERSONEN AUFTEILEN (Split)
-   Erkennt Sammelnamen wie „Presch, Burkhard & Irene" oder
-   „Mühlenkamp / Becker" und schlägt getrennte Personen vor.
-═══════════════════════════════════════════════════════════ */
-function parseMieterNamen(roh){
-  const s=(roh||'').trim();
-  if(!s) return [];
-  // Trenner für mehrere Haushalte / Parteien
-  const teile = s.split(/\s*(?:\/|;|\bu\.\b|\bund\b|&|\+)\s*/i).map(t=>t.trim()).filter(Boolean);
 
-  // Fall A: „Nachname, Vorname1 & Vorname2" – ein gemeinsamer Nachname
-  // Erkennung: genau ein Komma, links ein Wort (Nachname), rechts Vornamen
-  const kommaMatch = s.match(/^([^,]+),\s*(.+)$/);
-  if(kommaMatch && teile.length>1){
-    const nachname = kommaMatch[1].trim();
-    const restRoh = kommaMatch[2].trim();
-    const vornamen = restRoh.split(/\s*(?:\/|;|\bu\.\b|\bund\b|&|\+)\s*/i).map(t=>t.trim()).filter(Boolean);
-    if(vornamen.length>1 && !nachname.includes(' ')){
-      return vornamen.map(v=>({name:(v+' '+nachname).trim()}));
-    }
-  }
 
-  // Fall B: mehrere durch Trenner getrennte vollständige Namen
-  if(teile.length>1){
-    // Wenn ein Teil nur ein Vorname ist und ein anderer „Vorname Nachname",
-    // hänge den Nachnamen an den nackten Vornamen an.
-    const mitNachname = teile.find(t=>t.includes(' ') && !t.includes(','));
-    let nachname='';
-    if(mitNachname){ const w=mitNachname.split(/\s+/); nachname=w[w.length-1]; }
-    return teile.map(t=>{
-      // „Nachname, Vorname" → „Vorname Nachname"
-      const km=t.match(/^([^,]+),\s*(.+)$/);
-      if(km) return {name:(km[2].trim()+' '+km[1].trim()).trim()};
-      // nackter Vorname → Nachname ergänzen
-      if(!t.includes(' ') && nachname && t!==nachname) return {name:(t+' '+nachname).trim()};
-      return {name:t};
-    });
-  }
 
-  // Fall C: einzelner „Nachname, Vorname" → „Vorname Nachname"
-  if(kommaMatch){
-    return [{name:(kommaMatch[2].trim()+' '+kommaMatch[1].trim()).trim()}];
-  }
-  return [{name:s}];
-}
-
-async function modalMieterSplit(id){ return modalEditMieter(id); }
 async function modalNeueAdresse(mieterId) {
   const m = await idbGet('mieter', mieterId);
   if (!m) return;
@@ -32405,7 +32662,7 @@ function rateIstErhalten(r){
 // Summe TATSÄCHLICH eingegangener Raten (für Saldo)
 function kautionRatenSumme(kd){ return rc((kd.raten||[]).filter(rateIstErhalten).reduce((s,r)=>s+parseBetrag(r.betrag),0)); }
 // Summe ALLER vereinbarten Raten (für Soll-/Vollständigkeitsanzeige)
-function kautionRatenVereinbart(kd){ return rc((kd.raten||[]).reduce((s,r)=>s+parseBetrag(r.betrag),0)); }
+
 // Summe Zinsgutschriften
 function kautionZinsSumme(kd){ return rc((kd.bewegungen||[]).filter(b=>b.art==='zins').reduce((s,b)=>s+parseBetrag(b.betrag),0)); }
 // Summe Verrechnungen + Auszahlungen (Abgänge)
@@ -33781,7 +34038,7 @@ function setRoomVorhanden(room,val){
     renderProtRaeume();
   }
 }
-function setRoomCond(room,cond,val){PD.raeume[room].conditions[cond]=val;}
+
 function setRoomCondFull(room,cond,val){
   PD.raeume[room].conditions[cond]=val;
   // Wenn Bemerkung nicht mehr nötig – leeren
@@ -35582,12 +35839,13 @@ async function renderSettings(){
     ${istSysAdmin?`<div class="settings-card" data-tab="daten">
       <div class="card-hdr"><i class="ti ti-cloud-upload"></i> Website-Backend – Wohnungsexport</div>
       <p style="font-size:13px;color:var(--ink-40);margin-bottom:12px;line-height:1.6">
-        Erzeugt die Liste der belegten Wohneinheiten für das Azure-Backend (Mieterportal). Übertragen werden nur die zum Portal-Login nötigen Daten: Kennung, Adresse, Eckdaten und die hinterlegte Kontakt-E-Mail (für den Zugangscode). Es werden keine Verträge, Beträge oder Dokumente exportiert. Datei als JSON speichern und im Backend importieren – oder bei eingerichteter Verbindung direkt übertragen.
+        Erzeugt die Liste der belegten Wohneinheiten für das Azure-Backend (Mieterportal). Übertragen werden nur die zum Portal-Login nötigen Daten: Kennung, Adresse, Eckdaten und die hinterlegte Kontakt-E-Mail (für den Zugangscode). Es werden keine Verträge, Beträge oder Dokumente exportiert. Datei als JSON speichern und im Backend importieren – oder bei eingerichteter Verbindung direkt übertragen. <strong>Der Push entfernt nichts:</strong> Nach einem Auszug muss die Wohnung über das Portal-Verzeichnis aktiv aus dem Portal genommen werden, sonst bleibt die Anmeldung möglich.
       </p>
       <div id="wohnungsExportInfo" style="font-size:12px;color:var(--ink-40);margin-bottom:10px"></div>
       <button class="btn btn-primary btn-full" style="margin-bottom:8px" data-action-click="wohnungenExportJson"><i class="ti ti-download"></i> Als JSON speichern</button>
       <button class="btn btn-full" data-action-click="wohnungenExportPush"><i class="ti ti-cloud-up"></i> Direkt ans Backend senden</button>
       <button class="btn btn-full" style="margin-top:8px" data-action-click="wohnungenAdressenHolen"><i class="ti ti-cloud-down"></i> Neue Adressen aus dem Portal übernehmen</button>
+      <button class="btn btn-full" style="margin-top:8px" data-action-click="modalPortalVerzeichnis"><i class="ti ti-address-book"></i> Portal-Verzeichnis öffnen</button>
       <div id="wohnungsExportStatus" style="margin-top:10px"></div>
     </div>`:''}
 
@@ -36096,17 +36354,7 @@ async function sigLinieSpeichern(){
   await renderMeineSignatur();
   toast('Unterschriftslinie gespeichert ✓');
 }
-async function deleteSignaturLinie(){
-  if(!confirm('Linien-Variante der Unterschrift wirklich entfernen?')) return;
-  const u=await idbGet('users',CU.id).catch(()=>null);
-  if(u){ delete u.signaturMitLinie; delete u.sigLiniePos; u.geaendert=now(); await idbPut('users',u); }
-  delete CU.signaturMitLinie; delete CU.sigLiniePos;
-  sigDruckCacheLeeren(CU.id);
-  clearTimeout(window._syncTimer);
-  window._syncTimer=setTimeout(()=>syncToOneDrive(),3000);
-  await renderMeineSignatur();
-  toast('Linien-Variante entfernt');
-}
+
 
 /* ── Benutzer-Unterschrift (für Protokolle / NKA) ── */
 async function renderMeineSignatur(){
@@ -36412,11 +36660,7 @@ async function saveEditUser(id){
   closeModal(); await renderUserList_(); toast('Gespeichert ✓');
 }
 
-async function delUser(id){
-  if(!confirm('Benutzer wirklich löschen?')) return;
-  await idbDelete('users',id);
-  await renderUserList_(); toast('Benutzer gelöscht');
-}
+
 
 /* ═══════════════════════════════════════════════════════════
    BACKUP EXPORT / IMPORT
@@ -42590,11 +42834,7 @@ function zaSpNummern(zweck){
   }
   return [...out].sort((a,b)=>a-b);
 }
-function zaStellplatzAnteil(b){
-  // grobe Heuristik: reine Stellplatzzahlung
-  if(zaIstStellplatz(b.zweckKey||b.zweck)) return b.betrag;
-  return 0;
-}
+
 
 /* ═══════════════════════════════════════════════════════════
    v197 (B1): OFFENE POSTEN & MAHNWESEN
@@ -44109,7 +44349,7 @@ ${b3.length?`<h2>3. Abzüge</h2><table>
   closeModal();
   druckHTML(html, 'A+S-Aufstellung '+eh.name, null, true);
 }
-function rechnZuordnungName(id){ return RECHN_ZUORDNUNG.find(z=>z.id===id)?.name || id; }
+
 
 /* v276: Blendet die Felder der A+S-Maske je Position ein bzw. aus und zeigt an,
    auf welches Aktenzeichen die Rechnung laeuft. */
