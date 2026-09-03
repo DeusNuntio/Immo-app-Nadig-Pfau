@@ -1242,7 +1242,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=38;   // A398: +kr_abrechnungen
-const APP_VERSION = '2026-09-02-A408';
+const APP_VERSION = '2026-09-03-A409';
 /* v364 (12.08.2026) – offene Punkte abgearbeitet.
    1) D1/XLSX_SRI: Der im Code hinterlegte PowerShell-Befehl war FALSCH und
       konnte nie funktionieren - Invoke-WebRequest liefert unter .Content einen
@@ -9628,6 +9628,250 @@ async function mailTokenSenden(){
   }
 }
 
+
+/* ═══════════════════════════════════════════════════════════
+   MAIL-ANHÄNGE (A409)
+   ───────────────────────────────────────────────────────────
+   Zwei Quellen, bewusst nebeneinander:
+     (a) Aus der Akte des Empfaengers - der haeufige Fall. Was die App ohnehin
+         beim Mieter archiviert (Brief, Abrechnung, Bescheinigung), soll nicht
+         erst heruntergeladen und wieder hochgeladen werden. Ausgelagerte
+         Dokumente holt `dokAnhangDaten` vorher aus OneDrive zurueck.
+     (b) Datei vom Geraet - fuer alles, was nicht in der App liegt.
+   Die Nutzlast wird NICHT protokolliert: `tenant_mails` fuehrt nur Name, Typ
+   und Groesse. Ein Anhang im Protokoll landete sonst ueber den Sync in der
+   OneDrive-Datei und waere derselbe Groessentreiber, den §12-P23 gerade
+   beseitigt hat.
+   ═══════════════════════════════════════════════════════════ */
+
+const TM_MAX_ANHAENGE     = 5;
+const TM_MAX_ANHANG_BYTES = 10 * 1024 * 1024;   // je Anhang, wie im Backend
+const TM_MAX_GESAMT_BYTES = 15 * 1024 * 1024;   // alle zusammen, wie im Backend
+
+/* Muss mit MIME_ERLAUBT in send-mail.js uebereinstimmen. Steht hier ein Typ,
+   den das Backend ablehnt, waehlt der Nutzer eine Datei aus und erfaehrt erst
+   beim Senden, dass sie nicht geht. */
+const TM_MIME_ERLAUBT = [
+  'application/pdf',
+  'image/jpeg','image/png','image/webp','image/gif','image/heic',
+  'text/plain','text/csv','text/html',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+];
+
+window._tmAnhaenge = [];   // [{name, mimeType, groesse, quelle, dokId?, daten?}]
+
+function tmGroesseText(b){
+  const n = Number(b)||0;
+  if(n >= 1024*1024) return (n/1024/1024).toFixed(1).replace('.',',')+' MB';
+  if(n >= 1024)      return Math.round(n/1024)+' kB';
+  return n+' Byte';
+}
+
+/* Grobe Bytegroesse einer dataURL, ohne sie zu dekodieren: der base64-Teil
+   traegt 3 Byte je 4 Zeichen, abzueglich der Fuellzeichen am Ende. */
+function tmDataUrlBytes(dataUrl){
+  const s = String(dataUrl||'');
+  const k = s.indexOf(',');
+  if(k < 0) return 0;
+  const b64 = s.slice(k+1);
+  const fuell = (b64.endsWith('==') ? 2 : (b64.endsWith('=') ? 1 : 0));
+  return Math.max(0, Math.floor(b64.length * 3 / 4) - fuell);
+}
+
+function tmMimeAusDataUrl(dataUrl){
+  const m = /^data:([^;,]+)[;,]/.exec(String(dataUrl||''));
+  return m ? m[1].toLowerCase() : '';
+}
+
+/* Liefert die Bytes eines archivierten Dokuments als dataURL - auch dann, wenn
+   es nach OneDrive ausgelagert wurde. Gegenstueck zu `fotoDruckQuelle` fuer
+   den Druckpfad: dort geht es um das Canvas, hier um den Mailversand, aber
+   das Problem ist dasselbe - eine Fremd-URL nuetzt nichts, es braucht die
+   echten Daten. */
+async function dokAnhangDaten(d){
+  if(!d) return '';
+  if(d.data) return d.data;
+  if(istFotoRef(d.ref)){
+    try{
+      const url = await odDownloadUrl(d.ref.odId);
+      if(url){
+        const resp = await fetchMitTimeout(url, {}, 60000);
+        if(resp && resp.ok){
+          const blob = await resp.blob();
+          return await blobZuDataUrl(blob);
+        }
+      }
+    }catch(e){ console.warn('dokAnhangDaten:', e); }
+  }
+  return '';
+}
+
+function tmAnhangGesamt(){
+  return (window._tmAnhaenge||[]).reduce((s,a)=>s+(Number(a.groesse)||0), 0);
+}
+
+function tmAnhaengeZeichnen(){
+  const el = document.getElementById('tmAnhangListe');
+  if(!el) return;
+  const liste = window._tmAnhaenge || [];
+  if(!liste.length){ el.innerHTML = ''; return; }
+  const gesamt = tmAnhangGesamt();
+  el.innerHTML = liste.map((a,i)=>`
+    <div style="display:flex;align-items:center;gap:8px;border:1px solid var(--ink-10);border-radius:8px;padding:6px 10px;margin-top:6px">
+      <i class="ti ${a.quelle==='akte'?'ti-file-text':'ti-paperclip'}" style="color:var(--ink-40)"></i>
+      <span style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(a.name)}</span>
+      <span style="font-size:11px;color:var(--ink-40);margin-left:auto;white-space:nowrap">${tmGroesseText(a.groesse)}</span>
+      <button class="btn btn-sm" title="Anhang entfernen"
+        data-action-click="tmAnhangEntfernen" data-arg="${i}" data-argnum><i class="ti ti-x"></i></button>
+    </div>`).join('')
+    + `<div style="font-size:11px;color:${gesamt>TM_MAX_GESAMT_BYTES?'var(--red,#c0392b)':'var(--ink-40)'};margin-top:6px">
+         ${liste.length} Anhang/Anhänge · ${tmGroesseText(gesamt)} von ${tmGroesseText(TM_MAX_GESAMT_BYTES)}</div>`;
+}
+
+function tmAnhangEntfernen(i){
+  const liste = window._tmAnhaenge || [];
+  const k = Number(i);
+  if(!(k >= 0 && k < liste.length)) return;
+  liste.splice(k, 1);
+  tmAnhaengeZeichnen();
+}
+
+/* Gemeinsame Aufnahmepruefung fuer beide Quellen. Gibt einen Grund zurueck,
+   wenn nicht aufgenommen werden darf - sonst ''. */
+function tmAnhangPruefen(name, mimeType, groesse){
+  const liste = window._tmAnhaenge || [];
+  if(liste.length >= TM_MAX_ANHAENGE) return 'Mehr als '+TM_MAX_ANHAENGE+' Anhänge sind nicht möglich.';
+  if(!TM_MIME_ERLAUBT.includes(String(mimeType||'').toLowerCase()))
+    return 'Dateityp nicht erlaubt: '+(mimeType||'unbekannt')+'. Erlaubt sind PDF, Bilder, Office-Dateien und Textdateien.';
+  if(groesse > TM_MAX_ANHANG_BYTES)
+    return '„'+name+'" ist '+tmGroesseText(groesse)+' groß – erlaubt sind '+tmGroesseText(TM_MAX_ANHANG_BYTES)+' je Datei.';
+  if(tmAnhangGesamt() + groesse > TM_MAX_GESAMT_BYTES)
+    return 'Zusammen zu groß: die Anhänge dürfen '+tmGroesseText(TM_MAX_GESAMT_BYTES)+' nicht überschreiten.';
+  return '';
+}
+
+/* ── Quelle (b): Datei vom Geraet ─────────────────────────────────────── */
+async function tmDateiGewaehlt(input){
+  const dateien = Array.prototype.slice.call((input && input.files) || []);
+  const st = (h)=>{ const e=document.getElementById('tmStatus'); if(e) e.innerHTML=h; };
+  for(const f of dateien){
+    const grund = tmAnhangPruefen(f.name, f.type, f.size);
+    if(grund){ st('<span style="color:#b91c1c;font-size:13px">'+esc(grund)+'</span>'); break; }
+    try{
+      const dataUrl = await blobZuDataUrl(f);
+      window._tmAnhaenge.push({
+        name: f.name, mimeType: (f.type||'application/octet-stream').toLowerCase(),
+        groesse: f.size, quelle: 'datei', daten: dataUrl
+      });
+    }catch(e){
+      st('<span style="color:#b91c1c;font-size:13px">„'+esc(f.name)+'" ließ sich nicht lesen.</span>');
+    }
+  }
+  if(input) input.value = '';
+  tmAnhaengeZeichnen();
+}
+
+/* ── Quelle (a): aus der Akte des Empfaengers ─────────────────────────── */
+async function tmModalAusAkte(){
+  const sel = document.getElementById('tmMieter');
+  const mieterId = sel && sel.value;
+  if(!mieterId){ toast('Bitte zuerst den Empfänger wählen – die Auswahl zeigt dessen Akte.'); return; }
+  const m = await idbGet('mieter', mieterId).catch(()=>null);
+  let alle = [];
+  try{ alle = await idbGetAll('dokumente'); }catch(e){ alle = []; }
+  /* Nur Dokumente DIESES Mieters. Objektbezogene Unterlagen (mieterId:null)
+     bleiben bewusst draussen: die Gesamtaufstellung einer NKA enthaelt die
+     Zahlen aller Wohnungen - genau der Befund v349. */
+  const dok = (alle||[]).filter(d => d && d.mieterId === mieterId && !d._papierkorb)
+    .sort((a,b)=> String(b.erstellt||'').localeCompare(String(a.erstellt||'')));
+
+  const zeile = (d)=>{
+    const t = (DOK_TYPEN.find(x=>x.val===d.typ)||{});
+    const dat = d.erstellt ? new Date(d.erstellt).toLocaleDateString('de-DE') : '';
+    return `<div style="display:flex;align-items:center;gap:8px;border:1px solid var(--ink-10);border-radius:8px;padding:8px 10px;margin-bottom:6px">
+        <i class="ti ${t.icon||'ti-file'}" style="color:var(--ink-40)"></i>
+        <div style="min-width:0">
+          <div style="font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(d.name||'(ohne Namen)')}</div>
+          <div style="font-size:11px;color:var(--ink-40)">${esc(t.label||d.typ||'')}${dat?' · '+esc(dat):''}${d.ref?' · ausgelagert':''}</div>
+        </div>
+        <button class="btn btn-sm btn-primary" style="margin-left:auto"
+          data-action-click="tmAnhangAusAkte" data-arg="${escAttr(String(d.id))}">Anhängen</button>
+      </div>`;
+  };
+
+  showModal(`
+    <div class="m-title"><i class="ti ti-paperclip"></i> Aus der Akte anhängen</div>
+    <div style="font-size:12px;color:var(--ink-40);margin-bottom:10px">
+      Dokumente von ${esc(m ? (hauptmieterNameVoll(m)||'') : '')}. Nur Unterlagen dieses
+      Mietverhältnisses – objektbezogene Sammelunterlagen stehen hier bewusst nicht,
+      sie enthalten Angaben anderer Wohnungen.
+    </div>
+    <div style="max-height:52vh;overflow:auto">${
+      dok.length ? dok.map(zeile).join('')
+                 : '<div class="empty"><i class="ti ti-file-off"></i><p>Für diesen Mieter ist nichts archiviert.</p></div>'}</div>
+    <button class="btn btn-full" style="margin-top:12px" data-action-click="closeModal">Schließen</button>`);
+}
+
+async function tmAnhangAusAkte(dokId){
+  const d = await idbGet('dokumente', String(dokId||'')).catch(()=>null);
+  if(!d){ toast('Dokument nicht gefunden'); return; }
+  if((window._tmAnhaenge||[]).some(a => a.dokId === d.id)){ toast('Ist bereits angehängt'); return; }
+  toast('Wird geladen …');
+  const dataUrl = await dokAnhangDaten(d);
+  if(!dataUrl){
+    toast('Das Dokument ließ sich nicht laden. Bei ausgelagerten Dateien die OneDrive-Verbindung prüfen.', 6000);
+    return;
+  }
+  const mime = d.mimeType || tmMimeAusDataUrl(dataUrl) || 'application/octet-stream';
+  const groesse = tmDataUrlBytes(dataUrl);
+  const name = tmDateinameMitEndung(d.name || 'Dokument', mime);
+  const grund = tmAnhangPruefen(name, mime, groesse);
+  if(grund){ toast(grund, 6000); return; }
+  window._tmAnhaenge.push({ name, mimeType: mime.toLowerCase(), groesse, quelle:'akte', dokId: d.id, daten: dataUrl });
+  tmAnhaengeZeichnen();
+  closeModal();
+  toast('Angehängt ✓');
+}
+
+/* Archivierte Dokumente tragen einen Anzeigenamen ohne Endung ("Mietbescheinigung
+   08/2026"). Ohne Endung weiss der Mailclient des Empfaengers nicht, womit er
+   die Datei oeffnen soll. */
+function tmDateinameMitEndung(name, mime){
+  const n = String(name||'Dokument').trim();
+  if(/\.[A-Za-z0-9]{2,5}$/.test(n)) return n;
+  const endungen = {
+    'application/pdf':'pdf', 'image/jpeg':'jpg', 'image/png':'png', 'image/webp':'webp',
+    'image/gif':'gif', 'image/heic':'heic', 'text/plain':'txt', 'text/csv':'csv', 'text/html':'html',
+    'application/msword':'doc',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document':'docx',
+    'application/vnd.ms-excel':'xls',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':'xlsx',
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation':'pptx'
+  };
+  const e = endungen[String(mime||'').toLowerCase()];
+  return e ? (n + '.' + e) : n;
+}
+
+/* Ohne diese Zeile bleibt jeder Klick auf die drei Knoepfe WIRKUNGSLOS - kein
+   Fehler, keine Meldung, der Knopf wirkt einfach tot. Genau das hat
+   `pruef_aktionen.js` beim ersten Bau von A409 gemeldet. */
+registerActions({ tmModalAusAkte, tmAnhangAusAkte, tmAnhangEntfernen });
+
+/* Alle bei diesem Mieter hinterlegten Adressen - Spiegelfeld und Personenliste.
+   Grundlage der Fehlversand-Warnung. */
+function tmAdressenDesMieters(m){
+  const raus = [];
+  if(!m) return raus;
+  const nimm = (v)=>{ const t=String(v||'').trim().toLowerCase(); if(t && !raus.includes(t)) raus.push(t); };
+  nimm(m.email);
+  (Array.isArray(m.personen_liste)?m.personen_liste:[]).forEach(p => nimm(p && p.email));
+  return raus;
+}
+
 /* ════════════════════════════════════════════════════════════════
    Mieter-Mail (Tenant-Mail) – App-Seite
    Versand über Backend /api/send-mail (Function-Key). Jede gesendete
@@ -9680,7 +9924,20 @@ async function mailRenderMieterMail(body){
         <textarea id="tmText" spellcheck="true" lang="de" style="min-height:160px" placeholder="Sehr geehrte/r …"></textarea></div>
       <label style="font-size:12px;display:flex;align-items:center;gap:6px;margin:4px 0 10px">
         <input type="checkbox" id="tmSig" checked> Grußformel & Absender automatisch anhängen</label>
-      <div style="display:flex;gap:8px">
+
+      <div class="f-section-title" style="margin-top:6px"><i class="ti ti-paperclip"></i> Anhänge</div>
+      <div style="font-size:11px;color:var(--ink-40);margin-bottom:8px;line-height:1.5">
+        Bis zu 5 Dateien, je 10 MB, zusammen 15 MB. „Aus der Akte“ zeigt nur die
+        Unterlagen des gewählten Mieters.
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-sm" data-action-click="tmModalAusAkte"><i class="ti ti-folder"></i> Aus der Akte</button>
+        <button class="btn btn-sm" onclick="document.getElementById('tmDatei').click()"><i class="ti ti-upload"></i> Datei wählen</button>
+        <input type="file" id="tmDatei" multiple style="display:none" onchange="tmDateiGewaehlt(this)">
+      </div>
+      <div id="tmAnhangListe"></div>
+
+      <div style="display:flex;gap:8px;margin-top:12px">
         <button class="btn btn-primary" data-action-click="tenantMailSenden"><i class="ti ti-send"></i> Senden</button>
       </div>
       <div id="tmStatus" style="margin-top:10px"></div>
@@ -9694,7 +9951,14 @@ async function mailRenderMieterMail(body){
           <div style="font-size:11px;color:var(--ink-40)">an ${esc(v.empfaengerName||v.email||'')} · ${v.gesendet?new Date(v.gesendet).toLocaleString('de-DE'):''} ${v.status==='fehler'?'· <span style="color:#b91c1c">nicht zugestellt</span>':'· ✓'}</div>
         </div>`).join('')}
     </div>`:''}`;
+  tmAnhaengeWiederherstellen();
 }
+
+/* Die Maske wird bei jedem renderMail() neu gebaut. Ohne diesen Aufruf waeren
+   ausgewaehlte Anhaenge nach einem Reiterwechsel unsichtbar - vorhanden im
+   Speicher, aber nicht auf dem Schirm, und wuerden beim Senden ueberraschend
+   mitgehen. */
+function tmAnhaengeWiederherstellen(){ tmAnhaengeZeichnen(); }
 
 function tenantMailMieterGewaehlt(){
   const sel=document.getElementById('tmMieter');
@@ -9719,24 +9983,75 @@ async function tenantMailSenden(){
   if(mitSig){
     text += '\n\nMit freundlichen Grüßen\nNadig Pfau Immobilienverwaltung\ninfo@nadigpfau.de';
   }
+  /* A409: Fehlversand-Warnung. Anhaenge tragen regelmaessig personenbezogene
+     Daten (Abrechnung, Bescheinigung); eine Mail an die falsche Adresse ist ein
+     meldepflichtiger Vorfall nach Art. 33 DSGVO. Verglichen wird gegen ALLE bei
+     diesem Mieter hinterlegten Adressen - Spiegelfeld und Personenliste -,
+     damit die Mail an die zweite Person keine Rueckfrage ausloest.
+     Gewarnt wird nur, wenn ueberhaupt ein Mieter gewaehlt ist: eine freie
+     Adresse ohne Aktenbezug ist eine bewusste Entscheidung. */
+  if(mieterId){
+    const mAkte = await idbGet('mieter', mieterId).catch(()=>null);
+    const bekannt = tmAdressenDesMieters(mAkte);
+    if(bekannt.length && !bekannt.includes(mail.toLowerCase())){
+      const anzahl = (window._tmAnhaenge||[]).length;
+      const frage = 'Die Adresse „' + mail + '" ist bei diesem Mieter nicht hinterlegt.\n\n'
+        + 'In der Akte steht: ' + bekannt.join(', ') + '\n\n'
+        + (anzahl ? 'Es ' + (anzahl===1?'geht 1 Anhang':'gehen '+anzahl+' Anhänge') + ' mit. ' : '')
+        + 'Trotzdem an diese Adresse senden?';
+      if(!confirm(frage)){ st('<span style="font-size:13px;color:var(--ink-40)">Nicht gesendet.</span>'); return; }
+    }
+  }
+
+  const anhaenge = (window._tmAnhaenge||[]);
+  const gesamt = tmAnhangGesamt();
+  if(gesamt > TM_MAX_GESAMT_BYTES){
+    st('<span style="color:#b91c1c;font-size:13px">Die Anhänge sind zusammen zu groß ('
+      + tmGroesseText(gesamt) + ' von ' + tmGroesseText(TM_MAX_GESAMT_BYTES) + ').</span>');
+    return;
+  }
+
   st('<span style="font-size:13px;color:var(--ink-40)">Wird gesendet …</span>');
   const key=(await idbGet('settings','backendKey').catch(()=>null))?.value;
   const rec={
     id:'tm_'+Date.now().toString(36),
     mieterId, objektId:(opt?.getAttribute('data-objekt'))||'',
     empfaengerName, email:mail, betreff, text,
+    /* Nur Name, Typ und Groesse ins Protokoll - NIE die Nutzlast. Ein Anhang
+       im Store liefe ueber den Sync in die OneDrive-Datei und waere derselbe
+       Groessentreiber, den die Auslagerung (§12-P23) gerade beseitigt hat. */
+    anhaenge: anhaenge.map(a=>({ name:a.name, mimeType:a.mimeType, groesse:a.groesse,
+                                 quelle:a.quelle, dokId:a.dokId||null })),
     gesendet:new Date().toISOString(), status:'offen', geaendert:now()
   };
   try{
+    const nutzlast = { to:mail, subject:betreff, text };
+    if(anhaenge.length){
+      /* Das Backend erwartet reines base64 ohne dataURL-Praefix. */
+      nutzlast.anhaenge = anhaenge.map(a=>{
+        const k = String(a.daten||'').indexOf(',');
+        return { name:a.name, mimeType:a.mimeType, daten: k>=0 ? String(a.daten).slice(k+1) : String(a.daten||'') };
+      });
+    }
     const res=await fetchMitTimeout(BACKEND_AZURE+'/api/send-mail',{
       method:'POST', headers:{'Content-Type':'application/json','x-functions-key':key||''},
-      body:JSON.stringify({ to:mail, subject:betreff, text })
-    });
-    if(res.ok){ rec.status='gesendet'; st('<span style="color:#15803d;font-size:13px">Gesendet ✓</span>'); }
-    else { rec.status='fehler'; st('<span style="color:#b91c1c;font-size:13px">Backend-Fehler ('+res.status+'). Als Entwurf protokolliert.</span>'); }
+      body:JSON.stringify(nutzlast)
+    }, anhaenge.length ? 180000 : 30000);
+    if(res.ok){ rec.status='gesendet'; st('<span style="color:#15803d;font-size:13px">Gesendet ✓'
+      + (anhaenge.length? ' (' + anhaenge.length + ' Anhang/Anhänge)':'') + '</span>'); }
+    else {
+      rec.status='fehler';
+      /* Das Backend nennt den Grund - welche Datei beanstandet wurde, welche
+         Grenze gerissen ist. Ohne ihn saehe der Nutzer nur eine Zahl. */
+      let grund='';
+      try{ const j=await res.json(); grund=(j&&(j.grund||j.fehler))||''; }catch(e){}
+      st('<span style="color:#b91c1c;font-size:13px">Nicht gesendet ('+res.status+')'
+        + (grund? ': '+esc(grund) : '') + '. Als Entwurf protokolliert.</span>');
+    }
   }catch(e){
     rec.status='fehler';
-    st('<span style="color:#b91c1c;font-size:13px">Versand nicht möglich (Endpunkt /api/send-mail noch nicht aktiv). Protokolliert.</span>');
+    st('<span style="color:#b91c1c;font-size:13px">Versand nicht möglich – Backend nicht erreichbar'
+      + (anhaenge.length? ' oder die Anhänge brauchen zu lange' : '') + '. Protokolliert.</span>');
   }
   /* v368: Das Protokoll ist der Nachweis, dass die Mail hinausging. Scheitert
      das Schreiben, ist die Mail beim Mieter und die Verwaltung weiss nichts
@@ -9749,6 +10064,10 @@ async function tenantMailSenden(){
   clearTimeout(window._syncTimer); window._syncTimer=setTimeout(()=>syncToOneDrive(),3000);
   if(rec.status==='gesendet'){
     ['tmBetreff','tmText'].forEach(id=>{ const e=document.getElementById(id); if(e) e.value=''; });
+    /* Anhaenge NUR nach Erfolg leeren. Nach einem Fehler bleiben sie stehen -
+       sonst muesste der Nutzer alles neu heraussuchen, obwohl nur das Backend
+       nicht erreichbar war. */
+    window._tmAnhaenge = [];
   }
   renderMail();
 }
@@ -27517,8 +27836,27 @@ async function wohnungenAdressenHolen(){
       } else if(alt){
         unbekannt.push(w.kennung+' (abweichende Adresse bereits gepflegt)');
       } else {
-        m.email = wMail; setzePersonKontakt(m, 'email', wMail);
-        uebernommen++; geaendert = true;
+        /* A409: Die Fuehrungsadresse des Portal-Datensatzes ist die des ERSTEN
+           Eintrags im Registrierformular - wer sich dort zuerst eintraegt,
+           bestimmt sie. Traegt sich die zweite Person zuerst ein, gehoerte
+           diese Adresse bis A408 dem Hauptmieter der Akte, sofern dessen Feld
+           leer war. Kein Datenverlust, aber eine stille Fehlzuordnung.
+           Jetzt: Laesst sich die Adresse einer namentlich benannten Person aus
+           `personenMieter` zuordnen, bleibt sie dem Personenabgleich weiter
+           unten ueberlassen - der ordnet ueber den NAMEN zu und trifft die
+           richtige Person, unabhaengig von der Reihenfolge. Nur wenn keine
+           Zuordnung moeglich ist (Altbestand ohne personenMieter), gilt wie
+           bisher: Fuehrungsadresse -> Hauptmieter. */
+        const _pm = Array.isArray(w.personenMieter) ? w.personenMieter : [];
+        const _gehoertPerson = _pm.some(p =>
+          p && String(p.email||'').trim().toLowerCase() === wMail.toLowerCase()
+            && String(p.name||'').trim());
+        if(_gehoertPerson){
+          // still uebergehen - der Namensabgleich weiter unten setzt sie richtig
+        } else {
+          m.email = wMail; setzePersonKontakt(m, 'email', wMail);
+          uebernommen++; geaendert = true;
+        }
       }
     }
 
