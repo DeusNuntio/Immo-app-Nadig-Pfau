@@ -448,6 +448,12 @@ body{background:var(--surface);color:var(--ink);font-size:15px;-webkit-font-smoo
 /* ── OBJEKT CARDS ── */
 .obj-card{background:var(--white);border-radius:var(--radius-lg);border:1px solid var(--ink-10);padding:14px;margin-bottom:10px;box-shadow:var(--shadow);cursor:pointer;transition:transform .15s,box-shadow .15s,border-color .15s;display:flex;align-items:center;gap:12px}
 .obj-card:active{transform:scale(.98);box-shadow:none}
+/* A413: Standortstreifen. Inset-Schatten statt border-left – ein linker Rahmen
+   waere asymmetrisch, die abgerundete Ecke schnitte ihn keilfoermig an, und
+   seine Breite verschoebe den Karteninhalt. Die Farbe kommt als --grp-farbe
+   von der Karte selbst, damit die Regel fuer alle Standorte dieselbe ist. */
+.obj-card.grp-farbe{box-shadow:inset 4px 0 0 var(--grp-farbe),var(--shadow)}
+.obj-card.grp-farbe:active{box-shadow:inset 4px 0 0 var(--grp-farbe)}
 .obj-icon{width:46px;height:46px;border-radius:12px;background:var(--ink);display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:20px;color:#fff}
 .obj-icon.c-kr{background:var(--copper)}
 .obj-icon.c-mg{background:var(--ink-60)}
@@ -1242,7 +1248,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=38;   // A398: +kr_abrechnungen
-const APP_VERSION = '2026-09-03-A412';
+const APP_VERSION = '2026-09-04-A413';
 /* v364 (12.08.2026) – offene Punkte abgearbeitet.
    1) D1/XLSX_SRI: Der im Code hinterlegte PowerShell-Befehl war FALSCH und
       konnte nie funktionieren - Invoke-WebRequest liefert unter .Content einen
@@ -2895,10 +2901,16 @@ function istAllgemein(id){ return id===ALLGEMEIN_ID; }
 function objNameOderAllgemein(id){ return istAllgemein(id) ? 'Allgemein · alle Objekte' : (getObj(id)?.name||''); }
 // Dashboard-Standortgruppierung (P1) – BEWUSST getrennt von 'gruppe' (steuert Briefköpfe!).
 // label=Standortname, einzeln=true -> als normale Objektkarte ohne Gruppen-Ebene.
+/* A413: farbe = Standortstreifen am linken Rand der Dashboard-Karte.
+   NICHT fuer Status verwenden - rot/gelb/gruen gehoeren dort den Chips
+   (Mangel, Aufgabe, Alles OK). Der Streifen sagt "wo", nicht "wie schlimm".
+   Krefeld #C9A227 wie vorgegeben. Moenchengladbach von #E0A526 auf #E0762A
+   gezogen: der Originalton lag nur 5 Grad neben Krefeld und war auf der
+   Karte nicht davon zu unterscheiden; jetzt sind es rund 20 Grad. */
 const DASH_GRUPPEN=[
-  {id:'DUS', label:'Düsseldorf',          objektIds:['ruhrt41','mind23','mind25']},
-  {id:'MG',  label:'Mönchengladbach',     objektIds:['kyff28','kyff30','kyff32']},
-  {id:'KR',  label:'Krefeld',             objektIds:['inr181','inr183','inr185','wilm7','wilm9','wilm11','wilm13','tgkref']},
+  {id:'DUS', label:'Düsseldorf',          farbe:'#D71920', objektIds:['ruhrt41','mind23','mind25']},
+  {id:'MG',  label:'Mönchengladbach',     farbe:'#E0762A', objektIds:['kyff28','kyff30','kyff32']},
+  {id:'KR',  label:'Krefeld',             farbe:'#C9A227', objektIds:['inr181','inr183','inr185','wilm7','wilm9','wilm11','wilm13','tgkref']},
   {id:'MON', label:'Monheim am Rhein',    objektIds:['marien22'], einzeln:true},
   {id:'HIL', label:'Hilden',              objektIds:['verlach37'], einzeln:true},
   {id:'AMB', label:'Amboßstr. 10',        objektIds:['amboss10'], einzeln:true},
@@ -4375,7 +4387,7 @@ async function renderDash() {
       const hochSum = objs.reduce((n,o)=>n+myAuf.filter(a=>a.objektId===o.id&&a.prio==='hoch').length,0);
       const offen   = !!window._dashGrpOffen[grp.id];
 
-      html += `<div class="obj-card" style="cursor:pointer" onclick="dashGrpToggle('${grp.id}')">
+      html += `<div class="obj-card${grp.farbe?' grp-farbe':''}" style="cursor:pointer${grp.farbe?';--grp-farbe:'+grp.farbe:''}" onclick="dashGrpToggle('${grp.id}')">
         <div class="obj-icon" style="background:var(--ink-05);color:var(--ink-60)"><i class="ti ti-map-pin"></i></div>
         <div class="obj-body">
           <div class="obj-name">${esc(grp.label)} <span style="font-weight:500;color:var(--ink-40);font-size:13px">· ${objs.length} Objekte</span></div>
@@ -4390,7 +4402,7 @@ async function renderDash() {
         </div>
         <i class="ti ti-chevron-${offen?'down':'right'}" style="color:var(--ink-40);font-size:20px;flex-shrink:0"></i>
       </div>
-      <div id="dashGrp-${grp.id}" style="display:${offen?'block':'none'};padding-left:10px;border-left:2px solid var(--ink-10);margin:2px 0 8px 14px">
+      <div id="dashGrp-${grp.id}" style="display:${offen?'block':'none'};padding-left:10px;border-left:2px solid ${grp.farbe||'var(--ink-10)'};margin:2px 0 8px 14px">
         ${objs.map(o=>objCardHtml(o)).join('')}
       </div>`;
     }
@@ -27718,10 +27730,26 @@ function ewAutoPrint(){
    die sortierten Wortbestandteile in Kleinschreibung. Das ist grob, aber der
    Fehler faellt in die sichere Richtung - wer nicht erkannt wird, landet als
    Vorschlag beim Verwalter statt still in der Akte. */
+/* A413: Der Schluessel entscheidet, ob eine Person aus dem Portal als bereits
+   bekannt gilt. Die erste Fassung verglich zu woertlich und meldete deshalb
+   Bewohner als "neu", die laengst in der Akte stehen (04.09.2026):
+     "Eva-Maria Laenen"     gegen "Eva Maria Laenen"  – Bindestrich
+     "Dominik Pascal Sirna" gegen "Sirna, Dominik"    – zweiter Vorname
+     "Sonja Tauchert"       gegen "Tauchert, Sonya"   – andere Schreibweise
+   Hier behoben wird nur der erste Fall, und zwar sicher: Bindestrich,
+   Apostroph, Umlaute, ss und sonstige Diakritika werden vereinheitlicht.
+   Reihenfolge beachtet: erst NFC, damit ein zerlegt gespeichertes "ä"
+   (a + U+0308) ueberhaupt als "ä" erkannt wird – sonst bliebe nach dem
+   Entfernen der Zeichen ein "a" stehen und "Mueller" traefe nie auf "Müller".
+   Fall 2 und 3 bleiben bewusst dem Verwalter ueberlassen: eine Vermutung,
+   die zwei Personen zusammenlegt, faellt niemandem auf. */
 function portalNameSchluessel(name){
   return String(name||'')
+    .normalize('NFC')
     .toLowerCase()
-    .replace(/[.,;]/g,' ')
+    .replace(/ä/g,'ae').replace(/ö/g,'oe').replace(/ü/g,'ue').replace(/ß/g,'ss')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g,'')   // Akzente entfernen
+    .replace(/[.,;'’`\-–—]/g,' ')
     .split(/\s+/)
     .filter(t => t && !['herr','frau','dr','prof','von','van','de'].includes(t))
     .sort()
@@ -27757,13 +27785,31 @@ function portalPersonenAbgleich(m, personenMieter, kennung){
     if(idx < 0 && pMail){
       idx = m.personen_liste.findIndex(x => x && String(x.email||'').trim().toLowerCase() === pMail.toLowerCase());
     }
+    /* A413: Telefon als dritter Weg. normTelefon gab es laengst – zwanzig
+       Zeilen weiter unten fuer den Abweichungsvergleich –, nur genutzt wurde
+       es hier nicht. Eva-Maria Laenen stand mit derselben Nummer in der Akte
+       (+49 1578 8108523 gegen 015788108523) und waere darueber eindeutig zu
+       finden gewesen, obwohl der Name nicht passte. */
+    if(idx < 0 && pTel){
+      const tel = normTelefon(pTel);
+      if(tel) idx = m.personen_liste.findIndex(x => x && normTelefon(x.telefon) === tel);
+    }
 
     if(idx < 0){
       /* Unbekannt. NICHT anlegen: ob jemand Vertragspartei oder nur Bewohner
          ist, ergibt sich aus dem Mietvertrag, nicht aus einem Webformular.
          Der Verwalter entscheidet. */
+      /* A413: Die bereits eingetragenen Bewohner werden mitgegeben, damit der
+         Dialog sie neben den Vorschlag stellen kann. Ohne diese Gegenueber-
+         stellung sieht der Verwalter nur "neue Person" und legt Sonja neben
+         Sonya an – zwei Karteikarten fuer denselben Menschen. */
       ergebnis.vorschlaege.push({ kennung, mieterId:m.id, weNr:m.weNr,
-                                  name:pName, email:pMail, telefon:pTel });
+                                  name:pName, email:pMail, telefon:pTel,
+                                  vorhandene: m.personen_liste.map((x,i) => ({
+                                    i,
+                                    name:    String((x && x.name)    || ''),
+                                    email:   String((x && x.email)   || ''),
+                                    telefon: String((x && x.telefon) || '') })) });
       continue;
     }
 
@@ -27800,19 +27846,71 @@ async function modalPortalPersonen(){
       Sie werden als <strong>Bewohner</strong> angelegt, nicht als Vertragspartei – ob jemand
       Mietvertragspartei ist, ergibt sich aus dem Mietvertrag.
     </div>
-    ${v.map((x,i)=>`<label style="display:flex;gap:8px;align-items:flex-start;padding:8px;border:1px solid var(--line);border-radius:8px;margin-bottom:6px;cursor:pointer">
+    ${v.map((x,i)=>`<div style="border:1px solid var(--line);border-radius:8px;margin-bottom:8px;overflow:hidden">
+      <label style="display:flex;gap:8px;align-items:flex-start;padding:8px;cursor:pointer">
       <input type="checkbox" id="pv_${i}" checked style="width:16px;height:16px;margin-top:2px">
       <div style="flex:1;min-width:0;font-size:12px">
         <div style="font-weight:600">${esc(x.name||'(ohne Namen)')}</div>
         <div style="color:var(--ink-40)">WE ${esc(x.weNr||'?')} · ${esc(x.kennung||'')}</div>
         ${x.email?`<div style="color:var(--ink-40)"><i class="ti ti-mail"></i> ${esc(x.email)}</div>`:''}
         ${x.telefon?`<div style="color:var(--ink-40)"><i class="ti ti-phone"></i> ${esc(x.telefon)}</div>`:''}
-      </div></label>`).join('')}
+      </div></label>
+      ${(x.vorhandene||[]).length?`<div style="border-top:1px solid var(--line);background:var(--ink-05);padding:8px">
+        <div style="font-size:11px;color:var(--ink-60);margin-bottom:6px">In dieser Wohnung bereits eingetragen – dieselbe Person, nur anders geschrieben?</div>
+        ${x.vorhandene.map(p=>`<div style="display:flex;gap:8px;align-items:center;margin-bottom:4px;font-size:12px">
+          <div style="flex:1;min-width:0">${esc(p.name||'(ohne Namen)')}${p.telefon?` · ${esc(p.telefon)}`:''}${p.email?` · ${esc(p.email)}`:''}</div>
+          <button class="btn btn-sm" data-action-click="portalPersonZuordnen" data-arg="${i}" data-arg2="${p.i}" data-argnum="1,2">Zuordnen</button>
+        </div>`).join('')}
+      </div>`:''}
+    </div>`).join('')}
     <div class="f-row" style="margin-top:10px">
       <button class="btn btn-copper btn-full" data-action-click="portalPersonenUebernehmen">
         <i class="ti ti-user-plus"></i> Ausgewählte anlegen</button>
       <button class="btn btn-full" data-action-click="closeModal">Später</button>
     </div>`);
+}
+
+/* A413: Eine Portalperson einem bereits vorhandenen Bewohner zuordnen –
+   fuer die Faelle, die keine Automatik erkennen darf (Sonja/Sonya, zweiter
+   Vorname). Ergaenzt NUR leere Felder; eine Angabe, die in der Akte anders
+   steht, wird gemeldet und nicht ueberschrieben. Das ist dieselbe Regel wie
+   im automatischen Abgleich: die Zuordnung von Hand darf nicht mehr duerfen
+   als die Automatik, sonst waere sie der bequemere Weg zum Datenverlust. */
+async function portalPersonZuordnen(vIdx, pIdx){
+  const v = window._portalPersonenVorschlaege || [];
+  const x = v[vIdx];
+  if(!x){ toast('Vorschlag nicht mehr vorhanden'); return; }
+  const m = await idbGet('mieter', x.mieterId).catch(()=>null);
+  if(!m || !Array.isArray(m.personen_liste) || !m.personen_liste[pIdx]){
+    toast('Person in der Akte nicht gefunden'); return;
+  }
+  const person = m.personen_liste[pIdx];
+  const konflikte = [];
+  let ergaenzt = 0;
+  for(const [feld, wert] of [['email', x.email], ['telefon', x.telefon]]){
+    if(!wert) continue;
+    const alt = String(person[feld]||'').trim();
+    if(!alt){ person[feld] = wert; ergaenzt++; continue; }
+    const gleich = feld === 'telefon'
+      ? normTelefon(alt) === normTelefon(wert)
+      : alt.toLowerCase() === String(wert).toLowerCase();
+    if(!gleich) konflikte.push(feld === 'telefon' ? 'Telefon' : 'E-Mail');
+  }
+  if(ergaenzt){
+    try { await idbPut('mieter', m); }
+    catch(e){ console.error('portalPersonZuordnen: Speichern fehlgeschlagen', e);
+              toast('Konnte nicht gespeichert werden'); return; }
+  }
+  v.splice(vIdx, 1);
+  window._portalPersonenVorschlaege = v;
+  const wer = person.name || 'Bewohner';
+  toast(ergaenzt
+    ? 'Zugeordnet zu ' + wer + ' · ' + ergaenzt + (ergaenzt === 1 ? ' Angabe' : ' Angaben') + ' ergänzt'
+    : 'Zugeordnet zu ' + wer + ' · nichts zu ergänzen');
+  if(konflikte.length){
+    toast('Weicht von der Akte ab, nicht überschrieben: ' + konflikte.join(', '));
+  }
+  if(v.length) modalPortalPersonen(); else closeModal();
 }
 
 async function portalPersonenUebernehmen(){
@@ -27967,7 +28065,8 @@ async function wohnungenAdressenHolen(){
   toast(uebernommen+' Adresse(n), '+telNeu+' Rufnummer(n) übernommen');
 }
 
-registerActions({ modalPortalPersonen, portalPersonenUebernehmen });   // A396
+registerActions({ modalPortalPersonen, portalPersonenUebernehmen,        // A396
+                  portalPersonZuordnen });                              // A413
 registerActions({ saLoeschen });                                       // A402
 registerActions({ saAuskunftUmschalten });                             // A404
 registerActions({ modalKrAbrechnung, krSpeichern, krVersendetSetzen, krLoeschen,
