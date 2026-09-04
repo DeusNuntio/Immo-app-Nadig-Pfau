@@ -1242,7 +1242,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=38;   // A398: +kr_abrechnungen
-const APP_VERSION = '2026-09-03-A409';
+const APP_VERSION = '2026-09-03-A412';
 /* v364 (12.08.2026) – offene Punkte abgearbeitet.
    1) D1/XLSX_SRI: Der im Code hinterlegte PowerShell-Befehl war FALSCH und
       konnte nie funktionieren - Invoke-WebRequest liefert unter .Content einen
@@ -3616,7 +3616,13 @@ function getDeviceId(){
   try { d = localStorage.getItem('deviceId') || ''; } catch(e){}
   if(!d){
     d = 'dev_' + Math.random().toString(36).slice(2,8) + Date.now().toString(36).slice(-4);
-    try { localStorage.setItem('deviceId', d); } catch(e){}
+    /* R26 (A411): Laesst sich die Kennung nicht speichern, bekommt das Geraet
+       bei JEDEM Start eine neue. Die Geraetebindung (R50) greift dann nie -
+       schlimmer noch, ein gebundener Benutzer sperrt sich selbst aus, weil die
+       hinterlegte Kennung nicht mehr passt. Ohne diesen Hinweis sucht man den
+       Grund an der falschen Stelle. */
+    try { localStorage.setItem('deviceId', d); }
+    catch(e){ console.error('Geraete-Kennung nicht speicherbar - Gerätebindung wirkt nicht:', e && e.message); }
   }
   return d;
 }
@@ -6972,7 +6978,7 @@ async function syncVersorgerErinnerung(v){
     id: terminId,
     titel: `Kündigungsfrist ${sp.label} – ${v.anbieter}`,
     typ: 'vertrag',
-    datum: erinnerung.toISOString().split('T')[0],
+    datum: ymd(erinnerung),   // A412: war toISOString (UTC)
     uhrzeit:'', uhrzeitEnd:'', erinnerung:'',
     objektId: v.objektId,
     mieterId:null, mieterName:'',
@@ -9948,7 +9954,11 @@ async function mailRenderMieterMail(body){
       ${verlauf.map(v=>`
         <div style="background:var(--white);border:1px solid var(--ink-10);border-radius:10px;padding:10px 12px;margin-bottom:6px">
           <div style="font-size:13px;font-weight:600">${esc(v.betreff||'(ohne Betreff)')}</div>
-          <div style="font-size:11px;color:var(--ink-40)">an ${esc(v.empfaengerName||v.email||'')} · ${v.gesendet?new Date(v.gesendet).toLocaleString('de-DE'):''} ${v.status==='fehler'?'· <span style="color:#b91c1c">nicht zugestellt</span>':'· ✓'}</div>
+          <div style="font-size:11px;color:var(--ink-40)">an ${esc(v.empfaengerName||v.email||'')} · ${v.gesendet?new Date(v.gesendet).toLocaleString('de-DE'):''} ${
+            v.status==='fehler' ? '· <span style="color:#b91c1c">nicht zugestellt</span>'
+            : (v.status==='gesendet_ohne_anhaenge'
+                ? '· <span style="color:#b91c1c">ohne Anhänge zugestellt</span>'
+                : '· ✓' + ((v.anhaenge&&v.anhaenge.length)?' <i class="ti ti-paperclip"></i>'+v.anhaenge.length:''))}</div>
         </div>`).join('')}
     </div>`:''}`;
   tmAnhaengeWiederherstellen();
@@ -10004,6 +10014,18 @@ async function tenantMailSenden(){
   }
 
   const anhaenge = (window._tmAnhaenge||[]);
+  /* A410: Ist beim letzten Versand aufgefallen, dass das Backend Anhaenge
+     verwirft, wird VOR dem Senden gefragt statt hinterher gemeldet. Der
+     Merker gilt nur fuer diese Sitzung - nach einem Backend-Deploy genuegt
+     ein Neustart der App. */
+  if(anhaenge.length && window._backendOhneAnhaenge){
+    if(!confirm('Beim letzten Versuch hat das Backend die Anhänge NICHT verarbeitet – '
+      + 'die Mail ging ohne sie hinaus.\n\nVermutlich läuft dort noch der Stand vor B3.\n\n'
+      + 'Trotzdem senden? Die Anhänge würden erneut verloren gehen.')){
+      st('<span style="font-size:13px;color:var(--ink-40)">Nicht gesendet.</span>');
+      return;
+    }
+  }
   const gesamt = tmAnhangGesamt();
   if(gesamt > TM_MAX_GESAMT_BYTES){
     st('<span style="color:#b91c1c;font-size:13px">Die Anhänge sind zusammen zu groß ('
@@ -10037,8 +10059,30 @@ async function tenantMailSenden(){
       method:'POST', headers:{'Content-Type':'application/json','x-functions-key':key||''},
       body:JSON.stringify(nutzlast)
     }, anhaenge.length ? 180000 : 30000);
-    if(res.ok){ rec.status='gesendet'; st('<span style="color:#15803d;font-size:13px">Gesendet ✓'
-      + (anhaenge.length? ' (' + anhaenge.length + ' Anhang/Anhänge)':'') + '</span>'); }
+    if(res.ok){
+      /* A410: Das neue send-mail.js bestaetigt die Zahl der verarbeiteten
+         Anhaenge. Fehlt die Angabe, obwohl welche mitgeschickt wurden, laeuft
+         im Backend noch der Stand vor B3 - dort wird das Feld `anhaenge` gar
+         nicht gelesen, und die Mail ist ohne sie hinausgegangen. */
+      let bestaetigt = null;
+      try{ const j = await res.json(); bestaetigt = (j && typeof j.anhaenge === 'number') ? j.anhaenge : null; }
+      catch(e){ bestaetigt = null; }
+
+      if(anhaenge.length && bestaetigt === null){
+        window._backendOhneAnhaenge = true;
+        rec.status = 'gesendet_ohne_anhaenge';
+        st('<span style="color:#b91c1c;font-size:13px"><b>Mail gesendet – aber OHNE die '
+          + anhaenge.length + ' Anhang/Anhänge.</b><br>Das Backend verarbeitet noch keine Anhänge '
+          + '(Stand vor B3). Der Empfänger hat nur den Text erhalten. Bitte B3 in Azure ausrollen '
+          + 'und die Mail danach erneut senden.</span>');
+        toast('Achtung: Die Anhänge sind NICHT mitgegangen.', 9000);
+      } else {
+        window._backendOhneAnhaenge = false;
+        rec.status='gesendet';
+        st('<span style="color:#15803d;font-size:13px">Gesendet ✓'
+          + (anhaenge.length? ' (' + anhaenge.length + ' Anhang/Anhänge)':'') + '</span>');
+      }
+    }
     else {
       rec.status='fehler';
       /* Das Backend nennt den Grund - welche Datei beanstandet wurde, welche
@@ -10064,9 +10108,10 @@ async function tenantMailSenden(){
   clearTimeout(window._syncTimer); window._syncTimer=setTimeout(()=>syncToOneDrive(),3000);
   if(rec.status==='gesendet'){
     ['tmBetreff','tmText'].forEach(id=>{ const e=document.getElementById(id); if(e) e.value=''; });
-    /* Anhaenge NUR nach Erfolg leeren. Nach einem Fehler bleiben sie stehen -
-       sonst muesste der Nutzer alles neu heraussuchen, obwohl nur das Backend
-       nicht erreichbar war. */
+    /* Anhaenge NUR nach VOLLSTAENDIGEM Erfolg leeren. Nach einem Fehler und
+       nach 'gesendet_ohne_anhaenge' bleiben sie stehen - im zweiten Fall muss
+       die Mail nach dem Backend-Deploy erneut hinaus, und niemand soll die
+       Dateien dafuer neu heraussuchen muessen. */
     window._tmAnhaenge = [];
   }
   renderMail();
@@ -12517,7 +12562,13 @@ function montagDerWoche(dateStr){
   const d=new Date(dateStr+'T00:00:00');
   const tag=(d.getDay()+6)%7;
   d.setDate(d.getDate()-tag);
-  return d.toISOString().split('T')[0];
+  /* A412 (F-2): Der erste Schritt war richtig - 'T00:00:00' erzeugt Mitternacht
+     ORTSZEIT. Der letzte machte ihn zunichte: toISOString() rechnet nach UTC,
+     und in Berlin ist Ortszeit-Mitternacht 22:00 des Vortages. Die Funktion
+     lieferte dadurch IMMER den Sonntag statt des Montags - im Sommer wie im
+     Winter. Die Gruppierung blieb richtig (alle Tage einer Woche bekamen
+     denselben falschen Schluessel), falsch war nur das angezeigte Datum. */
+  return ymd(d);
 }
 function monatKey(dateStr){ return (dateStr||'').slice(0,7); } // YYYY-MM
 // Alle beendeten Sitzungen eines Users laden
@@ -15262,7 +15313,15 @@ async function schadenMailOeffnen(mangelId, store, mieterZeile){
   }
   const url='mailto:'+encodeURIComponent(t.email)+'?subject='+encodeURIComponent(t.betreff)+'&body='+encodeURIComponent(t.body);
   // Kommentar am Vorgang protokollieren
-  try{ const m=await idbGet(store,mangelId); if(m){ if(!m.kommentare)m.kommentare=[]; m.kommentare.push({autor:CU?.name||'–',datum:now(),text:'Schaden an Versicherung gemeldet (E-Mail-Entwurf erstellt).'}); await idbPut(store,m);} }catch(e){}
+  /* R26 (A411): Dieser Kommentar ist der NACHWEIS, dass gemeldet wurde -
+     unmittelbar danach oeffnet sich der Mail-Entwurf und der Vorgang gilt als
+     erledigt. Scheitert das Schreiben still, sieht es beim naechsten
+     Durchsehen aus, als sei nie gemeldet worden. */
+  try{ const m=await idbGet(store,mangelId); if(m){ if(!m.kommentare)m.kommentare=[]; m.kommentare.push({autor:CU?.name||'–',datum:now(),text:'Schaden an Versicherung gemeldet (E-Mail-Entwurf erstellt).'}); await idbPut(store,m);} }
+  catch(e){
+    console.error('Versicherungsmeldung nicht am Vorgang protokolliert:', e && e.message);
+    toast('Der Mail-Entwurf ist offen, der Vermerk am Vorgang ließ sich aber nicht speichern. Bitte von Hand nachtragen.', 8000);
+  }
   window.location.href=url;
   closeModal();
   toast('E-Mail-Entwurf geöffnet ✓');
@@ -16582,7 +16641,7 @@ function wartungTageBis(w){
 function wartungNaechste(basisISO, intervallMonate){
   const d = new Date(basisISO);
   d.setMonth(d.getMonth() + (intervallMonate||12));
-  return d.toISOString().split('T')[0];
+  return ymd(d);   // A412: war toISOString (UTC)
 }
 
 async function getMyWartung(){
@@ -17160,7 +17219,7 @@ async function syncIntervallTodos(){
     if(!faellig){
       // Erststart: ab heute eine Intervalllänge
       const d=new Date(); d.setDate(d.getDate()+def.tage);
-      faellig=d.toISOString().split('T')[0];
+      faellig=ymd(d);   // A412: war toISOString (UTC)
       conf.naechstFaellig=faellig; changed=true;
     }
     const f=new Date(faellig); f.setHours(0,0,0,0);
@@ -17201,7 +17260,7 @@ async function intervallErledigt(a){
   const key=intervallKey(a.intervallObjId,a.intervallTaetId);
   // Nächstes Intervall ab heute (Erledigungszeitpunkt)
   const d=new Date(); d.setDate(d.getDate()+def.tage);
-  const naechst=d.toISOString().split('T')[0];
+  const naechst=ymd(d);   // A412: war toISOString (UTC)
   cfg[key]=cfg[key]||{aktiv:true};
   cfg[key].naechstFaellig=naechst;
   cfg[key].letztErledigt=today();
@@ -17239,7 +17298,7 @@ async function toggleIntervall(objId,taetId,aktiv){
   cfg[key].aktiv=aktiv;
   if(aktiv && !cfg[key].naechstFaellig){
     const d=new Date(); d.setDate(d.getDate()+(def?.tage||30));
-    cfg[key].naechstFaellig=d.toISOString().split('T')[0];
+    cfg[key].naechstFaellig=ymd(d);   // A412: war toISOString (UTC)
   }
   await saveIntervallConfig(cfg);
   await syncIntervallTodos();
@@ -17385,7 +17444,7 @@ async function checkFaelligeAufgaben() {
   const myIds = myObj.map(o=>o.id);
   const heute = today();
   const morgen = new Date(); morgen.setDate(morgen.getDate()+1);
-  const morgenStr = morgen.toISOString().split('T')[0];
+  const morgenStr = ymd(morgen);   // A412: war toISOString (UTC)
 
   const aufgaben = (await idbGetAll('aufgaben'))
     .filter(a => (istAllgemein(a.objektId)||myIds.includes(a.objektId)) && a.status !== 'erledigt' && a.datum);
@@ -17440,7 +17499,7 @@ async function checkFaelligeTermine() {
     const vorlauf = parseInt(t.erinnerung||'0',10) || 0;
     const d = new Date(t.datum+'T12:00:00');
     d.setDate(d.getDate() - vorlauf);
-    const ab = d.toISOString().split('T')[0];     // ab diesem Tag erinnern
+    const ab = ymd(d);     // ab diesem Tag erinnern (A412: war toISOString)
     return ab <= heute;
   });
 
@@ -26863,9 +26922,13 @@ async function ewLaeufeUebersicht(){
      landen ueber das Namensdatum in einer eigenen Gruppe. */
   /* Objektnamen einmal aufloesen. Am Dokument steht nur `objektId`;
      ohne diesen Schritt hiesse in der Aufschluesselung alles "Ohne Objekt". */
-  let objekte = [];
-  try{ objekte = await idbGetAll('objekte'); }catch(e){ objekte = []; }
-  const objName = new Map((objekte||[]).map(o => [o.id, o.name || o.adresse || o.id]));
+  /* A412 (F-1): Hier stand `await idbGetAll('objekte')`. Diesen Speicher gibt
+     es nicht - er steht nicht in STORE_DEFS und wird von der Datenbank nie
+     angelegt. Die Objekte sind die Konstante OBJEKTE, abgefragt ueber getObj().
+     Der Zugriff warf, das catch setzte [], und die Zuordnung blieb leer: JEDER
+     Brief hiess "Ohne Objekt", womit die A406-Funktion "je Objekt loeschen"
+     nichts zum Auswaehlen hatte. */
+  const objName = new Map(OBJEKTE.map(o => [o.id, o.name || o.ort || o.id]));
   for(const d of briefe){ d._objektName = objName.get(d.objektId) || 'Ohne Objekt'; }
 
   const LUECKE = 30 * 60 * 1000;
@@ -30451,7 +30514,7 @@ async function updateKalBadge() {
   const alle = (await idbGetAll('termine')).filter(t=>(!t.objektId||myIds.includes(t.objektId))&&t.status!=='abgesagt');
   // Badge: Termine heute + in den nächsten 7 Tagen
   const next7 = new Date(); next7.setDate(next7.getDate()+7);
-  const next7Str = next7.toISOString().split('T')[0];
+  const next7Str = ymd(next7);   // A412: war toISOString (UTC)
   const relevant = alle.filter(t=>t.datum>=todayStr&&t.datum<=next7Str).length;
   const badge = document.getElementById('kalBadge');
   if (badge) { badge.style.display=relevant>0?'flex':'none'; badge.textContent=relevant; }
@@ -37880,10 +37943,25 @@ async function syncProfilUmstellen(){
       for (const m of ms){ await idbPut('mieter', mieterFuerHM(m), {keepStamp:true}); }
     } catch(e){ console.warn('HM-Profil: Mieterdaten reduzieren:', e); }   // v244 (R26)
     // Verwalter-Benutzer lokal entfernen (deren PIN-Hashes gehoeren nicht auf das Geraet)
+    /* R26 (A411): Der Block darueber bekam in v244 ein console.warn, dieser
+       wurde uebersehen. Scheitert er, bleiben die PIN-Hashes der Verwalter auf
+       dem Hausmeister-Geraet liegen - eine Sicherheitszusage, die dann nicht
+       stimmt. Das darf nicht still passieren, deshalb hier auch eine Meldung
+       an den Bediener. */
+    let _hmUserFehler = 0;
     try {
       const us = await idbGetAll('users');
-      for (const u of us){ if (!userFuerHM(u)) await idbDelete('users', u.id).catch(()=>{}); }
-    } catch(e){}
+      for (const u of us){
+        if (!userFuerHM(u)) await idbDelete('users', u.id)
+          .catch(x => { _hmUserFehler++; console.error('HM-Profil: Benutzer nicht entfernt:', u && u.id, x && x.message); });
+      }
+    } catch(e){
+      _hmUserFehler++;
+      console.error('HM-Profil: Verwalter-Benutzer konnten nicht entfernt werden:', e && e.message);
+    }
+    if (_hmUserFehler) {
+      toast('Achtung: ' + _hmUserFehler + ' Verwalter-Zugang/Zugänge ließen sich auf diesem Gerät nicht entfernen. Bitte prüfen.', 9000);
+    }
     // Snapshots koennen Voll-Mieterdaten enthalten -> ebenfalls leeren
     await idbClear('mieter_snapshots').catch(()=>{});
     /* v333 (Audit R46): settings bleibt erhalten (syncProfil, deviceId ...),
@@ -37957,8 +38035,19 @@ async function odPersistTokens() {
   }
 }
 async function odClearTokens() {
-  try { await idbDelete('od_auth','tokens'); } catch(e) {}
-  try { localStorage.removeItem('od_tokens'); } catch(e) {}
+  /* R26 (A411): Scheitern BEIDE Schritte, ist die OneDrive-Anmeldung noch da,
+     obwohl abgemeldet wurde. Bis A410 geschah das lautlos - die Zusage
+     "abgemeldet" stimmte dann einfach nicht. Einzeln gezaehlt, weil ein
+     Fehlschlag allein folgenlos bleibt: der jeweils andere Speicherort wird
+     beim naechsten Start ohnehin bevorzugt gelesen. */
+  let weg = 0;
+  try { await idbDelete('od_auth','tokens'); weg++; }
+  catch(e) { console.error('OneDrive-Tokens nicht aus der Datenbank entfernt:', e && e.message); }
+  try { localStorage.removeItem('od_tokens'); weg++; }
+  catch(e) { console.error('OneDrive-Tokens nicht aus dem lokalen Speicher entfernt:', e && e.message); }
+  if (!weg) {
+    toast('Die OneDrive-Anmeldung ließ sich nicht vollständig entfernen. Bitte die App schließen und erneut abmelden.', 9000);
+  }
 }
 
 async function odLoadTokens() {
@@ -39757,7 +39846,12 @@ function escJs(v){
 function telHref(v){ return 'tel:'+String(v==null?'':v).replace(/[^0-9+()/\s-]/g,'').trim(); }
 // A3: mailto:-URL säubern – Steuerzeichen/Anführungszeichen/Spitzklammern entfernen, dann attr-escapen.
 function mailHref(v){ return 'mailto:'+escAttr(String(v==null?'':v).replace(/[\s<>"'`]/g,'').trim()); }
-function today(){return new Date().toISOString().split('T')[0];}
+/* A412 (F-3): today() rechnete ueber toISOString nach UTC um und lieferte
+   deshalb zwischen 00:00 und 02:00 Ortszeit den VORTAG - bei 97 Aufrufstellen,
+   darunter die Stempeluhr: Wer um 00:15 ausstempelte, buchte auf gestern.
+   ymd() bildet das Datum aus den lokalen Bestandteilen und ist seit v218 der
+   richtige Weg; das Format bleibt gleich, eine Migration entfaellt. */
+function today(){ return ymd(new Date()); }
 function now(){return new Date().toLocaleString('de-DE');}
 // IBAN in 4er-Gruppen darstellen, Beispiel (fiktiv): DE00 1234 5678 9012 3456 78
 /* ── IBAN-PRUEFUNG (v285) ────────────────────────────────────
@@ -41503,7 +41597,15 @@ async function zaBatchRueckgaengig(batchId){
     }catch(err){ console.warn('Buchung löschen (Import rückgängig), ID '+id+':', err); }   // v244 (R26)
   }
   batch.status='storniert'; batch.storniertAm=nowIso(); batch.storniertVon=(typeof CU!=='undefined'&&CU)?CU.name:'';
-  try{ await idbPut('buchungs_batches', batch); }catch(_){ }
+  /* R26 (A411): Die Buchungen sind hier bereits geloescht. Scheitert das
+     Festschreiben des Status, meldet die App "entfernt", der Verlauf zeigt den
+     Import aber weiter als aktiv - und beim naechsten Rueckgaengigmachen sucht
+     die App Buchungen, die es nicht mehr gibt. */
+  try{ await idbPut('buchungs_batches', batch); }
+  catch(e){
+    console.error('Import-Storno nicht festgeschrieben:', e && e.message);
+    toast('Die Buchungen wurden entfernt, der Import ließ sich aber nicht als storniert festschreiben. Bitte den Verlauf prüfen.', 9000);
+  }
   clearTimeout(window._syncTimer);
   window._syncTimer=setTimeout(()=>{ if(typeof syncToOneDrive==='function') syncToOneDrive(); },2000);
   toast(`${del} Buchung(en) entfernt, Import storniert.`);
@@ -41568,7 +41670,13 @@ async function zaBatchRueckgaengigSelektiv(batchId){
   batch.buchungIds=verbleibend;
   if(!verbleibend.length){ batch.status='storniert'; batch.storniertAm=nowIso(); batch.storniertVon=(typeof CU!=='undefined'&&CU)?CU.name:''; }
   else { batch.teilRueckgaengigAm=nowIso(); }
-  try{ await idbPut('buchungs_batches', batch); }catch(_){ }
+  /* R26 (A411): wie oben - die Buchungen sind schon weg, nur der Vermerk
+     fehlt dann. */
+  try{ await idbPut('buchungs_batches', batch); }
+  catch(e){
+    console.error('Teil-Storno nicht festgeschrieben:', e && e.message);
+    toast('Die Buchungen wurden entfernt, der Vermerk am Import ließ sich aber nicht speichern. Bitte den Verlauf prüfen.', 9000);
+  }
   clearTimeout(window._syncTimer);
   window._syncTimer=setTimeout(()=>{ if(typeof syncToOneDrive==='function') syncToOneDrive(); },2000);
   toast(`${del} unveränderte Buchung(en) entfernt.`);
@@ -44469,7 +44577,7 @@ function fmtDatumLang(v){
   const heute=today();
   const d=new Date(v+'T00:00:00');
   const gestern=new Date(); gestern.setDate(gestern.getDate()-1);
-  const gesternStr=gestern.toISOString().split('T')[0];
+  const gesternStr=ymd(gestern);   // A412: war toISOString (UTC)
   const wt=d.toLocaleDateString('de-DE',{weekday:'short'});
   const datum=d.toLocaleDateString('de-DE',{day:'2-digit',month:'2-digit',year:'numeric'});
   if(v===heute) return 'Heute · '+wt+' '+datum;
@@ -48229,7 +48337,10 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden' && PD && PD.id) {
     if(!PD._adminEditOriginal) PD.status = 'draft';
     idbPut('protokolle', PD).catch(e => console.warn('Auto-Sicherung (hidden):', e));
-    try { localStorage.setItem('openProtokoll', JSON.stringify({ id: PD.id, step: PD._draftStep||0, ts: Date.now() })); } catch(e) {}
+    /* R26 (A411): Der Datensatz selbst wird eine Zeile darueber gesichert;
+       hier geht nur die Stelle verloren, an der weitergearbeitet wurde. */
+    try { localStorage.setItem('openProtokoll', JSON.stringify({ id: PD.id, step: PD._draftStep||0, ts: Date.now() })); }
+    catch(e) { console.warn('Entwurfsmarker nicht gespeichert:', e && e.message); }
   }
   if (document.visibilityState === 'visible' && typeof updateMailBadge === 'function') {
     updateMailBadge();
