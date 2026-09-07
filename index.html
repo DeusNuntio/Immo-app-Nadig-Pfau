@@ -1248,7 +1248,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=38;   // A398: +kr_abrechnungen
-const APP_VERSION = '2026-09-04-A413';
+const APP_VERSION = '2026-09-07-A421';
 /* v364 (12.08.2026) – offene Punkte abgearbeitet.
    1) D1/XLSX_SRI: Der im Code hinterlegte PowerShell-Befehl war FALSCH und
       konnte nie funktionieren - Invoke-WebRequest liefert unter .Content einen
@@ -4427,8 +4427,9 @@ function dashGrpToggle(grpId){
 
 async function getMyObjekte(){
   if(!CU) return [];
-  // Objekte mit eingeschränkter Sichtbarkeit (sichtbarFuer) nur für gelistete Benutzer
-  const sichtbar = o => !o.sichtbarFuer || o.sichtbarFuer.includes(CU.id);
+  /* A416 (B3): Die Sichtbarkeitsregel steht jetzt vollstaendig in darfObjekt.
+     Wer sie aendert, aendert sie dort - und nur dort. */
+  const sichtbar = o => darfObjekt(o.id);
   if(istVerwalter()) return OBJEKTE.filter(sichtbar);
   return OBJEKTE.filter(o=>CU.objekte.includes(o.gruppe) && sichtbar(o));
 }
@@ -4526,6 +4527,14 @@ function darfObjekt(objektId, u){
   if(cu.role==='admin') return true;
   const o = (typeof getObj==='function') ? getObj(objektId) : OBJEKTE.find(x=>x.id===objektId);
   if(!o) return false;
+  /* A416 (B3): sichtbarFuer kam nach dieser Funktion hinzu und wurde nur in
+     getMyObjekte nachgezogen - zwei Funktionen beantworteten dieselbe Frage
+     verschieden. "Zur Verlach 37" ist privat, liegt aber in der Gruppe 'mg':
+     wer die Kyffhaeuser betreut, bekam das Objekt ueber die Zaehlersuche
+     geliefert, obwohl es auf seinem Dashboard bewusst fehlt. Ab hier gibt es
+     genau EINE Regel, und getMyObjekte benutzt sie. Fuer 'admin' aendert sich
+     nichts - der Zweig darueber greift vorher. */
+  if(o.sichtbarFuer && !o.sichtbarFuer.includes(cu.id)) return false;
   if(cu.role==='eigentuemer') return Array.isArray(cu.objekte) && cu.objekte.includes(o.gruppe);
   // Hausmeister: gleiche Objektgrenze wie bisher (Gruppe), aber keine kaufm. Rechte
   return Array.isArray(cu.objekte) && cu.objekte.includes(o.gruppe);
@@ -6481,7 +6490,22 @@ async function saveNeuerZaehler(objektId, zaehlerId){
 }
 
 async function delZaehler(zaehlerId, objektId){
-  if(!confirm('Diesen Zähler wirklich löschen? Zugehörige Ablesungen bleiben erhalten, verlieren aber die Zuordnung.')) return;
+  /* A417 (B10): Der alte Text versprach "Zugehörige Ablesungen bleiben
+     erhalten, verlieren aber die Zuordnung". Der Datenzustand stimmte, die
+     Benutzbarkeit nicht: Jede Leseseite filtert ueber die Zaehlerliste, eine
+     Ansicht fuer zuordnungslose Ablesungen gibt es nicht. Die Historie ist
+     nach dem Loeschen also faktisch weg - und ein neu angelegter Zaehler
+     bekommt eine neue Id, die alten Staende haengen sich nicht wieder an.
+     Jetzt steht die Anzahl im Text, so wie zaMieterLoeschen es fuer
+     Buchungen vormacht: Eine Entscheidung, deren Folgen man vorher sieht,
+     ist eine andere als eine, die man hinterher erklaert bekommt. */
+  let _anz = 0;
+  try{ _anz = ((await idbGetAll('zaehlerstaende','zaehlerId',zaehlerId))||[]).length; }
+  catch(e){ console.warn('Ablesungen zum Zähler nicht ermittelbar:', e); }
+  const _txt = _anz
+    ? `\n\nDazu gehören ${_anz} Ablesung(en). Sie bleiben in der Datenbank, sind danach aber über keine Ansicht mehr erreichbar und lassen sich einem neuen Zähler nicht wieder zuordnen.`
+    : '\n\nZu diesem Zähler ist keine Ablesung erfasst.';
+  if(!confirm('Diesen Zähler wirklich löschen?'+_txt)) return;
   const z=await idbGet('zaehler', zaehlerId);
   if(z?.versorgerId){ await spiegelZaehlerVersorger(zaehlerId, z.versorgerId, ''); }
   await deleteMitTombstone('zaehler', zaehlerId);
@@ -12545,6 +12569,26 @@ function nowIso(){ return new Date().toISOString(); }
 /* ── v180 (Review H2): settings-Datensätze, die als Geheimnis gelten und das
    Gerät nie verlassen dürfen (kein Sync-Push, kein Backup-Export). ── */
 const SETTINGS_GEHEIM = ['backendKey','saEncKey','portalEncKey'];   // v299: +portalEncKey (R23)
+
+/* A418 (B12): Schluessel, die zu EINEM Geraet gehoeren und es nie verlassen
+   duerfen. Der Unterschied zu SETTINGS_GEHEIM: Die dort gelisteten sind
+   Geheimnisse, diese hier sind schlicht ortsgebunden.
+   Der gefaehrlichste Eintrag sind die Migrationsmarker (Praefix unten):
+   Wandert ein "Migration erledigt"-Marker auf ein Geraet, das die Migration
+   nie ausgefuehrt hat, unterbleibt sie dort dauerhaft und still.
+   Alles, was NICHT hier und nicht in SETTINGS_GEHEIM steht, ist eine
+   Geschaeftseinstellung (Briefkopf, Eigentuemerliste, Wartungsintervalle,
+   Pausenregel) und gehoert auf alle Geraete. */
+const SETTINGS_GERAET = ['geraetBindung','syncProfil','lastSync','lastSyncHM',
+                         'niimbotDichte','fibuBreit','zaLetztesKonto','lastGenBackup',
+                         'lastImport','cryptoConfig'];
+const SETTINGS_GERAET_PRAEFIX = ['taetigkeit_sort_'];
+function istGeraeteEinstellung(id){
+  const s = String(id||'');
+  if(SETTINGS_GERAET.includes(s)) return true;
+  if(/Migration/i.test(s) || /^migration_/i.test(s)) return true;   // *MigrationV225, migration_kr_v323, …
+  return SETTINGS_GERAET_PRAEFIX.some(p => s.startsWith(p));
+}
 async function fetchMitTimeout(url, opts={}, ms=15000){
   const ac=new AbortController();
   const t=setTimeout(()=>ac.abort(), ms);
@@ -17431,6 +17475,13 @@ async function deleteMangel(id){
   if(!confirm('Diesen Mangel wirklich löschen?')) return;
   let store='maengel';
   if(!(await idbGet('maengel',id))){ if(await idbGet('reparaturen',id).catch(()=>null)) store='reparaturen'; }
+  /* A419 (B9): Der Datensatz traegt die Fotoreferenzen; nach dem Loeschen
+     zeigt nichts mehr auf die Dateien in OneDrive, und eine Bereinigung
+     verwaister Fotos gibt es nicht. Deshalb VOR dem Loeschen einsammeln. */
+  try{
+    const _rec = await idbGet(store, id).catch(()=>null);
+    if(_rec) await refDateienAusDatensatzLoeschen(_rec);
+  }catch(e){ console.error('Mangel loeschen: OneDrive-Dateien nicht entfernt', e); }
   await deleteMitTombstone(store, id); bcSend('mangel_changed',{id});
   await syncEinzugNachMangelStatus(id);
   await refreshAufgaben(); toast('Mangel gelöscht');
@@ -17627,6 +17678,14 @@ function initNotifications() {
 /* ═══════════════════════════════════════════════════════════
    DOKUMENTE – Upload, Anzeige, Download
 ═══════════════════════════════════════════════════════════ */
+/* A416 (B2): Diese Sperrliste stand als const INNERHALB von renderDokumente.
+   openArchivDok braucht sie ebenfalls - dort waere der Zugriff ein
+   Laufzeitfehler gewesen, weil die Bindung ausserhalb der Funktion nicht
+   existiert. Sie steht deshalb hier, und renderDokumente benutzt von hier.
+   Bewusst KEINE zweite Liste: eine Sperrliste, die an zwei Orten gepflegt
+   wird, ist nach der ersten Aenderung keine Sperrliste mehr. */
+const ADMIN_ONLY_DOK = ['nka','nka_gesamt','ausweis','lastschrift'];
+
 const DOK_TYPEN = [
   {val:'plan',    label:'Grundriss / Plan',    icon:'ti-map'},
   {val:'foto',    label:'Foto',                icon:'ti-photo'},
@@ -17965,7 +18024,24 @@ async function archiviereAushangDokument({objektId, weNr, html, zimmerTitel}){
 // Archiviertes HTML-Dokument in neuem Fenster öffnen (Ansicht / Druck / Weiterleitung)
 async function openArchivDok(id) {
   const d = await idbGet('dokumente', id);
-  if (!d || !d.data) return;
+  /* A416 (B2): Die Pruefung gehoert HIERHER, nicht nur in die aufrufende
+     Ansicht. Grundsatz aus dem v389-Kommentar: "Der ausgeblendete Knopf allein
+     ist keine Berechtigung." Ein Aufrufer, der die Pruefung vergisst - so
+     geschehen in der globalen Suche -, darf die Sperre nicht aushebeln. */
+  if (d && !darfObjekt(d.objektId) && !istAllgemein(d.objektId)) {
+    toast('Kein Zugriff auf dieses Objekt'); return;
+  }
+  if (d && ADMIN_ONLY_DOK.includes(d.typ) && !istVerwalter()) {
+    toast('Nur für die Verwaltung einsehbar'); return;
+  }
+  if (!d) { toast('Dokument nicht gefunden'); return; }
+  /* A417 (B8): Hier stand `if (!d || !d.data) return;`. Fuer nach OneDrive
+     ausgelagerte Dokumente ist `data` geloescht (saveDok) - also der
+     Normalfall. Ueber die globale Suche wurde diese Funktion fuer JEDES
+     Dokument aufgerufen: Klick auf eine ausgelagerte PDF-Rechnung, und es
+     passierte wortlos nichts. downloadDok loest die Referenz ueber dokQuelle
+     auf und meldet im Fehlerfall; es wurde nur nie erreicht. */
+  if (!d.data) { await downloadDok(id); return; }
   if (d.istHtml) {
     const html = decodeURIComponent(d.data.replace(/^data:text\/html;charset=utf-8,/, ''));
     druckHTML(html);
@@ -17985,7 +18061,8 @@ async function renderDokumente(el, objektId, mieterId) {
   /* v350: 'nka_gesamt' ergaenzt. Die Gesamtaufstellung enthaelt die Ergebnisse
      ALLER Wohneinheiten - sie gehoert noch weniger in fremde Haende als eine
      Einzelabrechnung. */
-  const ADMIN_ONLY_DOK = ['nka','nka_gesamt','ausweis','lastschrift'];
+  // A416: Liste steht jetzt auf oberster Ebene (siehe dort), damit auch
+  // openArchivDok sie benutzen kann.
   if (!istVerwalter()) docs = docs.filter(d=>!ADMIN_ONLY_DOK.includes(d.typ));
 
   const gruppeByTyp = {};
@@ -18181,10 +18258,23 @@ async function odSyncWeDateien(gruppe, weNr){
   const kn='WE '+weKey;
 
   const bekannt={}, bekanntById={};
+  /* A417 (B13): pendingNachOrdner wird hier mitgefuellt. Bis dahin las die
+     innerste Schleife (sieben Ebenen tief) `od_dateien` fuer JEDEN
+     Ordnerknoten noch einmal vollstaendig und filterte danach auf einen
+     einzigen Ordner - bei drei Standorten rund 1.100 Vollabzuege. Die Daten
+     liegen zu diesem Zeitpunkt laengst im Arbeitsspeicher. Ein Durchlauf
+     statt 1.100, kein Verhaltensunterschied.
+     Hinweis fuer spaeter: Wuerden im Verlauf neue pendingUpload-Saetze
+     geschrieben, muesste die Uebersicht mitgepflegt werden. Das geschieht
+     derzeit nicht. */
+  const pendingNachOrdner={};
   for(const rec of await idbGetAll('od_dateien')){
     if(!rec) continue;
     if(rec.pfad) bekannt[rec.pfad]=rec;
     if(rec.odItemId) bekanntById[rec.odItemId]=rec;
+    if(rec.pendingUpload && rec._blobB64){
+      (pendingNachOrdner[rec.ordner] = pendingNachOrdner[rec.ordner] || []).push(rec);
+    }
   }
 
   const _mAlle=await idbGetAll('mieter').catch(()=>[]);
@@ -18476,6 +18566,41 @@ async function dokRefLoeschen(dok){
 
 /* Datensatz UND ausgelagerte Datei entfernen. Ersetzt die blossen
    deleteMitTombstone-Aufrufe auf dem dokumente-Store. */
+/* A419 (B9): Bis hierher konnte nur ein DOKUMENT seine ausgelagerte Datei
+   mitnehmen (dokRefLoeschen, v321). Maengel und Protokolle liessen ihre Fotos
+   auf OneDrive liegen - ohne Datensatz, der auf sie zeigt, und damit weder in
+   der App sichtbar noch verlaesslich ueber den Abgleich auffindbar
+   (Art. 5 Abs. 1 lit. e DSGVO).
+   Statt eines zweiten Mechanismus ist der vorhandene herausgeloest: eine
+   Stelle, mehrere Aufrufer. Fehler werden protokolliert, nicht geworfen -
+   eine nicht loeschbare Datei darf das Loeschen des Datensatzes nicht
+   verhindern, sonst bleibt beides stehen (Begruendung aus dem v321-Kommentar). */
+async function refDateiLoeschen(ref){
+  if(!istFotoRef(ref) || !ref.odId) return false;
+  try{
+    await odGraph('/me/drive/items/'+encodeURIComponent(ref.odId), {method:'DELETE'});
+    return true;
+  }catch(e){ console.warn('OneDrive-Datei nicht geloescht:', ref.odId, e); return false; }
+}
+
+/* Sammelt alle Datei-Referenzen aus einem beliebig verschachtelten Datensatz
+   und loescht sie. Deckt m.fotos, PD.raeume[*].photos und PD.zaehler[*].foto
+   in einem Zug ab - dieselbe Rekursion, die odBenutzteIds benutzt. */
+async function refDateienAusDatensatzLoeschen(rec){
+  const refs=[];
+  (function sammle(x, tiefe){
+    if(!x || tiefe>6) return;
+    if(Array.isArray(x)){ for(const e of x) sammle(e, tiefe+1); return; }
+    if(typeof x!=='object') return;
+    if(istFotoRef(x) && x.odId){ refs.push(x); return; }
+    for(const k in x){ if(k==='_geleert') continue; sammle(x[k], tiefe+1); }
+  })(rec, 0);
+  let n=0;
+  for(const r of refs) if(await refDateiLoeschen(r)) n++;
+  if(n) console.info('OneDrive: '+n+' zugehoerige Datei(en) mitgeloescht.');
+  return n;
+}
+
 async function dokVollstaendigLoeschen(dokId){
   const dok = await idbGet('dokumente', dokId).catch(()=>null);
   if(dok) await dokRefLoeschen(dok);
@@ -21784,8 +21909,16 @@ async function protokollEndgueltigLoeschen(id) {
   // verknüpfte Einzelfoto-Sicherungen mit entfernen
   try {
     const tmp = await idbGetAll('fotos', 'protId', id);
-    for (const fo of tmp) await idbDelete('fotos', fo.id).catch(()=>{});
+    for (const fo of tmp) await deleteMitTombstone('fotos', fo.id).catch(()=>{});
   } catch(e) { console.warn('Foto-Aufräumung (endgültige Löschung):', e); }
+  /* A419 (B9): Die Datensaetze im fotos-Speicher sind oben behandelt - die
+     ausgelagerten DATEIEN auf OneDrive bisher nicht. Sie stecken als
+     Referenzen im Protokoll selbst (PD.raeume[*].photos, PD.zaehler[*].foto)
+     und blieben nach dem Loeschen ohne jeden Verweis liegen. */
+  try{
+    const _prot = await idbGet('protokolle', id).catch(()=>null);
+    if(_prot) await refDateienAusDatensatzLoeschen(_prot);
+  }catch(e){ console.error('Protokoll loeschen: OneDrive-Dateien nicht entfernt', e); }
   await deleteMitTombstone('protokolle', id);
   clearTimeout(window._syncTimer);
   window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
@@ -21807,7 +21940,7 @@ async function bereinigeProtokollPapierkorb() {
       if (isNaN(t) || t > grenze) continue;
       try {
         const fotos = await idbGetAll('fotos', 'protId', p.id);
-        for (const fo of fotos) await idbDelete('fotos', fo.id).catch(()=>{});
+        for (const fo of fotos) await deleteMitTombstone('fotos', fo.id).catch(()=>{});
       } catch(e) {}
       await deleteMitTombstone('protokolle', p.id);
       n++;
@@ -22460,6 +22593,38 @@ async function saveWohnungHeizNk(objektId, weNr){
   }
   daten.grundriss = _whGr;
   await saveWohnungStamm(objektId, weNr, daten);
+  /* A418 (B4): Die Nebenkostenabrechnung rechnet mit `m.flaeche` aus dem
+     MIETER-Datensatz (flaechenMonate), nicht mit dem Stamm. Eine
+     Rueckspiegelung gab es nur beim ANLEGEN eines Mieters
+     (weMerkmaleVonWohnung), nicht beim Aendern. Wer hier ein neues Aufmass
+     eintrug, sah die richtige Zahl in der Wohnungsanzeige - und die
+     Abrechnung verteilte weiter nach der alten. Still, weil beide Zahlen in
+     der App stehen und keine der anderen sichtbar widerspricht.
+     Drei Vorsichtsmassnahmen, jede aus einem konkreten Risiko:
+     (1) nur GESETZTE Werte - ein leeres Feld darf einen gefuellten Wert nie
+         ueberschreiben, sonst loeschen sich beide Richtungen gegenseitig;
+     (2) nur AKTIVE Mieter - Vormieter und Leerstandssaetze behalten ihre
+         Werte, sonst verfaelschte eine spaetere Korrektur eine laengst
+         erstellte Abrechnung;
+     (3) nur bei ECHTER Abweichung schreiben - sonst bekaeme jeder Aufruf
+         einen neuen updatedAt und liefe im Abgleich als Aenderung mit. */
+  try{
+    const _neuFl = (daten.flaeche != null && daten.flaeche !== '') ? parseFloat(daten.flaeche) : null;
+    const _neuLg = (daten.lage || '').trim();
+    if(_neuFl || _neuLg){
+      const _mAlle = (await idbGetAll('mieter','objektId',objektId)) || [];
+      let _n = 0;
+      for(const _m of _mAlle){
+        if(String(_m.weNr) !== String(weNr)) continue;
+        if(_m._vormieter || _m.leerstand) continue;
+        let _geaendert = false;
+        if(_neuFl && parseFloat(_m.flaeche||0) !== _neuFl){ _m.flaeche = _neuFl; _geaendert = true; }
+        if(_neuLg && String(_m.lage||'') !== _neuLg){ _m.lage = _neuLg; _geaendert = true; }
+        if(_geaendert){ _m.updatedAt = nowIso(); await idbPut('mieter', _m, {keepStamp:true}); _n++; }
+      }
+      if(_n) toast(_n + ' Mieterdatensatz/-sätze angeglichen (Fläche/Lage)');
+    }
+  }catch(e){ console.error('Wohnungsdaten: Spiegelung auf die Mieter fehlgeschlagen', e); }
   window._whFotos = null; window._whGrundriss = null;
   closeModal();
   toast('Wohnungsdaten gespeichert ✓');
@@ -23809,7 +23974,12 @@ async function mvErzeugen(){
     try{
       const alle = await idbGetAll('dokumente');
       for(const dok of alle.filter(x=>x.mieterId===mieterId && x.typ==='vertrag')){
-        await idbDelete('dokumente', dok.id).catch(err=>console.warn('Alt-Vertrag löschen:', err));   // v244 (R26)
+        /* A415 (B1): war idbDelete OHNE Grabstein - der alte Vertragsentwurf
+           tauchte im Mieterportal wieder auf, neben dem neuen, ohne Hinweis
+           welcher gilt. dokVollstaendigLoeschen setzt den Grabstein UND
+           loescht die ausgelagerte OneDrive-Datei; sonst bliebe sie ohne
+           zugehoerigen Datensatz liegen. */
+        await dokVollstaendigLoeschen(dok.id).catch(err=>console.warn('Alt-Vertrag löschen:', err));   // v244 (R26)
       }
     }catch(err){ console.warn('Alt-Verträge des Mieters aufräumen:', err); }   // v244 (R26)
     dokId = await archiviereMieterDokument({
@@ -27825,13 +27995,128 @@ function portalPersonenAbgleich(m, personenMieter, kennung){
           ? normTelefon(alt) === normTelefon(wert)
           : alt.toLowerCase() === wert.toLowerCase();
         if(!gleich){
-          ergebnis.abweichend.push(kennung + ' · ' + (pName||'Person') + ': Portal ' + wert + ' · Akte ' + alt);
+          /* A421: fuer Rufnummern als Datensatz, damit der Auswahldialog die
+             Person wiederfindet. E-Mail-Abweichungen bleiben Text - dort gibt
+             es (noch) keinen Dialog, und eine halbe Umstellung waere
+             schlechter als keine. */
+          if(feld === 'telefon'){
+            ergebnis.abweichend.push({ kennung, mieterId:m.id, personIdx:idx,
+                                       name:(pName||'Person'), portalTel:wert, akteTel:alt });
+          } else {
+            ergebnis.abweichend.push(kennung + ' · ' + (pName||'Person') + ': Portal ' + wert + ' · Akte ' + alt);
+          }
         }
       }
     }
   }
   return ergebnis;
 }
+
+/* ═══════════════════════════════════════════════════════════
+   A421 – ABWEICHENDE RUFNUMMERN GEGENUEBERSTELLEN
+   Aufgebaut wie die Personenzuordnung darunter: zeigen, entscheiden lassen,
+   nichts von selbst tun. Die Nummer aus dem Portal ist Selbstauskunft des
+   Mieters - sie kann die richtigere sein oder ein Zahlendreher, und das
+   entscheidet der Verwalter, nicht die App.
+═══════════════════════════════════════════════════════════ */
+
+/* Ein Portalfeld kann MEHRERE Nummern enthalten - Mieter trennen sie mit
+   Schraegstrich, Semikolon oder Komma. normTelefon macht daraus eine einzige
+   Ziffernkette und meldet folgerichtig eine Abweichung, obwohl die Nummer aus
+   der Akte woertlich mit drin steht. Deshalb hier zerlegen und jede Nummer
+   einzeln behandeln. */
+function telefonTeile(roh){
+  return String(roh||'').split(/[\/;,]/).map(t => t.trim()).filter(Boolean);
+}
+
+async function modalTelefonAbgleich(){
+  const f = window._telAbweichungen || [];
+  if(!f.length){ toast('Keine offenen Rufnummern'); return; }
+  showModal(`
+    <div class="m-title"><i class="ti ti-phone"></i> Abweichende Rufnummern</div>
+    <div style="font-size:12px;color:var(--ink-60);margin-bottom:10px;line-height:1.5">
+      Links steht, was in der Akte gespeichert ist, rechts die Angabe aus dem Portal.
+      Die Portalnummer ist eine Selbstauskunft des Mieters – sie kann die neuere sein
+      oder ein Zahlendreher. Nichts wird ohne Ihre Entscheidung geändert.
+    </div>
+    ${f.map((x,i)=>{
+      const teile = telefonTeile(x.portalTel);
+      const gleichIdx = teile.findIndex(t => normTelefon(t) === normTelefon(x.akteTel));
+      return `<div style="border:1px solid var(--line);border-radius:8px;margin-bottom:8px;padding:8px" id="tw_${i}">
+        <div style="font-weight:600;font-size:12px">${esc(x.name||'(ohne Namen)')}</div>
+        <div style="color:var(--ink-40);font-size:11px;margin-bottom:6px">${esc(x.kennung||'')}${x.personIdx!=null?' · Bewohner':''}</div>
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:4px;font-size:12px">
+          <span style="width:52px;color:var(--ink-40)">Akte</span>
+          <span style="flex:1;font-family:var(--mono)">${esc(x.akteTel)}</span>
+          <button class="btn btn-sm" data-action-click="telefonBehalten" data-arg="${i}" data-argnum>Behalten</button>
+        </div>
+        ${teile.map((t,j)=>`
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:4px;font-size:12px">
+          <span style="width:52px;color:var(--ink-40)">${j?'':'Portal'}</span>
+          <span style="flex:1;font-family:var(--mono)">${esc(t)}</span>
+          ${j===gleichIdx
+            ? `<span class="chip chip-ok" style="font-size:10px">entspricht der Akte</span>`
+            : `<button class="btn btn-sm btn-copper" data-action-click="telefonUebernehmen" data-arg="${i}" data-arg2="${j}" data-argnum="1,2">Übernehmen</button>`}
+        </div>`).join('')}
+        ${teile.length>1?`<div style="font-size:11px;color:var(--ink-40);margin-top:2px">Mehrere Nummern in einem Feld – im Portal mit Schrägstrich getrennt eingetragen.</div>`:''}
+      </div>`;
+    }).join('')}
+    <button class="btn btn-full" style="margin-top:10px" data-action-click="closeModal">Schließen</button>`);
+}
+
+/* Fall aus der Liste nehmen, ohne etwas zu aendern. Bewusst eine eigene
+   Handlung: Wer "behalten" drueckt, hat entschieden - beim naechsten Export
+   soll die Liste nicht wieder von vorn anfangen. */
+function telefonBehalten(i){
+  const f = window._telAbweichungen || [];
+  if(!f[i]) return;
+  const wer = f[i].name || f[i].kennung;
+  f.splice(i,1);
+  window._telAbweichungen = f;
+  toast('Nummer aus der Akte behalten · ' + wer);
+  if(f.length) modalTelefonAbgleich(); else closeModal();
+}
+
+async function telefonUebernehmen(i, j){
+  const f = window._telAbweichungen || [];
+  const x = f[i];
+  if(!x){ toast('Eintrag nicht mehr vorhanden'); return; }
+  const neu = telefonTeile(x.portalTel)[j];
+  if(!neu){ toast('Nummer nicht lesbar'); return; }
+  const m = await idbGet('mieter', x.mieterId).catch(()=>null);
+  if(!m){ toast('Mieter nicht gefunden'); return; }
+
+  if(x.personIdx != null){
+    /* Nur der Bewohner, aus dessen Eintrag die Abweichung stammt. */
+    if(!Array.isArray(m.personen_liste) || !m.personen_liste[x.personIdx]){
+      toast('Bewohner nicht gefunden'); return;
+    }
+    m.personen_liste[x.personIdx].telefon = neu;
+  } else {
+    /* Mieter-Ebene: dieselben ZWEI Stellen, die auch der Abgleich schreibt -
+       das Spiegelfeld und die Personenliste. Nur eine davon zu setzen hiesse,
+       die zweite Wahrheit stehen zu lassen. */
+    m.telefon = neu;
+    /* setzePersonKontakt fuellt ausdruecklich nur LEERE Felder. Hier ist das
+       Feld nicht leer - sonst gaebe es die Abweichung gar nicht. Also die
+       Hauptperson gezielt setzen, sonst bliebe in der Personenliste die alte
+       Nummer als zweite Wahrheit stehen. */
+    const hp = Array.isArray(m.personen_liste) ? hauptPersonIdx(m.personen_liste) : -1;
+    if(hp >= 0 && m.personen_liste[hp]) m.personen_liste[hp].telefon = neu;
+    else setzePersonKontakt(m, 'telefon', neu);
+  }
+  m.updatedAt = nowIso();
+  try{ await idbPut('mieter', m); }
+  catch(e){ console.error('Rufnummer nicht gespeichert', e); toast('Konnte nicht gespeichert werden'); return; }
+
+  f.splice(i,1);
+  window._telAbweichungen = f;
+  syncSoon();
+  toast('Übernommen: ' + neu + ' · ' + (x.name || x.kennung));
+  if(f.length) modalTelefonAbgleich(); else closeModal();
+}
+
+registerActions({ modalTelefonAbgleich, telefonUebernehmen, telefonBehalten });   // A421
 
 /* Vorschlaege zur Bestaetigung. Angelegt wird als BEWOHNER, nicht als
    Vertragspartei - alles andere waere eine Aussage ueber den Mietvertrag,
@@ -27965,6 +28250,8 @@ async function wohnungenAdressenHolen(){
 
   const alle = await idbGetAll('mieter');
   let uebernommen=0, unbekannt=[], schonDa=0, telNeu=0, telAbweichend=[];
+  /* A421: Der Dialog braucht die Faelle nach dem Durchlauf noch. */
+  window._telAbweichungen = [];
   let persErgaenzt=0;                          // A396
   window._portalPersonenVorschlaege = [];      // A396
   for(const w of (daten.wohnungen||[])){
@@ -28030,7 +28317,11 @@ async function wohnungenAdressenHolen(){
         m.telefon = wTel; setzePersonKontakt(m, 'telefon', wTel);
         telNeu++; geaendert = true;
       } else if(normTelefon(alt) !== normTelefon(wTel)){
-        telAbweichend.push(w.kennung+': Portal '+wTel+' · Akte '+alt);
+        /* A421: war eine fertige Textzeile. Aus einem Satz laesst sich nicht
+           zurueckrechnen, welcher Mieter gemeint ist - fuer den Auswahldialog
+           braucht es die Id. Der Text wird jetzt erst beim Anzeigen gebaut. */
+        telAbweichend.push({ kennung:w.kennung, mieterId:m.id, personIdx:null,
+                             name:(m.mieter||''), portalTel:wTel, akteTel:alt });
       } else {
         setzePersonKontakt(m, 'telefon', alt);
         geaendert = true;
@@ -28052,15 +28343,30 @@ async function wohnungenAdressenHolen(){
   }
   if(st){
     const _vz = (window._portalPersonenVorschlaege||[]).length;
+    /* A421b: telAbweichend traegt seit A421 zweierlei - Datensaetze fuer den
+       Rufnummerndialog und Texte fuer E-Mail-Abweichungen. Nur die Texte
+       gehoeren in diese Zusammenfassung; die Datensaetze bekommen unten
+       ihren eigenen Kasten mit Knopf. */
+    const _abwText = telAbweichend.filter(x => typeof x === 'string');
     st.innerHTML = `<div style="font-size:12px;color:var(--green)"><i class="ti ti-circle-check"></i> ${uebernommen} Adresse(n) und ${telNeu} Rufnummer(n) übernommen, ${schonDa} Adresse(n) bereits aktuell.</div>`
       + (persErgaenzt?`<div style="font-size:12px;color:var(--green);margin-top:4px"><i class="ti ti-users"></i> ${persErgaenzt} Kontaktangabe(n) bei weiteren Personen ergänzt.</div>`:'')
       + (_vz?`<div style="font-size:12px;margin-top:6px;border:1px solid var(--copper);border-radius:8px;padding:8px">
           <i class="ti ti-user-question"></i> ${_vz} Person(en) im Portal, die in der Akte nicht bekannt sind.
           <button class="btn btn-sm btn-copper" style="margin-top:6px" data-action-click="modalPortalPersonen">Ansehen und anlegen</button>
         </div>`:'')
-      + (telAbweichend.length?`<div style="font-size:12px;color:var(--amber-d,#9a6b00);margin-top:4px"><i class="ti ti-phone"></i> Abweichende Rufnummer – bitte in der Mieterakte prüfen: ${esc(telAbweichend.join(' | '))}</div>`:'')
+      + (_abwText.length?`<div style="font-size:12px;color:var(--amber-d,#9a6b00);margin-top:4px"><i class="ti ti-mail"></i> Abweichende Angabe – bitte in der Mieterakte prüfen: ${esc(_abwText.join(' | '))}</div>`:'')
       + (unbekannt.length?`<div style="font-size:12px;color:var(--amber-d,#9a6b00);margin-top:4px"><i class="ti ti-alert-triangle"></i> Nicht zugeordnet: ${esc(unbekannt.join(', '))}</div>`:'')
       + ((daten.verwaisteRowkeys||[]).length?`<div style="font-size:12px;color:var(--amber-d,#9a6b00);margin-top:4px">Veraltete Einträge im Portal (Kleinschreibung): ${esc(daten.verwaisteRowkeys.join(', '))}</div>`:'');
+  }
+  /* A421: Die Faelle mit Id (Rufnummern) wandern in den Auswahldialog,
+     reine Textmeldungen (E-Mail) bleiben in der Zusammenfassung stehen. */
+  window._telAbweichungen = telAbweichend.filter(x => x && typeof x === 'object' && x.mieterId);
+  if(window._telAbweichungen.length && st){
+    const _n = window._telAbweichungen.length;
+    st.innerHTML += `<div style="font-size:12px;margin-top:6px;border:1px solid var(--copper);border-radius:8px;padding:8px">
+      <i class="ti ti-phone"></i> ${_n} abweichende Rufnummer(n). Portal und Akte gegenüberstellen und die richtige wählen.
+      <button class="btn btn-sm btn-copper" style="margin-top:6px" data-action-click="modalTelefonAbgleich">Nummern prüfen</button>
+    </div>`;
   }
   toast(uebernommen+' Adresse(n), '+telNeu+' Rufnummer(n) übernommen');
 }
@@ -29457,6 +29763,34 @@ function kappungsgrenze(obj, stichtagISO){
   return (gemeindeInMietSchVO(obj) && verordnungAktiv) ? 15 : 20;
 }
 
+/* A417 (B14): Die Rechnung oben ist richtig - sie war nur still. Laeuft die
+   MietSchVO NRW aus, faellt die Grenze fuer Duesseldorf, Krefeld, Monheim und
+   Hilden ohne jede Meldung von 15 auf 20 Prozent. Wird die Verordnung dagegen
+   VERLAENGERT - bei dieser Verordnungsart die Regel, nicht die Ausnahme -,
+   rechnet die App ab dem Stichtag zu hoch, und ein Erhoehungsverlangen ueber
+   der zulaessigen Grenze ist insoweit unwirksam.
+   Diese Funktion aendert die Rechnung nicht. Sie sagt nur, wann jemand
+   nachsehen muss. Sechs Monate Vorlauf, damit die Pruefung nicht erst
+   auffaellt, wenn das Schreiben schon draussen ist. */
+const KAPP_VORLAUF_TAGE = 183;
+function kappungsHinweis(obj, stichtagISO){
+  if(!gemeindeInMietSchVO(obj)) return '';
+  const stichtag = stichtagISO ? new Date(stichtagISO) : new Date();
+  const ende = new Date(MIETSCHVO_KAPPUNG_BIS);
+  const tageBis = Math.floor((ende - stichtag) / 86400000);
+  const endeTxt = fmtDate(MIETSCHVO_KAPPUNG_BIS);
+  if(tageBis < 0){
+    return 'Die MietSchVO NRW ist zum ' + endeTxt + ' ausgelaufen. Gerechnet wird '
+         + 'mit 20 %. Bitte prüfen, ob die Verordnung verlängert wurde – dann '
+         + 'gelten weiterhin 15 % und MIETSCHVO_KAPPUNG_BIS ist anzupassen.';
+  }
+  if(tageBis <= KAPP_VORLAUF_TAGE){
+    return 'Die MietSchVO NRW endet am ' + endeTxt + '. Ab dann rechnet die App '
+         + 'mit 20 % statt 15 %. Bitte rechtzeitig prüfen, ob sie verlängert wird.';
+  }
+  return '';
+}
+
 // Datum X Jahre vor Stichtag (für 3-Jahres-Fenster)
 function vorJahren(stichtagISO, jahre){
   const d = stichtagISO ? new Date(stichtagISO) : new Date();
@@ -30035,6 +30369,12 @@ async function runGlobalSearch(q) {
       for(const d of await idbGetAll('dokumente')){
         if (n>=MAX_JE_ART) break;
         if (d._geloescht) continue;
+        /* A416 (B2): Diese Quelle war neben Terminen und Interessenten NICHT
+           auf die sichtbaren Objekte begrenzt. Ein Hausmeister fand darueber
+           Unterlagen aller Objekte - und weil der Treffer openArchivDok
+           aufruft, auch Ausweiskopien und SEPA-Mandate, die renderDokumente
+           ueber ADMIN_ONLY_DOK bewusst sperrt. */
+        if (!myIds.includes(d.objektId) && !istAllgemein(d.objektId)) continue;
         if (!passt(d.name, d.titel, d.typ)) continue;
         n++;
         const bez = getObj(d.objektId)?.name || '';
@@ -30049,6 +30389,7 @@ async function runGlobalSearch(q) {
       let n=0;
       for(const t of (await idbGetAll('termine')).sort((a,b)=>String(b.datum||'').localeCompare(String(a.datum||'')))){
         if (n>=MAX_JE_ART) break;
+        if (!myIds.includes(t.objektId) && !istAllgemein(t.objektId)) continue;   // A416 (B2)
         if (!passt(t.titel, t.notiz, t.ort)) continue;
         n++;
         results.push({type:'termin', icon:'ti-calendar', color:'var(--green)',
@@ -30075,6 +30416,10 @@ async function runGlobalSearch(q) {
       let n=0;
       for(const i of await idbGetAll('interessenten')){
         if (n>=MAX_JE_ART) break;
+        /* A416 (B2): Interessenten sind Selbstauskuenfte der Mietbewerber -
+           Einkommen, Arbeitgeber, Vormieter. Personenbezogene Daten Dritter,
+           die nicht in eine Hausmeisteransicht gehoeren. */
+        if (!myIds.includes(i.objektId) && !istAllgemein(i.objektId)) continue;
         if (!passt(i.name, i.vorname, i.nachname, i.email, i.telefon)) continue;
         n++;
         results.push({type:'interessent', icon:'ti-user-search', color:'var(--blue)',
@@ -31272,8 +31617,14 @@ async function saveNewMieter(objektId) {
     if (vorhanden && vorhanden.mieter && !vorhanden.leerstand && vorhanden.id !== neuerMieter.id) {
       await mieterZuVormieter(vorhanden, neuerMieter);
     } else if (vorhanden && vorhanden.leerstand) {
-      // Leerstand-Datensatz mit neuem Mieter überschreiben (gleiche WE freigeben)
-      await idbDelete('mieter', vorhanden.id).catch(()=>{});
+      /* Leerstand-Datensatz mit neuem Mieter ueberschreiben (gleiche WE freigeben).
+         A415 (B1): war idbDelete OHNE Grabstein. `mieter` ist sync:true, und der
+         Abgleich loescht lokal nur, was in settings.tombstones steht - der
+         Leerstand kehrte beim naechsten Sync zurueck. Die Wohnung galt dann
+         gleichzeitig als vermietet UND als leerstehend, und flaechenMonate
+         zaehlte die Flaeche doppelt: das verschiebt die Verteilung in der
+         Nebenkostenabrechnung fuer ALLE Mieter des Objekts. */
+      await deleteMitTombstone('mieter', vorhanden.id);
     }
     await idbPut('mieter', neuerMieter);
     toast('Mieter gespeichert ✓');
@@ -31764,6 +32115,23 @@ async function saveEditMieter(id) {
     if (_wNeu && String(_wNeu) !== String(m.weNr||'')) {
       const _pr = await wePruefung(m.objektId, _wNeu);
       if (!_pr.ok) { toast(_pr.grund, 9000); return; }
+      /* A419 (B5, Variante A): Die Nummer ist nicht nur eine Angabe am
+         Mieter - sie ist der Schluessel, ueber den 15 Speicher und der
+         gesamte OneDrive-Ordnerbaum zusammenfinden. Wird sie hier
+         geaendert, wandert NICHTS mit: getWohnungStamm liefert danach ein
+         leeres Objekt, und Flaeche, Zimmerzahl, Heizungsvariante,
+         NK-Schluessel, Grundriss, Wohnungsfotos und der Schluesselbestand
+         sind aus Sicht der App verschwunden - ohne Fehlermeldung. Der
+         Mietvertragsgenerator zieht dann Standardwerte statt der erfassten.
+         Bis es eine echte Migration gibt (Variante B: alle Datensaetze mit
+         weNr===alt umsetzen plus OneDrive-Ordner umbenennen), ist die
+         Sperre der ehrlichere Weg. Sie greift NUR bei tatsaechlicher
+         Aenderung; wer aus anderen Gruenden speichert, merkt nichts. */
+      toast('Die Wohnungsnummer lässt sich hier nicht ändern. An ihr hängen '
+          + 'Wohnungsdaten, Schlüssel, Dokumente und die OneDrive-Ordner – '
+          + 'sie würden nicht mitwandern. Für eine Umnummerierung bitte '
+          + 'melden; sie muss über alle Speicher hinweg erfolgen.', 12000);
+      return;
     }
     m.weNr = _wNeu || m.weNr;
   }
@@ -31911,8 +32279,28 @@ async function mieterVonWohnungTrennen(id){
 async function mieterEndgueltigLoeschen(id){
   const m = await idbGet('mieter', id);
   if(!m) return;
-  if(!confirm(`Mieterdatensatz „${m.mieter||''}" endgültig löschen?\n\nDie Wohnung und ihre Stammdaten bleiben erhalten. Diese Aktion betrifft nur den Mieterdatensatz. Eine lokale Sicherung wird automatisch angelegt.`)) return;
+  /* A416 (B7): Bis hierher loeschte diese Funktion NUR den Mieter. Fuer
+     Aufgaben und Maengel ist das gewollt. Fuer `dokumente` war es ein Fehler:
+     Mietvertrag, Ausweiskopie (typ 'ausweis') und SEPA-Mandat
+     (typ 'lastschrift') blieben liegen, trugen eine mieterId, die niemand mehr
+     aufloest, waren ueber keine Mieterakte mehr erreichbar - und damit auch
+     nicht mehr loeschbar (Art. 17 DSGVO).
+     Die Anzahl steht im Bestaetigungstext: eine Entscheidung, deren Folgen man
+     vorher sieht, ist eine andere als eine, die man hinterher erklaert bekommt.
+     Bewusst NICHT kaskadiert werden Buchungen, NKA-Archive und Protokolle -
+     das sind Nachweise, dort ist die Verwaisung richtig. */
+  let _doks = [];
+  try{ _doks = (await idbGetAll('dokumente','mieterId',id)) || []; }
+  catch(e){ console.error('Mieterloeschung: Unterlagen nicht ermittelbar', e); }
+  const _dokText = _doks.length
+    ? `\n\nMitgelöscht werden ${_doks.length} zugehörige Unterlage(n) – darunter ggf. Mietvertrag, Ausweiskopie und SEPA-Mandat. Die Sicherung enthält diese NICHT.`
+    : '';
+  if(!confirm(`Mieterdatensatz „${m.mieter||''}" endgültig löschen?\n\nDie Wohnung und ihre Stammdaten bleiben erhalten. Buchungen, Protokolle und Abrechnungen bleiben als Nachweis erhalten. Eine lokale Sicherung des Mieterdatensatzes wird angelegt.${_dokText}`)) return;
   await erstelleMieterSnapshot('vor Löschung '+(m.mieter||m.id));
+  for(const d of _doks){
+    try{ await dokVollstaendigLoeschen(d.id); }
+    catch(e){ console.error('Mieterloeschung: Unterlage '+d.id+' nicht geloescht', e); }
+  }
   // v240 (KRITISCH): mit Tombstone löschen – sonst stellt der OneDrive-Merge
   // den Datensatz beim nächsten Sync wieder her (Nutzerbefund 18.07.).
   await deleteMitTombstone('mieter', id);
@@ -32963,7 +33351,13 @@ async function mieterReaktivierenAusfuehren(vormieterId, nachmieterId, modus){
     if(nm){
       if(modus==='loeschen'){
         await erstelleMieterSnapshot('Reaktivierung: lösche '+(nm.mieter||nm.id));
-        await idbDelete('mieter', nachmieterId);
+        /* A415 (B1): war idbDelete OHNE Grabstein - die schwerste der vier
+           Stellen. Dieser Zweig gehoert zu "Falschen Mieter loeschen &
+           Vormieter reaktivieren". Ohne Grabstein stand der falsche Mieter
+           nach dem naechsten Abgleich wieder da, jetzt NEBEN dem
+           reaktivierten Vormieter: zwei aktive Mieter auf einer Wohnung,
+           Mietkonto und NKA zaehlen beide. */
+        await deleteMitTombstone('mieter', nachmieterId);
       } else if(modus==='vormieter'){
         nm._vormieter = true;
         if(!nm.auszugISO){ const iso=today(); nm.auszugISO=iso; nm.auszug=new Date(iso).toLocaleDateString('de-DE'); }
@@ -33760,7 +34154,7 @@ async function restoreMangelFotos(){
   if(!offen.length) return;
   if(!confirm(`Es liegen ${offen.length} Foto(s) aus einer nicht abgeschlossenen Mangel-Erfassung vor. Übernehmen?`)){
     // Verworfen: aufräumen
-    for(const fo of offen) await idbDelete('fotos', fo.id).catch(()=>{});
+    for(const fo of offen) await deleteMitTombstone('fotos', fo.id).catch(()=>{});
     return;
   }
   window._mangelPhotos = offen.map(f=>f.data);
@@ -33778,7 +34172,7 @@ function delMangelFoto(i){
   if(!confirm('Foto wirklich entfernen?')) return;
   window._mangelPhotos.splice(i,1);
   if(window._mangelFotoIds && window._mangelFotoIds[i]){
-    idbDelete('fotos', window._mangelFotoIds[i]).catch(()=>{});
+    deleteMitTombstone('fotos', window._mangelFotoIds[i]).catch(()=>{});
     window._mangelFotoIds.splice(i,1);
   }
   const grid=document.getElementById('mgPhotoGrid');
@@ -33796,7 +34190,7 @@ async function cancelMangel(){
   // Verworfene Mangel-Erfassung: temporäre Fotos aufräumen
   try {
     const offen = await idbGetAll('fotos', 'protId', '__mangel_offen__');
-    for(const fo of offen) await idbDelete('fotos', fo.id).catch(()=>{});
+    for(const fo of offen) await deleteMitTombstone('fotos', fo.id).catch(()=>{});
   } catch(e){}
   window._mangelFotoIds = [];
   window._mangelPhotos = [];
@@ -33839,7 +34233,7 @@ async function saveMangel(){
   }
   try {
     const offen = await idbGetAll('fotos', 'protId', '__mangel_offen__');
-    for(const fo of offen) await idbDelete('fotos', fo.id).catch(()=>{});
+    for(const fo of offen) await deleteMitTombstone('fotos', fo.id).catch(()=>{});
   } catch(e){}
   window._mangelFotoIds = [];
   closeModal(); bcSend('mangel_changed',{});
@@ -34282,8 +34676,12 @@ async function protAbbrechen(){
   const objId=PD.objektId;
   const id=PD.id;
   PD=null;
-  // Bereits als Draft gespeicherten Zwischenstand entfernen (Hard-Delete, da bewusst verworfen)
-  try{ await idbDelete('protokolle', id); }catch(e){ console.warn('Abbrechen-Löschung:', e); }
+  /* Bereits als Entwurf gespeicherten Zwischenstand entfernen.
+     A415 (B1): Der fruehere Kommentar begruendete den Hard-Delete damit, dass
+     der Entwurf "bewusst verworfen" sei - genau deshalb braucht er den
+     Grabstein. Ohne ihn holte der naechste Abgleich den verworfenen Entwurf
+     aus dem Stand eines anderen Geraets zurueck ins Archiv. */
+  try{ await deleteMitTombstone('protokolle', id); }catch(e){ console.warn('Abbrechen-Löschung:', e); }
   try{ localStorage.removeItem('openProtokoll'); }catch(e){}
   toast('Protokoll verworfen');
   if(objId) await showObjekt(objId); else nav('dashboard','Übersicht','');
@@ -34578,7 +34976,7 @@ function delCondPhoto(room,cond,i){
   if(!confirm('Foto wirklich entfernen?')) return;
   const rd=PD&&PD.raeume&&PD.raeume[room]; if(!rd||!rd.condPhotos||!rd.condPhotos[cond])return;
   const fid=rd.condPhotoIds&&rd.condPhotoIds[cond]&&rd.condPhotoIds[cond][i];
-  if(fid){ idbDelete('fotos',fid).catch(()=>{}); rd.condPhotoIds[cond].splice(i,1); }
+  if(fid){ deleteMitTombstone('fotos',fid).catch(()=>{}); rd.condPhotoIds[cond].splice(i,1); }
   rd.condPhotos[cond].splice(i,1);
   if(!PD._adminEditOriginal) PD.status='draft';
   idbPut('protokolle',PD).catch(e=>console.warn('Draft nach Bauteilfoto-Löschung:',e));
@@ -34591,7 +34989,7 @@ function delZaehlerFoto(i){
   const fid = PD.zaehler[i].fotoId;
   PD.zaehler[i].foto = '';
   PD.zaehler[i].fotoId = null;
-  if (fid) idbDelete('fotos', fid).catch(e=>console.warn('Zählerfoto-Löschung:', e));
+  if (fid) deleteMitTombstone('fotos', fid).catch(e=>console.warn('Zählerfoto-Löschung:', e));
   idbPut('protokolle', PD).catch(e=>console.warn('Draft nach Zählerfoto-Löschung:', e));
   renderProt(2);
 }
@@ -34602,7 +35000,7 @@ function delRoomPhoto(room,idx){
   if (rd.photoIds && rd.photoIds[idx]) {
     const fid = rd.photoIds[idx];
     rd.photoIds.splice(idx,1);
-    idbDelete('fotos', fid).catch(e=>console.warn('Foto-Löschung:', e));
+    deleteMitTombstone('fotos', fid).catch(e=>console.warn('Foto-Löschung:', e));
   }
   idbPut('protokolle', PD).catch(e=>console.warn('Draft nach Foto-Löschung:', e));
   renderProtRaeume();
@@ -34802,7 +35200,7 @@ async function finishProt(){
   // Temporäre Einzelfoto-Sicherungen aufräumen (sind jetzt final im Protokoll enthalten)
   try {
     const tmp = await idbGetAll('fotos', 'protId', PD.id);
-    for (const fo of tmp) await idbDelete('fotos', fo.id).catch(()=>{});
+    for (const fo of tmp) await deleteMitTombstone('fotos', fo.id).catch(()=>{});
   } catch(e) { console.warn('Foto-Aufräumung:', e); }
   // Auto-Mängel aus Protokoll speichern (mit laufender Nummer, Bemerkung und Fotos)
   if(PD._autoMaengel?.length){
@@ -37014,7 +37412,29 @@ async function renderUserList_(){
   if(!el) return;
   const users=await idbGetAll('users');
   const darfDeaktivieren=istAlexander();
-  el.innerHTML=users.map(u=>{
+  /* A419 (B11): sichtbarFuer nennt drei feste Ids (u_admin, u_pfau, u_roland),
+     die die App selbst nie wieder vergibt - saveNewUser benutzt uid(), und
+     DEFAULT_USERS ist leer. Wird einer dieser Benutzer neu angelegt statt
+     bearbeitet, verschwinden die beiden privaten Objekte wortlos von seinem
+     Dashboard, und niemand bringt das mit einer Benutzer-Id in Verbindung.
+     Der Hinweis steht deshalb DORT, wo man ihn beheben kann. */
+  let _fehlendeSicht = [];
+  try{
+    const _vorhanden = new Set(users.map(u=>u.id));
+    const _gefordert = new Set();
+    for(const o of OBJEKTE) (o.sichtbarFuer||[]).forEach(id=>_gefordert.add(id));
+    _fehlendeSicht = [..._gefordert].filter(id=>!_vorhanden.has(id));
+  }catch(e){ console.warn('Sichtbarkeits-Ids nicht prüfbar:', e); }
+  const _sichtWarnung = _fehlendeSicht.length
+    ? `<div style="border:1px solid var(--amber);background:var(--amber-l);color:var(--amber);border-radius:8px;padding:10px;margin-bottom:10px;font-size:12px;line-height:1.5">
+         <b><i class="ti ti-alert-triangle"></i> Zugriff auf private Objekte unterbrochen</b><br>
+         Für die Objekte mit eingeschränkter Sichtbarkeit sind Benutzer hinterlegt, die es nicht (mehr) gibt:
+         <b>${esc(_fehlendeSicht.join(', '))}</b>.<br>
+         Diese Kennungen vergibt die App nicht selbst – wurde ein Benutzer neu angelegt statt bearbeitet,
+         bekam er eine andere. Die betroffenen Objekte erscheinen für ihn nicht mehr auf dem Dashboard.
+       </div>`
+    : '';
+  el.innerHTML=_sichtWarnung+users.map(u=>{
     const inaktiv=u.aktiv===false;
     return `
     <div class="user-item" style="${inaktiv?'opacity:0.55':''}">
@@ -38497,7 +38917,11 @@ async function syncToOneDrive() {
       // v180 (Review H2): Geheimnisse (Function-Key, SA-Schlüssel) bleiben auf dem Gerät –
       // sie gehören weder in die OneDrive-JSON noch in Backup-Dateien. settings werden
       // beim Sync ohnehin nie zurückgelesen (nur gepusht), daher kein Funktionsverlust.
-      if (s === 'settings') backup[s] = backup[s].filter(r => !SETTINGS_GEHEIM.includes(r?.id));
+      /* A418 (B12): zusaetzlich die geraetebezogenen Schluessel. Sie werden
+         beim Herunterladen ohnehin ignoriert - aber sie haben auch in der
+         gemeinsamen Datei nichts verloren. */
+      if (s === 'settings') backup[s] = backup[s].filter(
+        r => !SETTINGS_GEHEIM.includes(r?.id) && !istGeraeteEinstellung(r?.id));
     }
     backup.updatedAt = new Date().toISOString();
     backup.updatedBy = odTokens?.user_name || 'Unbekannt';
@@ -38703,6 +39127,32 @@ async function syncFromOneDrive() {
         // Lokale Datensätze, die remote fehlen, NICHT automatisch löschen –
         // nur echte Tombstones löschen (oben bereits erledigt). So bleiben lokal
         // neu angelegte Mieter/Benutzer erhalten, bis sie synchronisiert sind.
+      }
+      /* A418 (B12): settings wurde bisher HOCHGELADEN, aber nie
+         heruntergeladen - wegen merge:false stand der Speicher nicht in
+         STORES_MERGE, und die Nachbehandlung darueber nennt nur
+         ['users','mieter','tg']. Im ganzen Abgleichszweig schrieben nur zwei
+         Stellen nach settings: tombstones und lastSync, beides
+         Verwaltungsdaten des Abgleichs selbst.
+         Folge war, dass der Briefkopf auf dem Geraet blieb, auf dem er
+         eingerichtet wurde - wer unterwegs ein Mieterschreiben erzeugte,
+         hatte keinen Absender (§ 130 BGB).
+         Uebernommen wird jeder Schluessel, der weder geheim noch
+         geraetegebunden ist, ueber mergeRecord wie jeder andere Datensatz. */
+      if (backup.settings) {
+        let uebernommen = 0;
+        for (const item of backup.settings) {
+          if(!item || !item.id) continue;
+          if(SETTINGS_GEHEIM.includes(item.id) || istGeraeteEinstellung(item.id)) continue;
+          const local = await idbGet('settings', item.id).catch(()=>null);
+          const {merged, changed} = mergeRecord(local, item);
+          await idbPut('settings', merged, {keepStamp:true});
+          if(changed || !local) uebernommen++;
+        }
+        if(uebernommen){
+          console.info('Abgleich: ' + uebernommen + ' Einstellung(en) übernommen.');
+          try{ await ladeBriefkopfCache(); }catch(e){ console.warn('Briefkopf neu laden:', e); }
+        }
       }
       // v204 (P16): frisch gemergte Alt-Klartext-PINs sofort hashen
       try{ await pinMigrationAlleUser(); }catch(_){}
@@ -39170,8 +39620,7 @@ async function syncDateibaum(silent){
         }
 
         // (b) App -> Remote: lokal hochzuladende Dateien dieses Knotens
-        const pending=(await idbGetAll('od_dateien')).filter(r=>
-          r && r.pendingUpload && r.ordner===ordnerPfad && r._blobB64);
+        const pending = pendingNachOrdner[ordnerPfad] || [];   // A417 (B13): war ein Vollabzug je Ordner
         for(const rec of pending){
           let zielName=rec.name;
           // Konflikt: Datei gleichen Namens existiert remote, aber anderes eTag/unbekannt
@@ -45707,7 +46156,11 @@ async function rechnObjWechsel(){
   if(mSel){
     const mieter=objId?(await idbGetAll('mieter','objektId',objId)).sort((a,b)=>Number(a.weNr)-Number(b.weNr)):[];
     mSel.innerHTML='<option value="">– Mieter wählen –</option>'+
-      mieter.map(m=>`<option value="${m.id}">WE ${esc(m.weNr||'')} · ${esc(m.name||'')}</option>`).join('');
+      /* A417 (B6): las `m.name`. Das Feld gibt es auf einem Mieter-Datensatz
+         nicht - der Name steht in `mieter`. Die Liste zeigte deshalb nur
+         "WE 1 · ", "WE 2 · ". `hauptmieterNameVoll` ist der Helfer, der auch
+         sonst fuer Mieternamen zustaendig ist. */
+      mieter.map(m=>`<option value="${m.id}">WE ${esc(m.weNr||'')} · ${esc(hauptmieterNameVoll(m)||m.mieter||'')}</option>`).join('');
   }
   // Reparaturen (offene + des Objekts)
   const rSel=document.getElementById('rReparatur');
@@ -45787,7 +46240,7 @@ async function rechnungSpeichern(id){
     if(kostenartId){ const v=getNKAVorlage(objektId); kostenartName=v?.kosten.find(k=>k.id===kostenartId)?.name||null; }
   } else if(zuordnung==='mieter'){
     mieterId=document.getElementById('rMieter')?.value||null;
-    if(mieterId){ const m=await idbGet('mieter',mieterId).catch(()=>null); mieterName=m?(`WE ${m.weNr||''} · ${m.name||''}`):null; }
+    if(mieterId){ const m=await idbGet('mieter',mieterId).catch(()=>null); mieterName=m?(`WE ${m.weNr||''} · ${hauptmieterNameVoll(m)||m.mieter||''}`):null; /* A417 (B6): war m.name */ }
   } else if(zuordnung==='reparatur'){
     reparaturId=document.getElementById('rReparatur')?.value||null;
     if(reparaturId){ const rp=await idbGet('reparaturen',reparaturId).catch(()=>null); reparaturTitel=rp?.titel||null; }
@@ -48662,6 +49115,28 @@ const EINMALIG_AKTIONEN = [
 window.addEventListener('load', function(){
   const fehlend = EINMALIG_AKTIONEN.filter(n=>!einmalig(n));
   if (fehlend.length) console.warn('Doppelklick-Sperre: unbekannte Funktionsnamen:', fehlend.join(', '));
+
+  /* A414: Die Sperre ersetzt window[name]. Das wirkt fuer onclick-Knoepfe,
+     die den Namen erst beim Klick nachschlagen - NICHT aber fuer die
+     Ereignisdelegation: window.__act wird beim Parsen (registerActions) und
+     bei DOMContentLoaded (ohneArgumente-Schleife) gefuellt, beides VOR
+     'load'. Dort stand deshalb weiterhin die unumhuellte Funktion, und 14
+     der 43 abgesicherten Aktionen gingen an der Sperre vorbei - darunter
+     die drei Mailversandfunktionen und der Portal-Push, bei dem am 02.09.
+     mehrfache Posteingangseintraege aufgefallen waren.
+     Nachgezogen statt vorgezogen: Die Reihenfolge zweier DOMContentLoaded-
+     Zuhoerer haengt an der Zeilennummer im Dokument. Eine Loesung, die
+     kippt, sobald jemand einen Block verschiebt, ist keine. */
+  let nachgezogen = 0;
+  if (window.__act) EINMALIG_AKTIONEN.forEach(n => {
+    if (typeof window.__act[n] === 'function' && typeof window[n] === 'function'
+        && window.__act[n] !== window[n]){
+      window.__act[n] = window[n];
+      nachgezogen++;
+    }
+  });
+  if (nachgezogen) console.info('Doppelklick-Sperre auch fuer ' + nachgezogen +
+                                ' delegierte Aktionen aktiv.');
 });
 
 
