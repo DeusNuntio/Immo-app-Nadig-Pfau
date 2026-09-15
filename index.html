@@ -1248,7 +1248,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=38;   // A398: +kr_abrechnungen
-const APP_VERSION = '2026-09-07-A421';
+const APP_VERSION = '2026-09-14-A425';
 /* v364 (12.08.2026) – offene Punkte abgearbeitet.
    1) D1/XLSX_SRI: Der im Code hinterlegte PowerShell-Befehl war FALSCH und
       konnte nie funktionieren - Invoke-WebRequest liefert unter .Content einen
@@ -9334,6 +9334,140 @@ async function postfachAnhang(id, nr){
   window.open(url,'_blank','noopener');
 }
 
+/* ── A425: Anhang herunterladen statt nur oeffnen ──────────────────────
+   postfachAnhang() oeffnet die kurzlebige Adresse in einem neuen Tab. Bei
+   einem PDF zeigt der Browser es dann an, statt es zu speichern - auf dem
+   Handy landet es nirgends. Hier wird die Datei geholt und ueber einen
+   <a download> abgelegt, damit sie im Download-Ordner ankommt.
+
+   Das setzt voraus, dass das Speicherkonto CORS fuer die Herkunft dieser App
+   erlaubt. Ist das nicht eingerichtet, scheitert fetch() - dann greift der
+   bisherige Weg (oeffnen), und die Meldung sagt, woran es liegt, statt den
+   Fehlschlag zu verschlucken. */
+async function postfachAnhangSpeichern(id, nr, name){
+  const url = await postfachAnhangUrl(id, nr);
+  if(!url){ toast('Anhang konnte nicht geladen werden.', 4000); return; }
+  const datei = String(name || 'anhang').replace(/[\\/:*?"<>|]+/g, '_');
+  try{
+    const r = await fetchMitTimeout(url, {}, 60000);
+    if(!r || !r.ok) throw new Error('HTTP ' + (r ? r.status : 'ohne Antwort'));
+    const blob = await r.blob();
+    const objUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = objUrl; a.download = datei;
+    document.body.appendChild(a); a.click(); a.remove();
+    /* Erst nach dem Klick freigeben - vorher ist die Adresse noch in Gebrauch. */
+    setTimeout(()=>URL.revokeObjectURL(objUrl), 60000);
+    toast('„' + datei + '" gespeichert ✓');
+  }catch(e){
+    console.warn('Anhang speichern:', e);
+    window.open(url, '_blank', 'noopener');
+    toast('Direktes Speichern nicht möglich – Anhang wurde geöffnet. '
+        + 'Ursache ist meist eine fehlende CORS-Freigabe des Speicherkontos für '
+        + location.origin + '.', 7000);
+  }
+}
+
+/* Alle Anhaenge nacheinander. Bewusst seriell mit kurzer Pause: mehrere
+   gleichzeitig ausgeloeste Downloads blockt der Browser als Popup-Flut. */
+async function postfachAlleAnhaenge(id){
+  const m = (window._postfachMails||{})[id];
+  if(!m || !(m.anhaenge||[]).length){ toast('Keine Anhänge'); return; }
+  for(const a of m.anhaenge){
+    await postfachAnhangSpeichern(id, Number(a.nr), a.name||'Anhang');
+    await new Promise(r=>setTimeout(r, 600));
+  }
+}
+
+/* Erlaubter Dateityp fuer den Weiterversand. Manche Absender deklarieren alles
+   als application/octet-stream; dann entscheidet die Endung. Dieselbe
+   Ueberlegung wie in istBildAnhang, nur fuer alle im Backend erlaubten Typen -
+   sonst liesse sich ein voellig normales PDF nicht weiterleiten. */
+const MAIL_ENDUNG_MIME = {
+  pdf:'application/pdf', jpg:'image/jpeg', jpeg:'image/jpeg', png:'image/png',
+  webp:'image/webp', gif:'image/gif', heic:'image/heic',
+  txt:'text/plain', csv:'text/csv', htm:'text/html', html:'text/html',
+  doc:'application/msword',
+  docx:'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  xls:'application/vnd.ms-excel',
+  xlsx:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  pptx:'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+};
+function mailMimeAusName(name, typ){
+  const t = String(typ||'').toLowerCase().split(';')[0].trim();
+  if(TM_MIME_ERLAUBT.includes(t)) return t;
+  const endung = (String(name||'').match(/\.([a-z0-9]+)$/i)||[])[1];
+  return MAIL_ENDUNG_MIME[String(endung||'').toLowerCase()] || '';
+}
+
+/* ── A425: Weiterleiten ────────────────────────────────────────────────
+   Gebaut auf dem vorhandenen Versandweg (Reiter "Mieter-Mail", /api/send-mail
+   seit A409) - kein zweiter Mailversand. Weitergeleitet wird als ZITAT mit
+   Kopfzeilen, nicht als eingebettete Originalnachricht: eine echte
+   Weiterleitung im Sinne von message/rfc822 muesste das Backend bauen, und der
+   Nutzen dafuer steht in keinem Verhaeltnis. */
+async function postfachWeiterleiten(id){
+  const m = (window._postfachMails||{})[id];
+  if(!m){ toast('Nachricht nicht gefunden'); return; }
+
+  const anh = (m.anhaenge||[]);
+  let mitAnhang = false;
+  if(anh.length){
+    mitAnhang = confirm(anh.length + ' Anhang/Anhänge mitschicken?\n\n'
+      + anh.map(a=>'· '+(a.name||'Anhang')+' ('+Math.max(1,Math.round((a.bytes||0)/1024))+' kB)').join('\n')
+      + '\n\nAbbrechen leitet nur den Text weiter.');
+  }
+
+  if(mitAnhang){
+    toast('Anhänge werden geladen …');
+    let uebernommen = 0; const abgelehnt = [];
+    for(const a of anh){
+      const mime = mailMimeAusName(a.name, a.typ);
+      if(!mime){ abgelehnt.push((a.name||'Anhang')+' – Dateityp nicht erlaubt'); continue; }
+      const grund = tmAnhangPruefen(a.name||'Anhang', mime, Number(a.bytes)||0);
+      if(grund){ abgelehnt.push((a.name||'Anhang')+' – '+grund); continue; }
+      try{
+        const url = await postfachAnhangUrl(id, Number(a.nr));
+        if(!url) throw new Error('keine Adresse');
+        const r = await fetchMitTimeout(url, {}, 60000);
+        if(!r || !r.ok) throw new Error('HTTP '+(r?r.status:'ohne Antwort'));
+        const blob = await r.blob();
+        window._tmAnhaenge.push({
+          name: a.name || 'Anhang', mimeType: mime,
+          groesse: blob.size, quelle: 'postfach',
+          daten: await blobZuDataUrl(blob),
+        });
+        uebernommen++;
+      }catch(e){
+        console.warn('Weiterleiten, Anhang:', e);
+        abgelehnt.push((a.name||'Anhang')+' – konnte nicht geladen werden');
+      }
+    }
+    if(abgelehnt.length){
+      alert('Nicht übernommen:\n\n· ' + abgelehnt.join('\n· ')
+        + (uebernommen ? '\n\nDie übrigen ' + uebernommen + ' Anhang/Anhänge sind angehängt.'
+                       : '\n\nDie Weiterleitung geht ohne Anhänge hinaus.'));
+    }
+  }
+
+  const kopf = [
+    '---------- Weitergeleitete Nachricht ----------',
+    'Von: '      + (m.vonName ? m.vonName + ' <' + m.vonAdresse + '>' : (m.vonAdresse||'')),
+    'Datum: '    + (m.datum ? new Date(m.datum).toLocaleString('de-DE') : ''),
+    'An: '       + (m.an || ''),
+    'Betreff: '  + (m.betreff || ''),
+    '', '',
+  ].join('\n');
+
+  window._mailVorbelegung = {
+    email: '',
+    betreff: /^(fwd|wg)[:.]/i.test(String(m.betreff||'')) ? String(m.betreff) : 'Fwd: ' + (m.betreff||''),
+    text: kopf + mailTextLesbar(m.text || ''),
+  };
+  setMailTab('mieter');
+}
+
+
 /* Ist der Anhang ein Bild? Nach Dateityp, ersatzweise nach Endung - manche
    Absender schicken alles als application/octet-stream. */
 function istBildAnhang(a){
@@ -9386,10 +9520,15 @@ function postfachDetailZeigen(id){
   const m=window._postfachMails[id];
   if(!ziel || !m) return;
   if(ziel.innerHTML){ ziel.innerHTML=''; return; }
+  /* A425: Je Anhang zwei Wege - ansehen und speichern. Bis A424 gab es nur
+     das Oeffnen; ein PDF wurde damit angezeigt statt abgelegt. */
   const anh=(m.anhaenge||[]).map(a=>
-    `<button class="btn btn-sm" onclick="postfachAnhang('${escJs(m.id)}',${Number(a.nr)})">`
+    `<span style="display:inline-flex;gap:2px;align-items:stretch">`
+    + `<button class="btn btn-sm" onclick="postfachAnhang('${escJs(m.id)}',${Number(a.nr)})" title="Ansehen">`
     + `<i class="ti ti-paperclip"></i> ${esc(a.name||'Anhang')} `
-    + `<span style="color:var(--ink-40)">(${Math.max(1,Math.round((a.bytes||0)/1024))} kB)</span></button>`).join(' ');
+    + `<span style="color:var(--ink-40)">(${Math.max(1,Math.round((a.bytes||0)/1024))} kB)</span></button>`
+    + `<button class="btn btn-sm" onclick="postfachAnhangSpeichern('${escJs(m.id)}',${Number(a.nr)},'${escJs(a.name||'Anhang')}')" title="Herunterladen">`
+    + `<i class="ti ti-download"></i></button></span>`).join(' ');
   /* v363: Fuer jedes Bild ein Platz, der nach dem Aufklappen gefuellt wird. */
   const bilder = (m.anhaenge||[]).filter(istBildAnhang);
   const bildPlaetze = bilder.map(a=>
@@ -9401,6 +9540,10 @@ function postfachDetailZeigen(id){
       <div style="white-space:pre-wrap;font-size:13px;line-height:1.5">${esc(mailTextLesbar(m.text)||'(kein Text)')}</div>
       ${bildPlaetze}
       ${anh?`<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">${anh}</div>`:''}
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;border-top:1px solid var(--line);padding-top:10px">
+        <button class="btn btn-sm btn-copper" onclick="postfachWeiterleiten('${escJs(m.id)}')"><i class="ti ti-arrow-forward"></i> Weiterleiten</button>
+        ${(m.anhaenge||[]).length>1?`<button class="btn btn-sm" onclick="postfachAlleAnhaenge('${escJs(m.id)}')"><i class="ti ti-download"></i> Alle Anhänge speichern</button>`:''}
+      </div>
     </div>`;
   if(bilder.length) postfachVorschauLaden(m.id, bilder.map(a=>Number(a.nr)));
 }
@@ -9931,9 +10074,14 @@ function mailVorbelegungAnwenden(){
   const text = document.getElementById('tmText');
   if(mail) mail.value = v.email || '';
   if(betr) betr.value = v.betreff || '';
-  if(text && !text.value) text.value = (v.anrede || '') + '\n\n';
+  /* A425: Beim Weiterleiten kommt ein fertiger Text mit (Kopfzeilen plus
+     Urtext). Er ueberschreibt einen vorhandenen Entwurf NICHT stillschweigend,
+     sondern wird davorgesetzt - ein angefangener Text soll nicht verschwinden. */
+  if(text && v.text) text.value = v.text + (text.value ? '\n\n' + text.value : '');
+  else if(text && !text.value) text.value = (v.anrede || '') + '\n\n';
   if(text) text.focus();
-  toast('Empfänger übernommen – Text ergänzen und senden.');
+  toast(v.text ? 'Weiterleitung vorbereitet – Empfänger eintragen und senden.'
+               : 'Empfänger übernommen – Text ergänzen und senden.');
 }
 
 async function mailRenderMieterMail(body){
@@ -12581,7 +12729,15 @@ const SETTINGS_GEHEIM = ['backendKey','saEncKey','portalEncKey'];   // v299: +po
    Pausenregel) und gehoert auf alle Geraete. */
 const SETTINGS_GERAET = ['geraetBindung','syncProfil','lastSync','lastSyncHM',
                          'niimbotDichte','fibuBreit','zaLetztesKonto','lastGenBackup',
-                         'lastImport','cryptoConfig'];
+                         'lastImport'];
+/* A422: cryptoConfig stand hier bis A421. Der Eintrag traegt den KDF-Salt der
+   verschluesselten Zugangsdaten - und der gehoert zu den DATEN, nicht zum
+   Geraet: die damit verschluesselten Passwoerter liegen im sync-pflichtigen
+   Speicher 'versorger'. Blieb der Salt lokal, waren sie auf jedem anderen
+   Geraet unlesbar, auch mit dem richtigen Master-Passwort. Ein Salt ist kein
+   Geheimnis; er schuetzt gegen vorberechnete Tabellen, nicht gegen Mitlesen,
+   und steht ueblicherweise neben dem Geheimtext. Das Master-Passwort selbst
+   wird nirgends gespeichert. Zur Uebernahme siehe syncFromOneDrive. */
 const SETTINGS_GERAET_PRAEFIX = ['taetigkeit_sort_'];
 function istGeraeteEinstellung(id){
   const s = String(id||'');
@@ -16364,6 +16520,7 @@ ${nurTg?'':`
     ${darfMieterDokumente()?`<button class="btn btn-sm" onclick="showMieterDokumente('${m.id}')"><i class="ti ti-paperclip"></i> Archiv & Dokumente</button>`:''}
     ${istVerwalter()?`<button class="btn btn-sm" onclick="modalMietbescheinigung('${m.id}')"><i class="ti ti-receipt-2"></i> Mietbescheinigung</button>`:''}
     ${darfBescheinigungen()?`<button class="btn btn-sm" onclick="druckeWohnungsgeberBescheinigung('${m.id}')"><i class="ti ti-file-certificate"></i> WGB</button>`:''}
+    ${darfBescheinigungen()?`<button class="btn btn-sm" data-action-click="modalMietschuldenfreiheit" data-arg="${escAttr(m.id)}"><i class="ti ti-file-check"></i> Schuldenfreiheit</button>`:''}
     <button class="btn btn-sm" onclick="modalBrief('${m.id}','${m.objektId}')"><i class="ti ti-mail"></i> Brief</button>`;
     const gWohnung = `
     ${istVerwalter()?`<button class="btn btn-sm" onclick="modalWohnungHeizNk('${m.objektId}','${escJs(String(m.weNr||''))}')"><i class="ti ti-home-cog"></i> Wohnungsinfos</button>`:''}
@@ -17701,6 +17858,9 @@ const DOK_TYPEN = [
   {val:'brief',   label:'Schreiben / Brief',    icon:'ti-mail'},
   {val:'mieterhoehung',label:'Mieterhöhung',    icon:'ti-trending-up'},
   {val:'wgb',     label:'Wohnungsgeberbescheinigung',icon:'ti-file-certificate'},
+  /* A424: eigener Typ. Ohne Eintrag hier hiesse die Bescheinigung im Archiv
+     "Sonstiges" und liesse sich nicht gezielt heraussuchen. */
+  {val:'msf',     label:'Mietschuldenfreiheitsbescheinigung',icon:'ti-file-check'},
   {val:'protokoll',label:'Übergabeprotokoll',   icon:'ti-clipboard-check'},
   {val:'aushang', label:'Aushang „Wohnung frei“', icon:'ti-printer'},
   {val:'sonstiges',label:'Sonstiges',           icon:'ti-paperclip'},
@@ -18516,7 +18676,7 @@ const DOK_INLINE_TYPEN = ['ausweis','lastschrift'];
 // Typ -> OneDrive-Kategorie (nur auf WE-Knoten; Allgemein bleibt 'Sonstiges').
 const DOK_OD_KATEGORIE = { vertrag:'Mietvertrag', brief:'Briefe', foto:'Fotos',
   wohnungsbild:'Fotos', protokoll:'Protokolle', abrechnung:'Rechnungen', nka:'Rechnungen',
-  wgb:'Mietbescheinigungen', mieterhoehung:'Briefe' };  // v179: fehlten -> landeten in Sonstiges
+  wgb:'Mietbescheinigungen', msf:'Mietbescheinigungen', mieterhoehung:'Briefe' };  // v179: fehlten -> landeten in Sonstiges
 
 // Lagert ein Dokument nach OneDrive aus. dok braucht typ/objektId/name/mimeType,
 // dataUrl ist die frische FileReader-dataURL. Liefert Referenz oder null.
@@ -18644,7 +18804,7 @@ async function saveDok(objektId, mieterId) {
     };
     // v177: Datei nach OneDrive auslagern (Referenz statt Base64); Fehler ⇒ inline (Fallback)
     const odRef = await dokAuslagernRef(dok, e.target.result);
-    if(odRef){ dok.ref = odRef; delete dok.data; }
+    if(odRef){ dok.ref = odRef; feldGeleert(dok, 'data'); }   // A422
     await idbPut('dokumente', dok);
     closeModal();
     clearTimeout(window._syncTimer);
@@ -25473,6 +25633,255 @@ oder zur Verfügung zu stellen, obwohl ein tatsächlicher Bezug der Wohnung wede
 
 
 /* ═══════════════════════════════════════════════════════════
+   MIETSCHULDENFREIHEITSBESCHEINIGUNG (A424)
+
+   Rechtlicher Rahmen: Es gibt KEINEN Anspruch des Mieters auf diese
+   Bescheinigung - BGH, Urteil vom 30.09.2009, VIII ZR 238/08. Geschuldet ist
+   nur die Quittung nach § 368 BGB; eine darueber hinausgehende Erklaerung kann
+   nach Auffassung des BGH als Verzicht auf Ansprueche ausgelegt werden. Der
+   Vermieter stellt sie freiwillig aus und traegt das Risiko selbst.
+
+   Was die App dazu beitragen kann, ist nicht die Entscheidung, sondern die
+   Grundlage: Vor dem Druck wird geprueft und ANGEZEIGT, was der Datenbestand
+   tatsaechlich hergibt - ab wann Zahlungen erfasst sind, ob ein Rueckstand
+   offen ist, ob Nebenforderungen offen sind. Die Urkunde selbst traegt die
+   uebliche Formulierung ("stets"); die Warnung steht im Dialog, nicht im
+   Dokument. Beides gehoert getrennt: das eine ist Entscheidungshilfe, das
+   andere eine Urkunde.
+
+   Bewusst NICHT uebernommen aus dem ueblichen Vordruck: das zweite Kreuzfeld
+   "noch Mietschulden hat" samt Betragszeile. Wer Rueckstaende hat, bekommt
+   keine Bescheinigung - ein Papier, das der Mieter dem naechsten Vermieter
+   vorlegen MUSS und das gegen ihn spricht, schuldet niemand, und eine falsche
+   Zahl darin fuehrt schnell zu § 824 BGB.
+═══════════════════════════════════════════════════════════ */
+
+/* Wieviele Monate Rueckschau. Gross genug, dass die Zahlungserfassung
+   vollstaendig hineinfaellt (sie beginnt 11/2024), aber begrenzt - das
+   Monatsraster wird fuer JEDEN Mieter aufgespannt. Reicht das Fenster
+   ausnahmsweise nicht bis zum Beginn der Erfassung, meldet msfPruefung das
+   ueber `fensterZuKurz`, statt stillschweigend zu wenig zu pruefen. */
+const MSF_FENSTER_MONATE = 120;
+
+async function msfPruefung(mieterId){
+  const m = await idbGet('mieter', mieterId).catch(()=>null);
+  if(!m) return null;
+  const {rows, monate, datenAb} = await opRueckstaende(MSF_FENSTER_MONATE);
+  const treffer = rows.find(r => r.mieterId === mieterId) || null;
+  const beginn  = m.einzugISO || wgbIsoAus(m.einzug) || '';
+  return {
+    mieter: m,
+    datenAb,                                              // 'JJJJ-MM' oder null
+    beginn,                                               // ISO oder ''
+    rueckstand: treffer ? treffer.rueckstand : 0,
+    nf:         treffer ? treffer.nf : nfOffenSumme(m),
+    /* Das Mietverhaeltnis begann, bevor Zahlungen erfasst wurden - fuer die
+       Zeit davor kann die App nichts belegen. */
+    vorDatenlage: !!(datenAb && beginn && beginn.slice(0,7) < datenAb),
+    fensterZuKurz: !!(datenAb && monate.length && datenAb < monate[0]),
+    bisMonat: monate.length ? monate[monate.length-1] : '',
+  };
+}
+
+/* 'JJJJ-MM' -> 'MM/JJJJ' fuer die Anzeige. */
+function msfMonatDe(jm){
+  const t = String(jm||'');
+  return /^\d{4}-\d{2}$/.test(t) ? t.slice(5)+'/'+t.slice(0,4) : '';
+}
+
+async function modalMietschuldenfreiheit(mieterId){
+  if(!darfBescheinigungen()){ toast('Die Bescheinigung stellt die Verwaltung aus'); return; }
+  const p = await msfPruefung(mieterId);
+  if(!p){ toast('Mieter nicht gefunden'); return; }
+  const m = p.mieter;
+
+  const users  = await idbGetAll('users').catch(()=>[]);
+  const admins = users.filter(sigErlaubt);
+  /* Dieselbe Auswahl wie bei der Wohnungsgeberbescheinigung - bewusst
+     dieselben Funktionen (wgbSigToggle/wgbGewaehlteSignaturen), nicht eine
+     zweite Fassung davon. Beide Dialoge koennen nicht gleichzeitig offen sein. */
+  window._wgbSigUserIds = (admins.some(u=>u.id===CU?.id)) ? [CU.id] : [];
+  const sigListe = admins.length
+    ? admins.map(u=>`
+        <label style="display:flex;align-items:center;gap:8px;padding:6px 8px;border:1px solid var(--ink-10);border-radius:8px;margin-bottom:6px;cursor:pointer">
+          <input type="checkbox" value="${u.id}" ${window._wgbSigUserIds.includes(u.id)?'checked':''} onchange="wgbSigToggle('${u.id}')" style="width:16px;height:16px">
+          <img src="${u.signatur}" style="max-height:34px;background:#fff;border:1px solid var(--ink-10);border-radius:4px" alt="Unterschrift">
+          <span style="font-size:13px">${esc(u.name||'')}</span>
+        </label>`).join('')
+    : '<div style="font-size:12px;color:var(--amber)">Keine hinterlegten Unterschriften. Unter „Mein Profil“ kann eine Unterschrift hinterlegt werden. Ohne Auswahl wird ein leeres Unterschriftsfeld gedruckt.</div>';
+
+  // Was die Datenlage hergibt - in Klartext, vor der Unterschrift.
+  const befunde = [];
+  if(p.rueckstand >= 0.5) befunde.push({stufe:'rot',
+    text:`Offener Mietrückstand von ${fmtEur(p.rueckstand)}. Eine Bescheinigung über vertragsgerechte Zahlung wäre unzutreffend.`});
+  if(p.nf >= 0.005) befunde.push({stufe:'rot',
+    text:`Offene Nebenforderung(en) von ${fmtEur(p.nf)}. Sie sind keine Miete, gehören aber in die Entscheidung.`});
+  if(!p.datenAb) befunde.push({stufe:'rot',
+    text:'In der App sind noch gar keine Zahlungseingänge erfasst – es gibt nichts, worauf sich die Bescheinigung stützen könnte.'});
+  else if(p.vorDatenlage) befunde.push({stufe:'gelb',
+    text:`Das Mietverhältnis besteht seit ${wgbDatumDe(p.beginn)||'unbekannt'}, Zahlungen sind aber erst ab ${msfMonatDe(p.datenAb)} erfasst. Für die Zeit davor kann die App nichts belegen – das Wort „stets“ geht insoweit über die Aktenlage hinaus.`});
+  if(p.fensterZuKurz) befunde.push({stufe:'gelb',
+    text:`Geprüft wurden die letzten ${MSF_FENSTER_MONATE} Monate; die Zahlungserfassung reicht weiter zurück.`});
+  if(!befunde.length) befunde.push({stufe:'gruen',
+    text:`Keine offenen Posten. Geprüft ab ${msfMonatDe(p.datenAb)} bis ${msfMonatDe(p.bisMonat)}.`});
+
+  const farbe = { rot:['var(--red-l,#fdeaea)','var(--red,#c0392b)'],
+                  gelb:['var(--amber-l,#fef3e2)','var(--amber-d,#9a6b00)'],
+                  gruen:['var(--green-l,#e6f4ec)','var(--green,#1F6B45)'] };
+  const kasten = befunde.map(b=>`
+    <div style="background:${farbe[b.stufe][0]};border-left:3px solid ${farbe[b.stufe][1]};border-radius:6px;padding:8px 10px;font-size:12px;line-height:1.5;margin-bottom:6px">
+      ${esc(b.text)}</div>`).join('');
+
+  showModal(`
+    <div class="m-title"><i class="ti ti-file-check"></i> Mietschuldenfreiheitsbescheinigung</div>
+    <div style="font-size:12px;color:var(--ink-40);margin-bottom:10px">${esc(hauptmieterNameVoll(m))} · ${esc(getObj(m.objektId)?.name||'')} WE ${esc(String(m.weNr||''))}</div>
+
+    <div class="f-section-title"><i class="ti ti-scale"></i> Was die Aktenlage hergibt</div>
+    ${kasten}
+    <div style="font-size:11px;color:var(--ink-40);margin:8px 0 12px;line-height:1.5">
+      Ein Anspruch auf diese Bescheinigung besteht nicht (BGH, 30.09.2009 – VIII ZR 238/08).
+      Sie ist eine freiwillige Erklärung und kann weiter reichen als eine Quittung nach § 368 BGB.
+    </div>
+
+    <div class="f-section-title" style="margin-top:4px"><i class="ti ti-calendar"></i> Angaben</div>
+    <div class="f-row">
+      <div class="f"><label for="msfUntDatum">Datum der Unterschrift</label>
+        <input type="date" id="msfUntDatum" value="${esc(today())}"></div>
+    </div>
+    <div class="f"><label for="msfBemerkung">Bemerkungen <span style="opacity:.7">(optional, erscheinen auf der Bescheinigung)</span></label>
+      <textarea id="msfBemerkung" rows="2" placeholder="z. B. Zeitraum, auf den sich die Bestätigung bezieht"></textarea></div>
+
+    <div class="f-section-title" style="margin-top:8px"><i class="ti ti-signature"></i> Unterschrift(en)</div>
+    <div id="wgbSigPick">${sigListe}</div>
+
+    <div class="f-row" style="margin-top:12px">
+      <button class="btn btn-copper btn-full" data-action-click="msfDruckStart" data-arg="${escAttr(mieterId)}"><i class="ti ti-printer"></i> Erstellen &amp; Drucken</button>
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
+    </div>`);
+}
+
+async function msfDruckStart(mieterId){
+  const p = await msfPruefung(mieterId);
+  if(!p){ toast('Mieter nicht gefunden'); return; }
+  /* Die Felder VOR closeModal() auslesen - danach ist der Dialog aus dem
+     Dokument entfernt und getElementById liefert null (Lehre aus v358). */
+  const untDatumISO = document.getElementById('msfUntDatum')?.value || '';
+  const bemerkung   = (document.getElementById('msfBemerkung')?.value || '').trim();
+  const sigs        = await wgbGewaehlteSignaturen();
+
+  /* Kein hartes Verbot - der Verwalter entscheidet. Aber er entscheidet mit
+     der Zahl vor Augen, nicht daneben. */
+  if(p.rueckstand >= 0.5 || p.nf >= 0.005){
+    const teile = [];
+    if(p.rueckstand >= 0.5) teile.push('Mietrückstand ' + fmtEur(p.rueckstand));
+    if(p.nf >= 0.005)       teile.push('offene Nebenforderung ' + fmtEur(p.nf));
+    if(!confirm('Für diesen Mieter ist noch etwas offen:\n\n· ' + teile.join('\n· ')
+      + '\n\nEine Bescheinigung über stets vertragsgerechte Zahlung wäre damit '
+      + 'unzutreffend. Trotzdem ausstellen?')) return;
+  } else if(p.vorDatenlage){
+    if(!confirm('Das Mietverhältnis besteht seit ' + (wgbDatumDe(p.beginn)||'unbekannt')
+      + ', Zahlungen sind in der App erst ab ' + msfMonatDe(p.datenAb) + ' erfasst.\n\n'
+      + 'Die Bescheinigung sagt „stets“ – für die Zeit davor stützt sie sich nicht auf '
+      + 'die App, sondern auf Ihre eigene Kenntnis. Fortfahren?')) return;
+  } else if(!p.datenAb){
+    if(!confirm('Es sind noch keine Zahlungseingänge erfasst. Die Bescheinigung stützt '
+      + 'sich damit ausschließlich auf Ihre eigene Kenntnis. Fortfahren?')) return;
+  }
+
+  closeModal();
+  await msfErzeugeUndDrucke(mieterId, sigs, { untDatumISO, bemerkung });
+}
+
+async function msfErzeugeUndDrucke(mieterId, sigListe, opt){
+  const m = await idbGet('mieter', mieterId).catch(()=>null);
+  if(!m) return;
+  const obj = getObj(m.objektId);
+  const bk  = getBriefkopf(m.objektId);
+  const untDatum = wgbDatumDe(opt && opt.untDatumISO) || new Date().toLocaleDateString('de-DE');
+  const ort = String(bk.ort||'').replace(/^\s*\d{5}\s*/, '').trim();
+  const beginn = wgbDatumDe(m.einzugISO || wgbIsoAus(m.einzug)) || '';
+  const schrift = (typeof ewSchriftStil==='function') ? ewSchriftStil(/Atkinson\s+Hyperlegible/) : '';
+  const bem = String((opt && opt.bemerkung) || '').trim();
+
+  const html = `<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8">
+<title>Mietschuldenfreiheitsbescheinigung – ${esc(hauptmieterNameVoll(m))}</title>
+${schrift}<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Atkinson Hyperlegible',Arial,sans-serif;font-size:12px;color:#111;padding:20px;max-width:210mm;line-height:1.6}
+h1{font-size:15px;font-weight:700;margin-bottom:18px;text-align:center;letter-spacing:.3px}
+.bk{font-size:10px;color:#444;margin-bottom:18px;padding:8px;background:#f8f8f8;border-left:3px solid #1F4E79}
+h2{font-size:11px;font-weight:700;margin:16px 0 6px;color:#1F4E79;text-transform:uppercase;letter-spacing:.4px}
+.block{margin-bottom:6px}
+.block .z{border-bottom:1px solid #999;padding:3px 2px;min-height:20px}
+.lab{font-size:9px;color:#666}
+.kern{margin:18px 0;padding:12px 14px;border:1px solid #333;border-radius:2px}
+.sig-area{margin-top:34px;display:grid;grid-template-columns:1fr 1fr;gap:20px;page-break-inside:avoid}
+.sig-box{font-size:10px;color:#555;text-align:center}
+.footer{font-size:8px;color:#888;margin-top:22px;text-align:center}
+@page{margin:1.8cm;size:A4}@media print{body{padding:0;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+</style></head><body>
+
+<div class="bk">
+  <strong>${esc(amtlicherName(bk.name))}</strong>${bk.zusatz?' · '+esc(bk.zusatz):''}<br>
+  ${esc(bk.strasse)} · ${esc(bk.ort)}<br>
+  Tel: ${esc(bk.tel||'')}${bk.email?' · '+esc(bk.email):''}
+</div>
+
+<h1>Mietschuldenfreiheitsbescheinigung</h1>
+
+<h2>Der Vermieter</h2>
+<div class="block"><div class="z">${esc(amtlicherName(bk.name))}</div><div class="lab">Name des Vermieters</div></div>
+<div class="block"><div class="z">${esc(bk.strasse||'')}</div><div class="lab">Straße / Hausnummer</div></div>
+<div class="block"><div class="z">${esc(bk.ort||'')}</div><div class="lab">PLZ / Ort</div></div>
+<div class="block"><div class="z">${esc(bk.tel||'')}</div><div class="lab">Telefon</div></div>
+
+<h2>bestätigt, dass der Mieter</h2>
+<div class="block"><div class="z">${esc(hauptmieterNameVoll(m))}</div><div class="lab">Name des Mieters</div></div>
+<div class="block"><div class="z">${esc(obj?.name||'')}${m.weNr?' · WE '+esc(String(m.weNr)):''}${m.etage?' · '+esc(m.etage):''}</div><div class="lab">Straße / Hausnummer</div></div>
+<div class="block"><div class="z">${esc(obj?.ort||'')}</div><div class="lab">PLZ / Ort</div></div>
+
+<div class="kern">
+  die Miete <strong>stets vertragsgerecht entrichtet hat</strong>.
+  ${beginn?`<div style="font-size:10px;color:#555;margin-top:6px">Das Mietverhältnis besteht seit dem ${esc(beginn)}.</div>`:''}
+</div>
+
+${bem?`<h2>Bemerkungen</h2><div style="font-size:11px;white-space:pre-wrap;border-bottom:1px solid #999;padding-bottom:6px">${esc(bem)}</div>`:''}
+
+<div class="sig-area">
+  ${(sigListe&&sigListe.length)
+    ? sigListe.map(sg=>`<div class="sig-box">
+        <img src="${sg.signatur}" style="max-height:92px;display:block;margin:0 auto 2px" alt="Unterschrift">
+        <div style="border-top:1px solid #333;padding-top:4px">${ort?esc(ort)+', ':''}${esc(untDatum)}<br>${esc(sg.name||'')} – Vermieter</div>
+      </div>`).join('')
+    : `<div class="sig-box">
+        <div style="height:72px"></div>
+        <div style="border-top:1px solid #333;padding-top:4px">${ort?esc(ort)+', ':''}${esc(untDatum)}<br>Unterschrift des Vermieters</div>
+      </div>`}
+</div>
+
+<div class="footer">
+  Mietschuldenfreiheitsbescheinigung · ${esc(obj?.name||'')}${m.weNr?' WE '+esc(String(m.weNr)):''} · ${esc(hauptmieterNameVoll(m))} · ${esc(untDatum)}
+</div>
+
+<scr` + `ipt>(function(){var p=function(){setTimeout(function(){window.focus();window.print();},500);};if(document.readyState==='complete'){p();}else{window.addEventListener('load',p);}})()</scr` + `ipt>
+</body></html>`;
+
+  await archiviereMieterDokument({
+    mieterId: m.id, objektId: m.objektId,
+    typ: 'msf',
+    name: `Mietschuldenfreiheitsbescheinigung – ${untDatum}`,
+    html,
+  });
+
+  const ok = druckHTML(html);
+  toast(ok ? 'Bescheinigung erstellt ✓' : 'Bescheinigung archiviert – Druck im Dokumentenarchiv abrufbar');
+}
+
+registerActions({ modalMietschuldenfreiheit, msfDruckStart });   // A424
+
+
+
+/* ═══════════════════════════════════════════════════════════
    NKA HILFSFUNKTIONEN
 ═══════════════════════════════════════════════════════════ */
 const NKA_ZEITRAEUME = {
@@ -27113,23 +27522,37 @@ async function ewLaeufeUebersicht(){
   const objName = new Map(OBJEKTE.map(o => [o.id, o.name || o.ort || o.id]));
   for(const d of briefe){ d._objektName = objName.get(d.objektId) || 'Ohne Objekt'; }
 
+  /* A423: `erstellt` ist eine ZEICHENKETTE im deutschen Format
+     ("25.08.2026, 12:29") - now() liefert toLocaleString('de-DE'), keinen
+     Zeitstempel. A406 rechnete damit wie mit Millisekunden: die Subtraktion
+     ergab NaN, `NaN <= LUECKE` ist falsch, und damit wurde JEDER Brief zu
+     einem eigenen Lauf. Mit 158 Briefen im Bestand: 158 Gruppen, alle
+     beschriftet "ohne Datum", weil new Date("25.08.2026, 12:29") ein Invalid
+     Date ist. Der Knopf "alle ausser dem juengsten Lauf" haette 157 von 158
+     geloescht. A406 wollte die Laeufe unterscheidbar machen und hat das
+     Gegenteil bewirkt.
+     zeitWert() (A422) liest deutsches Format UND ISO. `erstellt` hat Vorrang,
+     weil es den Erzeugungszeitpunkt festhaelt; `updatedAt` waere nur ein
+     Ersatz und verschoebe sich bei jeder spaeteren Aenderung. */
+  const zeitVon = d => zeitWert(d.erstellt) || zeitWert(d.updatedAt);
   const LUECKE = 30 * 60 * 1000;
-  const mitZeit = briefe.filter(d => d.erstellt).sort((a,b) => a.erstellt - b.erstellt);
-  const ohneZeit = briefe.filter(d => !d.erstellt);
+  const mitZeit = briefe.filter(d => zeitVon(d) > 0).sort((a,b) => zeitVon(a) - zeitVon(b));
+  const ohneZeit = briefe.filter(d => !(zeitVon(d) > 0));
 
   const gruppen = [];
   for(const d of mitZeit){
     const letzte = gruppen[gruppen.length-1];
-    if(letzte && (d.erstellt - letzte.neuest) <= LUECKE){
+    const tz = zeitVon(d);
+    if(letzte && (tz - letzte.neuest) <= LUECKE){
       letzte.ids.push(d.id);
       letzte.dokumente.push(d);
       if(d.mieterId) letzte.mieter.add(d.mieterId);
-      letzte.neuest = d.erstellt;
+      letzte.neuest = tz;
     } else {
-      gruppen.push({ lauf: fmtDatumZeit(d.erstellt), schluessel: String(d.erstellt),
+      gruppen.push({ lauf: fmtDatumZeit(tz), schluessel: String(tz),
                      ids:[d.id], dokumente:[d],
                      mieter: new Set(d.mieterId ? [d.mieterId] : []),
-                     aeltest: d.erstellt, neuest: d.erstellt });
+                     aeltest: tz, neuest: tz });
     }
   }
   // Altbestand ohne Zeitstempel: nach dem Datum im Namen zusammenfassen
@@ -27161,7 +27584,8 @@ async function ewLaufLoeschen(lauf){
   const anzahl = treffer.reduce((a,l)=>a+l.ids.length, 0);
   if(!anzahl){ toast('Nichts zu löschen'); return; }
   const was = lauf === '__alt__'
-    ? `alle ${anzahl} Briefe aus ${treffer.length} älteren Läufen`
+    ? `alle ${anzahl} Briefe aus ${treffer.length} älteren Lauf/Läufen `
+      + `(${laeufe[0].ids.length} Brief(e) vom ${laeufe[0].lauf} bleiben erhalten)`
     : `alle ${anzahl} Briefe vom ${treffer[0] ? treffer[0].lauf : lauf}`;
   if(!confirm(`${was} endgültig löschen?\n\nDie Briefe verschwinden bei allen betroffenen Mietern und auf allen Geräten. Bereits verschickte Papierbriefe bleiben davon unberührt.`)) return;
   let n = 0;
@@ -27203,8 +27627,12 @@ async function ewAufraeumenAnzeigen(){
               + `<button class="btn btn-sm btn-danger" onclick="ewObjektLoeschen(${i}, '${escJs(o.name)}')"><i class="ti ti-trash"></i></button></div>`).join('')
           + `</div></div>`;
         }).join('')
+      /* A423: Der Knopf nennt jetzt auch, WAS stehen bleibt. Solange die
+         Laufgruppierung kaputt war, hiess "alle ausser dem juengsten Lauf"
+         faktisch "alle ausser einem Brief" - ohne dass das irgendwo stand. */
       + (alt ? `<button class="btn btn-full btn-danger" style="margin-top:8px" data-action-click="ewLaufLoeschen" data-arg="__alt__">`
-             + `<i class="ti ti-trash"></i> Alle ${alt} Briefe außer dem jüngsten Lauf löschen</button>` : '');
+             + `<i class="ti ti-trash"></i> Alle ${alt} Briefe älterer Läufe löschen `
+             + `(${laeufe[0].ids.length} vom ${esc(laeufe[0].lauf)} bleiben)</button>` : '');
   }catch(e){
     console.warn('ewAufraeumenAnzeigen:', e);
     toast('Archiv konnte nicht gelesen werden');
@@ -29232,7 +29660,7 @@ async function onWohnungGrundrissFile(objektId, weNr, slot){
     if(vorher) await dokRefLoeschen(vorher);
     // v177: nach OneDrive auslagern; Fehler ⇒ data bleibt inline (Fallback)
     const odRef = await dokAuslagernRef(dok, e.target.result, weNr);
-    if(odRef){ dok.ref = odRef; delete dok.data; }
+    if(odRef){ dok.ref = odRef; feldGeleert(dok, 'data'); }   // A422
     await idbPut('dokumente',dok);
     clearTimeout(window._syncTimer);
     window._syncTimer=setTimeout(()=>syncToOneDrive(),3000);
@@ -29319,7 +29747,7 @@ async function onWohnungsbildFile(objektId, weNr){
     };
     // v177: nach OneDrive auslagern; Fehler ⇒ data bleibt inline (Fallback)
     const odRef = await dokAuslagernRef(dok, e.target.result, weNr);
-    if(odRef){ dok.ref = odRef; delete dok.data; }
+    if(odRef){ dok.ref = odRef; feldGeleert(dok, 'data'); }   // A422
     await idbPut('dokumente',dok);
     clearTimeout(window._syncTimer);
     window._syncTimer=setTimeout(()=>syncToOneDrive(),3000);
@@ -37737,6 +38165,33 @@ function istPersonenObjekt(oid){
 function recStamp(r){ return r ? (r.updatedAt||r.geaendert||r.erstellt||'') : ''; }
 function _istLeer(v){ return v===undefined||v===null||v===''||(Array.isArray(v)&&v.length===0); }
 
+/* A422: Zeitstempel vergleichbar machen. Stand bis A421 als lokale Funktion
+   _zeitWert INNERHALB von syncFromOneDrive - der Abgleich der Feldgrabsteine
+   in mergeRecord verglich daneben mit String>=. Zwei Vergleichsarten fuer
+   dieselbe Frage sind eine zweite Wahrheit; bei durchgaengig ISO-Stempeln
+   liefern sie dasselbe, beim deutschen Format ("15.6.2026, 14:07") nicht.
+   Deshalb hier einmal, benutzt von beiden Stellen. */
+function zeitWert(t){
+  if(!t) return 0;
+  if(/^\d{4}-\d{2}-\d{2}T/.test(t)) return new Date(t).getTime();
+  // deutsches Format TT.M.JJJJ, HH:MM[:SS]
+  const m=String(t).match(/(\d{1,2})\.(\d{1,2})\.(\d{4})[,\s]+(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+  if(m) return new Date(+m[3],+m[2]-1,+m[1],+m[4],+m[5],+(m[6]||0)).getTime();
+  const d=Date.parse(t); return isNaN(d)?0:d;
+}
+
+/* A422: Ein Feld entfernen UND die Entfernung fuer den Abgleich vermerken.
+   Ohne diesen Vermerk holt der Merge das Feld beim naechsten Abgleich von
+   jedem Geraet zurueck, das den alten Stand noch fuehrt. */
+function feldGeleert(rec, ...felder){
+  if(!rec) return rec;
+  const stamp = new Date().toISOString();
+  const grab = (rec._geleert && typeof rec._geleert==='object') ? {...rec._geleert} : {};
+  for(const f of felder){ grab[f] = stamp; delete rec[f]; }
+  rec._geleert = grab;
+  return rec;
+}
+
 // Führt remote in local zusammen. Regeln:
 //  - Fehlt local komplett → remote übernehmen.
 //  - Sonst gewinnt grundsätzlich der Datensatz mit dem JÜNGEREN Zeitstempel,
@@ -37769,7 +38224,8 @@ function mergeRecord(local, remote){
       const grabStamp = grab[k];                 // Zeitstempel der bewussten Leerung
       const secStamp  = (secondary===local) ? ls : rs;
       // Nur zurückholen, wenn KEINE jüngere/gleich alte Leerung vorliegt.
-      if(!(grabStamp && secStamp && String(grabStamp) >= String(secStamp))) merged[k]=secondary[k];
+      // A422: ueber zeitWert statt String-Vergleich - siehe dort.
+      if(!(grabStamp && secStamp && zeitWert(grabStamp) >= zeitWert(secStamp))) merged[k]=secondary[k];
     }
   }
   /* v290 KRITISCH: pinSalt, pinHash und pinKdf sind EIN zusammengehoeriges
@@ -37795,6 +38251,32 @@ function mergeRecord(local, remote){
         if(_istLeer(quelle[k])) delete merged[k]; else merged[k] = quelle[k];
       }
     }
+  }
+
+  /* A422: Ein Feldgrabstein muss auch dann greifen, wenn das Feld beim
+     Loeschen ENTFERNT statt geleert wurde.
+
+     Warum das noetig ist: `{...secondary, ...primary}` uebernimmt jeden
+     Schluessel, den primary GAR NICHT hat, unveraendert von secondary. Wer ein
+     Feld mit delete entfernt, verliert es damit beim naechsten Abgleich an die
+     Gegenseite - die Rueckhol-Schleife oben sieht das Feld als gefuellt und
+     laesst es stehen. Genau so kamen 16 ausgelagerte Dokumente wieder zu ihrer
+     Base64-Kopie: `ref` von der neuen Seite, `data` von der alten. Die
+     Auslagerung wurde still rueckgaengig gemacht, die Sync-Datei schrumpfte nie.
+     Dieselbe Fehlerklasse wie B1, nur eine Ebene tiefer: dort fehlte der
+     Grabstein fuer einen DATENSATZ, hier fuer ein FELD.
+
+     Entfernt wird nur, was nachweislich aelter ist als die Leerung. Der Wert
+     stammt von einer bekannten Seite; deren Stempel muss aelter oder gleich alt
+     sein wie der Grabstein - dieselbe Schwelle, die die Rueckhol-Schleife
+     benutzt. Ein Feld, das jemand spaeter WIEDER gefuellt hat, traegt einen
+     juengeren Stempel und bleibt stehen. */
+  const _META = new Set(['id','_geleert','updatedAt','geaendert','erstellt','_konflikte']);
+  for(const k in grab){
+    if(_META.has(k) || _istLeer(merged[k])) continue;
+    const quelleStamp = (k in primary) ? (primary===local ? ls : rs)
+                                       : (secondary===local ? ls : rs);
+    if(quelleStamp && zeitWert(grab[k]) >= zeitWert(quelleStamp)) delete merged[k];
   }
 
   if(Object.keys(grab).length) merged._geleert = grab; else if(merged._geleert) delete merged._geleert;
@@ -39030,18 +39512,9 @@ async function syncFromOneDrive() {
     const remoteTime = backup.updatedAt||'';
     const ls = await idbGet('settings','lastSync').catch(()=>null);
     const localTime  = ls?.value||'';
-    // Robust: echten Zeitwert bilden. Deutsches Format ("15.6.2026, 14:07")
-    // in ein vergleichbares Datum wandeln; ISO bleibt ISO. Bei Unklarheit
-    // lieber synchronisieren als überspringen (remoteVal=Infinity-Fallback).
-    function _zeitWert(t){
-      if(!t) return 0;
-      if(/^\d{4}-\d{2}-\d{2}T/.test(t)) return new Date(t).getTime();
-      // deutsches Format TT.M.JJJJ, HH:MM[:SS]
-      const m=String(t).match(/(\d{1,2})\.(\d{1,2})\.(\d{4})[,\s]+(\d{1,2}):(\d{2})(?::(\d{2}))?/);
-      if(m) return new Date(+m[3],+m[2]-1,+m[1],+m[4],+m[5],+(m[6]||0)).getTime();
-      const d=Date.parse(t); return isNaN(d)?0:d;
-    }
-    const remoteVal=_zeitWert(remoteTime), localVal=_zeitWert(localTime);
+    // A422: Zeitwertbildung steht jetzt als zeitWert() auf oberster Ebene -
+    // dieselbe Funktion, die auch die Feldgrabsteine in mergeRecord vergleicht.
+    const remoteVal=zeitWert(remoteTime), localVal=zeitWert(localTime);
     if (window._forceSyncDownload || remoteVal > localVal || (remoteTime && remoteTime!==localTime && remoteVal===0)) {
       // Sicherung des aktuellen Mieter-Stands, bevor Remote-Daten einfließen
       await erstelleMieterSnapshot('sync');
@@ -39144,6 +39617,22 @@ async function syncFromOneDrive() {
         for (const item of backup.settings) {
           if(!item || !item.id) continue;
           if(SETTINGS_GEHEIM.includes(item.id) || istGeraeteEinstellung(item.id)) continue;
+          /* A422: Der Schluessel-Salt wird uebernommen, aber NIE ueberschrieben.
+             Haette dieses Geraet bereits einen eigenen Salt, wuerden mit dem
+             Ueberschreiben genau die Werte unlesbar, die es selbst
+             verschluesselt hat. Ein abweichender Salt ist deshalb ein Fall
+             fuers Konfliktprotokoll, nicht fuer den stillen Austausch. */
+          if(item.id === 'cryptoConfig'){
+            const vorhanden = await idbGet('settings','cryptoConfig').catch(()=>null);
+            if(vorhanden && vorhanden.salt){
+              if(vorhanden.salt !== item.salt){
+                console.warn('Abgleich: abweichender cryptoConfig-Salt – lokaler Stand bleibt.');
+                await logSyncKonflikt({ art:'behalten', store:'settings', datensatzId:'cryptoConfig',
+                  hinweis:'Abweichender Schlüssel-Salt der Zugangsdaten – lokaler Stand behalten' });
+              }
+              continue;
+            }
+          }
           const local = await idbGet('settings', item.id).catch(()=>null);
           const {merged, changed} = mergeRecord(local, item);
           await idbPut('settings', merged, {keepStamp:true});
@@ -48084,6 +48573,14 @@ let _bfLaeuft = false, _bfAbbruch = false;
 function bfIstInline(v){
   return typeof v === 'string' && v.startsWith('data:') && !v.startsWith('data:text/html');
 }
+/* A422b: Datensatz, der die Datei schon in OneDrive liegen hat UND die alte
+   Base64-Kopie noch mitschleppt. Vor A422 entstand das bei jedem Abgleich neu:
+   die Auslagerung entfernte `data` ohne Grabstein, ein Geraet mit dem alten
+   Stand brachte es zurueck. Hier ist NICHT hochzuladen - die Datei ist da -,
+   sondern nur die Kopie zu entfernen. */
+function bfDoppelt(rec){
+  return !!(rec && rec.ref && rec.ref.odId && bfIstInline(rec.data));
+}
 /* ── v249: lokale Verkleinerung sensibler Belege ──────────────────────────
    Gilt NUR fuer DOK_INLINE_TYPEN (Ausweis/Lastschrift). Diese Dokumente
    werden bewusst nicht nach OneDrive ausgelagert; sie duerfen aber verkleinert
@@ -48145,7 +48642,8 @@ function bfWalkLesen(node, cb, tiefe){
 }
 /* Analyse: zählt Inline-Bestände je Store. Liest nur, schreibt nichts. */
 async function backfillAnalyse(){
-  const res = { stores:{}, anzahl:0, bytes:0, kompAnzahl:0, kompBytes:0 };   // v249
+  const res = { stores:{}, anzahl:0, bytes:0, kompAnzahl:0, kompBytes:0,
+                doppelt:0, doppeltBytes:0 };   // v249, doppelt: A422b
   for(const st of BF_STORES){
     let recs = [];
     try{ recs = await idbGetAll(st); }catch(_){ continue; }
@@ -48216,7 +48714,8 @@ async function backfillLauf(){
   const btnReset = () => { const b=document.getElementById('bfStartBtn'); if(b) b.disabled=false; };
   const melde = txt => { const el = document.getElementById('bfStatus'); if(el) el.innerHTML = txt; };
   if(_bfLaeuft){ btnReset(); return; }
-  const stat = { geaendert:0, fehler:0, bytes:0, records:0, komprimiert:0, kompBytes:0 };   // v249
+  const stat = { geaendert:0, fehler:0, bytes:0, records:0, komprimiert:0, kompBytes:0,
+                 bereinigt:0 };   // v249, bereinigt: A422b
   try{
     if(!(await odGetToken())){
       melde('<span style="color:var(--red)">Bitte zuerst mit OneDrive verbinden. Sync-Verbindung fehlt.</span>');
@@ -48247,21 +48746,31 @@ async function backfillLauf(){
             if(rec.size) rec.size = Math.round(klein.length * 0.75);   // Byte-Schaetzung aus Base64
             stat.komprimiert++;
             stat.kompBytes += (vorherLen - klein.length);
+          } else if(bfDoppelt(rec)){
+            /* A422b: schon ausgelagert, Kopie ueberfluessig. Kein Upload -
+               sonst entstuende eine zweite Datei im WE-Ordner (v321). */
+            stat.bytes += rec.data.length; feldGeleert(rec, 'data');
+            stat.geaendert++; stat.bereinigt++;
           } else {
             // Feldwechsel data -> ref (Lesepfad dokQuelle ist dual-format, v177)
             if(!bfIstInline(rec.data)) continue;
             const ref = await dokAuslagernRef(rec, rec.data);
-            if(ref){ stat.bytes += rec.data.length; rec.ref = ref; delete rec.data; stat.geaendert++; }
+            if(ref){ stat.bytes += rec.data.length; rec.ref = ref; feldGeleert(rec, 'data'); stat.geaendert++; }   // A422
             else { stat.fehler++; continue; }
           }
 
         } else if(st === 'fotos'){
-          // Feldwechsel data -> ref (restoreFotosForPD liest data ODER ref, v175)
-          if(!bfIstInline(rec.data)) continue;
-          const ziel = await bfZiel('fotos', rec);
-          const ref = ziel ? await bfHochladen(rec.data, ziel, cache) : null;
-          if(ref){ stat.bytes += rec.data.length; rec.ref = ref; delete rec.data; stat.geaendert++; }
-          else { stat.fehler++; continue; }
+          if(bfDoppelt(rec)){                              // A422b, siehe dokumente
+            stat.bytes += rec.data.length; feldGeleert(rec, 'data');
+            stat.geaendert++; stat.bereinigt++;
+          } else {
+            // Feldwechsel data -> ref (restoreFotosForPD liest data ODER ref, v175)
+            if(!bfIstInline(rec.data)) continue;
+            const ziel = await bfZiel('fotos', rec);
+            const ref = ziel ? await bfHochladen(rec.data, ziel, cache) : null;
+            if(ref){ stat.bytes += rec.data.length; rec.ref = ref; feldGeleert(rec, 'data'); stat.geaendert++; }   // A422
+            else { stat.fehler++; continue; }
+          }
 
         } else if(st === 'objekt_stamm'){
           // Zwei Record-Arten: Objekt-Stamm (id=objektId) und 'wohnungen_<objektId>'
@@ -49106,7 +49615,10 @@ const EINMALIG_AKTIONEN = [
   'saveEinkauf','saveVersicherung','saveVersorger','saveWartung','saveSegment',
   'saveVentilNeu','saveBranchenbuch','saveKaution','saveErstattung',
   'rechnungSpeichern','saveZaehlerstand','importBackupAusfuehren','importExcel',
-  'exportBackup','wohnungenExportPush','zaExportSammellastschrift'
+  'exportBackup','wohnungenExportPush','zaExportSammellastschrift',
+  /* A425b: beides laedt Dateien nach. Ein zweiter Tap waehrend des Ladens
+     haengte die Anhaenge doppelt an bzw. lud sie doppelt herunter. */
+  'postfachWeiterleiten','postfachAlleAnhaenge'
 ];
 
 /* Erst nach dem Laden umhuellen: window.<name> existiert durch Hoisting zwar
