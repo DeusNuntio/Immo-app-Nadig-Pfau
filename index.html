@@ -1248,7 +1248,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=38;   // A398: +kr_abrechnungen
-const APP_VERSION = '2026-09-14-A425';
+const APP_VERSION = '2026-09-15-A426';
 /* v364 (12.08.2026) – offene Punkte abgearbeitet.
    1) D1/XLSX_SRI: Der im Code hinterlegte PowerShell-Befehl war FALSCH und
       konnte nie funktionieren - Invoke-WebRequest liefert unter .Content einen
@@ -9468,6 +9468,26 @@ async function postfachWeiterleiten(id){
 }
 
 
+/* A426: Lange Dateinamen in der MITTE kuerzen. Anfang, Ende und Endung
+   bleiben stehen - und genau daran unterscheidet man zwei Anhaenge desselben
+   Absenders. "Nebenkostenabrechnung_WE32_2025.pdf" und "..._WE33_2025.pdf"
+   saehen hinten abgeschnitten gleich aus; mittig gekuerzt bleibt die
+   Wohnungsnummer sichtbar. Vorn etwas mehr Platz als hinten, weil dort das
+   Thema steht. CSS kann das nicht - text-overflow kuerzt nur am Rand. */
+function kuerzeDateiname(name, max){
+  const n = String(name||'Anhang');
+  const m = max || 28;
+  if(n.length <= m) return n;
+  const p = n.lastIndexOf('.');
+  const endung = (p > 0 && n.length - p <= 6) ? n.slice(p) : '';
+  const basis  = endung ? n.slice(0, p) : n;
+  const platz  = m - endung.length - 1;          // eine Stelle fuers Auslassungszeichen
+  if(platz < 6) return n.slice(0, Math.max(1, m - 1)) + '…';
+  const vorn   = Math.ceil(platz * 0.6);
+  const hinten = platz - vorn;
+  return basis.slice(0, vorn) + '…' + (hinten ? basis.slice(-hinten) : '') + endung;
+}
+
 /* Ist der Anhang ein Bild? Nach Dateityp, ersatzweise nach Endung - manche
    Absender schicken alles als application/octet-stream. */
 function istBildAnhang(a){
@@ -9520,15 +9540,24 @@ function postfachDetailZeigen(id){
   const m=window._postfachMails[id];
   if(!ziel || !m) return;
   if(ziel.innerHTML){ ziel.innerHTML=''; return; }
-  /* A425: Je Anhang zwei Wege - ansehen und speichern. Bis A424 gab es nur
-     das Oeffnen; ein PDF wurde damit angezeigt statt abgelegt. */
-  const anh=(m.anhaenge||[]).map(a=>
-    `<span style="display:inline-flex;gap:2px;align-items:stretch">`
-    + `<button class="btn btn-sm" onclick="postfachAnhang('${escJs(m.id)}',${Number(a.nr)})" title="Ansehen">`
-    + `<i class="ti ti-paperclip"></i> ${esc(a.name||'Anhang')} `
-    + `<span style="color:var(--ink-40)">(${Math.max(1,Math.round((a.bytes||0)/1024))} kB)</span></button>`
-    + `<button class="btn btn-sm" onclick="postfachAnhangSpeichern('${escJs(m.id)}',${Number(a.nr)},'${escJs(a.name||'Anhang')}')" title="Herunterladen">`
-    + `<i class="ti ti-download"></i></button></span>`).join(' ');
+  /* A425: Je Anhang zwei Wege - ansehen und speichern.
+     A426: Eine ZEILE je Anhang statt zweier Knoepfe nebeneinander. Der Name
+     steht nicht mehr IM Knopf, sondern zwischen Klammer und Knoepfen; mit
+     min-width:0 und Kuerzung kann er die Knoepfe nicht mehr hinausschieben.
+     Genau das passierte vorher bei jedem laengeren Dateinamen. */
+  const anh=(m.anhaenge||[]).map(a=>{
+    const voll = a.name || 'Anhang';
+    const kb   = Math.max(1, Math.round((a.bytes||0)/1024));
+    return `<div style="display:flex;align-items:center;gap:8px;padding:6px 8px;border:1px solid var(--line);border-radius:8px;margin-bottom:6px">`
+    + `<i class="ti ti-paperclip" style="color:var(--ink-40);flex-shrink:0"></i>`
+    + `<span style="flex:1;min-width:0;font-size:13px;overflow:hidden;white-space:nowrap" title="${escAttr(voll)}">`
+    + `${esc(kuerzeDateiname(voll, 26))}<br>`
+    + `<span style="font-size:11px;color:var(--ink-40)">${kb} kB</span></span>`
+    + `<button class="btn btn-sm" style="flex-shrink:0" onclick="postfachAnhang('${escJs(m.id)}',${Number(a.nr)})" title="Ansehen" aria-label="Anhang ansehen">`
+    + `<i class="ti ti-eye"></i></button>`
+    + `<button class="btn btn-sm btn-copper" style="flex-shrink:0" onclick="postfachAnhangSpeichern('${escJs(m.id)}',${Number(a.nr)},'${escJs(voll)}')" title="Herunterladen" aria-label="Anhang herunterladen">`
+    + `<i class="ti ti-download"></i></button></div>`;
+  }).join('');
   /* v363: Fuer jedes Bild ein Platz, der nach dem Aufklappen gefuellt wird. */
   const bilder = (m.anhaenge||[]).filter(istBildAnhang);
   const bildPlaetze = bilder.map(a=>
@@ -9539,7 +9568,7 @@ function postfachDetailZeigen(id){
       <div style="font-size:12px;color:var(--ink-40);margin-bottom:6px">An: ${esc(m.an||'')}</div>
       <div style="white-space:pre-wrap;font-size:13px;line-height:1.5">${esc(mailTextLesbar(m.text)||'(kein Text)')}</div>
       ${bildPlaetze}
-      ${anh?`<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">${anh}</div>`:''}
+      ${anh?`<div style="margin-top:10px">${anh}</div>`:''}
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;border-top:1px solid var(--line);padding-top:10px">
         <button class="btn btn-sm btn-copper" onclick="postfachWeiterleiten('${escJs(m.id)}')"><i class="ti ti-arrow-forward"></i> Weiterleiten</button>
         ${(m.anhaenge||[]).length>1?`<button class="btn btn-sm" onclick="postfachAlleAnhaenge('${escJs(m.id)}')"><i class="ti ti-download"></i> Alle Anhänge speichern</button>`:''}

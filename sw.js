@@ -18,7 +18,7 @@
    ───────────────────────────────────────────────────────────────────────── */
 'use strict';
 
-const CACHE = 'nadigpfau-A425';
+const CACHE = 'nadigpfau-A426';
 
 /* v329 (R32): Wie lange die Navigation auf das Netz wartet, bevor die
    gecachte Fassung ausgeliefert wird. Siehe Kommentar am fetch-Handler. */
