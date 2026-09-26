@@ -1248,7 +1248,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=38;   // A398: +kr_abrechnungen
-const APP_VERSION = '2026-09-15-A426';
+const APP_VERSION = '2026-09-26-A427';
 /* v364 (12.08.2026) – offene Punkte abgearbeitet.
    1) D1/XLSX_SRI: Der im Code hinterlegte PowerShell-Befehl war FALSCH und
       konnte nie funktionieren - Invoke-WebRequest liefert unter .Content einen
@@ -18027,9 +18027,13 @@ function mieterDokumentId(typ, mieterId, von, bis){
        + '_' + String(bis||'').replace(/\W/g,'');
 }
 
-async function archiviereMieterDokument({mieterId, objektId, typ, name, html, mimeType, festeId}) {
+async function archiviereMieterDokument({mieterId, objektId, typ, name, html, mimeType, festeId, entwurfId}) {
   if (!mieterId) return null;
   try {
+    /* A427: Wird eine vorhandene Fassung ersetzt, bleiben die Einstellungen
+       des Nutzers daran erhalten - Portalfreigabe und Notiz. Bis A426 fielen
+       sie bei jeder Neuerzeugung (NKA, C3) stillschweigend weg. */
+    const vorher = festeId ? await idbGet('dokumente', festeId).catch(()=>null) : null;
     const entry = {
       id: festeId || uid(),
       objektId: objektId || null,
@@ -18037,9 +18041,17 @@ async function archiviereMieterDokument({mieterId, objektId, typ, name, html, mi
       typ: typ || 'sonstiges',
       name: name || 'Dokument',
       erstellt: now(),
+      /* ISO-Stempel fuer Abgleich und Grabsteinvergleich; 'erstellt' ist
+         deutsches Anzeigeformat und dafuer ungeeignet (vgl. A423). */
+      geaendert: nowIso(),
       ersteller: CU?.name || '',
       mimeType: mimeType || (html ? 'text/html' : 'application/octet-stream'),
     };
+    if (entwurfId) entry.entwurfId = entwurfId;
+    if (vorher) {
+      if (vorher.portalFreigabe === true || vorher.portalFreigabe === false) entry.portalFreigabe = vorher.portalFreigabe;
+      if (vorher.notiz) entry.notiz = vorher.notiz;
+    }
     if (html) {
       // HTML als selbsttragendes, druckbares Dokument als Data-URL ablegen
       entry.data = 'data:text/html;charset=utf-8,' + encodeURIComponent(html);
@@ -18254,6 +18266,11 @@ async function renderDokumente(el, objektId, mieterId) {
   // openArchivDok sie benutzen kann.
   if (!istVerwalter()) docs = docs.filter(d=>!ADMIN_ONLY_DOK.includes(d.typ));
 
+  /* A427: Entwuerfe nur laden, wenn Briefe in der Liste stehen. */
+  const entwuerfe = docs.some(d=>d.typ==='brief')
+    ? new Map((await idbGetAll('brief_entwuerfe').catch(()=>[])).map(e=>[e.id, e]))
+    : new Map();
+
   const gruppeByTyp = {};
   DOK_TYPEN.forEach(t=>{ gruppeByTyp[t.val]=[]; });
   docs.forEach(d=>{ if(gruppeByTyp[d.typ]) gruppeByTyp[d.typ].push(d); else gruppeByTyp['sonstiges'].push(d); });
@@ -18278,7 +18295,7 @@ async function renderDokumente(el, objektId, mieterId) {
       const isImg = d.mimeType?.startsWith('image/');
       const isPdf = d.mimeType === 'application/pdf';
       const isHtmlDok = d.istHtml === true;
-      h += `<div style="background:var(--white);border:1px solid var(--ink-10);border-radius:var(--radius);padding:10px 12px;margin-bottom:6px;display:flex;gap:10px;align-items:center">
+      h += `<div style="background:var(--white);border:1px solid var(--ink-10);border-radius:var(--radius);padding:10px 12px;margin-bottom:6px;display:flex;flex-wrap:wrap;gap:10px;align-items:center">
         <div style="width:38px;height:38px;border-radius:8px;background:var(--ink-05);display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:18px;color:var(--copper)">
           <i class="ti ${isImg?'ti-photo':isPdf?'ti-file-type-pdf':isHtmlDok?typ.icon:'ti-file'}"></i>
         </div>
@@ -18298,6 +18315,7 @@ async function renderDokumente(el, objektId, mieterId) {
           <button class="btn btn-sm" onclick="downloadDok('${d.id}')"><i class="ti ti-download"></i></button>
           <button class="btn btn-sm btn-danger" onclick="deleteDok('${d.id}')"><i class="ti ti-trash"></i></button>
         </div>
+        ${(d.typ==='brief' && isHtmlDok) ? briefArchivZeileHTML(d, entwuerfe.get(d.entwurfId)) : ''}
       </div>`;
     });
   });
@@ -18410,18 +18428,23 @@ function odDateienDedupe(liste){
   return out;
 }
 
+/* A427: Entfernt eine Datei aus OneDrive und kennzeichnet den Satz als
+   geloescht - ohne Rueckfrage und ohne Oberflaeche. Wirft bei einem
+   OneDrive-Fehler; der Satz bleibt dann unveraendert. */
+async function odDateiEntfernen(rec){
+  if(rec.odItemId) await odGraph('/me/drive/items/'+encodeURIComponent(rec.odItemId), {method:'DELETE'});
+  rec.geloescht=true; rec._blobB64=undefined; rec.pendingUpload=false;
+  await idbPut('od_dateien', rec);
+}
+
 /* v181 (Punkt 1): Datei aus App UND OneDrive löschen (mit Sicherheitsabfrage).
    Record wird per geloescht-Flag entfernt (merge-fähig, geräteübergreifend). */
 async function odDateiLoeschen(recId){
   const rec=await idbGet('od_dateien', recId).catch(()=>null);
   if(!rec) return;
   if(!confirm(`„${rec.name||'Datei'}" wirklich löschen?\n\nDie Datei wird aus der App-Ansicht entfernt und – falls noch vorhanden – auch in OneDrive gelöscht.`)) return;
-  if(rec.odItemId){
-    try{ await odGraph('/me/drive/items/'+encodeURIComponent(rec.odItemId), {method:'DELETE'}); }
-    catch(e){ toast('OneDrive-Löschung fehlgeschlagen: '+e.message); return; }
-  }
-  rec.geloescht=true; rec._blobB64=undefined; rec.pendingUpload=false;
-  await idbPut('od_dateien', rec);
+  try{ await odDateiEntfernen(rec); }
+  catch(e){ toast('OneDrive-Löschung fehlgeschlagen: '+e.message); return; }
   syncSoon();
   toast('Datei gelöscht ✓');
   const el=document.getElementById('mieterODEl');
@@ -20735,20 +20758,26 @@ ${briefeHTML}
 
    Bewusst EINE Funktion fuer beide Abrechnungswege: bis v366 stand dieselbe
    Grafik woertlich an zwei Stellen im Quelltext. */
-function nkaKopfHTML(bk){
+/* A427: Die Marke allein - Wortmarke oder eigener Name. Bis A426 stand diese
+   Regel nur in nkaKopfHTML; der Fliesstext-Brief setzte die Wortmarke immer,
+   auch fuer Moenchengladbach. breitePx gilt fuer die Wortmarke, schriftPt fuer
+   den Namen. */
+function briefkopfMarkeHTML(bk, breitePx, schriftPt){
   const name = String((bk && bk.name) || '');
   const eigenerName = /nadig/i.test(name) && !/pfau/i.test(name);
+  if(!eigenerName) return npWortmarkeSvg(breitePx || 230);
+  return `<div style="font-family:Georgia,'Times New Roman',serif;font-size:${Number(schriftPt)||20}pt;font-weight:700;`
+    + `color:#0B3D6E;letter-spacing:0.5px;line-height:1.15">${esc(name)}</div>`
+    /* Die Unterzeile nur, wenn das Wort nicht schon im Namen steht -
+       "Immobilienverwaltung Roland B. Nadig" ueber "IMMOBILIENVERWALTUNG" liest sich
+       wie ein Fehler. A427: "Hausverwaltung" zaehlt ebenso. */
+    + (/(immobilien|haus)verwaltung/i.test(name) ? ''
+        : `<div style="font-family:Arial,Helvetica,sans-serif;font-size:8pt;letter-spacing:1.1px;`
+          + `color:#888780;margin-top:2px">IMMOBILIENVERWALTUNG</div>`);
+}
 
-  const marke = eigenerName
-    ? `<div style="font-family:Georgia,'Times New Roman',serif;font-size:20pt;font-weight:700;`
-      + `color:#0B3D6E;letter-spacing:0.5px;line-height:1.15">${esc(bk.name||'')}</div>`
-      /* Die Unterzeile nur, wenn das Wort nicht schon im Namen steht -
-         "Immobilienverwaltung Roland B. Nadig" ueber "IMMOBILIENVERWALTUNG" liest sich
-         wie ein Fehler. */
-      + (/immobilienverwaltung/i.test(name) ? ''
-          : `<div style="font-family:Arial,Helvetica,sans-serif;font-size:8pt;letter-spacing:1.1px;`
-            + `color:#888780;margin-top:2px">IMMOBILIENVERWALTUNG</div>`)
-    : `${npWortmarkeSvg(230)}`;
+function nkaKopfHTML(bk){
+  const marke = briefkopfMarkeHTML(bk, 230, 20);
 
   return marke
     + `<div style="font-size:8px;color:#555;margin-top:4px;line-height:1.5">`
@@ -26644,19 +26673,45 @@ function briefEntwurfAusFormular(){
   };
 }
 
+/* A427: Datensatz aus dem Dialog, auf dem vorhandenen Entwurf aufbauend.
+   Bis A426 wurde der Satz aus einer festen Feldliste neu gebildet - alles
+   andere ging beim Speichern verloren, auch krId (Verknuepfung zur
+   Kostenerstattung, A400) und die Archiv-Verweise dokIds. */
+function briefEntwurfDatensatz(alt, mieterId, objektId){
+  return Object.assign({}, alt || {}, {
+    id: (alt&&alt.id) || window._briefEntwurfId || uid(),
+    mieterId: mieterId || (alt&&alt.mieterId) || '',
+    objektId: objektId || (alt&&alt.objektId) || '',
+    erstellt: (alt&&alt.erstellt) || nowIso(),
+    erstelltVon: (alt&&alt.erstelltVon) || CU?.id || '',
+    versendetAm: (alt&&alt.versendetAm) || '',
+    dokIds: Object.assign({}, (alt&&alt.dokIds) || {})
+  }, briefEntwurfAusFormular(), { geaendert: nowIso() });
+}
+
+/* A427: Beim Druck wird der Stand als Entwurf gehalten - sonst ist der
+   gedruckte Brief spaeter nicht mehr zu aendern. Ist er als versendet
+   gesperrt, bleibt er, wie er ist. Liefert den Entwurf oder null. */
+async function briefEntwurfSichern(mieterId, objektId){
+  const alt = window._briefEntwurfId ? await idbGet('brief_entwuerfe', window._briefEntwurfId).catch(()=>null) : null;
+  if(briefEntwurfGesperrt(alt)) return alt;
+  const rec = briefEntwurfDatensatz(alt, mieterId, objektId);
+  try{ await idbPut('brief_entwuerfe', rec); }
+  catch(e){
+    console.warn('Entwurf beim Druck:', e);
+    toast('Der Brief wird gedruckt, lässt sich aber später nicht mehr bearbeiten (Entwurf nicht gespeichert).', 7000);
+    return null;
+  }
+  window._briefEntwurfId = rec.id;
+  return rec;
+}
+
 async function briefEntwurfSpeichern(mieterId, objektId){
   const f = briefEntwurfAusFormular();
   if(!f.betreff.trim() && !f.text.trim()){ toast('Entwurf ist leer'); return; }
   const alt = window._briefEntwurfId ? await idbGet('brief_entwuerfe', window._briefEntwurfId).catch(()=>null) : null;
   if(briefEntwurfGesperrt(alt)){ toast('Der Brief ist als versendet gekennzeichnet und nicht mehr änderbar.', 5000); return; }
-  const rec = Object.assign({
-    id: window._briefEntwurfId || uid(),
-    mieterId: mieterId || (alt&&alt.mieterId) || '',
-    objektId: objektId || (alt&&alt.objektId) || '',
-    erstellt: (alt&&alt.erstellt) || nowIso(),
-    erstelltVon: (alt&&alt.erstelltVon) || CU?.id || '',
-    versendetAm: (alt&&alt.versendetAm) || ''
-  }, f, { geaendert: nowIso() });
+  const rec = briefEntwurfDatensatz(alt, mieterId, objektId);
   const ok = await idbPut('brief_entwuerfe', rec).then(()=>true).catch(e=>{ console.warn('Entwurf speichern:', e); return false; });
   if(!ok){ toast('Entwurf konnte nicht gespeichert werden.', 6000); return; }
   window._briefEntwurfId = rec.id;
@@ -26667,20 +26722,111 @@ async function briefEntwurfSpeichern(mieterId, objektId){
 /* Haken 'versendet'. Setzt bzw. loescht das Versanddatum. Beim Setzen wird
    der Brief zusaetzlich beim Mieter archiviert - vorher ist er kein
    Schriftstueck, sondern eine Notiz. */
+/* A427: Setzt oder loescht das Versanddatum und speichert. Gemeinsam fuer den
+   Haken im Brief-Dialog und den im Archiv. Liefert true bei Erfolg. */
+async function briefVersandKennzeichnen(e, ja){
+  if(ja && !e.versendetAm) e.versendetAm = nowIso();
+  else if(!ja) e.versendetAm = '';
+  e.geaendert = nowIso();
+  try{ await idbPut('brief_entwuerfe', e); }
+  catch(err){ console.warn('Versendet-Kennzeichen:', err); toast('Konnte nicht gespeichert werden.', 6000); return false; }
+  syncSoon();
+  toast(ja ? 'Als versendet gekennzeichnet ✓' : 'Wieder zur Bearbeitung freigegeben ✓');
+  return true;
+}
+
 async function briefEntwurfVersendetSetzen(id, ja){
   const e = await idbGet('brief_entwuerfe', id).catch(()=>null);
   if(!e){ toast('Entwurf nicht gefunden'); return; }
-  if(ja && !e.versendetAm){
-    e.versendetAm = nowIso();
-  } else if(!ja){
-    e.versendetAm = '';
-  }
-  e.geaendert = nowIso();
-  try{ await idbPut('brief_entwuerfe', e); }
-  catch(err){ console.warn('Versendet-Kennzeichen:', err); toast('Konnte nicht gespeichert werden.', 6000); return; }
-  toast(ja ? 'Als versendet gekennzeichnet ✓' : 'Wieder zur Bearbeitung freigegeben ✓');
+  if(!(await briefVersandKennzeichnen(e, ja))) return;
   closeModal();
   modalBrief(e.mieterId||'', e.objektId||'', e.id);
+}
+
+/* ─── A427: Brief aus dem Archiv bearbeiten ─────────────────────────────
+   Die Archivfassung ist das fertige HTML. Fuer Briefe ab A427 verweist sie
+   ueber entwurfId auf den Entwurf. Aeltere Briefe haben keinen - deren Felder
+   werden aus dem HTML zurueckgelesen. Das geht, weil druckeBrief jedes Feld
+   in ein eigenes, benanntes Element schreibt (bk-betreff, bk-text ...).
+   Die Kostenaufstellung (A400) laesst sich so nicht zurueckgewinnen. */
+function briefFelderAusArchiv(d){
+  if(!d || !d.istHtml || typeof d.data !== 'string') return null;
+  let html;
+  try{ html = decodeURIComponent(d.data.replace(/^data:text\/html;charset=utf-8,/, '')); }
+  catch(_){ return null; }
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  if(doc.querySelectorAll('.brief-seite').length !== 1) return null;
+  const t = sel => { const x = doc.querySelector(sel); return x ? x.textContent.trim() : ''; };
+  const betreff = t('.bk-betreff');
+  const textEl  = doc.querySelector('.bk-text');
+  if(!betreff || !textEl) return null;
+  /* Fettung zurueck in die Sternchen-Schreibweise des Eingabefeldes. */
+  textEl.querySelectorAll('strong,b').forEach(s => s.replaceWith('**' + s.textContent + '**'));
+  const dm = t('.bk-datum').match(/(\d{1,2})\.(\d{1,2})\.(\d{4})/);
+  return {
+    betreff,
+    text:   textEl.textContent.trim(),
+    datum:  dm ? `${dm[3]}-${dm[2].padStart(2,'0')}-${dm[1].padStart(2,'0')}` : today(),
+    anrede: t('.bk-anrede').replace(/,\s*$/, ''),
+    gruss:  t('.bk-gruss') || 'Mit freundlichen Grüßen',
+    sigNamen: Array.from(doc.querySelectorAll('.bk-sigimg img + span')).map(s => s.textContent.trim()).filter(Boolean),
+    mitAufstellung: !!doc.querySelector('.kr-tab')
+  };
+}
+
+/* Entwurf zu einem Archivbrief - vorhanden oder aus dem HTML angelegt. */
+async function briefEntwurfZuDok(dokId){
+  const d = await idbGet('dokumente', dokId).catch(()=>null);
+  if(!d){ toast('Dokument nicht gefunden'); return null; }
+  if(d.entwurfId){
+    const e = await idbGet('brief_entwuerfe', d.entwurfId).catch(()=>null);
+    if(e) return e;
+  }
+  const f = briefFelderAusArchiv(d);
+  if(!f){ toast('Dieser Brief lässt sich nicht in seine Felder zerlegen und ist deshalb nicht bearbeitbar.', 6000); return null; }
+  const users = await idbGetAll('users').catch(()=>[]);
+  const e = {
+    id: uid(), mieterId: d.mieterId || '', objektId: d.objektId || '',
+    empfSel: 'single', betreff: f.betreff, datum: f.datum, anrede: f.anrede,
+    text: f.text, gruss: f.gruss,
+    sigUserIds: f.sigNamen.map(n => (users.find(u => u.name === n) || {}).id).filter(Boolean).slice(0, 2),
+    dokIds: { [d.mieterId]: d.id },
+    erstellt: nowIso(), erstelltVon: CU?.id || '', versendetAm: '', geaendert: nowIso()
+  };
+  try{
+    await idbPut('brief_entwuerfe', e);
+    d.entwurfId = e.id; d.geaendert = nowIso();
+    await idbPut('dokumente', d);
+  }catch(err){ console.warn('Entwurf aus Archiv:', err); toast('Konnte nicht gespeichert werden.', 6000); return null; }
+  syncSoon();
+  if(f.mitAufstellung) toast('Hinweis: Die Kostenaufstellung wird beim erneuten Druck nicht mitgedruckt.', 7000);
+  return e;
+}
+
+async function briefAusArchivBearbeiten(dokId){
+  const e = await briefEntwurfZuDok(dokId);
+  if(!e) return;
+  closeModal();
+  modalBrief(e.mieterId || '', e.objektId || '', e.id);
+}
+
+async function briefArchivVersendet(dokId, ja){
+  const e = await briefEntwurfZuDok(dokId);
+  if(e) await briefVersandKennzeichnen(e, ja);
+  const d = await idbGet('dokumente', dokId).catch(()=>null);
+  const el = document.getElementById('mieterDokEl') || document.getElementById('objTabContent');
+  if(el && d) await renderDokumente(el, d.objektId, d.mieterId || null);
+}
+
+/* Zeile unter einem Archivbrief: Bearbeiten, solange nicht versendet. */
+function briefArchivZeileHTML(d, e){
+  const versendet = !!(e && e.versendetAm);
+  return `<div style="flex-basis:100%;display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:8px;padding-top:8px;border-top:1px solid var(--ink-10)">`
+    + (versendet ? '' : `<button class="btn btn-sm" onclick="briefAusArchivBearbeiten('${escJs(d.id)}')"><i class="ti ti-pencil"></i> Bearbeiten</button>`)
+    + `<label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">`
+    + `<input type="checkbox" style="width:16px;height:16px" ${versendet ? 'checked' : ''} onchange="briefArchivVersendet('${escJs(d.id)}', this.checked)">`
+    + (versendet ? `versendet am ${esc(fmtDate(String(e.versendetAm).slice(0,10)))}` : 'versendet')
+    + `</label></div>`;
 }
 
 async function briefEntwurfLoeschen(id){
@@ -26768,7 +26914,6 @@ async function modalBrief(mieterId, objektId, entwurfId) {
     <div class="f"><label for="briefBetreff">Betreff *</label>
       <input type="text" id="briefBetreff" placeholder="z. B. Information zur Hauswartung" spellcheck="true" lang="de"
         value="${esc(vw(ent&&ent.betreff,''))}" ${gesperrt?'readonly':''}></div>
-    <input type="hidden" id="briefAbsender" value="hausverwaltung">
     <div class="f"><label for="briefDatum">Datum</label>
       <input type="date" id="briefDatum" value="${esc(vw(ent&&ent.datum, today()))}" ${gesperrt?'readonly':''}></div>
     <div class="f"><label for="briefAnrede">Anrede</label>
@@ -26922,7 +27067,6 @@ async function druckeBrief(mieterId, objektId, opt) {
   const datum   = document.getElementById('briefDatum')?.value;
   const anrede  = document.getElementById('briefAnrede')?.value;
   const gruss   = document.getElementById('briefGruss')?.value || 'Mit freundlichen Grüßen';
-  const absType = document.getElementById('briefAbsender')?.value;
   const empfSel = document.getElementById('briefEmpf')?.value;
   const fmtD    = d => d ? new Date(d).toLocaleDateString('de-DE') : today();
 
@@ -26938,20 +27082,20 @@ async function druckeBrief(mieterId, objektId, opt) {
     empfaenger = empfaenger.filter(m=>m.id===empfSel);
   }
 
-  // Absender bestimmen
-  const abs = {
-    hausverwaltung: {name:'Nadig Pfau Immobilienverwaltung', strasse:VERWALTER_STRASSE, ort:VERWALTER_ORT, tel:'0177 / 2509710', email:'info@nadigpfau.de'},
-    eigentuemer:    {name:'Alexander-Roland Nadig und Anna-Alexandra Pfau', strasse:VERWALTER_STRASSE, ort:VERWALTER_ORT, tel:'0177 / 2509710', email:'info@nadigpfau.de'},
-    hausmeister:    {name:CU?.name||'Hausmeister', strasse:'', ort:'', tel:'', email:''},
-    // v273 (R23): keine Kontaktdaten mehr im Quellcode – der Absender wird aus
-    // dem MG-Briefkopf gespeist (Einstellungen → Briefköpfe, settings['briefkopf_mg']).
-    // Damit gibt es für diese Daten nur noch eine Pflegestelle.
-    roland:         (()=>{ const b = getBriefkopfFor('mg');
-                           return {name:b.name||'', strasse:b.strasse||'', ort:b.ort||'',
-                                   tel:b.tel||'', email:b.email||''}; })(),
-  }[absType] || {};
+  /* A427: Absender aus dem Briefkopf der Objektgruppe - wie NKA, Aushang und
+     Mieterhoehung. Bis A426 stand hier eine Auswahl, deren Feld fest auf
+     'hausverwaltung' lag: jeder Brief trug "Nadig Pfau Immobilienverwaltung",
+     auch fuer Moenchengladbach, wo Roland B. Nadig allein auftritt.
+     Ruecksendezeile und Namenszeile unter der Unterschrift nehmen die
+     Absenderzeile (ohne Vornamen), wie im NKA-Kopf. */
+  /* A427: Stand sichern, bevor der Dialog schliesst - danach sind die
+     Eingabefelder weg. */
+  const entwurf = await briefEntwurfSichern(mieterId, objektId);
 
-  const obj = empfaenger[0] ? getObj(empfaenger[0].objektId) : null;
+  const obj = empfaenger[0] ? getObj(empfaenger[0].objektId) : (objektId ? getObj(objektId) : null);
+  const bk  = getBriefkopf(obj?.id || objektId || '');
+  const abs = { name: bk.absender || bk.name || '', strasse: bk.strasse || '', ort: bk.ort || '',
+                tel: bk.tel || '', email: bk.email || '' };
 
   closeModal();
 
@@ -26960,7 +27104,11 @@ async function druckeBrief(mieterId, objektId, opt) {
   // festen mm-Spaltenbreiten im Kopf – das war die Ursache der leeren Seite auf
   // Samsung. Der zweispaltige Briefkopf wird über eine TABELLE gelöst, die in
   // jedem Druckkontext zuverlässig rendert.
-  const logoSvg = briefLogoSvg();
+  /* A427: 131 px Breite entspricht den bisherigen 44 px Hoehe der Wortmarke.
+     Der eigene Name in 16 pt: gemessen passt "Hausverwaltung Roland B. Nadig"
+     samt Zusatzzeile in die 31-mm-Kopfzeile (smoke_A427 misst das nach). */
+  const logoSvg = briefkopfMarkeHTML(bk, 131, 16)
+    + (bk.zusatz ? `<div style="font-size:8pt;color:#555;margin-top:2px">${esc(bk.zusatz)}</div>` : '');
   const absRueck = `${abs.name||''}${abs.strasse?' · '+abs.strasse:''}${abs.ort?' · '+abs.ort:''}`;
 
   // Gewählte Unterschrift(en) laden (wie NKA)
@@ -27114,15 +27262,9 @@ async function druckeBrief(mieterId, objektId, opt) {
     druckHTML(druckDok);
   }
 
-  /* v394: Wurde aus einem Entwurf gedruckt, traegt er ab jetzt das
-     Versanddatum. Nur beim echten Druck - der Word-Export ist eine
-     Zwischenfassung zum Weiterbearbeiten und darf nicht sperren. */
-  if(!opt.word && window._briefEntwurfId){
-    try{
-      const _e = await idbGet('brief_entwuerfe', window._briefEntwurfId);
-      if(_e && !_e.versendetAm){ _e.versendetAm = nowIso(); _e.geaendert = nowIso(); await idbPut('brief_entwuerfe', _e); }
-    }catch(e){ console.warn('Entwurf als versendet kennzeichnen:', e); }
-  }
+  /* A427: Bis hier setzte der Druck den Entwurf auf "versendet" (v394).
+     Gedruckt ist aber nicht verschickt - ein Tippfehler im Ausdruck liess
+     sich danach nicht mehr beheben. Versendet setzt jetzt nur der Haken. */
 
   // Jeden Brief einzeln archivieren (vollständiges Dokument inkl. Auto-Print für späteres Öffnen)
   for(const m of empfaenger){
@@ -27130,12 +27272,23 @@ async function druckeBrief(mieterId, objektId, opt) {
        Sammeldokument fuer den Druck - wer den Brief spaeter aus dem Archiv als
        PDF druckte, bekam keine Fusszeile. */
     const einzelHtml = dokKopf + seiteFuer(m) + pzSkript + autoPrint + '</body></html>';
+    /* A427: feste Id je Entwurf und Mieter - ein erneuter Druck ersetzt die
+       Archivfassung. Aus dem Archiv uebernommene Altbriefe behalten ihre
+       bisherige Id (dokIds). */
+    const festeId = entwurf
+      ? ((entwurf.dokIds || {})[m.id] || mieterDokumentId('brief', m.id, entwurf.id, ''))
+      : undefined;
     const dokId = await archiviereMieterDokument({
       mieterId: m.id, objektId: m.objektId,
       typ: 'brief',
       name: `${betreff} (${fmtD(datum)})`,
       html: einzelHtml,
+      festeId, entwurfId: entwurf ? entwurf.id : undefined,
     });
+    if(entwurf && dokId && (entwurf.dokIds || {})[m.id] !== dokId){
+      entwurf.dokIds = Object.assign({}, entwurf.dokIds || {}, { [m.id]: dokId });
+      entwurf._dokIdsNeu = true;
+    }
     /* v391: Briefe des Hausmeisters melden sich bei der Verwaltung. Der Brief
        wird NICHT ein zweites Mal gespeichert - die Meldung verweist auf die
        Archivkopie beim Mieter. Ein zweiter Ablageort waere die zweite
@@ -27155,6 +27308,12 @@ async function druckeBrief(mieterId, objektId, opt) {
         toast('Der Brief wurde erstellt, die Verwaltung konnte aber nicht benachrichtigt werden.', 7000);
       }
     }
+  }
+  if(entwurf && entwurf._dokIdsNeu){
+    delete entwurf._dokIdsNeu;
+    entwurf.geaendert = nowIso();
+    try{ await idbPut('brief_entwuerfe', entwurf); }
+    catch(e){ console.warn('Archiv-Verweis am Entwurf:', e); }
   }
 }
 
@@ -27225,12 +27384,6 @@ function npMarkeRef(breitePx){
   /* href und xlink:href gemeinsam: aeltere Druck-Engines kennen nur xlink. */
   return `<svg width="${b}" height="${h}" role="img" aria-label="Nadig Pfau Immobilienverwaltung">`
        + `<use href="#np-marke" xlink:href="#np-marke"/></svg>`;
-}
-
-function briefLogoSvg(hoehePx){
-  /* v370: Aufrufer uebergeben weiterhin eine HOEHE. */
-  const h = Number(hoehePx) || 44;
-  return npWortmarkeSvg(Math.round(h * NP_MARKE_RATIO));
 }
 
 /* Rücklauffrist: Druckdatum + 21 Tage, höchstens bis zum Monatsende, und nie
@@ -48656,11 +48809,76 @@ function bfEndung(d){
   if(d.startsWith('data:image/webp')) return '.webp';
   return '.jpg';
 }
+/* ─── A427: Vorschaubilder ausgelagerter Fotos ───────────────────────────
+   Eine Referenz {ref,odId,name,mime,thumb} traegt ihr Vorschaubild (96 px,
+   rund 1 KB) bewusst inline. Bis A426 stiegen beide Walker in Referenzen
+   hinein, hielten dieses Vorschaubild fuer ein Alt-Foto, luden es als
+   "backfill_id_....jpg" hoch und ersetzten es durch eine Referenz - bei jedem
+   Lauf eine Stufe tiefer. Ergebnis: Muelldateien im WE-Ordner und ein
+   Vorschaubild, das kein Text mehr ist ([object Object]).
+   Heilung: die Kette auf das innerste Vorschaubild abflachen und die Ids der
+   Zwischenstufen sammeln. nurZaehlen: nichts aendern (Analyse). */
+function bfThumbsReparieren(node, ids, nurZaehlen, tiefe){
+  tiefe = tiefe || 0;
+  if(tiefe > 8 || !node || typeof node !== 'object') return 0;
+  if(istFotoRef(node)){
+    if(!node.thumb || typeof node.thumb !== 'object') return 0;
+    let t = node.thumb, stufen = 0;
+    while(t && typeof t === 'object' && stufen < 20){ if(t.odId) ids.add(t.odId); t = t.thumb; stufen++; }
+    if(!nurZaehlen) node.thumb = (typeof t === 'string' && t) ? t : undefined;
+    return 1;
+  }
+  let n = 0;
+  const keys = Array.isArray(node) ? node.map((_,i)=>i) : Object.keys(node);
+  for(const k of keys){
+    if(k === '_geleert') continue;
+    const v = node[k];
+    if(v && typeof v === 'object') n += bfThumbsReparieren(v, ids, nurZaehlen, tiefe+1);
+  }
+  return n;
+}
+/* Alle odIds, auf die eine Referenz als FOTO zeigt (nicht als Vorschaubild).
+   Schutz vor dem Loeschen einer Datei, die doch noch gebraucht wird. */
+function bfRefIds(node, ids, tiefe){
+  tiefe = tiefe || 0;
+  if(tiefe > 8 || !node || typeof node !== 'object') return;
+  if(istFotoRef(node)){ ids.add(node.odId); return; }
+  const keys = Array.isArray(node) ? node.map((_,i)=>i) : Object.keys(node);
+  for(const k of keys){ if(k !== '_geleert') bfRefIds(node[k], ids, tiefe+1); }
+}
+/* Heilungslauf vor dem Auslagern. Liefert {refs, muell:[od_dateien-Saetze]}. */
+async function bfThumbsHeilen(){
+  const kette = new Set(), benutzt = new Set();
+  let refs = 0;
+  for(const st of BF_STORES){
+    let recs = [];
+    try{ recs = await idbGetAll(st); }catch(_){ continue; }
+    for(const rec of recs){
+      if(!rec) continue;
+      const n = bfThumbsReparieren(rec, kette, false);
+      if(n){
+        refs += n; rec.geaendert = nowIso();
+        try{ await idbPut(st, rec); }catch(e){ console.warn('Vorschaubild heilen', st, e); }
+      }
+      bfRefIds(rec, benutzt);
+    }
+  }
+  const muell = [];
+  if(kette.size){
+    for(const r of await idbGetAll('od_dateien').catch(()=>[])){
+      if(r && !r.geloescht && kette.has(r.id) && !benutzt.has(r.id)
+         && String(r.name||'').startsWith('backfill_')) muell.push(r);
+    }
+  }
+  return { refs, muell };
+}
+
 /* Rekursiver Lesewalker (Analyse) – findet auch verschachtelte Protokollfotos
    (raeume[..].condPhotos, zaehler[..].foto …). */
 function bfWalkLesen(node, cb, tiefe){
   tiefe = tiefe || 0;
   if(tiefe > 8 || !node || typeof node !== 'object') return;
+  if(istFotoRef(node)) return;   // A427: Vorschaubild einer Referenz ist kein Alt-Foto
   const keys = Array.isArray(node) ? node.map((_,i)=>i) : Object.keys(node);
   for(const k of keys){
     if(k === '_geleert') continue;
@@ -48672,13 +48890,16 @@ function bfWalkLesen(node, cb, tiefe){
 /* Analyse: zählt Inline-Bestände je Store. Liest nur, schreibt nichts. */
 async function backfillAnalyse(){
   const res = { stores:{}, anzahl:0, bytes:0, kompAnzahl:0, kompBytes:0,
-                doppelt:0, doppeltBytes:0 };   // v249, doppelt: A422b
+                doppelt:0, doppeltBytes:0,   // v249, doppelt: A422b
+                thumbDefekt:0, thumbDateien:0 };   // A427
+  const _kette = new Set();
   for(const st of BF_STORES){
     let recs = [];
     try{ recs = await idbGetAll(st); }catch(_){ continue; }
     let n = 0, b = 0;
     for(const r of recs){
       if(!r) continue;
+      res.thumbDefekt += bfThumbsReparieren(r, _kette, true);
       if(st === 'dokumente'){
         if(bfIstInline(r.data) && !DOK_INLINE_TYPEN.includes(r.typ)){ n++; b += r.data.length; }
         // v249: sensible Belege werden nicht ausgelagert, aber lokal verkleinert
@@ -48689,6 +48910,7 @@ async function backfillAnalyse(){
     }
     if(n){ res.stores[st] = { n, b }; res.anzahl += n; res.bytes += b; }
   }
+  res.thumbDateien = _kette.size;
   return res;
 }
 /* Upload mit Dedupe-Cache. Liefert Referenz oder null (dann bleibt inline). */
@@ -48705,6 +48927,7 @@ async function bfHochladen(dataUrl, ziel, cache){
 async function bfWalkMigrieren(node, ziel, cache, stat, tiefe){
   tiefe = tiefe || 0;
   if(tiefe > 8 || !node || typeof node !== 'object' || _bfAbbruch) return;
+  if(istFotoRef(node)) return;   // A427, siehe bfThumbsReparieren
   const keys = Array.isArray(node) ? node.map((_,i)=>i) : Object.keys(node);
   for(const k of keys){
     if(_bfAbbruch) return;
@@ -48752,6 +48975,18 @@ async function backfillLauf(){
       return stat;
     }
     _bfLaeuft = true; _bfAbbruch = false;
+    /* A427: erst die Vorschaubilder heilen, dann auslagern. */
+    melde('Vorschaubilder werden geprüft…');
+    const heil = await bfThumbsHeilen();
+    stat.thumbs = heil.refs;
+    if(heil.muell.length && confirm(heil.muell.length + ' überflüssige Vorschaubild-Dateien („backfill_…“, je rund 1 KB) '
+        + 'liegen in OneDrive. Sie wurden irrtümlich hochgeladen und werden nicht gebraucht.\n\nJetzt aus OneDrive löschen?')){
+      for(const r of heil.muell){
+        if(_bfAbbruch) break;
+        try{ await odDateiEntfernen(r); stat.muellGeloescht = (stat.muellGeloescht||0) + 1; }
+        catch(e){ console.warn('Vorschaubild-Datei löschen:', e); stat.muellFehler = (stat.muellFehler||0) + 1; }
+      }
+    }
     const cache = new Map();
     for(const st of BF_STORES){
       if(_bfAbbruch) break;
@@ -48842,11 +49077,14 @@ async function backfillLauf(){
     _bfLaeuft = false;
     btnReset();
   }
-  if(stat.geaendert || stat.komprimiert){ try{ syncSoon(); }catch(_){} }   // v249
+  if(stat.geaendert || stat.komprimiert || stat.thumbs || stat.muellGeloescht){ try{ syncSoon(); }catch(_){} }   // v249, A427
   const kompTxt = stat.komprimiert
     ? ` Zusätzlich <b>${stat.komprimiert}</b> sensible Belege (Ausweis/Lastschrift) lokal verkleinert – <b>${(stat.kompBytes/1048576).toFixed(1)} MB</b> gespart, ohne sie hochzuladen.`
     : '';
-  melde(`${_bfAbbruch?'Abgebrochen':'Fertig'}: <b>${stat.geaendert}</b> Dateien ausgelagert, <b>${(stat.bytes/1048576).toFixed(1)} MB</b> aus der Sync-Datei entfernt, ${stat.records} Datensätze aktualisiert${stat.fehler?`, <b>${stat.fehler}</b> übersprungen (bleiben unverändert inline)`:''}.${kompTxt} ${(stat.geaendert||stat.komprimiert)?'Der nächste Sync überträgt den schlankeren Stand.':''}`);
+  const thumbTxt = (stat.thumbs || stat.muellGeloescht || stat.muellFehler)
+    ? ` <b>${stat.thumbs||0}</b> Vorschaubilder repariert${stat.muellGeloescht?`, <b>${stat.muellGeloescht}</b> überflüssige Dateien aus OneDrive gelöscht`:''}${stat.muellFehler?`, <b>${stat.muellFehler}</b> nicht löschbar`:''}.`
+    : '';
+  melde(`${_bfAbbruch?'Abgebrochen':'Fertig'}:${thumbTxt} <b>${stat.geaendert}</b> Dateien ausgelagert, <b>${(stat.bytes/1048576).toFixed(1)} MB</b> aus der Sync-Datei entfernt, ${stat.records} Datensätze aktualisiert${stat.fehler?`, <b>${stat.fehler}</b> übersprungen (bleiben unverändert inline)`:''}.${kompTxt} ${(stat.geaendert||stat.komprimiert)?'Der nächste Sync überträgt den schlankeren Stand.':''}`);
   return stat;
 }
 function backfillAbbrechen(){ _bfAbbruch = true; toast('Wird nach dem laufenden Foto beendet…'); }
@@ -48862,13 +49100,16 @@ async function modalBackfill(){
     `<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:12px">
        <span>${esc(st)}</span><b>${a.stores[st].n} · ${(a.stores[st].b/1048576).toFixed(1)} MB</b></div>`).join('');
   showModal(`<div class="m-title"><i class="ti ti-cloud-upload"></i> Alt-Fotos auslagern</div>
-    ${(a.anzahl || a.kompAnzahl) ? `
-    <p style="font-size:13px;color:var(--ink-60);line-height:1.55;margin-bottom:10px">
+    ${(a.anzahl || a.kompAnzahl || a.thumbDefekt) ? `
+    ${a.thumbDefekt?`<p style="font-size:12px;color:var(--ink-60);line-height:1.5;background:var(--ink-05);border-radius:8px;padding:9px 11px;margin-bottom:10px">
+      <i class="ti ti-tool"></i> <b>${a.thumbDefekt} Vorschaubilder</b> sind beschädigt und werden repariert${a.thumbDateien?`;
+      dazu liegen <b>${a.thumbDateien} überflüssige Dateien</b> („backfill_…“) in OneDrive, die nach Rückfrage gelöscht werden`:''}.</p>`:''}
+    ${a.anzahl?`<p style="font-size:13px;color:var(--ink-60);line-height:1.55;margin-bottom:10px">
       Im Gerätespeicher liegen noch <b>${a.anzahl} Bilder/Belege</b> (<b>${mb} MB</b>) als Base64 in den
       Datensätzen. Sie werden bei <i>jedem</i> Sync mitübertragen. Der Vorgang lädt sie nach OneDrive
       (in die bestehende Ordnerstruktur) und ersetzt sie durch Verweise – Anzeige, Druck und Teilen
       funktionieren unverändert weiter.
-    </p>
+    </p>`:''}
     <div style="background:var(--ink-05);border-radius:8px;padding:9px 11px;margin-bottom:10px">${zeilen}</div>
     ${a.kompAnzahl?`<p style="font-size:11.5px;color:var(--ink-60);line-height:1.5;background:var(--green-l);border-radius:8px;padding:9px 11px;margin-bottom:10px">
       <i class="ti ti-photo-scan"></i> Zusätzlich liegen <b>${a.kompAnzahl} sensible Belege</b> (Ausweis/Lastschrift,
