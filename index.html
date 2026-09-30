@@ -1248,7 +1248,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=38;   // A398: +kr_abrechnungen
-const APP_VERSION = '2026-09-26-A427';
+const APP_VERSION = '2026-09-26-A429';
 /* v364 (12.08.2026) – offene Punkte abgearbeitet.
    1) D1/XLSX_SRI: Der im Code hinterlegte PowerShell-Befehl war FALSCH und
       konnte nie funktionieren - Invoke-WebRequest liefert unter .Content einen
@@ -9400,6 +9400,47 @@ function mailMimeAusName(name, typ){
   return MAIL_ENDUNG_MIME[String(endung||'').toLowerCase()] || '';
 }
 
+/* ── A428: Antworten ───────────────────────────────────────────────────
+   Bis A427 gab es im Postfach nur Weiterleiten. Derselbe Weg wie dort:
+   Vorbelegung des Reiters "Mieter-Mail". Anhaenge werden bei einer Antwort
+   bewusst NICHT mitgeschickt - der Absender hat sie ja. */
+function postfachAntwortBetreff(b){
+  const t = String(b||'').trim();
+  return /^(aw|re|antw)\s*:/i.test(t) ? t : 'AW: ' + t;
+}
+function postfachZitat(m){
+  const von = m.vonName ? m.vonName + ' <' + (m.vonAdresse||'') + '>' : (m.vonAdresse||'');
+  const wann = m.datum ? new Date(m.datum).toLocaleString('de-DE') : '';
+  const zeilen = String(mailTextLesbar(m.text || '') || '').replace(/\r\n?/g, '\n').split('\n');
+  return (wann ? 'Am ' + wann + ' schrieb ' + von : von + ' schrieb') + ':\n'
+    + zeilen.map(z => '> ' + z).join('\n');
+}
+/* Aktueller Mieter zur Absenderadresse - Spiegelfeld und Personenliste.
+   Vormieter und leere Wohnungen zaehlen nicht; bei mehreren Treffern keiner,
+   dann entscheidet der Verwalter selbst. */
+async function postfachMieterZuAdresse(adresse){
+  const a = String(adresse||'').trim().toLowerCase();
+  if(!a) return null;
+  const alle = await idbGetAll('mieter').catch(()=>[]);
+  const treffer = (alle||[]).filter(m => m && !m._vormieter && !m._zukuenftig
+    && !istWohnungFaktischLeer(m) && tmAdressenDesMieters(m).includes(a));
+  return treffer.length === 1 ? treffer[0] : null;
+}
+async function postfachAntworten(id){
+  const m = (window._postfachMails||{})[id];
+  if(!m){ toast('Nachricht nicht gefunden'); return; }
+  if(!m.vonAdresse){ toast('Zu dieser Nachricht ist keine Absenderadresse bekannt.'); return; }
+  const mieter = await postfachMieterZuAdresse(m.vonAdresse);
+  window._mailVorbelegung = {
+    art: 'antwort',
+    email: String(m.vonAdresse),
+    mieterId: mieter ? mieter.id : '',
+    betreff: postfachAntwortBetreff(m.betreff),
+    text: '\n\n' + postfachZitat(m),
+  };
+  setMailTab('mieter');
+}
+
 /* ── A425: Weiterleiten ────────────────────────────────────────────────
    Gebaut auf dem vorhandenen Versandweg (Reiter "Mieter-Mail", /api/send-mail
    seit A409) - kein zweiter Mailversand. Weitergeleitet wird als ZITAT mit
@@ -9570,6 +9611,7 @@ function postfachDetailZeigen(id){
       ${bildPlaetze}
       ${anh?`<div style="margin-top:10px">${anh}</div>`:''}
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;border-top:1px solid var(--line);padding-top:10px">
+        ${m.vonAdresse?`<button class="btn btn-sm btn-primary" onclick="postfachAntworten('${escJs(m.id)}')"><i class="ti ti-arrow-back-up"></i> Antworten</button>`:''}
         <button class="btn btn-sm btn-copper" onclick="postfachWeiterleiten('${escJs(m.id)}')"><i class="ti ti-arrow-forward"></i> Weiterleiten</button>
         ${(m.anhaenge||[]).length>1?`<button class="btn btn-sm" onclick="postfachAlleAnhaenge('${escJs(m.id)}')"><i class="ti ti-download"></i> Alle Anhänge speichern</button>`:''}
       </div>
@@ -10075,6 +10117,24 @@ function tmDateinameMitEndung(name, mime){
    `pruef_aktionen.js` beim ersten Bau von A409 gemeldet. */
 registerActions({ tmModalAusAkte, tmAnhangAusAkte, tmAnhangEntfernen });
 
+/* A428: Wo beginnt der zitierte bzw. weitergeleitete Teil? Die Grussformel
+   gehoert DAVOR - bis A427 hing sie hinter dem weitergeleiteten Text, und
+   bei einer Antwort stuende sie unter dem Zitat. */
+function tmZitatBeginn(text){
+  const t = String(text||'');
+  const a = /^(?:Am .+ schrieb .+|.+ schrieb):\n> /m.exec(t);
+  const w = /^---------- Weitergeleitete Nachricht ----------$/m.exec(t);
+  const k = [a && {index:a.index, art:'antwort'}, w && {index:w.index, art:'weiterleitung'}]
+    .filter(Boolean).sort((x,y)=>x.index-y.index);
+  return k[0] || null;
+}
+function tmSignaturEinfuegen(text, sig){
+  const z = tmZitatBeginn(text);
+  if(!z) return text + sig;
+  const vor = text.slice(0, z.index).replace(/\s+$/, '');
+  return (vor ? vor + sig : sig.replace(/^\s+/, '')) + '\n\n' + text.slice(z.index);
+}
+
 /* Alle bei diesem Mieter hinterlegten Adressen - Spiegelfeld und Personenliste.
    Grundlage der Fehlversand-Warnung. */
 function tmAdressenDesMieters(m){
@@ -10101,6 +10161,10 @@ function mailVorbelegungAnwenden(){
   const mail = document.getElementById('tmMail');
   const betr = document.getElementById('tmBetreff');
   const text = document.getElementById('tmText');
+  /* A428: Mieter vorwaehlen, wenn die Antwort einem zugeordnet ist. Nur,
+     wenn er in der Auswahl steht - sonst bleibt sie leer. */
+  const sel = document.getElementById('tmMieter');
+  if(sel && v.mieterId && Array.from(sel.options).some(o => o.value === v.mieterId)) sel.value = v.mieterId;
   if(mail) mail.value = v.email || '';
   if(betr) betr.value = v.betreff || '';
   /* A425: Beim Weiterleiten kommt ein fertiger Text mit (Kopfzeilen plus
@@ -10108,8 +10172,13 @@ function mailVorbelegungAnwenden(){
      sondern wird davorgesetzt - ein angefangener Text soll nicht verschwinden. */
   if(text && v.text) text.value = v.text + (text.value ? '\n\n' + text.value : '');
   else if(text && !text.value) text.value = (v.anrede || '') + '\n\n';
-  if(text) text.focus();
-  toast(v.text ? 'Weiterleitung vorbereitet – Empfänger eintragen und senden.'
+  if(text){
+    text.focus();
+    /* A428: Bei der Antwort steht das Zitat unten, geschrieben wird oben. */
+    if(v.art === 'antwort'){ try{ text.setSelectionRange(0, 0); text.scrollTop = 0; }catch(_){} }
+  }
+  toast(v.art === 'antwort' ? 'Antwort vorbereitet – Text oben ergänzen und senden.'
+      : v.text ? 'Weiterleitung vorbereitet – Empfänger eintragen und senden.'
                : 'Empfänger übernommen – Text ergänzen und senden.');
 }
 
@@ -10203,8 +10272,15 @@ async function tenantMailSenden(){
   if(!mail || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(mail)){ st('<span style="color:#b91c1c;font-size:13px">Bitte gültige E-Mail-Adresse.</span>'); return; }
   if(!betreff){ st('<span style="color:#b91c1c;font-size:13px">Bitte einen Betreff angeben.</span>'); return; }
   if(!text){ st('<span style="color:#b91c1c;font-size:13px">Bitte einen Text eingeben.</span>'); return; }
+  /* A428: Bei einer Antwort zaehlt nur der eigene Teil ueber dem Zitat -
+     sonst ginge das Zitat allein als "Antwort" hinaus. */
+  const _zitat = tmZitatBeginn(text);
+  if(_zitat && _zitat.art === 'antwort' && !text.slice(0, _zitat.index).trim()){
+    st('<span style="color:#b91c1c;font-size:13px">Bitte über dem Zitat eine Antwort schreiben.</span>'); return;
+  }
   if(mitSig){
-    text += '\n\nMit freundlichen Grüßen\nNadig Pfau Immobilienverwaltung\ninfo@nadigpfau.de';
+    const _absender = mieterId ? absenderName(opt?.getAttribute('data-objekt') || '') : 'Nadig Pfau Immobilienverwaltung';
+    text = tmSignaturEinfuegen(text, '\n\nMit freundlichen Grüßen\n' + _absender + '\ninfo@nadigpfau.de');
   }
   /* A409: Fehlversand-Warnung. Anhaenge tragen regelmaessig personenbezogene
      Daten (Abrechnung, Bescheinigung); eine Mail an die falsche Adresse ist ein
@@ -16771,7 +16847,7 @@ function mbBegleittext(m, obj){
     + 'des Wohngeldgesetzes (WoGG)'+(adr?(' für Ihre Wohnung '+adr):'')+'.\n\n'
     + 'Bitte prüfen Sie die Angaben. Für Rückfragen stehen wir Ihnen gerne zur Verfügung.\n\n'
     + 'Mit freundlichen Grüßen\n'
-    + 'Nadig Pfau Immobilienverwaltung';
+    + absenderName(obj?.id || m.objektId);
 }
 
 async function mbVersandDialog(mbId){
@@ -18299,8 +18375,8 @@ async function renderDokumente(el, objektId, mieterId) {
         <div style="width:38px;height:38px;border-radius:8px;background:var(--ink-05);display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:18px;color:var(--copper)">
           <i class="ti ${isImg?'ti-photo':isPdf?'ti-file-type-pdf':isHtmlDok?typ.icon:'ti-file'}"></i>
         </div>
-        <div style="flex:1;min-width:0">
-          <div style="font-size:13px;font-weight:600;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(d.name)}</div>
+        <div style="flex:1 1 150px;min-width:0">
+          <div data-rolle="dokname" title="${escAttr(d.name||'')}" style="font-size:13px;font-weight:600;color:var(--ink);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere;line-height:1.35">${esc(d.name)}</div>
           <div style="font-size:11px;color:var(--ink-40);margin-top:1px">${d.erstellt||''} · ${isHtmlDok?'Schreiben':fmtBytes(d.size||0)}</div>
           ${d.notiz?`<div style="font-size:11px;color:var(--ink-60);margin-top:2px;font-style:italic">${esc(d.notiz)}</div>`:''}
         </div>
@@ -18309,7 +18385,7 @@ async function renderDokumente(el, objektId, mieterId) {
             const ueberschrieben = (d.portalFreigabe===true||d.portalFreigabe===false);
             return `<button class="btn btn-sm" title="${frei?'Für Mieterportal freigegeben':'Nicht freigegeben'}${ueberschrieben?' (manuell gesetzt)':' (Typ-Standard)'} – tippen zum Umschalten" onclick="togglePortalFreigabe('${d.id}')" style="flex-shrink:0;${frei?'color:var(--success);border-color:var(--success)':'color:var(--ink-40)'}"><i class="ti ${frei?'ti-world-share':'ti-world-off'}"></i></button>`;
           })() : ''}
-        <div style="display:flex;gap:5px;flex-shrink:0">
+        <div style="display:flex;gap:5px;flex-shrink:0;margin-left:auto">
           ${isImg?`<button class="btn btn-sm" data-action-click="openFoto" data-arg="${d.id}" data-arg2="dok"><i class="ti ti-eye"></i></button>`:''}
           ${isHtmlDok?`<button class="btn btn-sm" onclick="openArchivDok('${d.id}')" title="Öffnen / Drucken / Weiterleiten"><i class="ti ti-eye"></i></button>`:''}
           <button class="btn btn-sm" onclick="downloadDok('${d.id}')"><i class="ti ti-download"></i></button>
@@ -20700,7 +20776,7 @@ h2{font-size:11px;font-weight:700;color:#1F4E79}
     </tr></thead>
     <tbody>${uebersichtRows}</tbody>
   </table>
-  <div class="footer">Nebenkostenabrechnung ${jahr} · ${obj?.name||''} · Nadig Pfau Immobilienverwaltung</div>
+  <div class="footer">Nebenkostenabrechnung ${jahr} · ${obj?.name||''} · ${esc(absenderName(obj?.id))}</div>
 </div>
 
 <!-- EINZELBRIEFE -->
@@ -22183,6 +22259,17 @@ async function bereinigeProtokollPapierkorb() {
    genau eine Pflegestelle im Code - gespeicherte Briefkoepfe aus den
    Einstellungen haben weiterhin Vorrang (migriereVerwalteranschrift zieht
    Altwerte einmalig nach). */
+/* A429: Name, unter dem die Verwaltung gegenueber den Mietern eines Objekts
+   auftritt - die Absenderzeile des Gruppen-Briefkopfs. Bis A428 stand an
+   Mail-Signatur, Begleittexten und Fusszeilen fest "Nadig Pfau
+   Immobilienverwaltung", auch fuer Moenchengladbach (Befund 26.09.: Brief
+   Kyffhaeuser 30). Krefeld/Duesseldorf liefern unveraendert diesen Namen. */
+function absenderName(objektId){
+  try{
+    const bk = getBriefkopf(objektId || '');
+    return (bk && (bk.absender || bk.name)) || 'Nadig Pfau Immobilienverwaltung';
+  }catch(_){ return 'Nadig Pfau Immobilienverwaltung'; }
+}
 const VERWALTER_STRASSE = 'Zur Verlach 37';
 const VERWALTER_ORT     = '40723 Hilden';
 const VERWALTER_ANSCHRIFT = VERWALTER_STRASSE + ', ' + VERWALTER_ORT;
@@ -25385,7 +25472,7 @@ function kqBegleittext(m, obj){
     +(adr?(' für Ihre Wohnung '+adr):'')+'.\n\n'
     +'Für Rückfragen stehen wir Ihnen gerne zur Verfügung.\n\n'
     +'Mit freundlichen Grüßen\n'
-    +'Nadig Pfau Immobilienverwaltung';
+    +absenderName(obj?.id || m.objektId);
 }
 
 // Versand-Dialog (analog Mietbescheinigung)
@@ -29001,7 +29088,7 @@ async function modalAushang(objektId) {
         <option value="hausverwaltung">Nadig Pfau Immobilienverwaltung</option>
         <option value="eigentuemer">Eigentümer Alexander-Roland Nadig und Anna-Alexandra Pfau</option>
         <option value="hausmeister">Hausmeister · ${CU?.name||''}</option>
-        <option value="roland">Roland B. Nadig</option>
+        <option value="roland" ${/nadig/i.test(absenderName(objektId)) && !/pfau/i.test(absenderName(objektId))?'selected':''}>Roland B. Nadig</option>
       </select>
     </div>
     <div class="f"><label for="aushDatum">Datum</label>
@@ -30550,7 +30637,9 @@ function mhUpdateCockpit(mieterId){
   let restProM2 = (flaeche>0 && b.restEur>0) ? ' ('+f2(b.restEur/flaeche)+' €/m²)' : '';
   let html = ''
     + '<div style="font-weight:700;margin-bottom:6px">'+punkt+'Kappungsgrenze '+b.grenze+' % in 3 Jahren'
-    + (b.grenze===15?' <span style="font-weight:400;color:var(--ink-40)">(NRW-MietSchVO bis 28.02.2030)</span>':'')+'</div>'
+    /* A429: Datum aus der Konstanten statt fest im Text - sonst stimmt der
+       Hinweis nach einer Verlaengerung der Verordnung nicht mehr. */
+    + (b.grenze===15?' <span style="font-weight:400;color:var(--ink-40)">(NRW-MietSchVO bis '+fmtDate(MIETSCHVO_KAPPUNG_BIS)+')</span>':'')+'</div>'
     + '<table style="width:100%;font-size:12px;border-collapse:collapse">'
     + '<tr><td style="padding:2px 0;color:var(--ink-40)">Basismiete (Stand vor 3 J.)</td><td style="text-align:right">'+fmtEur(b.basis)+'</td></tr>'
     + '<tr><td style="padding:2px 0;color:var(--ink-40)">Höchstmiete nach Kappung</td><td style="text-align:right;font-weight:600">'+fmtEur(b.maxMiete)+'</td></tr>'
@@ -30571,6 +30660,10 @@ function mhUpdateCockpit(mieterId){
       + (sf.ok ? '– Sperrfrist (12 Mon.) erfüllt.' : '– Sperrfrist noch nicht erfüllt (frühestens '+(sf.fruehestens?sf.fruehestens.toLocaleDateString('de-DE'):'–')+').')
       + '</div>';
   }
+  /* A429: A417 (B14) hatte kappungsHinweis gebaut, aber nirgends aufgerufen -
+     die Warnung vor dem Auslaufen der MietSchVO NRW erschien nie. */
+  const kh = kappungsHinweis(obj, datum);
+  if(kh) html += '<div style="margin-top:6px;padding:6px 8px;border-radius:6px;background:#FFF4E5;color:#9E5E24"><i class="ti ti-alert-triangle"></i> '+esc(kh)+'</div>';
   html += '<div style="margin-top:4px;font-size:10px;color:var(--ink-40)">Zusätzlich gilt: die ortsübliche Vergleichsmiete (Mietspiegel) ist absolute Obergrenze – bitte separat prüfen.</div>';
   el.innerHTML = html;
 }
@@ -30698,7 +30791,7 @@ ${istZustimmung
   : `<p>Bitte überweisen Sie ab dem <strong>${wirksamAb}</strong> den neuen Betrag von <strong>${fmtEur(neueMiete + (neueNK||alteNK))}</strong> auf das Ihnen bekannte Konto.</p>`}
 <p style="margin-top:12mm">Mit freundlichen Grüßen<br><br>${esc(bk.name)}</p>
 <div style="font-size:8px;color:#aaa;margin-top:16mm;padding-top:4mm;border-top:1px solid #eee">
-  Mieterhöhungsschreiben · ${esc(obj?.name||'')} WE ${esc(m.weNr)} · ${esc(m.mieter)} · ${esc(heute)} · Nadig Pfau Immobilienverwaltung
+  Mieterhöhungsschreiben · ${esc(obj?.name||'')} WE ${esc(m.weNr)} · ${esc(m.mieter)} · ${esc(heute)} · ${esc(absenderName(m.objektId))}
 </div>
 \x3cscript\x3e(function(){var p=function(){setTimeout(function(){window.focus();window.print();},600);};if(document.readyState==='complete'){p();}else{window.addEventListener('load',p);}})()\x3c/script\x3e
 </body></html>`;
@@ -36199,7 +36292,7 @@ ${(d.aenderungen&&d.aenderungen.length)?`<div style="margin-top:12px;padding:8px
     <strong>${a.feld}:</strong> „${a.alt||'–'}" &rarr; „${a.neu||'–'}" · geändert von ${a.von} am ${a.wann}
   </div>`).join('')}
 </div>`:''}
-<div class="footer">Übergabeprotokoll · ${esc(d.objektName)} · WE ${d.weNr||'?'} · ${datum} · ${d.abgeschlossenAm||now()} · Nadig Pfau Immobilienverwaltung</div>
+<div class="footer">Übergabeprotokoll · ${esc(d.objektName)} · WE ${d.weNr||'?'} · ${datum} · ${d.abgeschlossenAm||now()} · ${esc(absenderName(d.objektId))}</div>
 
 
 
@@ -49888,7 +49981,9 @@ const EINMALIG_AKTIONEN = [
   'exportBackup','wohnungenExportPush','zaExportSammellastschrift',
   /* A425b: beides laedt Dateien nach. Ein zweiter Tap waehrend des Ladens
      haengte die Anhaenge doppelt an bzw. lud sie doppelt herunter. */
-  'postfachWeiterleiten','postfachAlleAnhaenge'
+  'postfachWeiterleiten','postfachAlleAnhaenge',
+  /* A428: liest die Mieterliste - ein zweiter Tap wuerde doppelt vorbelegen. */
+  'postfachAntworten'
 ];
 
 /* Erst nach dem Laden umhuellen: window.<name> existiert durch Hoisting zwar
