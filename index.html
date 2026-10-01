@@ -1248,7 +1248,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=38;   // A398: +kr_abrechnungen
-const APP_VERSION = '2026-09-26-A429';
+const APP_VERSION = '2026-10-01-A430';
 /* v364 (12.08.2026) – offene Punkte abgearbeitet.
    1) D1/XLSX_SRI: Der im Code hinterlegte PowerShell-Befehl war FALSCH und
       konnte nie funktionieren - Invoke-WebRequest liefert unter .Content einen
@@ -26652,9 +26652,9 @@ function adressVollNamenVertrag(m){
    Word rendert beim HTML-Import weder Inline-SVG noch data:-URIs. Beides
    kam im Briefkopf vor, deshalb fehlten Logo und Unterschriften.
 
-   MHTML loest das: Bilder liegen als eigene MIME-Teile bei und werden ueber
-   Content-Location referenziert. Diesen Weg unterstuetzt Word seit jeher -
-   es ist sein eigenes Speicherformat fuer "Webseite, in einer Datei".
+   A430: Seit hier wird ein echtes .docx gebaut (briefDocxBauen, unten); das
+   MHTML-.doc aus A401 liess sich ausserhalb von Word fuer Windows nicht
+   oeffnen.
 
    Das SVG muss vorher gerastert werden. Ueber ein Canvas, mit dreifacher
    Aufloesung, damit es im Druck nicht ausfranst. */
@@ -26683,50 +26683,299 @@ async function svgNachPng(svgText, breite, hoehe){
   });
 }
 
-/* Baut das MHTML-Paket. Jede data:-URI im HTML wird durch eine
-   Content-Location ersetzt und als eigener Teil angehaengt. */
-function mhtmlBauen(html, titel){
-  const grenze = '----=_NadigPfau_' + Date.now();
-  const teile = [];
-  let nr = 0;
-  const ersetzt = html.replace(/src="data:image\/(png|jpeg|jpg|gif);base64,([^"]+)"/g,
-    (_treffer, typ, daten)=>{
-      nr++;
-      const name = 'bild' + nr + '.' + (typ === 'jpg' ? 'jpeg' : typ);
-      teile.push({ name, typ:'image/' + (typ === 'jpg' ? 'jpeg' : typ), daten });
-      return 'src="' + name + '"';
-    });
-
-  const kopf = '<!DOCTYPE html><html xmlns:w="urn:schemas-microsoft-com:office:word" lang="de">';
-  let mht = 'MIME-Version: 1.0\r\n'
-    + 'Content-Type: multipart/related; boundary="' + grenze + '"\r\n'
-    + 'X-Document-Type: Word.Document\r\n\r\n'
-    + '--' + grenze + '\r\n'
-    + 'Content-Type: text/html; charset="utf-8"\r\n'
-    + 'Content-Transfer-Encoding: base64\r\n'
-    + 'Content-Location: file:///C:/' + (titel||'brief') + '.htm\r\n\r\n'
-    + base64AusText(kopf + ersetzt) + '\r\n\r\n';
-
-  for(const t of teile){
-    mht += '--' + grenze + '\r\n'
-      + 'Content-Type: ' + t.typ + '\r\n'
-      + 'Content-Transfer-Encoding: base64\r\n'
-      + 'Content-Location: file:///C:/' + t.name + '\r\n\r\n'
-      + t.daten.replace(/\s+/g,'').replace(/(.{76})/g,'$1\r\n') + '\r\n\r\n';
-  }
-  return mht + '--' + grenze + '--\r\n';
+/* ═══ A430: Word-Export als echtes .docx ═══════════════════════════════
+   Befund (Nutzer, 01.10.2026): Die gespeicherte Word-Datei liess sich nicht
+   oeffnen. Sie war seit A401 kein Word-Dokument, sondern MHTML ("Webseite in
+   einer Datei") mit der Endung .doc. Word fuer Windows nimmt das an; Word
+   fuer Android/iOS, Google Docs und viele Dateimanager nicht - sie erwarten
+   bei .doc das alte Binaerformat und melden eine defekte Datei.
+   Jetzt: ein echtes Office-Open-XML-Paket (.docx), gebaut mit dem
+   vorhandenen ZIP-Writer (zipStore, v157) - keine Fremdbibliothek.
+   Quelle ist das fertige Brief-HTML aus druckeBrief: Jede Zeile des
+   Briefes steht dort in einem eigenen, benannten Element (bk-kopf, bk-abs,
+   bk-anschrift ...). So gibt es weiterhin genau EINE Briefvorlage; der
+   Wandler bildet sie nur ab. Masse wie im Druck (v392): Raender 14/18/14/
+   20 mm, Kopf 31 mm hoch, Anschriftfeld 85 mm breit und mindestens 18 mm
+   hoch - die Fensterlage DIN 5008 bleibt erhalten. */
+const DOCX_TW_MM = 1440 / 25.4;        // Twips je Millimeter
+const DOCX_EMU_PX = 9525;              // EMU je CSS-Pixel (96 dpi)
+function docxTw(mm){ return Math.round(mm * DOCX_TW_MM); }
+function docxEsc(t){
+  return String(t == null ? '' : t).replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+/* Ein Textlauf. Reihenfolge der Kinder von w:rPr ist im Schema festgelegt -
+   Word verweigert die Datei, wenn sie nicht stimmt. */
+function docxLauf(text, o){
+  o = o || {};
+  let p = '';
+  if(o.schrift) p += `<w:rFonts w:ascii="${docxEsc(o.schrift)}" w:hAnsi="${docxEsc(o.schrift)}" w:cs="${docxEsc(o.schrift)}"/>`;
+  if(o.fett) p += '<w:b/><w:bCs/>';
+  if(o.farbe) p += `<w:color w:val="${o.farbe}"/>`;
+  if(o.sperr) p += `<w:spacing w:val="${o.sperr}"/>`;
+  if(o.pt) p += `<w:sz w:val="${Math.round(o.pt*2)}"/><w:szCs w:val="${Math.round(o.pt*2)}"/>`;
+  return `<w:r>${p ? '<w:rPr>'+p+'</w:rPr>' : ''}<w:t xml:space="preserve">${docxEsc(text)}</w:t></w:r>`;
+}
+/* Ein Absatz. o.vor/o.nach in mm, o.zeile als Faktor, o.ausr 'right'.
+   Auch hier gilt die Schema-Reihenfolge: pBdr, spacing, jc, rPr. */
+function docxAbsatz(laeufe, o){
+  o = o || {};
+  let p = '';
+  if(o.linieUnten) p += `<w:pBdr><w:bottom w:val="single" w:sz="4" w:space="1" w:color="${o.linieUnten}"/></w:pBdr>`;
+  const sp = [];
+  if(o.vor != null) sp.push(`w:before="${docxTw(o.vor)}"`);
+  sp.push(`w:after="${docxTw(o.nach || 0)}"`);
+  if(o.zeile) sp.push(`w:line="${Math.round(o.zeile*240)}" w:lineRule="auto"`);
+  p += `<w:spacing ${sp.join(' ')}/>`;
+  if(o.ausr) p += `<w:jc w:val="${o.ausr}"/>`;
+  if(o.pt) p += `<w:rPr><w:sz w:val="${Math.round(o.pt*2)}"/></w:rPr>`;
+  return `<w:p><w:pPr>${p}</w:pPr>${laeufe || ''}</w:p>`;
+}
+/* bild: Mediendatei (rid, datei); breite/hoehe in px; nr: fortlaufende
+   Zeichnungs-Id - sie muss je Vorkommen eindeutig sein, auch wenn dieselbe
+   Mediendatei mehrfach erscheint (Sammelbrief: Logo und Unterschrift je Brief). */
+function docxBildLauf(bild, breite, hoehe, nr){
+  const cx = Math.round(breite * DOCX_EMU_PX), cy = Math.round(hoehe * DOCX_EMU_PX);
+  return `<w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0">`
+    + `<wp:extent cx="${cx}" cy="${cy}"/><wp:docPr id="${nr}" name="Bild ${nr}"/>`
+    + `<a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">`
+    + `<a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">`
+    + `<pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">`
+    + `<pic:nvPicPr><pic:cNvPr id="${nr}" name="${bild.datei}"/><pic:cNvPicPr/></pic:nvPicPr>`
+    + `<pic:blipFill><a:blip r:embed="${bild.rid}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>`
+    + `<pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm>`
+    + `<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic>`
+    + `</a:graphicData></a:graphic></wp:inline></w:drawing></w:r>`;
+}
+/* Rahmenlose Tabelle. spalten: Breiten in mm; zeilen: [{hoeheMm, genau, zellen:[xml]}]. */
+function docxTabelle(spalten, zeilen, o){
+  o = o || {};
+  const rand = ['top','left','bottom','right','insideH','insideV']
+    .map(s => `<w:${s} w:val="nil"/>`).join('');
+  const grid = spalten.map(mm => `<w:gridCol w:w="${docxTw(mm)}"/>`).join('');
+  const rows = zeilen.map(z => {
+    const trPr = z.hoeheMm ? `<w:trPr><w:trHeight w:val="${docxTw(z.hoeheMm)}" w:hRule="${z.genau ? 'exact' : 'atLeast'}"/></w:trPr>` : '';
+    const tcs = z.zellen.map((inhalt, i) => {
+      const linie = (z.linieUnten && z.linieUnten[i]) ? `<w:tcBorders><w:bottom w:val="single" w:sz="${z.linieUnten[i].sz}" w:space="0" w:color="${z.linieUnten[i].farbe}"/></w:tcBorders>` : '';
+      return `<w:tc><w:tcPr><w:tcW w:w="${docxTw(spalten[i])}" w:type="dxa"/>${linie}</w:tcPr>${inhalt || docxAbsatz('')}</w:tc>`;
+    }).join('');
+    return `<w:tr>${trPr}${tcs}</w:tr>`;
+  }).join('');
+  const breite = spalten.reduce((a, b) => a + b, 0);
+  const zellRand = o.zellRandMm != null ? docxTw(o.zellRandMm) : 0;
+  return `<w:tbl><w:tblPr><w:tblW w:w="${docxTw(breite)}" w:type="dxa"/><w:tblBorders>${rand}</w:tblBorders>`
+    + `<w:tblLayout w:type="fixed"/><w:tblCellMar><w:top w:w="0" w:type="dxa"/><w:left w:w="${zellRand}" w:type="dxa"/>`
+    + `<w:bottom w:w="0" w:type="dxa"/><w:right w:w="${zellRand}" w:type="dxa"/></w:tblCellMar></w:tblPr>`
+    + `<w:tblGrid>${grid}</w:tblGrid>${rows}</w:tbl>`;
+}
+/* CSS-Angaben eines Elements in Lauf-Optionen (nur, was die Vorlage nutzt). */
+function docxStilAus(el, basis){
+  const o = Object.assign({}, basis || {});
+  const st = (el && el.getAttribute && el.getAttribute('style')) || '';
+  const g = st.match(/font-size:\s*([\d.]+)(pt|px)/i);
+  if(g) o.pt = g[2].toLowerCase() === 'px' ? parseFloat(g[1]) * 0.75 : parseFloat(g[1]);
+  if(/font-weight:\s*(700|bold)/i.test(st)) o.fett = true;
+  const f = st.match(/color:\s*#([0-9a-f]{3,6})/i);
+  if(f) o.farbe = f[1].length === 3 ? f[1].split('').map(c => c + c).join('') : f[1];
+  const s = st.match(/font-family:\s*([^;,]+)/i);
+  if(s) o.schrift = s[1].replace(/['"]/g, '').trim();
+  const ls = st.match(/letter-spacing:\s*([\d.]+)px/i);
+  if(ls) o.sperr = Math.round(parseFloat(ls[1]) * 15);          // px -> Twips (1 px = 15 tw)
+  return o;
+}
+/* Kindknoten in Absaetze zerlegen: <br> beginnt einen neuen, <strong>/<b>
+   macht fett. Liefert Arrays von Laeufen. */
+function docxZeilenAus(el, basis){
+  const zeilen = [[]];
+  (function lauf(knoten, fett){
+    for(const k of knoten.childNodes){
+      if(k.nodeType === 3){
+        const teile = k.textContent.split('\n');
+        teile.forEach((t, i) => {
+          if(i > 0) zeilen.push([]);
+          if(t) zeilen[zeilen.length-1].push(docxLauf(t, Object.assign({}, basis, fett ? {fett:true} : {})));
+        });
+      } else if(k.nodeType === 1){
+        const tag = k.tagName.toLowerCase();
+        if(tag === 'br') zeilen.push([]);
+        else lauf(k, fett || tag === 'strong' || tag === 'b');
+      }
+    }
+  })(el, false);
+  return zeilen.map(z => z.join(''));
+}
+/* Masse eines Bildes (data:-URI) bestimmen. */
+function docxBildMasse(src){
+  return new Promise(fertig => {
+    const b = new Image();
+    b.onload = () => fertig({ w: b.naturalWidth || 1, h: b.naturalHeight || 1 });
+    b.onerror = () => fertig(null);
+    b.src = src;
+  });
 }
 
-/* UTF-8-sichere Base64-Kodierung. btoa allein scheitert an Umlauten -
-   genau daran waeren die Briefe mit "Grüßen" gestorben. */
-function base64AusText(txt){
-  const bytes = new TextEncoder().encode(txt);
-  let bin = '';
-  const block = 0x8000;
-  for(let i=0; i<bytes.length; i+=block){
-    bin += String.fromCharCode.apply(null, bytes.subarray(i, i+block));
+/* Hauptfunktion: Brief-HTML (eine oder mehrere .brief-seite) -> docx-Blob.
+   Das Logo muss bereits als PNG-<img> vorliegen (svgNachPng). */
+async function briefDocxBauen(briefHtml, titel){
+  const doc = new DOMParser().parseFromString('<body>' + briefHtml + '</body>', 'text/html');
+  const bilder = [];                 // Mediendateien, je Inhalt nur einmal
+  const nachDaten = new Map();
+  let zeichnungen = 0;
+  async function bild(img, maxHoehePx){
+    const src = img.getAttribute('src') || '';
+    const m = src.match(/^data:image\/(png|jpe?g|gif);base64,(.+)$/i);
+    if(!m) return '';
+    let w = Number(img.getAttribute('width')) || 0, h = Number(img.getAttribute('height')) || 0;
+    if(!w || !h){
+      const nat = await docxBildMasse(src);
+      if(!nat) return '';
+      w = nat.w; h = nat.h;
+    }
+    if(maxHoehePx && h > maxHoehePx){ w = w * maxHoehePx / h; h = maxHoehePx; }
+    const typ = m[1].toLowerCase() === 'jpg' ? 'jpeg' : m[1].toLowerCase();
+    let b = nachDaten.get(m[2]);
+    if(!b){
+      const nr = bilder.length + 1;
+      b = { rid: 'rIdBild' + nr, datei: 'bild' + nr + '.' + (typ === 'jpeg' ? 'jpg' : typ), typ, daten: m[2] };
+      bilder.push(b); nachDaten.set(m[2], b);
+    }
+    return docxBildLauf(b, Math.round(w), Math.round(h), ++zeichnungen);
   }
-  return btoa(bin).replace(/(.{76})/g,'$1\r\n');
+  const TEXT = { pt: 9, schrift: 'Arial', farbe: '111111' };   // 12px wie im Druck
+  const NUTZ_MM = 210 - 20 - 18;                                // 172 mm
+  const teile = [];
+  const seiten = Array.from(doc.querySelectorAll('.brief-seite'));
+  for(let si = 0; si < seiten.length; si++){
+    if(si > 0) teile.push('<w:p><w:r><w:br w:type="page"/></w:r></w:p>');
+    const seite = seiten[si];
+    for(const el of Array.from(seite.children)){
+      const kl = el.classList;
+      if(kl.contains('bk-kopf')){
+        const l = el.querySelector('.bk-l'), r = el.querySelector('.bk-r');
+        let links = '';
+        for(const k of Array.from(l ? l.children : [])){
+          if(k.tagName.toLowerCase() === 'img') links += docxAbsatz(await bild(k));
+          else links += docxAbsatz(docxLauf(k.textContent.trim(), docxStilAus(k, {schrift:'Arial'})), {nach: 0.5});
+        }
+        const rechts = docxZeilenAus(r, { pt: 6, farbe: '555555', schrift: 'Arial' })
+          .map(z => docxAbsatz(z, { ausr: 'right' })).join('');
+        /* 65/35 statt 60/40 wie im Druck: Word ersetzt Georgia auf manchen
+           Geraeten durch eine breitere Schrift, dann bricht der eigene Name
+           um. Die rechte Spalte traegt nur kurze 6-pt-Zeilen. */
+        teile.push(docxTabelle([NUTZ_MM*0.65, NUTZ_MM*0.35], [{ hoeheMm: 31, genau: true, zellen: [links, rechts] }]));
+      } else if(kl.contains('bk-abs')){
+        teile.push(docxAbsatz(docxLauf(el.textContent, { pt: 7, farbe: '777777', schrift: 'Arial' }), { nach: 2, linieUnten: 'CCCCCC' }));
+      } else if(kl.contains('bk-anschrift')){
+        const z = docxZeilenAus(el, { pt: 10.5, schrift: 'Arial', farbe: '111111' })
+          .map(x => docxAbsatz(x, { zeile: 1.15 })).join('');
+        teile.push(docxTabelle([85], [{ hoeheMm: 18, zellen: [z] }]));
+      } else if(kl.contains('bk-datum')){
+        teile.push(docxAbsatz(docxLauf(el.textContent, { pt: 10, schrift: 'Arial', farbe: '333333' }), { vor: 8, nach: 5, ausr: 'right' }));
+      } else if(kl.contains('bk-betreff')){
+        teile.push(docxAbsatz(docxLauf(el.textContent, Object.assign({}, TEXT, { fett: true })), { nach: 6 }));
+      } else if(kl.contains('bk-anrede')){
+        teile.push(docxAbsatz(docxLauf(el.textContent, TEXT), { nach: 4 }));
+      } else if(kl.contains('bk-text')){
+        const z = docxZeilenAus(el, TEXT);
+        z.forEach((x, i) => teile.push(docxAbsatz(x, { zeile: 1.6, nach: i === z.length - 1 ? 8 : 0, pt: 9 })));
+      } else if(kl.contains('kr-tab')){
+        const reihen = Array.from(el.querySelectorAll('tr')).map(tr => {
+          const kopf = !!tr.querySelector('th'), summe = tr.classList.contains('kr-sum');
+          const zellen = Array.from(tr.children).map(td => docxAbsatz(
+            docxLauf(td.textContent.trim(), Object.assign({}, TEXT, kopf ? { pt: 8.25, fett: true } : {}, summe ? { fett: true } : {})),
+            { vor: 1.2, nach: 1.2, ausr: td.classList.contains('kr-r') ? 'right' : undefined }));
+          const farbe = kopf ? { sz: 6, farbe: '333333' } : (summe ? null : { sz: 4, farbe: 'CCCCCC' });
+          return { zellen, linieUnten: farbe ? zellen.map(() => farbe) : null };
+        });
+        teile.push(docxAbsatz('', { nach: 4 }));
+        teile.push(docxTabelle([NUTZ_MM*0.72, NUTZ_MM*0.28], reihen, { zellRandMm: 2 }));
+        teile.push(docxAbsatz('', { nach: 2 }));
+      } else if(kl.contains('kr-fuss')){
+        teile.push(docxAbsatz(docxLauf(el.textContent, { pt: 8.25, farbe: '444444', schrift: 'Arial' }), { nach: 2 }));
+      } else if(kl.contains('bk-gruss')){
+        const mitSig = el.nextElementSibling && el.nextElementSibling.classList.contains('bk-sigimg');
+        teile.push(docxAbsatz(docxLauf(el.textContent, TEXT), { nach: mitSig ? 2 : 14 }));
+      } else if(kl.contains('bk-sigimg')){
+        const spans = Array.from(el.children);
+        const zellen = [];
+        for(const s of spans){
+          const img = s.querySelector('img'), name = s.querySelector('span');
+          zellen.push((img ? docxAbsatz(await bild(img, 69), { nach: 1 }) : '')
+            + docxAbsatz(docxLauf(name ? name.textContent : '', { pt: 7.5, schrift: 'Arial', farbe: '111111' })));
+        }
+        if(zellen.length){
+          teile.push(docxTabelle(zellen.map(() => 60), [{ zellen }]));
+          teile.push(docxAbsatz('', { nach: 2 }));
+        }
+      } else if(kl.contains('bk-sig')){
+        teile.push(docxAbsatz(docxLauf(el.textContent, TEXT)));
+      } else if(el.textContent.trim()){
+        teile.push(docxAbsatz(docxLauf(el.textContent.trim(), TEXT)));   // Unbekanntes: als Text, nicht verlieren
+      }
+    }
+  }
+  const sect = `<w:sectPr><w:pgSz w:w="11906" w:h="16838"/>`
+    + `<w:pgMar w:top="${docxTw(14)}" w:right="${docxTw(18)}" w:bottom="${docxTw(14)}" w:left="${docxTw(20)}" w:header="${docxTw(8)}" w:footer="${docxTw(8)}" w:gutter="0"/></w:sectPr>`;
+  const dokument = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+    + '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+    + ' xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"'
+    + ' xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"'
+    + ' xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"'
+    + ' xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">'
+    + '<w:body>' + teile.join('') + sect + '</w:body></w:document>';
+  const stile = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+    + '<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+    + '<w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:cs="Arial" w:eastAsia="Arial"/>'
+    + '<w:sz w:val="18"/><w:szCs w:val="18"/><w:lang w:val="de-DE"/></w:rPr></w:rPrDefault>'
+    + '<w:pPrDefault><w:pPr><w:spacing w:after="0" w:line="240" w:lineRule="auto"/></w:pPr></w:pPrDefault></w:docDefaults>'
+    + '<w:style w:type="paragraph" w:default="1" w:styleId="Standard"><w:name w:val="Normal"/><w:qFormat/></w:style>'
+    + '<w:style w:type="table" w:default="1" w:styleId="NormaleTabelle"><w:name w:val="Normal Table"/><w:tblPr>'
+    + '<w:tblInd w:w="0" w:type="dxa"/><w:tblCellMar><w:top w:w="0" w:type="dxa"/><w:left w:w="0" w:type="dxa"/>'
+    + '<w:bottom w:w="0" w:type="dxa"/><w:right w:w="0" w:type="dxa"/></w:tblCellMar></w:tblPr></w:style>'
+    + '</w:styles>';
+  const typen = new Set(bilder.map(b => b.typ));
+  const inhaltstypen = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+    + '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+    + '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+    + '<Default Extension="xml" ContentType="application/xml"/>'
+    + (typen.has('png') ? '<Default Extension="png" ContentType="image/png"/>' : '')
+    + (typen.has('jpeg') ? '<Default Extension="jpg" ContentType="image/jpeg"/>' : '')
+    + (typen.has('gif') ? '<Default Extension="gif" ContentType="image/gif"/>' : '')
+    + '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
+    + '<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>'
+    + '<Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>'
+    + '</Types>';
+  const paketRels = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+    + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+    + '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>'
+    + '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>'
+    + '</Relationships>';
+  const dokRels = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+    + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+    + '<Relationship Id="rIdStile" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>'
+    + bilder.map(b => `<Relationship Id="${b.rid}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/${b.datei}"/>`).join('')
+    + '</Relationships>';
+  const jetzt = new Date().toISOString().replace(/\.\d+Z$/, 'Z');
+  const kern = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+    + '<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties"'
+    + ' xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/"'
+    + ' xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">'
+    + `<dc:title>${docxEsc(titel || 'Brief')}</dc:title><dc:language>de-DE</dc:language>`
+    + `<dcterms:created xsi:type="dcterms:W3CDTF">${jetzt}</dcterms:created></cp:coreProperties>`;
+  const enc = new TextEncoder();
+  const b64 = s => { const bin = atob(s.replace(/\s+/g, '')); const u = new Uint8Array(bin.length);
+                     for(let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return u; };
+  const eintraege = [
+    { name: '[Content_Types].xml', bytes: enc.encode(inhaltstypen) },
+    { name: '_rels/.rels', bytes: enc.encode(paketRels) },
+    { name: 'docProps/core.xml', bytes: enc.encode(kern) },
+    { name: 'word/document.xml', bytes: enc.encode(dokument) },
+    { name: 'word/styles.xml', bytes: enc.encode(stile) },
+    { name: 'word/_rels/document.xml.rels', bytes: enc.encode(dokRels) },
+    ...bilder.map(b => ({ name: 'word/media/' + b.datei, bytes: b64(b.daten) })),
+  ];
+  return new Blob([zipStore(eintraege)],
+    { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
 }
 
 function briefTextHTML(roh){
@@ -27310,11 +27559,9 @@ async function druckeBrief(mieterId, objektId, opt) {
 
   const druckDok = dokKopf + briefeHTML + pzSkript + autoPrint + '</body></html>';
 
-  /* Word: dieselbe Vorlage, nur als Datei. Ein echtes .docx braeuchte eine
-     Fremdbibliothek, die die App bisher nicht laedt; Word oeffnet HTML mit
-     dieser Kennzeichnung zuverlaessig und behaelt Fettung und Umbrueche.
-     Die Seitenzahlen entfallen dort - sie entstehen erst beim Druck, und
-     Word setzt eigene. */
+  /* Word: dieselbe Vorlage, nur als Datei. A430: briefDocxBauen bildet das
+     Brief-HTML als .docx ab (eigener ZIP-Writer, keine Fremdbibliothek).
+     Die Seitenzahlen entfallen dort - sie entstehen erst beim Druck. */
   if(opt.word){
     /* A401: Inline-SVG durch ein PNG ersetzen - Word zeigt SVG nicht an.
        Schlaegt die Rasterung fehl, geht der Brief OHNE Logo heraus statt gar
@@ -27333,18 +27580,23 @@ async function druckeBrief(mieterId, objektId, opt) {
         toast('Hinweis: Logo konnte für Word nicht gewandelt werden.', 5000);
       }
     }
-    const wordDok = `<head><meta charset="UTF-8"><title>${esc(betreff)}</title>${style}</head><body>`
-      + wordKoerper + '</body></html>';
     const dateiname = (betreff.replace(/[^\wäöüÄÖÜß -]/g,'').trim() || 'Brief');
-    /* MHTML statt reinem HTML: nur so nimmt Word die eingebetteten Bilder an.
-       Die Endung bleibt .doc, damit ein Doppelklick weiterhin Word oeffnet. */
-    const blob = new Blob([mhtmlBauen(wordDok, dateiname)], {type:'application/msword'});
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = dateiname + '.doc';
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(()=>URL.revokeObjectURL(a.href), 4000);
-    toast('Word-Datei gespeichert ✓');
+    /* A430: echtes .docx statt MHTML-.doc - oeffnet auch in Word fuer
+       Android/iOS, Google Docs und LibreOffice. */
+    let blob = null;
+    try{ blob = await briefDocxBauen(wordKoerper, betreff); }
+    catch(e){
+      console.warn('Word-Export:', e);
+      toast('Word-Datei konnte nicht erstellt werden. Bitte als PDF drucken.', 7000);
+    }
+    if(blob){
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = dateiname + '.docx';
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(()=>URL.revokeObjectURL(a.href), 4000);
+      toast('Word-Datei gespeichert ✓');
+    }
   } else {
     druckHTML(druckDok);
   }
