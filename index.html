@@ -1248,7 +1248,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=38;   // A398: +kr_abrechnungen
-const APP_VERSION = '2026-10-01-A430';
+const APP_VERSION = '2026-10-01-A433';
 /* v364 (12.08.2026) – offene Punkte abgearbeitet.
    1) D1/XLSX_SRI: Der im Code hinterlegte PowerShell-Befehl war FALSCH und
       konnte nie funktionieren - Invoke-WebRequest liefert unter .Content einen
@@ -9903,6 +9903,18 @@ async function mailTokenSenden(){
 const TM_MAX_ANHAENGE     = 5;
 const TM_MAX_ANHANG_BYTES = 10 * 1024 * 1024;   // je Anhang, wie im Backend
 const TM_MAX_GESAMT_BYTES = 15 * 1024 * 1024;   // alle zusammen, wie im Backend
+/* A432: Kopien. Grenze wie im Backend B4 - je Feld zehn Adressen. */
+const TM_MAX_KOPIEN = 10;
+/* Freitext "a@b.de; c@d.de, e@f.de" -> Liste ohne Doppelte (Gross/klein egal). */
+function tmAdressListe(roh){
+  const gesehen = new Set(), liste = [];
+  for(const t of String(roh || '').split(/[,;\s]+/)){
+    const a = t.trim(); if(!a) continue;
+    const k = a.toLowerCase(); if(gesehen.has(k)) continue;
+    gesehen.add(k); liste.push(a);
+  }
+  return liste;
+}
 
 /* Muss mit MIME_ERLAUBT in send-mail.js uebereinstimmen. Steht hier ein Typ,
    den das Backend ablehnt, waehlt der Nutzer eine Datei aus und erfaehrt erst
@@ -10072,25 +10084,108 @@ async function tmModalAusAkte(){
     <button class="btn btn-full" style="margin-top:12px" data-action-click="closeModal">Schließen</button>`);
 }
 
-async function tmAnhangAusAkte(dokId){
+/* A433: Laden und Pruefen eines Akten-Dokuments als Anhang - ohne Meldung
+   und ohne Dialog. Liefert '' bei Erfolg, sonst den Grund. Aufrufer: die
+   Auswahl "Aus der Akte" und das Weiterleiten einer gesendeten Mail. */
+async function tmAnhangAusDokLaden(dokId){
   const d = await idbGet('dokumente', String(dokId||'')).catch(()=>null);
-  if(!d){ toast('Dokument nicht gefunden'); return; }
-  if((window._tmAnhaenge||[]).some(a => a.dokId === d.id)){ toast('Ist bereits angehängt'); return; }
-  toast('Wird geladen …');
+  if(!d) return 'Dokument nicht mehr in der Akte';
+  if((window._tmAnhaenge||[]).some(a => a.dokId === d.id)) return 'bereits angehängt';
   const dataUrl = await dokAnhangDaten(d);
-  if(!dataUrl){
-    toast('Das Dokument ließ sich nicht laden. Bei ausgelagerten Dateien die OneDrive-Verbindung prüfen.', 6000);
-    return;
-  }
+  if(!dataUrl) return 'ließ sich nicht laden (bei ausgelagerten Dateien OneDrive-Verbindung prüfen)';
   const mime = d.mimeType || tmMimeAusDataUrl(dataUrl) || 'application/octet-stream';
   const groesse = tmDataUrlBytes(dataUrl);
   const name = tmDateinameMitEndung(d.name || 'Dokument', mime);
   const grund = tmAnhangPruefen(name, mime, groesse);
-  if(grund){ toast(grund, 6000); return; }
+  if(grund) return grund;
   window._tmAnhaenge.push({ name, mimeType: mime.toLowerCase(), groesse, quelle:'akte', dokId: d.id, daten: dataUrl });
+  return '';
+}
+
+async function tmAnhangAusAkte(dokId){
+  toast('Wird geladen …');
+  const grund = await tmAnhangAusDokLaden(dokId);
+  if(grund === 'bereits angehängt'){ toast('Ist bereits angehängt'); return; }
+  if(grund){ toast('Nicht angehängt: ' + grund, 6000); return; }
   tmAnhaengeZeichnen();
   closeModal();
   toast('Angehängt ✓');
+}
+
+/* ── A433: Gesendete Mails ───────────────────────────────────────────── */
+function tmVerlaufMehr(){
+  window._tmVerlaufAnzahl = (window._tmVerlaufAnzahl || 8) + 20;
+  renderMail();
+}
+
+const TM_STATUS_TEXT = {
+  gesendet: 'gesendet', fehler: 'nicht zugestellt', offen: 'nicht abgeschlossen',
+  gesendet_ohne_anhaenge: 'gesendet – ohne Anhänge', gesendet_ohne_kopien: 'gesendet – ohne CC/BCC'
+};
+
+async function tmGesendetOeffnen(id){
+  const v = await idbGet('tenant_mails', String(id||'')).catch(()=>null);
+  if(!v){ toast('Mail nicht gefunden'); return; }
+  const zeile = (titel, wert) => wert ? `<div style="display:flex;gap:8px;font-size:12px;margin-bottom:3px">
+      <span style="width:58px;flex-shrink:0;color:var(--ink-40)">${titel}</span>
+      <span style="flex:1;min-width:0;overflow-wrap:anywhere">${wert}</span></div>` : '';
+  const an = esc(v.empfaengerName && v.empfaengerName !== v.email ? v.empfaengerName + ' <' + (v.email||'') + '>' : (v.email||''));
+  const anh = Array.isArray(v.anhaenge) ? v.anhaenge : [];
+  const statusFehler = v.status && v.status !== 'gesendet';
+  showModal(`
+    <div class="m-title"><i class="ti ti-mail-opened"></i> Gesendete Mail</div>
+    <div style="background:var(--ink-05);border-radius:10px;padding:10px 12px;margin-bottom:10px">
+      ${zeile('Datum', v.gesendet ? esc(new Date(v.gesendet).toLocaleString('de-DE')) : '')}
+      ${zeile('Status', `<span style="color:${statusFehler ? '#b91c1c' : 'var(--green)'}">${esc(TM_STATUS_TEXT[v.status] || v.status || '')}</span>`)}
+      ${zeile('An', an)}
+      ${zeile('CC', esc((v.cc||[]).join(', ')))}
+      ${zeile('BCC', esc((v.bcc||[]).join(', ')))}
+      ${zeile('Betreff', '<b>' + esc(v.betreff || '(ohne Betreff)') + '</b>')}
+      ${anh.length ? zeile('Anhänge', anh.map(a => `<div><i class="ti ti-paperclip"></i> ${esc(a.name||'Anhang')}${
+          a.dokId ? ' <span style="color:var(--ink-40)">· aus der Akte</span>' : ' <span style="color:var(--ink-40)">· nicht gespeichert</span>'}</div>`).join('')) : ''}
+    </div>
+    <div style="white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px;line-height:1.55;border:1px solid var(--ink-10);border-radius:10px;padding:10px 12px;max-height:50vh;overflow:auto">${esc(v.text || '')}</div>
+    <div class="f-row" style="margin-top:12px">
+      <button class="btn btn-copper btn-full" data-action-click="tmGesendetWeiterleiten" data-arg="${escAttr(String(v.id))}"><i class="ti ti-arrow-forward"></i> Weiterleiten</button>
+      <button class="btn btn-full" data-action-click="closeModal">Schließen</button>
+    </div>`);
+}
+
+/* Weiterleiten wie im Postfach (A425): Kopfzeilen + Text in die Maske. BCC
+   gehoert nicht in den Kopf - verdeckte Empfaenger bleiben verdeckt. */
+async function tmGesendetWeiterleiten(id){
+  const v = await idbGet('tenant_mails', String(id||'')).catch(()=>null);
+  if(!v){ toast('Mail nicht gefunden'); return; }
+  const anh = Array.isArray(v.anhaenge) ? v.anhaenge : [];
+  const ladbar = anh.filter(a => a && a.dokId);
+  const weg = anh.filter(a => a && !a.dokId);
+  const meldungen = [];
+  if(ladbar.length && confirm(ladbar.length + ' Anhang/Anhänge aus der Akte wieder anhängen?\n\n'
+       + ladbar.map(a => '· ' + (a.name || 'Anhang')).join('\n') + '\n\nAbbrechen leitet nur den Text weiter.')){
+    toast('Anhänge werden geladen …');
+    for(const a of ladbar){
+      const grund = await tmAnhangAusDokLaden(a.dokId);
+      if(grund && grund !== 'bereits angehängt') meldungen.push((a.name || 'Anhang') + ' – ' + grund);
+    }
+  }
+  weg.forEach(a => meldungen.push((a.name || 'Anhang') + ' – war vom Gerät bzw. aus dem Postfach angehängt und ist nicht gespeichert'));
+  if(meldungen.length) alert('Nicht angehängt:\n\n· ' + meldungen.join('\n· '));
+
+  const kopf = [
+    '---------- Weitergeleitete Nachricht ----------',
+    'Von: Nadig Pfau Immobilienverwaltung <info@nadigpfau.de>',
+    'Datum: '   + (v.gesendet ? new Date(v.gesendet).toLocaleString('de-DE') : ''),
+    'An: '      + (v.empfaengerName && v.empfaengerName !== v.email ? v.empfaengerName + ' <' + (v.email||'') + '>' : (v.email||'')),
+  ].concat((v.cc||[]).length ? ['Cc: ' + v.cc.join(', ')] : [])
+   .concat(['Betreff: ' + (v.betreff || ''), '', '']).join('\n');
+
+  closeModal();
+  window._mailVorbelegung = {
+    email: '',
+    betreff: /^(fwd|wg)[:.]/i.test(String(v.betreff||'')) ? String(v.betreff) : 'Fwd: ' + (v.betreff||''),
+    text: kopf + (v.text || ''),
+  };
+  setMailTab('mieter');
 }
 
 /* Archivierte Dokumente tragen einen Anzeigenamen ohne Endung ("Mietbescheinigung
@@ -10167,6 +10262,11 @@ function mailVorbelegungAnwenden(){
   if(sel && v.mieterId && Array.from(sel.options).some(o => o.value === v.mieterId)) sel.value = v.mieterId;
   if(mail) mail.value = v.email || '';
   if(betr) betr.value = v.betreff || '';
+  /* A432: Kopien (nur beim wiederhergestellten Entwurf belegt). */
+  if(v.cc || v.bcc){
+    const c = document.getElementById('tmCc'), b = document.getElementById('tmBcc'), box = document.getElementById('tmKopienBox');
+    if(c) c.value = v.cc || ''; if(b) b.value = v.bcc || ''; if(box) box.open = true;
+  }
   /* A425: Beim Weiterleiten kommt ein fertiger Text mit (Kopfzeilen plus
      Urtext). Er ueberschreibt einen vorhandenen Entwurf NICHT stillschweigend,
      sondern wird davorgesetzt - ein angefangener Text soll nicht verschwinden. */
@@ -10177,6 +10277,7 @@ function mailVorbelegungAnwenden(){
     /* A428: Bei der Antwort steht das Zitat unten, geschrieben wird oben. */
     if(v.art === 'antwort'){ try{ text.setSelectionRange(0, 0); text.scrollTop = 0; }catch(_){} }
   }
+  if(v.art === 'entwurf'){ return; }   // A432: die Statuszeile nennt den Fehler; Text steht wieder da
   toast(v.art === 'antwort' ? 'Antwort vorbereitet – Text oben ergänzen und senden.'
       : v.text ? 'Weiterleitung vorbereitet – Empfänger eintragen und senden.'
                : 'Empfänger übernommen – Text ergänzen und senden.');
@@ -10193,7 +10294,10 @@ async function mailRenderMieterMail(body){
   }).join('');
   // letzte gesendete Mails
   let verlauf=[]; try{ verlauf=await idbGetAll('tenant_mails'); }catch(e){ verlauf=[]; }
-  verlauf=(verlauf||[]).filter(x=>x&&!x._papierkorb).sort((a,b)=>String(b.gesendet||'').localeCompare(String(a.gesendet||''))).slice(0,8);
+  verlauf=(verlauf||[]).filter(x=>x&&!x._papierkorb).sort((a,b)=>String(b.gesendet||'').localeCompare(String(a.gesendet||'')));
+  /* A433: statt fester acht Eintraege schrittweise mehr. */
+  const _vGesamt = verlauf.length;
+  verlauf = verlauf.slice(0, window._tmVerlaufAnzahl || 8);
 
   body.innerHTML=`
     <div style="background:var(--white);border:1px solid var(--ink-10);border-radius:var(--radius);padding:14px">
@@ -10206,6 +10310,16 @@ async function mailRenderMieterMail(body){
       </select>
       <div class="f"><label for="tmMail">E-Mail-Adresse</label>
         <input type="email" id="tmMail" placeholder="wird aus Auswahl gefüllt" autocomplete="off"></div>
+      <!-- A432: Kopien. Eingeklappt, damit die Maske fuer den Normalfall kurz bleibt. -->
+      <details id="tmKopienBox" style="margin:-4px 0 10px">
+        <summary style="font-size:12px;color:var(--ink-60);cursor:pointer;padding:4px 0">CC / BCC</summary>
+        <div class="f" style="margin-top:6px"><label for="tmCc">CC</label>
+          <input type="text" id="tmCc" inputmode="email" autocomplete="off" placeholder="adresse@beispiel.de, weitere@beispiel.de"></div>
+        <div class="f"><label for="tmBcc">BCC</label>
+          <input type="text" id="tmBcc" inputmode="email" autocomplete="off" placeholder="unsichtbar für die übrigen Empfänger"></div>
+        <div style="font-size:11px;color:var(--ink-40);line-height:1.45">Mehrere Adressen mit Komma trennen.
+          CC-Empfänger sehen einander und den Hauptempfänger. Mehrere Mieter gemeinsam anschreiben: BCC.</div>
+      </details>
       <div class="f"><label for="tmBetreff">Betreff</label>
         <input type="text" id="tmBetreff" placeholder="z. B. Ankündigung Heizungswartung"></div>
       <div class="f"><label for="tmText">Nachricht</label>
@@ -10234,14 +10348,21 @@ async function mailRenderMieterMail(body){
     <div style="margin-top:16px">
       <div class="f-section-title"><i class="ti ti-history"></i> Zuletzt gesendet</div>
       ${verlauf.map(v=>`
-        <div style="background:var(--white);border:1px solid var(--ink-10);border-radius:10px;padding:10px 12px;margin-bottom:6px">
-          <div style="font-size:13px;font-weight:600">${esc(v.betreff||'(ohne Betreff)')}</div>
-          <div style="font-size:11px;color:var(--ink-40)">an ${esc(v.empfaengerName||v.email||'')} · ${v.gesendet?new Date(v.gesendet).toLocaleString('de-DE'):''} ${
+        <div style="background:var(--white);border:1px solid var(--ink-10);border-radius:10px;padding:10px 12px;margin-bottom:6px;cursor:pointer"
+          role="button" tabindex="0" title="Öffnen" data-action-click="tmGesendetOeffnen" data-arg="${escAttr(String(v.id))}">
+          <div style="font-size:13px;font-weight:600;display:flex;gap:6px;align-items:baseline">
+            <span style="flex:1;min-width:0;overflow-wrap:anywhere">${esc(v.betreff||'(ohne Betreff)')}</span>
+            <i class="ti ti-chevron-right" style="color:var(--ink-40)"></i></div>
+          <div style="font-size:11px;color:var(--ink-40)">an ${esc(v.empfaengerName||v.email||'')}${
+            ((v.cc||[]).length||(v.bcc||[]).length) ? ' + ' + ((v.cc||[]).length+(v.bcc||[]).length) + ' Kopie(n)' : ''} · ${v.gesendet?new Date(v.gesendet).toLocaleString('de-DE'):''} ${
             v.status==='fehler' ? '· <span style="color:#b91c1c">nicht zugestellt</span>'
+            : v.status==='gesendet_ohne_kopien' ? '· <span style="color:#b91c1c">ohne CC/BCC zugestellt</span>'
             : (v.status==='gesendet_ohne_anhaenge'
                 ? '· <span style="color:#b91c1c">ohne Anhänge zugestellt</span>'
                 : '· ✓' + ((v.anhaenge&&v.anhaenge.length)?' <i class="ti ti-paperclip"></i>'+v.anhaenge.length:''))}</div>
         </div>`).join('')}
+      ${_vGesamt > verlauf.length ? `<button class="btn btn-sm btn-full" data-action-click="tmVerlaufMehr">
+        <i class="ti ti-chevron-down"></i> Weitere anzeigen (${_vGesamt - verlauf.length})</button>` : ''}
     </div>`:''}`;
   tmAnhaengeWiederherstellen();
 }
@@ -10267,10 +10388,23 @@ async function tenantMailSenden(){
   const mail=(document.getElementById('tmMail')?.value||'').trim();
   const betreff=(document.getElementById('tmBetreff')?.value||'').trim();
   let text=(document.getElementById('tmText')?.value||'').trim();
+  const textRoh = text;   // A432: ohne Grussformel - fuer die Wiederherstellung nach einem Fehler
   const mitSig=document.getElementById('tmSig')?.checked;
   const st=(h)=>{ const e=document.getElementById('tmStatus'); if(e) e.innerHTML=h; };
   if(!mail || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(mail)){ st('<span style="color:#b91c1c;font-size:13px">Bitte gültige E-Mail-Adresse.</span>'); return; }
   if(!betreff){ st('<span style="color:#b91c1c;font-size:13px">Bitte einen Betreff angeben.</span>'); return; }
+  /* A432: Kopien. Der Hauptempfaenger steht nicht nochmals in CC/BCC, eine
+     Adresse in CC nicht nochmals in BCC. */
+  const _haupt = mail.toLowerCase();
+  const cc  = tmAdressListe(document.getElementById('tmCc')?.value).filter(a => a.toLowerCase() !== _haupt);
+  const _ccSet = new Set(cc.map(a => a.toLowerCase()));
+  const bcc = tmAdressListe(document.getElementById('tmBcc')?.value)
+    .filter(a => a.toLowerCase() !== _haupt && !_ccSet.has(a.toLowerCase()));
+  const _falsch = cc.concat(bcc).filter(a => !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(a));
+  if(_falsch.length){ st('<span style="color:#b91c1c;font-size:13px">Ungültige Adresse in CC/BCC: ' + esc(_falsch.join(', ')) + '</span>'); return; }
+  if(cc.length > TM_MAX_KOPIEN || bcc.length > TM_MAX_KOPIEN){
+    st('<span style="color:#b91c1c;font-size:13px">Höchstens ' + TM_MAX_KOPIEN + ' Adressen je Feld (CC, BCC).</span>'); return;
+  }
   if(!text){ st('<span style="color:#b91c1c;font-size:13px">Bitte einen Text eingeben.</span>'); return; }
   /* A428: Bei einer Antwort zaehlt nur der eigene Teil ueber dem Zitat -
      sonst ginge das Zitat allein als "Antwort" hinaus. */
@@ -10302,6 +10436,21 @@ async function tenantMailSenden(){
     }
   }
 
+  /* A432: In CC sieht jeder Empfaenger jede Adresse. Stehen dort Adressen
+     ANDERER Mieter, legt die Verwaltung deren Kontaktdaten offen (Art. 5
+     Abs. 1 lit. f, Art. 32 DSGVO). Fuer gemeinsame Schreiben ist BCC der
+     richtige Weg - gefragt wird, nicht verboten: ein Ehepaar mit zwei
+     Mietvertraegen darf sich sehen. */
+  if(cc.length){
+    const _alle = await idbGetAll('mieter').catch(()=>[]);
+    const _fremd = cc.filter(a => _alle.some(x => x && x.id !== mieterId && !x._vormieter
+      && tmAdressenDesMieters(x).includes(a.toLowerCase())));
+    if(_fremd.length && !confirm('In CC stehen Adressen anderer Mieter:\n' + _fremd.join(', ')
+        + '\n\nAlle Empfänger sehen diese Adressen. Für mehrere Mieter besser BCC verwenden.\n\nTrotzdem mit CC senden?')){
+      st('<span style="font-size:13px;color:var(--ink-40)">Nicht gesendet.</span>'); return;
+    }
+  }
+
   const anhaenge = (window._tmAnhaenge||[]);
   /* A410: Ist beim letzten Versand aufgefallen, dass das Backend Anhaenge
      verwirft, wird VOR dem Senden gefragt statt hinterher gemeldet. Der
@@ -10328,6 +10477,7 @@ async function tenantMailSenden(){
     id:'tm_'+Date.now().toString(36),
     mieterId, objektId:(opt?.getAttribute('data-objekt'))||'',
     empfaengerName, email:mail, betreff, text,
+    cc, bcc,                                    // A432
     /* Nur Name, Typ und Groesse ins Protokoll - NIE die Nutzlast. Ein Anhang
        im Store liefe ueber den Sync in die OneDrive-Datei und waere derselbe
        Groessentreiber, den die Auslagerung (§12-P23) gerade beseitigt hat. */
@@ -10337,6 +10487,8 @@ async function tenantMailSenden(){
   };
   try{
     const nutzlast = { to:mail, subject:betreff, text };
+    if(cc.length)  nutzlast.cc  = cc;             // A432 (Backend B4)
+    if(bcc.length) nutzlast.bcc = bcc;
     if(anhaenge.length){
       /* Das Backend erwartet reines base64 ohne dataURL-Praefix. */
       nutzlast.anhaenge = anhaenge.map(a=>{
@@ -10353,9 +10505,14 @@ async function tenantMailSenden(){
          Anhaenge. Fehlt die Angabe, obwohl welche mitgeschickt wurden, laeuft
          im Backend noch der Stand vor B3 - dort wird das Feld `anhaenge` gar
          nicht gelesen, und die Mail ist ohne sie hinausgegangen. */
-      let bestaetigt = null;
-      try{ const j = await res.json(); bestaetigt = (j && typeof j.anhaenge === 'number') ? j.anhaenge : null; }
-      catch(e){ bestaetigt = null; }
+      let bestaetigt = null, kopienBestaetigt = null;
+      try{ const j = await res.json();
+           bestaetigt = (j && typeof j.anhaenge === 'number') ? j.anhaenge : null;
+           kopienBestaetigt = (j && typeof j.kopien === 'number') ? j.kopien : null; }   // A432
+      catch(e){ bestaetigt = null; }   // kopienBestaetigt bleibt null
+      /* A432: Ein Backend vor B4 liest cc/bcc nicht und meldet trotzdem Erfolg.
+         Fehlt die Bestaetigung, sind die Kopien NICHT hinausgegangen. */
+      const ohneKopien = (cc.length + bcc.length) > 0 && kopienBestaetigt === null;
 
       if(anhaenge.length && bestaetigt === null){
         window._backendOhneAnhaenge = true;
@@ -10365,11 +10522,19 @@ async function tenantMailSenden(){
           + '(Stand vor B3). Der Empfänger hat nur den Text erhalten. Bitte B3 in Azure ausrollen '
           + 'und die Mail danach erneut senden.</span>');
         toast('Achtung: Die Anhänge sind NICHT mitgegangen.', 9000);
+      } else if(ohneKopien){
+        window._backendOhneAnhaenge = false;
+        rec.status = 'gesendet_ohne_kopien';
+        st('<span style="color:#b91c1c;font-size:13px"><b>Mail an ' + esc(mail) + ' gesendet – aber OHNE CC/BCC.</b><br>'
+          + 'Das Backend verarbeitet noch keine Kopien (Stand vor B4). An '
+          + esc(cc.concat(bcc).join(', ')) + ' ist nichts hinausgegangen.</span>');
+        toast('Achtung: CC/BCC sind NICHT mitgegangen.', 9000);
       } else {
         window._backendOhneAnhaenge = false;
         rec.status='gesendet';
         st('<span style="color:#15803d;font-size:13px">Gesendet ✓'
-          + (anhaenge.length? ' (' + anhaenge.length + ' Anhang/Anhänge)':'') + '</span>');
+          + (anhaenge.length? ' (' + anhaenge.length + ' Anhang/Anhänge)':'')
+          + ((cc.length + bcc.length) ? ' · Kopien: ' + (cc.length + bcc.length) : '') + '</span>');
       }
     }
     else {
@@ -10402,6 +10567,11 @@ async function tenantMailSenden(){
        die Mail nach dem Backend-Deploy erneut hinaus, und niemand soll die
        Dateien dafuer neu heraussuchen muessen. */
     window._tmAnhaenge = [];
+  } else if(rec.status === 'fehler'){
+    /* A432: renderMail() baut die Maske neu auf. Bis hier waren danach
+       Empfaenger, Betreff und Text weg, obwohl die Mail nicht hinausging. */
+    window._mailVorbelegung = { art:'entwurf', mieterId, email:mail, betreff, text:textRoh,
+                                cc: cc.join(', '), bcc: bcc.join(', ') };
   }
   renderMail();
 }
@@ -16570,8 +16740,10 @@ ${nurTg?'':`
       ${istVerwalter()&&(m.krKlausel==='Ja'||(!m.krKlausel&&(m.krHoehe||m.krProzent||m.krMaxEuro)))?`<div class="det-field"><label>KR-Klausel${!m.krKlausel?' · <span style="color:var(--amber)">ungeprüft</span>':''}</label><span>${fmtEur(m.krHoehe)} je Fall · ${m.krProzent?m.krProzent+'%':'–'}${m.krMaxEuro?' (max. '+fmtEur(m.krMaxEuro)+'/Jahr)':' p.a.'}</span></div>`:''}
       ${m.telefon?`<div class="det-field"><label>Telefon</label><span><a href="${telHref(m.telefon)}">${esc(m.telefon)}</a></span></div>`:''}
       ${m.email?`<div class="det-field"><label>E-Mail</label><span><a href="${mailHref(m.email)}">${esc(m.email)}</a></span></div>`:''}
+      ${m.kontaktweg?`<div class="det-field"><label>Bevorzugter Kontakt</label><span>${({email:'E-Mail',telefon:'Telefon',post:'Post'})[m.kontaktweg]||esc(m.kontaktweg)}</span></div>`:''}
+      ${m.hkvVersand?`<div class="det-field"><label>Heizkostenübersicht</label><span>${m.hkvVersand==='post'?'per Post':'per E-Mail'}</span></div>`:''}
     </div>
-    ${istVerwalter()&&(m.iban||m.zahlweise||m.sepaMandat)?`<details class="bank-det">
+    ${istVerwalter()&&(m.iban||m.zahlweise||m.sepaMandat||m.sepaUnterschriftAm)?`<details class="bank-det">
       <summary><i class="ti ti-building-bank"></i> Bankverbindung<span class="bank-kurz">${m.zahlweise==='sepa'?'SEPA-Lastschrift':(m.zahlweise?'Selbstüberweisung':'')}${m.iban?' · '+esc(ibanMaskiert(m.iban)):''}</span></summary>
       <div class="bank-body">
         ${m.zahlweise?`<div class="bank-zeile"><span>Zahlungsweise</span><b>${m.zahlweise==='sepa'?'SEPA-Lastschrift':'Selbstüberweisung'}</b></div>`:''}
@@ -16579,6 +16751,7 @@ ${nurTg?'':`
         ${m.iban?`<div class="bank-zeile"><span>IBAN</span><b style="font-variant-numeric:tabular-nums;letter-spacing:.4px">${esc(fmtIban(m.iban))}</b></div>`:''}
         ${m.bic?`<div class="bank-zeile"><span>BIC</span><b>${esc(m.bic)}</b></div>`:''}
         ${m.sepaMandat?`<div class="bank-zeile"><span>SEPA-Mandat</span><b>${esc(m.sepaMandat)}</b></div>`:''}
+        ${m.sepaUnterschriftAm?`<div class="bank-zeile"><span>Mandat unterschrieben erhalten</span><b>${esc(fmtDate(m.sepaUnterschriftAm))}</b></div>`:''}
         ${m.bankBemerkung?`<div class="bank-zeile"><span>Bemerkung</span><b>${esc(m.bankBemerkung)}</b></div>`:''}
       </div>
     </details>`:''}
@@ -29066,6 +29239,7 @@ async function telefonUebernehmen(i, j){
 }
 
 registerActions({ modalTelefonAbgleich, telefonUebernehmen, telefonBehalten });   // A421
+registerActions({ tmVerlaufMehr, tmGesendetOeffnen, tmGesendetWeiterleiten });   // A433
 
 /* Vorschlaege zur Bestaetigung. Angelegt wird als BEWOHNER, nicht als
    Vertragspartei - alles andere waere eine Aussage ueber den Mietvertrag,
@@ -29327,6 +29501,482 @@ registerActions({ saAuskunftUmschalten });                             // A404
 registerActions({ modalKrAbrechnung, krSpeichern, krVersendetSetzen, krLoeschen,
                   krPosHinzu, krPosWeg, krNeuBerechnen, krArtGewechselt,
                   krBriefErzeugen, krZeitUebernehmen });                 // A398–A403
+
+/* ═══ A431: KONTAKTÜBERSICHT JE STANDORT ═══════════════════════════════
+   Auftrag (Nutzer, 01.10.2026): sehen, wer nach dem Eigentuemerwechsel-
+   Anschreiben Kontaktdaten geschickt hat und wer nicht; je Standort alle
+   aktiven Mietverhaeltnisse mit E-Mail und Telefon in EINER Ansicht pflegen,
+   ohne fuer jeden Mieter die Akte zu oeffnen; Namen korrigieren; Abweichungen
+   zwischen Portal und Akte sehen und uebernehmen.
+   Grundsaetze:
+   - Geschrieben wird nur in die Akte (Store 'mieter'), auf demselben Weg wie
+     saveEditMieter: Personenliste ist die Quelle, Name und Kontakt am Mieter
+     sind ihr Spiegel (mieterAusPersonenAbleiten - eine Regel, zwei Aufrufer).
+   - Das Portal wird hier nur GELESEN. Portalangaben sind Selbstauskunft;
+     uebernommen wird nur, was der Verwalter antippt. Ins Portal gelangt die
+     korrigierte Akte ueber den vorhandenen Push ("Direkt ans Backend senden").
+   - "Rueckmeldung erhalten" ist ein Haken je Mietverhaeltnis
+     (m.kontaktRueckAm, ISO-Datum). Er setzt sich von selbst, sobald hier eine
+     Kontaktangabe geaendert wird, und laesst sich abwaehlen. Eine Registrierung
+     im Portal zaehlt ebenfalls als Rueckmeldung, wird aber nicht gespeichert,
+     sondern bei jedem Oeffnen aus dem Portal gelesen.
+   - A432: je Mietverhaeltnis zusaetzlich bevorzugter Kontaktweg
+     (m.kontaktweg: email|telefon|post), Zustellung der monatlichen
+     Heizkostenuebersicht nach § 6a HeizkostenV (m.hkvVersand: email|post) und
+     der Eingang des unterschriebenen Lastschriftmandats (m.sepaUnterschriftAm,
+     ISO). Der Haken aendert die Zahlweise NICHT - ob eingezogen wird, bleibt
+     eine Entscheidung in der Akte (Mietabgleich Krefeld: wer anders zahlt,
+     wuerde sonst doppelt belastet).
+   - A432: TG-Mieter (Stellplatz ohne Wohnung) gehoeren dazu; sie haben kein
+     Portal und keine Heizkostenuebersicht. Beendete TG-Vertraege
+     (aktiv:false) bleiben draussen.
+   - Vertragsparteien legt diese Ansicht nicht an: neue Personen sind
+     Bewohner. Wer Vertragspartei ist, steht im Mietvertrag (wie A396). */
+
+let _ku = null;   // { gruppeId, karten:[...], portal:Map|null, portalFehler:'', filter:'alle' }
+
+/* Mietverhaeltnisse eines Standorts, in der Reihenfolge der Dashboard-Gruppe. */
+async function kontaktMietverhaeltnisse(gruppeId){
+  const grp = DASH_GRUPPEN.find(g => g.id === gruppeId);
+  if(!grp) return [];
+  const alle = await idbGetAll('mieter').catch(() => []);
+  const rang = new Map(grp.objektIds.map((id, i) => [id, i]));
+  return alle.filter(m => m && rang.has(m.objektId) && !m._vormieter && !m._zukuenftig
+                         && !m.leerstand && !istWohnungFaktischLeer(m)
+                         && !(m._tgMieter && m.aktiv === false))
+    .sort((a, b) => (rang.get(a.objektId) - rang.get(b.objektId))
+      || ((parseFloat(a.weNr) || 0) - (parseFloat(b.weNr) || 0))
+      || String(a.weNr || '').localeCompare(String(b.weNr || ''))
+      || String(a.mieter || '').localeCompare(String(b.mieter || ''), 'de'));
+}
+
+/* Portal je Kennung. Fehlt Schluessel oder Netz, bleibt die Ansicht nutzbar. */
+async function kontaktPortalLaden(){
+  try{
+    const j = await portalVerzeichnisLaden();
+    return { karte: new Map((j.wohnungen || []).map(w => [String(w.kennung || '').toUpperCase(), w])), fehler: '' };
+  }catch(e){ return { karte: null, fehler: String(e && e.message || e) }; }
+}
+
+/* Personen des Portals einer Wohnung, einheitlich als Liste. Aeltere Backends
+   liefern nur Name/E-Mail/Telefon auf Wohnungsebene. */
+function kontaktPortalPersonen(w){
+  if(!w) return [];
+  if(Array.isArray(w.personenMieter) && w.personenMieter.length)
+    return w.personenMieter.filter(Boolean).map(p => ({ name: String(p.name || '').trim(),
+      email: String(p.email || '').trim(), telefon: String(p.telefon || '').trim(), ebene: 'person' }));
+  const p = { name: String(w.name || '').trim(), email: String(w.email || '').trim(),
+              telefon: String(w.telefon || '').trim(), ebene: 'wohnung' };
+  return (p.email || p.telefon) ? [p] : [];
+}
+
+/* Portalperson einer Aktenperson zuordnen - dieselben drei Wege wie im
+   automatischen Abgleich (A396/A413): Name, E-Mail, Telefon. Eine Angabe auf
+   Wohnungsebene gehoert der Hauptperson. Liefert den Index oder -1. */
+function kontaktPortalZuordnen(L, pp){
+  if(pp.ebene === 'wohnung') return hauptPersonIdx(L);
+  const schl = portalNameSchluessel(pp.name);
+  let i = schl ? L.findIndex(x => x && !x.verstorben && portalNameSchluessel(x.name) === schl) : -1;
+  if(i < 0 && pp.email) i = L.findIndex(x => x && String(x.email || '').trim().toLowerCase() === pp.email.toLowerCase());
+  if(i < 0 && pp.telefon){ const t = normTelefon(pp.telefon); if(t) i = L.findIndex(x => x && normTelefon(x.telefon) === t); }
+  return i;
+}
+
+/* Unterschiede Portal <-> Arbeitsstand einer Karte.
+   Liefert { jePerson: {idx: [{feld, wert}]}, neu: [pp], gleich: bool } */
+function kontaktAbweichungen(karte){
+  const erg = { jePerson: {}, neu: [] };
+  const pps = kontaktPortalPersonen(karte.portal);
+  for(const pp of pps){
+    const i = kontaktPortalZuordnen(karte.L, pp);
+    if(i < 0){ if(pp.name || pp.email || pp.telefon) erg.neu.push(pp); continue; }
+    const p = karte.L[i] || {};
+    const liste = [];
+    if(pp.email && String(p.email || '').trim().toLowerCase() !== pp.email.toLowerCase()) liste.push({ feld: 'email', wert: pp.email });
+    if(pp.telefon){
+      const teile = telefonTeile(pp.telefon);
+      const hat = teile.some(t => normTelefon(t) === normTelefon(p.telefon));
+      if(!hat) teile.forEach(t => liste.push({ feld: 'telefon', wert: t }));
+    }
+    if(pp.ebene === 'person' && pp.name && portalNameSchluessel(pp.name) !== portalNameSchluessel(p.name))
+      liste.push({ feld: 'name', wert: pp.name });
+    if(liste.length) erg.jePerson[i] = liste;
+  }
+  erg.gleich = !Object.keys(erg.jePerson).length && !erg.neu.length;
+  return erg;
+}
+
+/* Gemeinsame Ableitung aus der Personenliste (A431, aus saveEditMieter
+   herausgeloest): Anzeigename = Nachnamen der Vertragsparteien, Anrede und
+   Kontakt-Spiegel = erste Vertragspartei mit Rueckfall auf eine andere
+   lebende Person. */
+function mieterAusPersonenAbleiten(m){
+  const persListe = Array.isArray(m.personen_liste) ? m.personen_liste : [];
+  if(!persListe.length) return m;
+  const lebend = persListe.filter(p => !p.verstorben);
+  m.mieter = hauptmieterNachnamen(m) || (lebend[0] || persListe[0]).name;
+  const vpListe = lebend.filter(p => p.vertragspartner);
+  const haupt = vpListe[0] || lebend[0] || persListe[0];
+  if(haupt?.anrede) m.anrede = haupt.anrede;
+  m.telefon = (haupt?.telefon || '').trim() || (lebend.find(p => String(p.telefon || '').trim())?.telefon || '').trim();
+  m.email   = (haupt?.email   || '').trim() || (lebend.find(p => String(p.email   || '').trim())?.email   || '').trim();
+  return m;
+}
+
+/* Arbeitskopie der Personen. personenMitSpiegel setzt bei einer Akte ohne
+   Personenliste die Anrede 'Herr' als Formularvorgabe - hier sieht niemand
+   die Anrede, sie darf also nicht still in die Akte wandern. */
+function kontaktPersonen(m){
+  const L = personenMitSpiegel(m);
+  if(!(Array.isArray(m.personen_liste) && m.personen_liste.length) && L[0]) L[0].anrede = m.anrede || '';
+  return L;
+}
+
+function kontaktStatus(k){
+  const lebend = k.L.filter(p => p && !p.verstorben);
+  const mail = lebend.some(p => String(p.email || '').trim());
+  const tel  = lebend.some(p => String(p.telefon || '').trim());
+  const portalReg = !!(k.portal && k.portal.registriert);
+  return { mail, tel, portalReg, rueck: !!k.rueckAm || portalReg,
+           abw: k.portal ? !kontaktAbweichungen(k).gleich : false,
+           sepa: !!k.sepaAm, hkvPost: !k.tg && k.hkv === 'post' };
+}
+
+async function modalKontaktUebersicht(gruppeId){
+  if(!istVerwalter()){ toast('Nur für die Verwaltung'); return; }
+  const gid = gruppeId || (_ku && _ku.gruppeId) || 'MG';
+  _ku = { gruppeId: gid, karten: [], portal: null, portalFehler: '', filter: (_ku && _ku.filter) || 'alle' };
+  showModal(`
+    <div class="m-title"><i class="ti ti-address-book"></i> Kontaktdaten der Mieter</div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">
+      ${DASH_GRUPPEN.map(g => `<button class="btn btn-sm ${g.id === gid ? 'btn-primary' : ''}"
+        data-action-click="kontaktStandortWechseln" data-arg="${escAttr(g.id)}">${esc(g.label)}</button>`).join('')}
+    </div>
+    <div id="kuKopf"></div>
+    <div id="kuListe"><div style="padding:18px 0;text-align:center;color:var(--ink-40)">Wird geladen …</div></div>
+    <div style="position:sticky;bottom:0;background:var(--white);padding-top:8px;display:flex;gap:8px">
+      <button class="btn btn-copper btn-full" id="kuAlleSpeichern" data-action-click="kontaktAlleSpeichern" disabled>
+        <i class="ti ti-device-floppy"></i> Alle Änderungen speichern</button>
+      <button class="btn btn-full" data-action-click="kontaktSchliessen">Schließen</button>
+    </div>`);
+  const [liste, portal, sps] = await Promise.all([kontaktMietverhaeltnisse(gid), kontaktPortalLaden(),
+                                                  idbGetAll('stellplaetze').catch(() => [])]);
+  _ku.portal = portal.karte; _ku.portalFehler = portal.fehler;
+  const spJeMieter = new Map();
+  for(const sp of sps || []){
+    if(!sp || sp.geloescht || !sp.mieterId) continue;
+    if(!spJeMieter.has(sp.mieterId)) spJeMieter.set(sp.mieterId, []);
+    spJeMieter.get(sp.mieterId).push(String(sp.nr));
+  }
+  _ku.karten = liste.map(m => ({
+    id: m.id, objektId: m.objektId, weNr: m.weNr,
+    kennung: wohnungsKennung(m.objektId, m.weNr),
+    L: kontaktPersonen(m),
+    rueckAm: m.kontaktRueckAm || '',
+    tg: !!m._tgMieter,
+    stellplaetze: (spJeMieter.get(m.id) || []).sort((a, b) => (Number(a) || 0) - (Number(b) || 0)),
+    kontaktweg: m.kontaktweg || '', hkv: m.hkvVersand || '',
+    sepaAm: m.sepaUnterschriftAm || '', zahlweise: m.zahlweise || '',
+    portal: (!m._tgMieter && portal.karte) ? (portal.karte.get(wohnungsKennung(m.objektId, m.weNr)) || null) : null,
+    geaendert: false
+  }));
+  kontaktZeichnen();
+}
+
+async function kontaktStandortWechseln(gid){
+  if(_ku && _ku.karten.some(k => k.geaendert)
+     && !confirm('Es gibt ungespeicherte Änderungen. Trotzdem den Standort wechseln? Die Änderungen gehen verloren.')) return;
+  await modalKontaktUebersicht(gid);
+}
+
+function kontaktSchliessen(){
+  if(_ku && _ku.karten.some(k => k.geaendert)
+     && !confirm('Es gibt ungespeicherte Änderungen. Trotzdem schließen?')) return;
+  _ku = null;
+  closeModal();
+}
+
+function kontaktFilter(f){ if(_ku){ _ku.filter = f; kontaktZeichnen(); } }
+
+function kontaktZeichnen(){
+  if(!_ku) return;
+  const kopf = document.getElementById('kuKopf'), el = document.getElementById('kuListe');
+  if(!kopf || !el) return;
+  const st = _ku.karten.map(kontaktStatus);
+  const n = {
+    alle: st.length,
+    ohneRueck: st.filter(s => !s.rueck).length,
+    ohneKontakt: st.filter(s => !s.mail || !s.tel).length,
+    abw: st.filter(s => s.abw).length,
+    ohneSepa: st.filter(s => !s.sepa).length,
+    hkvPost: st.filter(s => s.hkvPost).length
+  };
+  const chip = (f, txt, zahl) => `<button class="btn btn-sm ${_ku.filter === f ? 'btn-primary' : ''}"
+    data-action-click="kontaktFilter" data-arg="${f}">${txt} <b>${zahl}</b></button>`;
+  kopf.innerHTML = `
+    <div style="font-size:12px;color:var(--ink-60);margin-bottom:8px;line-height:1.5">
+      <b>${n.alle - n.ohneRueck}</b> von <b>${n.alle}</b> Mietverhältnissen haben sich gemeldet
+      (Rückantwort oder Portal). Änderungen gehen erst mit <i>Speichern</i> in die Akte.
+    </div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">
+      ${chip('alle', 'Alle', n.alle)}${chip('ohneRueck', 'Ohne Rückmeldung', n.ohneRueck)}
+      ${chip('ohneKontakt', 'E-Mail oder Telefon fehlt', n.ohneKontakt)}
+      ${_ku.portal ? chip('abw', 'Weicht vom Portal ab', n.abw) : ''}
+      ${chip('ohneSepa', 'Lastschrift-Unterschrift fehlt', n.ohneSepa)}${chip('hkvPost', 'Heizkosten per Post', n.hkvPost)}
+    </div>
+    ${_ku.portal ? '' : `<div style="font-size:12px;color:var(--amber-d,#9a6b00);margin-bottom:10px">
+      <i class="ti ti-cloud-off"></i> Portal nicht gelesen${_ku.portalFehler ? ': ' + esc(_ku.portalFehler) : ''}.
+      Die Akte lässt sich trotzdem pflegen.</div>`}`;
+  const zeigen = _ku.karten.map((k, i) => [k, i, st[i]]).filter(([k, i, s]) =>
+    _ku.filter === 'ohneRueck' ? !s.rueck
+    : _ku.filter === 'ohneKontakt' ? (!s.mail || !s.tel)
+    : _ku.filter === 'abw' ? s.abw
+    : _ku.filter === 'ohneSepa' ? !s.sepa
+    : _ku.filter === 'hkvPost' ? s.hkvPost : true);
+  el.innerHTML = zeigen.length ? zeigen.map(([k, i]) => kontaktKarteHTML(k, i)).join('')
+    : `<div class="empty"><i class="ti ti-check"></i><p>Keine Mietverhältnisse in dieser Auswahl.</p></div>`;
+  kontaktKnopfStand();
+}
+
+function kontaktKarteHTML(k, ci){
+  const obj = getObj(k.objektId);
+  const s = kontaktStatus(k);
+  const abw = k.portal ? kontaktAbweichungen(k) : { jePerson: {}, neu: [] };
+  const portalTxt = k.tg ? `<span style="color:var(--ink-40)"><i class="ti ti-parking"></i> Stellplatz – kein Portal</span>`
+    : !_ku.portal ? ''
+    : !k.portal ? `<span style="color:var(--ink-40)"><i class="ti ti-point"></i> nicht im Portal</span>`
+    : k.portal.registriert ? `<span style="color:var(--green)"><i class="ti ti-circle-check"></i> im Portal registriert</span>`
+    : k.portal.regOffen ? `<span style="color:var(--ink-40)"><i class="ti ti-mail-fast"></i> Portal: Schlüssel nicht eingelöst</span>`
+    : `<span style="color:var(--ink-40)"><i class="ti ti-point"></i> im Portal angelegt</span>`;
+  const rahmen = k.geaendert ? 'var(--copper)' : (s.rueck ? 'var(--ink-10)' : 'var(--amber,#e0a800)');
+  const zeilen = k.L.map((p, pi) => {
+    if(!p || p.verstorben) return '';
+    const d = abw.jePerson[pi] || [];
+    const feld = (f, typ, ph) => `<input type="${typ}" id="ku_${ci}_${pi}_${f}" value="${escAttr(p[f] || '')}" placeholder="${ph}"
+      ${typ === 'email' ? 'inputmode="email" autocomplete="off"' : typ === 'tel' ? 'inputmode="tel" autocomplete="off"' : 'autocomplete="off"'}
+      data-action-input="kontaktEingabe" data-arg="${ci}" data-arg2="${pi}" data-arg3="${f}" data-argnum="1,2"
+      style="width:100%;font-size:13px;padding:7px 8px">`;
+    return `<div style="border-top:1px solid var(--ink-10);padding-top:8px;margin-top:8px">
+      <div style="font-size:11px;color:var(--ink-40);margin-bottom:4px">${p.vertragspartner ? 'Vertragspartei' : 'Bewohner'}</div>
+      <div style="display:grid;grid-template-columns:1fr;gap:6px">
+        ${feld('name', 'text', 'Vor- und Nachname')}
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">${feld('email', 'email', 'E-Mail')}${feld('telefon', 'tel', 'Telefon')}</div>
+      </div>
+      ${d.map(x => `<div style="display:flex;align-items:center;gap:8px;margin-top:4px;font-size:12px;color:var(--amber-d,#9a6b00)">
+        <i class="ti ti-arrows-diff"></i><span style="flex:1;min-width:0;overflow-wrap:anywhere">Portal ${x.feld === 'email' ? 'E-Mail' : x.feld === 'telefon' ? 'Telefon' : 'Name'}: <b>${esc(x.wert)}</b></span>
+        <button class="btn btn-sm" data-action-click="kontaktPortalUebernehmen" data-arg="${ci}" data-arg2="${pi}" data-arg3="${x.feld}" data-arg4="${escAttr(x.wert)}" data-argnum="1,2">Übernehmen</button>
+      </div>`).join('')}
+    </div>`;
+  }).join('');
+  const neu = abw.neu.map((pp, ni) => `<div style="display:flex;align-items:center;gap:8px;margin-top:6px;font-size:12px;background:var(--ink-05);border-radius:8px;padding:6px 8px">
+      <span style="flex:1;min-width:0;overflow-wrap:anywhere"><i class="ti ti-user-question"></i> Nur im Portal: <b>${esc(pp.name || '(ohne Namen)')}</b>${pp.email ? ' · ' + esc(pp.email) : ''}${pp.telefon ? ' · ' + esc(pp.telefon) : ''}</span>
+      <button class="btn btn-sm" data-action-click="kontaktPortalPersonNeu" data-arg="${ci}" data-arg2="${ni}" data-argnum="1,2">Als Bewohner</button>
+    </div>`).join('');
+  return `<div id="ku_karte_${ci}" style="border:1px solid ${rahmen};border-radius:10px;padding:10px 12px;margin-bottom:10px">
+    <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">
+      <b style="font-size:13px">${esc(obj?.name || k.objektId)}${k.tg
+        ? (k.stellplaetze.length ? ' · Stellplatz ' + esc(k.stellplaetze.join(', ')) : ' · TG-Mieter')
+        : ' · WE ' + esc(String(k.weNr)) + (k.stellplaetze.length ? ' · TG ' + esc(k.stellplaetze.join(', ')) : '')}</b>
+      <span style="margin-left:auto;font-size:11px">${portalTxt}</span>
+    </div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;font-size:11px;margin-top:4px;color:var(--ink-40)">
+      <span style="color:${s.mail ? 'var(--green)' : 'var(--amber-d,#9a6b00)'}"><i class="ti ti-mail"></i> ${s.mail ? 'E-Mail' : 'keine E-Mail'}</span>
+      <span style="color:${s.tel ? 'var(--green)' : 'var(--amber-d,#9a6b00)'}"><i class="ti ti-phone"></i> ${s.tel ? 'Telefon' : 'kein Telefon'}</span>
+    </div>
+    ${zeilen}
+    ${neu}
+    ${kontaktWahlenHTML(k, ci, s)}
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:10px">
+      <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
+        <input type="checkbox" id="ku_rueck_${ci}" ${k.rueckAm ? 'checked' : ''} style="width:16px;height:16px"
+          data-action-change="kontaktRueckUmschalten" data-arg="${ci}" data-argnum>
+        Rückmeldung erhalten${k.rueckAm ? ' am ' + esc(fmtDate(k.rueckAm)) : ''}</label>
+      <button class="btn btn-sm" data-action-click="kontaktPersonNeu" data-arg="${ci}" data-argnum><i class="ti ti-user-plus"></i> Person</button>
+      <button class="btn btn-sm btn-copper" style="margin-left:auto;${k.geaendert ? '' : 'opacity:.35'}" ${k.geaendert ? '' : 'disabled'}
+        data-action-click="kontaktKarteSpeichern" data-arg="${ci}" data-argnum><i class="ti ti-device-floppy"></i> Speichern</button>
+    </div>
+  </div>`;
+}
+
+/* A432: Kontaktweg, Zustellung der Heizkostenuebersicht, Lastschriftmandat.
+   Auswahlknoepfe statt Klappliste: ein Tipp je Angabe, der gewaehlte Wert ist
+   auf einen Blick zu sehen. Erneutes Tippen auf den gewaehlten Wert hebt die
+   Auswahl auf ("keine Angabe" ist ein eigener, ehrlicher Zustand). */
+function kontaktWahlenHTML(k, ci, s){
+  const knopf = (feld, wert, txt, akt) => `<button class="btn btn-sm ${akt === wert ? 'btn-primary' : ''}"
+      style="padding:4px 9px" data-action-click="kontaktWahl" data-arg="${ci}" data-arg2="${feld}" data-arg3="${wert}" data-argnum>${txt}</button>`;
+  const zeile = (titel, inhalt) => `<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:8px">
+      <span style="font-size:12px;color:var(--ink-60);min-width:120px">${titel}</span>${inhalt}</div>`;
+  const hkvOhneMail = !k.tg && k.hkv === 'email' && !s.mail;
+  const sepaHinweis = k.sepaAm && k.zahlweise !== 'sepa';
+  return `<div style="border-top:1px solid var(--ink-10);margin-top:10px;padding-top:2px">
+    ${zeile('Bevorzugter Kontakt', knopf('kontaktweg', 'email', 'E-Mail', k.kontaktweg) + knopf('kontaktweg', 'telefon', 'Telefon', k.kontaktweg) + knopf('kontaktweg', 'post', 'Post', k.kontaktweg))}
+    ${k.tg ? '' : zeile('Heizkostenübersicht', knopf('hkv', 'email', 'per E-Mail', k.hkv) + knopf('hkv', 'post', 'per Post', k.hkv))}
+    ${hkvOhneMail ? `<div style="font-size:11px;color:var(--amber-d,#9a6b00);margin-top:4px"><i class="ti ti-alert-triangle"></i> Per E-Mail gewünscht, aber keine E-Mail-Adresse eingetragen.</div>` : ''}
+    <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;margin-top:8px">
+      <input type="checkbox" id="ku_sepa_${ci}" ${k.sepaAm ? 'checked' : ''} style="width:16px;height:16px"
+        data-action-change="kontaktSepaUmschalten" data-arg="${ci}" data-argnum>
+      Lastschriftmandat unterschrieben erhalten${k.sepaAm ? ' am ' + esc(fmtDate(k.sepaAm)) : ''}</label>
+    ${sepaHinweis ? `<div style="font-size:11px;color:var(--amber-d,#9a6b00);margin-top:4px;line-height:1.45"><i class="ti ti-info-circle"></i> Zahlweise in der Akte: ${k.zahlweise ? 'Selbstüberweisung' : 'nicht gesetzt'}. Eingezogen wird erst, wenn die Akte auf SEPA-Lastschrift steht – dort mit IBAN und Mandatsreferenz umstellen.</div>` : ''}
+  </div>`;
+}
+
+function kontaktWahl(ci, feld, wert){
+  const k = _ku && _ku.karten[ci]; if(!k || !['kontaktweg', 'hkv'].includes(feld)) return;
+  k[feld] = (k[feld] === wert) ? '' : wert;
+  kontaktMarkieren(ci, true);   // Angabe aus der Rueckantwort
+  kontaktKarteNeu(ci);
+}
+
+function kontaktSepaUmschalten(ci){
+  const k = _ku && _ku.karten[ci]; if(!k) return;
+  k.sepaAm = (this && this.checked) ? (k.sepaAm || today()) : '';
+  kontaktMarkieren(ci, false);
+  kontaktKarteNeu(ci);
+}
+
+/* Eingabe: Arbeitsstand fuehren, Karte als geaendert kennzeichnen. Kein
+   Neuzeichnen beim Tippen - das wuerde die Schreibmarke verlieren. Der
+   Rueckmeldungs-Haken setzt sich bei Kontaktangaben von selbst. */
+function kontaktEingabe(ci, pi, feld){
+  const k = _ku && _ku.karten[ci]; if(!k || !k.L[pi]) return;
+  k.L[pi][feld] = this && this.value != null ? this.value : '';
+  kontaktMarkieren(ci, feld !== 'name');
+}
+
+function kontaktMarkieren(ci, kontaktGeaendert){
+  const k = _ku.karten[ci];
+  k.geaendert = true;
+  if(kontaktGeaendert && !k.rueckAm){
+    k.rueckAm = today();
+    const cb = document.getElementById('ku_rueck_' + ci); if(cb) cb.checked = true;
+  }
+  const karte = document.getElementById('ku_karte_' + ci);
+  if(karte){
+    karte.style.borderColor = 'var(--copper)';
+    const b = karte.querySelector('[data-action-click="kontaktKarteSpeichern"]');
+    if(b){ b.disabled = false; b.style.opacity = ''; }
+  }
+  kontaktKnopfStand();
+}
+
+function kontaktKnopfStand(){
+  const b = document.getElementById('kuAlleSpeichern');
+  if(!b || !_ku) return;
+  const n = _ku.karten.filter(k => k.geaendert).length;
+  b.disabled = !n;
+  b.style.opacity = n ? '' : '.35';   // die App-CSS kennt keinen eigenen Stil fuer gesperrte Knoepfe
+  b.innerHTML = '<i class="ti ti-device-floppy"></i> ' + (n ? n + (n === 1 ? ' Änderung' : ' Änderungen') + ' speichern' : 'Alle Änderungen speichern');
+}
+
+function kontaktRueckUmschalten(ci){
+  const k = _ku && _ku.karten[ci]; if(!k) return;
+  k.rueckAm = (this && this.checked) ? (k.rueckAm || today()) : '';
+  kontaktMarkieren(ci, false);
+}
+
+/* Portalwert in den Arbeitsstand uebernehmen - gespeichert wird erst mit
+   Speichern, damit eine Fehlbedienung folgenlos bleibt. */
+function kontaktPortalUebernehmen(ci, pi, feld, wert){
+  const k = _ku && _ku.karten[ci]; if(!k || !k.L[pi]) return;
+  k.L[pi][feld] = String(wert || '');
+  kontaktMarkieren(ci, feld !== 'name');
+  kontaktKarteNeu(ci);
+}
+
+function kontaktPortalPersonNeu(ci, ni){
+  const k = _ku && _ku.karten[ci]; if(!k) return;
+  const pp = kontaktAbweichungen(k).neu[ni]; if(!pp) return;
+  k.L.push({ name: pp.name, anrede: '', email: pp.email, telefon: pp.telefon,
+             geburtsdatum: '', verstorben: false, vertragspartner: false, quelle: 'portal' });
+  kontaktMarkieren(ci, true);
+  kontaktKarteNeu(ci);
+}
+
+function kontaktPersonNeu(ci){
+  const k = _ku && _ku.karten[ci]; if(!k) return;
+  k.L.push({ name: '', anrede: '', email: '', telefon: '', geburtsdatum: '', verstorben: false,
+             vertragspartner: false, quelle: 'kontaktuebersicht' });
+  kontaktMarkieren(ci, false);
+  kontaktKarteNeu(ci);
+  const f = document.getElementById('ku_' + ci + '_' + (k.L.length - 1) + '_name'); if(f) f.focus();
+}
+
+function kontaktKarteNeu(ci){
+  const alt = document.getElementById('ku_karte_' + ci);
+  if(!alt) return;
+  const t = document.createElement('div');
+  t.innerHTML = kontaktKarteHTML(_ku.karten[ci], ci);
+  alt.replaceWith(t.firstElementChild);
+}
+
+/* Pruefen vor dem Schreiben. Liefert Fehlertext oder ''. */
+function kontaktPruefen(k){
+  for(const p of k.L){
+    if(!p || p.verstorben) continue;
+    const mail = String(p.email || '').trim();
+    if(mail && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(mail)) return 'E-Mail-Adresse ungültig: ' + mail;
+    if(!String(p.name || '').trim() && (mail || String(p.telefon || '').trim()))
+      return 'Bitte zu jeder E-Mail-Adresse oder Rufnummer einen Namen eintragen.';
+  }
+  if(!k.L.some(p => p && !p.verstorben && String(p.name || '').trim())) return 'Mindestens eine Person mit Namen erforderlich.';
+  return '';
+}
+
+/* Eine Karte in die Akte schreiben. Liefert true/false, meldet selbst. */
+async function kontaktSchreiben(ci){
+  const k = _ku && _ku.karten[ci]; if(!k || !k.geaendert) return true;
+  if(!istVerwalter()){ toast('Nur für die Verwaltung'); return false; }
+  const fehler = kontaktPruefen(k);
+  const ort = (getObj(k.objektId)?.name || '') + ' WE ' + k.weNr;
+  if(fehler){ toast(ort + ': ' + fehler, 7000); return false; }
+  const m = await idbGet('mieter', k.id).catch(() => null);
+  if(!m){ toast(ort + ': Mieter nicht gefunden', 6000); return false; }
+  const alt = JSON.parse(JSON.stringify(m));
+  /* Leere neue Zeilen fallen weg; Texte werden getrimmt. */
+  m.personen_liste = k.L.filter(p => p && (p.verstorben || String(p.name || '').trim()))
+    .map(p => { const q = Object.assign({}, p);
+      ['name', 'email', 'telefon'].forEach(f => { if(q[f] != null) q[f] = String(q[f]).trim(); });
+      return q; });
+  mieterAusPersonenAbleiten(m);
+  if(k.rueckAm) m.kontaktRueckAm = k.rueckAm; else delete m.kontaktRueckAm;
+  /* A432: leere Auswahl = Feld weg (erfasseLeerungen vermerkt den Grabstein). */
+  if(k.kontaktweg) m.kontaktweg = k.kontaktweg; else delete m.kontaktweg;
+  if(!k.tg && k.hkv) m.hkvVersand = k.hkv; else if(!k.tg) delete m.hkvVersand;
+  if(k.sepaAm) m.sepaUnterschriftAm = k.sepaAm; else delete m.sepaUnterschriftAm;
+  m.geaendert = now();
+  erfasseLeerungen(alt, m);
+  try{ await idbPut('mieter', m); }
+  catch(e){ console.error('Kontaktübersicht speichern', e); toast(ort + ': konnte nicht gespeichert werden', 7000); return false; }
+  k.L = kontaktPersonen(m);
+  k.geaendert = false;
+  return true;
+}
+
+async function kontaktKarteSpeichern(ci){
+  if(await kontaktSchreiben(ci)){
+    syncSoon();
+    toast('Gespeichert ✓');
+    kontaktZeichnen();
+  }
+}
+
+async function kontaktAlleSpeichern(){
+  if(!_ku) return;
+  let ok = 0, fehler = 0;
+  for(let ci = 0; ci < _ku.karten.length; ci++){
+    if(!_ku.karten[ci].geaendert) continue;
+    if(await kontaktSchreiben(ci)) ok++; else fehler++;
+  }
+  if(ok) syncSoon();
+  toast(ok + ' gespeichert' + (fehler ? ', ' + fehler + ' mit Fehler – bitte prüfen' : ' ✓'), fehler ? 8000 : 3000);
+  kontaktZeichnen();
+}
+
+registerActions({ modalKontaktUebersicht, kontaktStandortWechseln, kontaktSchliessen, kontaktFilter,
+                  kontaktEingabe, kontaktRueckUmschalten, kontaktPortalUebernehmen, kontaktPortalPersonNeu,
+                  kontaktPersonNeu, kontaktKarteSpeichern, kontaktAlleSpeichern,
+                  kontaktWahl, kontaktSepaUmschalten });   // A431, A432
 
 // ── Aushang ──────────────────────────────────────────────────
 async function modalAushang(objektId) {
@@ -33030,11 +33680,10 @@ async function saveEditMieter(id) {
   m.personen_liste = persListe;
   // Anzeigename = Nachname(n) der Vertragspartner; sonst erste lebende Person.
   const lebend = persListe.filter(p=>!p.verstorben);
-  m.mieter = hauptmieterNachnamen(m) || (lebend[0]||persListe[0]).name;
   // Anrede + gespiegelte Kontaktdaten = erste Vertragspartei (Altfunktionen/Schnellzugriff)
-  const vpListe = lebend.filter(p=>p.vertragspartner);
-  const haupt = vpListe[0] || lebend[0] || persListe[0];
-  if(haupt?.anrede) m.anrede = haupt.anrede;
+  /* A431: Ableitung in mieterAusPersonenAbleiten - die Kontaktuebersicht
+     schreibt nach derselben Regel. */
+  mieterAusPersonenAbleiten(m);
   /* Gespiegelte Hauptkontaktdaten. v388: Das Formular belegt die erste
      Vertragspartei jetzt mit dem Spiegelwert vor (personenMitSpiegel), wenn
      keine Person eine Angabe fuehrt. Ein leeres Feld ist damit eine bewusste
@@ -33042,8 +33691,6 @@ async function saveEditMieter(id) {
      dem Portal uebernommene Adresse nicht mehr entfernen. Der Rueckfall auf
      eine andere Person bleibt, damit die Angabe nicht verschwindet, nur weil
      sie an der zweiten Zeile steht. */
-  m.telefon = (haupt?.telefon || '').trim() || (lebend.find(p=>String(p.telefon||'').trim())?.telefon || '').trim();
-  m.email   = (haupt?.email   || '').trim() || (lebend.find(p=>String(p.email  ||'').trim())?.email   || '').trim();
   // Zusatzkontakt
   const zkName = document.getElementById('zkName')?.value?.trim()||'';
   if(zkName){
@@ -37700,6 +38347,16 @@ async function renderSettings(){
       <button class="btn btn-full" style="margin-top:8px" data-action-click="wohnungenAdressenHolen"><i class="ti ti-cloud-down"></i> Neue Adressen aus dem Portal übernehmen</button>
       <button class="btn btn-full" style="margin-top:8px" data-action-click="modalPortalVerzeichnis"><i class="ti ti-address-book"></i> Portal-Verzeichnis öffnen</button>
       <div id="wohnungsExportStatus" style="margin-top:10px"></div>
+    </div>`:''}
+
+    ${istVerwalter()?`<div class="settings-card" data-tab="daten">
+      <div class="card-hdr"><i class="ti ti-address-book"></i> Kontaktdaten der Mieter</div>
+      <p style="font-size:13px;color:var(--ink-40);margin-bottom:12px;line-height:1.6">
+        Je Standort alle Mietverhältnisse mit Namen, E-Mail und Telefon in einer Liste – Rückantworten
+        direkt eintragen, Namen korrigieren, Angaben aus dem Mieterportal gegenüberstellen und übernehmen.
+        Zeigt, wer sich gemeldet hat und wer nicht.
+      </p>
+      <button class="btn btn-primary btn-full" data-action-click="modalKontaktUebersicht"><i class="ti ti-address-book"></i> Kontaktübersicht öffnen</button>
     </div>`:''}
 
     ${istVerwalter()?`<div class="settings-card" data-tab="daten">
@@ -50235,7 +50892,12 @@ const EINMALIG_AKTIONEN = [
      haengte die Anhaenge doppelt an bzw. lud sie doppelt herunter. */
   'postfachWeiterleiten','postfachAlleAnhaenge',
   /* A428: liest die Mieterliste - ein zweiter Tap wuerde doppelt vorbelegen. */
-  'postfachAntworten'
+  'postfachAntworten',
+  /* A431: Schreiben in die Akte - ein zweiter Tap waehrend des Speicherns
+     wuerde dieselbe Karte zweimal schreiben. */
+  'kontaktKarteSpeichern','kontaktAlleSpeichern',
+  /* A433: laedt Anhaenge nach - ein zweiter Tap haengte sie doppelt an. */
+  'tmGesendetWeiterleiten'
 ];
 
 /* Erst nach dem Laden umhuellen: window.<name> existiert durch Hoisting zwar
