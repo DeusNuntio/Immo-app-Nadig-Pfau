@@ -1248,7 +1248,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=38;   // A398: +kr_abrechnungen
-const APP_VERSION = '2026-10-01-A433';
+const APP_VERSION = '2026-10-08-A435';
 /* v364 (12.08.2026) – offene Punkte abgearbeitet.
    1) D1/XLSX_SRI: Der im Code hinterlegte PowerShell-Befehl war FALSCH und
       konnte nie funktionieren - Invoke-WebRequest liefert unter .Content einen
@@ -9082,7 +9082,13 @@ async function renderMail(){
   else if(tab==='mieter'){     await mailRenderMieterMail(body);
                                /* v362: NACH dem Aufbau - vorher stehen die
                                   Felder nicht im Dokument. */
-                               mailVorbelegungAnwenden(); }
+                               mailVorbelegungAnwenden();
+                               /* A434: Ergebnis des letzten Versands, einmalig. */
+                               if(window._tmLetzterStatus){
+                                 const _s = document.getElementById('tmStatus');
+                                 if(_s) _s.innerHTML = window._tmLetzterStatus;
+                                 window._tmLetzterStatus = '';
+                               } }
   else if(tab==='papierkorb')  await mailRenderPapierkorb(body);
   else                         await mailRenderToken(body);
 }
@@ -9729,8 +9735,9 @@ async function mailRenderNachrichten(body){
     return;
   }
   const cnt=document.getElementById('mailCountMsg'); if(cnt) cnt.textContent=liste.length?'('+liste.length+')':'';
-  if(!liste.length){ body.innerHTML=NACHRICHTEN_HERKUNFT+'<div class="empty"><i class="ti ti-message-off"></i><p>Keine neuen Nachrichten.</p></div>'; return; }
+  /* A435: kein return mehr bei leerer Liste - darunter folgen die Vormerkungen. */
   let html=NACHRICHTEN_HERKUNFT;
+  if(!liste.length) html+='<div class="empty" style="padding:14px 0"><i class="ti ti-message-off"></i><p>Keine neuen Nachrichten.</p></div>';
   for(const n of liste){
     const dt=n.zeitstempel||n.erstellt?new Date(n.zeitstempel||n.erstellt).toLocaleString('de-DE'):'';
     const name=n.name||[n.vorname,n.nachname].filter(Boolean).join(' ')||'(ohne Namen)';
@@ -9750,7 +9757,117 @@ async function mailRenderNachrichten(body){
       </div>
     </div>`;
   }
+  html+='<div id="vmBereich"></div>';
   body.innerHTML=html;
+  await vormerkungenZeichnen(key);
+}
+
+/* ── A435: Vormerkungen der Website ─────────────────────────────────────
+   Je Person (E-Mail) und Objekt eine Gruppe; die neueste Vormerkung traegt
+   die Angaben, die Ids aller gehen gemeinsam auf "Erledigt". */
+function vormerkungenGruppieren(liste){
+  const g = new Map();
+  for(const v of liste){
+    const k = String(v.email||'').toLowerCase() + '|' + (v.objektId || v.objektName || '');
+    if(!g.has(k)) g.set(k, []);
+    g.get(k).push(v);
+  }
+  return [...g.values()].map(a => {
+    a.sort((x, y) => String(y.zeitstempel).localeCompare(String(x.zeitstempel)));
+    return { neu: a[0], ids: a.map(x => x.id), anzahl: a.length, erste: a[a.length-1].zeitstempel,
+             erledigt: a.every(x => x.erledigt) ? a[0].erledigt : '' };
+  }).sort((x, y) => String(y.neu.zeitstempel).localeCompare(String(x.neu.zeitstempel)));
+}
+
+function vormerkungKarteHTML(gr){
+  const v = gr.neu;
+  const name = v.name || [v.vorname, v.nachname].filter(Boolean).join(' ') || '(ohne Namen)';
+  const dt = d => d ? new Date(d).toLocaleString('de-DE') : '';
+  const zeile = (titel, wert) => wert ? `<div style="display:flex;gap:8px;font-size:12px;margin-top:3px">
+      <span style="width:118px;flex-shrink:0;color:var(--ink-40)">${titel}</span>
+      <span style="flex:1;min-width:0;overflow-wrap:anywhere">${esc(wert)}</span></div>` : '';
+  const mb = /^\d{4}-\d{2}-\d{2}$/.test(String(v.mietbeginn||'')) ? fmtDate(v.mietbeginn) : v.mietbeginn;
+  const kinder = v.kinder && v.kinder !== '0' ? v.kinder + (v.kinderAlter ? ' (Alter: ' + v.kinderAlter + ')' : '') : (v.kinderAlter ? 'Alter: ' + v.kinderAlter : '');
+  const idsArg = escAttr(gr.ids.join(','));
+  return `<div class="vm-karte" style="border:1px solid var(--line);${inboxBalken('website')}border-radius:10px;padding:12px;margin-bottom:10px;background:var(--white)${gr.erledigt?';opacity:.65':''}">
+    <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap">
+      <div><b>${esc(name)}</b> <span style="font-size:10px;padding:1px 6px;border-radius:6px;color:#fff;background:${INBOX_FARBE.website}">Vormerkung</span>
+        ${gr.anzahl > 1 ? `<span style="font-size:10px;padding:1px 6px;border-radius:6px;background:var(--ink-05);color:var(--ink-60)">${gr.anzahl}× vorgemerkt</span>` : ''}<br>
+        <span style="font-size:12px;color:var(--ink-40)">${esc(v.email||'')}${v.telefon?' · '+esc(v.telefon):''} · ${esc(dt(v.zeitstempel))}</span></div>
+    </div>
+    ${v.objektName?`<div style="font-size:12px;color:var(--ink-60);margin-top:6px"><i class="ti ti-building"></i> ${esc(v.objektName)}</div>`:''}
+    <div style="margin-top:6px">
+      ${zeile('Mietbeginn', mb)}${zeile('Erwachsene', v.erwachsene)}${zeile('Kinder', kinder)}${zeile('Empfohlen von', v.empfohlenVon)}
+      ${gr.anzahl > 1 ? zeile('Zuerst vorgemerkt', dt(gr.erste)) : ''}
+      ${gr.erledigt ? zeile('Erledigt am', dt(gr.erledigt)) : ''}
+    </div>
+    <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+      ${v.email && !gr.erledigt ? `<button class="btn btn-sm btn-primary" data-action-click="vormerkungLinkSenden" data-arg="${escAttr(v.email)}" data-arg2="${escAttr(v.objektName||'')}"><i class="ti ti-send"></i> Selbstauskunft-Link</button>` : ''}
+      ${v.email ? `<button class="btn btn-sm" data-action-click="websiteNachrichtAntworten" data-arg="${escAttr(v.email)}" data-arg2="${escAttr(name)}"><i class="ti ti-mail-forward"></i> Antworten</button>` : ''}
+      <button class="btn btn-sm" data-action-click="vormerkungErledigen" data-arg="${idsArg}" data-arg2="${gr.erledigt ? '0' : '1'}">
+        <i class="ti ti-${gr.erledigt ? 'arrow-back-up' : 'check'}"></i> ${gr.erledigt ? 'Wieder offen' : 'Erledigt'}</button>
+    </div>
+  </div>`;
+}
+
+async function vormerkungenZeichnen(key){
+  const el = document.getElementById('vmBereich'); if(!el) return;
+  const alle = !!window._vmAlle;
+  let liste = [];
+  try{
+    const res = await fetchMitTimeout(BACKEND_AZURE + '/api/inbox?art=vormerkung' + (alle ? '&alle=1' : ''), { headers:{ 'x-functions-key': key } });
+    if(!res.ok) throw new Error('HTTP ' + res.status);
+    liste = await res.json().catch(() => []);
+  }catch(e){
+    el.innerHTML = '<div style="font-size:12px;color:var(--ink-40);margin-top:6px"><i class="ti ti-alert-circle"></i> Vormerkungen konnten nicht geladen werden.</div>';
+    return;
+  }
+  if(!Array.isArray(liste)) liste = [];
+  /* Ein Backend vor B6 ignoriert ?art=vormerkung und liefert die Nachrichten
+     - erkennbar am fehlenden Feld 'erledigt'. */
+  const altesBackend = liste.length && liste.some(v => !Object.prototype.hasOwnProperty.call(v, 'erledigt'));
+  const kopf = `<div style="display:flex;align-items:center;gap:8px;margin:18px 0 8px">
+      <div style="font-size:14px;font-weight:700;flex:1"><i class="ti ti-bookmark"></i> Vormerkungen</div>
+      ${altesBackend ? '' : `<button class="btn btn-sm" data-action-click="vormerkungenUmschalten">${alle ? 'Nur offene' : 'Erledigte anzeigen'}</button>`}</div>`;
+  if(altesBackend){
+    el.innerHTML = kopf + '<div style="font-size:12px;color:var(--amber-d,#9a6b00);line-height:1.5"><i class="ti ti-info-circle"></i> '
+      + 'Vormerkungen erscheinen hier, sobald das Backend B6 (interest.js, inbox.js) eingespielt ist.</div>';
+    return;
+  }
+  const gruppen = vormerkungenGruppieren(liste);
+  el.innerHTML = kopf + (gruppen.length ? gruppen.map(vormerkungKarteHTML).join('')
+    : `<div class="empty" style="padding:14px 0"><i class="ti ti-bookmark-off"></i><p>${alle ? 'Keine Vormerkungen.' : 'Keine offenen Vormerkungen.'}</p></div>`);
+}
+
+function vormerkungenUmschalten(){
+  window._vmAlle = !window._vmAlle;
+  idbGet('settings','backendKey').then(k => vormerkungenZeichnen(k && k.value)).catch(() => {});
+}
+
+async function vormerkungErledigen(idListe, erledigt){
+  const ids = String(idListe || '').split(',').filter(Boolean);
+  if(!ids.length) return;
+  const key = (await idbGet('settings','backendKey').catch(() => null))?.value;
+  if(!key){ toast('Kein Backend-Schlüssel hinterlegt.'); return; }
+  try{
+    const r = await fetchMitTimeout(BACKEND_AZURE + '/api/inbox-vormerkung', {
+      method:'POST', headers:{ 'Content-Type':'application/json', 'x-functions-key': key },
+      body: JSON.stringify({ ids, erledigt: String(erledigt) === '1' })
+    });
+    if(!r || !r.ok) throw new Error('HTTP ' + (r ? r.status : 'ohne Antwort'));
+  }catch(e){
+    console.warn('Vormerkung erledigen:', e);
+    toast('Konnte am Server nicht gespeichert werden – bitte später erneut versuchen.', 5000);
+    return;
+  }
+  toast(String(erledigt) === '1' ? 'Vormerkung erledigt ✓' : 'Wieder offen ✓');
+  await vormerkungenZeichnen(key);
+}
+
+/* Reiter "Link senden" mit Adresse und Objekt vorbelegen. */
+function vormerkungLinkSenden(email, objekt){
+  window._tokVorbelegung = { email: String(email || ''), objekt: String(objekt || '') };
+  setMailTab('token');
 }
 
 // Website-Nachricht als gelesen/verarbeitet markieren (optimistisch).
@@ -9815,6 +9932,12 @@ async function mailRenderToken(body){
       <div id="mtTokStatus" style="margin-top:10px"></div>
     </div>`;
   await mailTokInteressentBefuellen();
+  /* A435: aus einer Vormerkung heraus geoeffnet - einmalig vorbelegen. */
+  if(window._tokVorbelegung){
+    const v = window._tokVorbelegung; window._tokVorbelegung = null;
+    const m = document.getElementById('mtTokMail'), o = document.getElementById('mtTokObjekt');
+    if(m) m.value = v.email; if(o && v.objekt) o.value = v.objekt;
+  }
 }
 
 // Dropdown der Mail-Token-UI befüllen (eigene IDs)
@@ -10112,6 +10235,18 @@ async function tmAnhangAusAkte(dokId){
   toast('Angehängt ✓');
 }
 
+/* A434: Gruende des Backends (B5) fuer eine fehlende Ablage in "Gesendet". */
+function tmAblageGrundText(g){
+  const s = String(g || '');
+  if(s === 'imap-zugang-fehlt') return 'Postfachzugang im Backend nicht eingerichtet';
+  if(s === 'anmeldung')         return 'Anmeldung am Postfach fehlgeschlagen';
+  if(s === 'ordner-unbekannt')  return 'Ordner „Gesendet“ nicht gefunden';
+  if(s === 'abgeschaltet')      return 'Ablage im Backend abgeschaltet';
+  if(s === 'imapflow-fehlt')    return 'Backend-Paket imapflow fehlt';
+  if(s === 'aufbau')            return 'Kopie ließ sich nicht aufbauen';
+  return 'Postfach nicht erreichbar';
+}
+
 /* ── A433: Gesendete Mails ───────────────────────────────────────────── */
 function tmVerlaufMehr(){
   window._tmVerlaufAnzahl = (window._tmVerlaufAnzahl || 8) + 20;
@@ -10137,6 +10272,8 @@ async function tmGesendetOeffnen(id){
     <div style="background:var(--ink-05);border-radius:10px;padding:10px 12px;margin-bottom:10px">
       ${zeile('Datum', v.gesendet ? esc(new Date(v.gesendet).toLocaleString('de-DE')) : '')}
       ${zeile('Status', `<span style="color:${statusFehler ? '#b91c1c' : 'var(--green)'}">${esc(TM_STATUS_TEXT[v.status] || v.status || '')}</span>`)}
+      ${v.gesendetKopie === true ? zeile('IONOS', 'in „Gesendet“ abgelegt')
+        : v.gesendetKopie === false ? zeile('IONOS', `<span style="color:var(--amber-d,#9a6b00)">nicht in „Gesendet“ (${esc(tmAblageGrundText(v.gesendetGrund))})</span>`) : ''}
       ${zeile('An', an)}
       ${zeile('CC', esc((v.cc||[]).join(', ')))}
       ${zeile('BCC', esc((v.bcc||[]).join(', ')))}
@@ -10505,10 +10642,12 @@ async function tenantMailSenden(){
          Anhaenge. Fehlt die Angabe, obwohl welche mitgeschickt wurden, laeuft
          im Backend noch der Stand vor B3 - dort wird das Feld `anhaenge` gar
          nicht gelesen, und die Mail ist ohne sie hinausgegangen. */
-      let bestaetigt = null, kopienBestaetigt = null;
+      let bestaetigt = null, kopienBestaetigt = null, ablage = null;
       try{ const j = await res.json();
            bestaetigt = (j && typeof j.anhaenge === 'number') ? j.anhaenge : null;
-           kopienBestaetigt = (j && typeof j.kopien === 'number') ? j.kopien : null; }   // A432
+           kopienBestaetigt = (j && typeof j.kopien === 'number') ? j.kopien : null;   // A432
+           /* A434: Backend B5 meldet, ob die Kopie in IONOS "Gesendet" liegt. */
+           if(j && typeof j.gesendetKopie === 'boolean') ablage = { ok: j.gesendetKopie, grund: j.gesendetGrund || '' }; }
       catch(e){ bestaetigt = null; }   // kopienBestaetigt bleibt null
       /* A432: Ein Backend vor B4 liest cc/bcc nicht und meldet trotzdem Erfolg.
          Fehlt die Bestaetigung, sind die Kopien NICHT hinausgegangen. */
@@ -10534,7 +10673,20 @@ async function tenantMailSenden(){
         rec.status='gesendet';
         st('<span style="color:#15803d;font-size:13px">Gesendet ✓'
           + (anhaenge.length? ' (' + anhaenge.length + ' Anhang/Anhänge)':'')
-          + ((cc.length + bcc.length) ? ' · Kopien: ' + (cc.length + bcc.length) : '') + '</span>');
+          + ((cc.length + bcc.length) ? ' · Kopien: ' + (cc.length + bcc.length) : '')
+          + (ablage && ablage.ok ? ' · in IONOS „Gesendet“ abgelegt' : '') + '</span>');
+      }
+      /* A434: Ablage in "Gesendet". Die Mail ist in jedem Fall hinausgegangen -
+         fehlt nur die Kopie, darf der Nutzer NICHT erneut senden. */
+      if(ablage){
+        rec.gesendetKopie = ablage.ok;
+        if(!ablage.ok){
+          rec.gesendetGrund = ablage.grund;
+          const _s = document.getElementById('tmStatus');
+          if(_s) _s.insertAdjacentHTML('beforeend', '<div style="font-size:12px;color:var(--amber-d,#9a6b00);margin-top:4px">'
+            + 'Die Mail ist verschickt, liegt aber nicht in IONOS „Gesendet“ (' + esc(tmAblageGrundText(ablage.grund))
+            + '). Bitte nicht erneut senden – die Kopie steht hier im Verlauf.</div>');
+        }
       }
     }
     else {
@@ -10573,6 +10725,10 @@ async function tenantMailSenden(){
     window._mailVorbelegung = { art:'entwurf', mieterId, email:mail, betreff, text:textRoh,
                                 cc: cc.join(', '), bcc: bcc.join(', ') };
   }
+  /* A434: renderMail() baut die Maske neu - bis hier verschwand dabei die
+     Ergebniszeile ("Gesendet ✓", "OHNE Anhaenge" ...) sofort wieder; sichtbar
+     blieb nur der Toast. Einmalig in die neue Maske uebernehmen. */
+  window._tmLetzterStatus = document.getElementById('tmStatus')?.innerHTML || '';
   renderMail();
 }
 
@@ -29240,6 +29396,7 @@ async function telefonUebernehmen(i, j){
 
 registerActions({ modalTelefonAbgleich, telefonUebernehmen, telefonBehalten });   // A421
 registerActions({ tmVerlaufMehr, tmGesendetOeffnen, tmGesendetWeiterleiten });   // A433
+registerActions({ vormerkungenUmschalten, vormerkungErledigen, vormerkungLinkSenden, websiteNachrichtAntworten });   // A435
 
 /* Vorschlaege zur Bestaetigung. Angelegt wird als BEWOHNER, nicht als
    Vertragspartei - alles andere waere eine Aussage ueber den Mietvertrag,
@@ -50897,7 +51054,9 @@ const EINMALIG_AKTIONEN = [
      wuerde dieselbe Karte zweimal schreiben. */
   'kontaktKarteSpeichern','kontaktAlleSpeichern',
   /* A433: laedt Anhaenge nach - ein zweiter Tap haengte sie doppelt an. */
-  'tmGesendetWeiterleiten'
+  'tmGesendetWeiterleiten',
+  /* A435: Serveraufruf - ein zweiter Tap wuerde dieselbe Gruppe zweimal setzen. */
+  'vormerkungErledigen'
 ];
 
 /* Erst nach dem Laden umhuellen: window.<name> existiert durch Hoisting zwar
