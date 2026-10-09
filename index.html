@@ -1248,7 +1248,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=38;   // A398: +kr_abrechnungen
-const APP_VERSION = '2026-10-08-A435';
+const APP_VERSION = '2026-10-09-A437';
 /* v364 (12.08.2026) – offene Punkte abgearbeitet.
    1) D1/XLSX_SRI: Der im Code hinterlegte PowerShell-Befehl war FALSCH und
       konnte nie funktionieren - Invoke-WebRequest liefert unter .Content einen
@@ -10397,6 +10397,7 @@ function mailVorbelegungAnwenden(){
      wenn er in der Auswahl steht - sonst bleibt sie leer. */
   const sel = document.getElementById('tmMieter');
   if(sel && v.mieterId && Array.from(sel.options).some(o => o.value === v.mieterId)) sel.value = v.mieterId;
+  tmSigVorschauZeichnen();   // A437
   if(mail) mail.value = v.email || '';
   if(betr) betr.value = v.betreff || '';
   /* A432: Kopien (nur beim wiederhergestellten Entwurf belegt). */
@@ -10461,8 +10462,13 @@ async function mailRenderMieterMail(body){
         <input type="text" id="tmBetreff" placeholder="z. B. Ankündigung Heizungswartung"></div>
       <div class="f"><label for="tmText">Nachricht</label>
         <textarea id="tmText" spellcheck="true" lang="de" style="min-height:160px" placeholder="Sehr geehrte/r …"></textarea></div>
-      <label style="font-size:12px;display:flex;align-items:center;gap:6px;margin:4px 0 10px">
-        <input type="checkbox" id="tmSig" checked> Grußformel & Absender automatisch anhängen</label>
+      <div style="margin:4px 0 10px">
+        <label style="font-size:12px;display:flex;align-items:center;gap:6px">
+          <input type="checkbox" id="tmSig" checked onchange="tmSigVorschauZeichnen()"> Grußformel & Name anhängen</label>
+        <label style="font-size:12px;display:flex;align-items:center;gap:6px;margin-left:20px">
+          <input type="checkbox" id="tmSigKontakt" checked onchange="tmSigVorschauZeichnen()"> mit Kontaktdaten (Anschrift, Telefon, E-Mail)</label>
+        <pre id="tmSigVorschau" style="white-space:pre-wrap;font:11px/1.45 var(--font,system-ui);color:var(--ink-60);background:var(--paper,#faf8f5);border:1px dashed var(--ink-10);border-radius:8px;padding:6px 9px;margin:6px 0 0"></pre>
+      </div>
 
       <div class="f-section-title" style="margin-top:6px"><i class="ti ti-paperclip"></i> Anhänge</div>
       <div style="font-size:11px;color:var(--ink-40);margin-bottom:8px;line-height:1.5">
@@ -10502,6 +10508,7 @@ async function mailRenderMieterMail(body){
         <i class="ti ti-chevron-down"></i> Weitere anzeigen (${_vGesamt - verlauf.length})</button>` : ''}
     </div>`:''}`;
   tmAnhaengeWiederherstellen();
+  tmSigVorschauZeichnen();   // A437
 }
 
 /* Die Maske wird bei jedem renderMail() neu gebaut. Ohne diesen Aufruf waeren
@@ -10515,6 +10522,7 @@ function tenantMailMieterGewaehlt(){
   const opt=sel?.options[sel.selectedIndex];
   const mailEl=document.getElementById('tmMail');
   if(mailEl && opt) mailEl.value=opt.getAttribute('data-mail')||'';
+  tmSigVorschauZeichnen();   // A437: Briefkopf haengt am Objekt
 }
 
 async function tenantMailSenden(){
@@ -10550,8 +10558,10 @@ async function tenantMailSenden(){
     st('<span style="color:#b91c1c;font-size:13px">Bitte über dem Zitat eine Antwort schreiben.</span>'); return;
   }
   if(mitSig){
-    const _absender = mieterId ? absenderName(opt?.getAttribute('data-objekt') || '') : 'Nadig Pfau Immobilienverwaltung';
-    text = tmSignaturEinfuegen(text, '\n\nMit freundlichen Grüßen\n' + _absender + '\ninfo@nadigpfau.de');
+    /* A436: mit Anschrift aus dem Briefkopf (mailSignatur).
+       A437: Kontaktdaten abwaehlbar, Name des Absenders darueber. */
+    text = tmSignaturEinfuegen(text, mailSignatur(mieterId ? (opt?.getAttribute('data-objekt') || '') : '',
+      { kontakt: document.getElementById('tmSigKontakt')?.checked !== false }));
   }
   /* A409: Fehlversand-Warnung. Anhaenge tragen regelmaessig personenbezogene
      Daten (Abrechnung, Bescheinigung); eine Mail an die falsche Adresse ist ein
@@ -10624,6 +10634,14 @@ async function tenantMailSenden(){
   };
   try{
     const nutzlast = { to:mail, subject:betreff, text };
+    /* A437 (Backend B7): Anzeigename "Person | Verwaltung"; eine eigene
+       Adresse nur, wenn hinterlegt - das Backend nimmt sie nur aus seiner
+       Freigabeliste an, sonst bleibt es bei info@. Aeltere Backends
+       ignorieren beide Felder. */
+    nutzlast.absenderName = mailAbsenderAnzeige(rec.objektId);
+    const _eigene = mailAbsenderAdresse();
+    if(_eigene) nutzlast.absenderAdresse = _eigene;
+    rec.absender = nutzlast.absenderName;
     if(cc.length)  nutzlast.cc  = cc;             // A432 (Backend B4)
     if(bcc.length) nutzlast.bcc = bcc;
     if(anhaenge.length){
@@ -22599,6 +22617,165 @@ function absenderName(objektId){
     return (bk && (bk.absender || bk.name)) || 'Nadig Pfau Immobilienverwaltung';
   }catch(_){ return 'Nadig Pfau Immobilienverwaltung'; }
 }
+/* A436: Grussformel samt Anschrift fuer Mails - aus dem Briefkopf der
+   Objektgruppe, damit Mail und Brief denselben Absender tragen. Ohne Objekt
+   (Mail an einen Nicht-Mieter) der Standard-Briefkopf.
+   A437: Bestandteile unter Einstellungen → E-Mail-Signatur schaltbar
+   (settings 'mail_signatur', synchronisiert). Unter der Grussformel steht
+   der Name des angemeldeten Nutzers, darunter - abgesetzt - der
+   Kontaktblock. Ohne Nutzername (und mit Standardwerten) ist die Ausgabe
+   zeichengleich mit A436.
+   opt.kontakt=false: nur Grussformel und Name (Haken in der Mail-Maske). */
+const MAIL_SIGNATUR_DEFAULTS = {
+  gruss:'Mit freundlichen Grüßen',
+  person:true,        // Name des angemeldeten Nutzers
+  firma:true,         // Absenderzeile des Briefkopfs ("Nadig Pfau Immobilienverwaltung")
+  namen:false,        // Namenszeile des Briefkopfs (Inhaber)
+  zusatz:true, anschrift:true, tel:true, email:true,
+  frei:'',            // weitere Zeilen, z. B. Erreichbarkeit
+  anzeigeName:true,   // Absendername im Postfach: "Person | Verwaltung" (Backend B7)
+  adressen:{}         // je Nutzer-ID eigene Absenderadresse (nur mit Freigabe im Backend)
+};
+let _mailSigCache = null;
+function mailSigEinstellungen(){
+  return Object.assign({}, MAIL_SIGNATUR_DEFAULTS, _mailSigCache || {});
+}
+function mailCuId(){
+  try{ return (typeof CU !== 'undefined' && CU && CU.id) ? String(CU.id) : ''; }catch(_){ return ''; }
+}
+function mailAbsenderPerson(){
+  try{ return (typeof CU !== 'undefined' && CU && CU.name) ? String(CU.name).trim() : ''; }
+  catch(_){ return ''; }
+}
+/* Kern ohne Seiteneffekte: bk = Briefkopf, firma = Absenderzeile, s = Einstellungen. */
+function mailSignaturAus(bk, firma, s){
+  const t = z => String(z || '').trim();
+  bk = bk || {};
+  const person = s.person ? t(s.personName !== undefined ? s.personName : mailAbsenderPerson()) : '';
+  const firmaZ = (s.firma && t(firma).toLowerCase() !== person.toLowerCase()) ? t(firma) : '';
+  const kontakt = s.kontakt === false ? [] : [
+    firmaZ,
+    s.namen ? bk.namen : '',
+    s.zusatz ? bk.zusatz : '',
+    s.anschrift ? (bk.strasse || VERWALTER_STRASSE) : '',
+    s.anschrift ? (bk.ort || VERWALTER_ORT) : '',
+    (s.tel && t(bk.tel)) ? 'Tel. ' + t(bk.tel) : '',
+    s.email ? (bk.email || 'info@nadigpfau.de') : ''
+  ].concat(String(s.frei || '').split('\n')).map(t).filter(Boolean);
+  const kopf = [t(s.gruss), person].filter(Boolean);
+  // Ohne Personenzeile schliesst der Kontaktblock direkt an (Stand A436).
+  const teile = person
+    ? [kopf.join('\n'), kontakt.join('\n')]
+    : [kopf.concat(kontakt).join('\n')];
+  const sig = teile.filter(Boolean).join('\n\n');
+  return sig ? '\n\n' + sig : '';
+}
+function mailSignatur(objektId, opt){
+  let bk = {};
+  try{ bk = getBriefkopf(objektId || '') || {}; }catch(_){ bk = {}; }
+  return mailSignaturAus(bk, absenderName(objektId), Object.assign(mailSigEinstellungen(), opt || {}));
+}
+/* A437: Anzeigename im Postfach des Empfaengers. Die Adresse bleibt
+   info@nadigpfau.de - erkennbar wird, wer schreibt. Zeichen, die im
+   Mailkopf stoeren, entfernt zusaetzlich das Backend. */
+function mailAbsenderAnzeige(objektId){
+  const s = mailSigEinstellungen();
+  const firma = absenderName(objektId);
+  if(!s.anzeigeName) return firma;
+  const p = mailAbsenderPerson();
+  return (p && p.toLowerCase() !== firma.toLowerCase()) ? p + ' | ' + firma : firma;
+}
+function mailAbsenderAdresse(){
+  const s = mailSigEinstellungen();
+  const id = mailCuId();
+  return (id && s.adressen && s.adressen[id]) ? String(s.adressen[id]).trim() : '';
+}
+
+/* A437: Einstellungskarte. Vorschau aus den Formularwerten (noch ungespeichert). */
+const MAIL_SIG_SCHALTER = [
+  ['person','Name des Absenders (angemeldeter Nutzer)'],
+  ['firma','Verwaltung (Absenderzeile des Briefkopfs)'],
+  ['namen','Namenszeile des Briefkopfs'],
+  ['zusatz','Zusatz des Briefkopfs'],
+  ['anschrift','Anschrift'],
+  ['tel','Telefon'],
+  ['email','E-Mail-Adresse'],
+  ['anzeigeName','Absendername im Postfach: „Name | Verwaltung“']
+];
+function mailSigFormWerte(){
+  const s = mailSigEinstellungen();
+  const w = Object.assign({}, s, { adressen: Object.assign({}, s.adressen || {}) });
+  MAIL_SIG_SCHALTER.forEach(([k]) => { const el = document.getElementById('msig_' + k); if(el) w[k] = !!el.checked; });
+  const g = document.getElementById('msig_gruss'); if(g) w.gruss = g.value.trim();
+  const f = document.getElementById('msig_frei');  if(f) w.frei = f.value.replace(/\s+$/,'');
+  const a = document.getElementById('msig_adresse');
+  const id = mailCuId();
+  if(a && id){ const v = a.value.trim().toLowerCase(); if(v) w.adressen[id] = v; else delete w.adressen[id]; }
+  return w;
+}
+function mailSigVorschauEinst(){
+  const el = document.getElementById('msigVorschau'); if(!el) return;
+  const key = document.getElementById('msig_gruppe')?.value || 'dus';
+  const bk = getBriefkopfFor(key) || {};
+  const w = mailSigFormWerte();
+  const sig = mailSignaturAus(bk, bk.absender || bk.name || 'Nadig Pfau Immobilienverwaltung', w).replace(/^\n+/, '');
+  const p = mailAbsenderPerson(), firma = bk.absender || bk.name || 'Nadig Pfau Immobilienverwaltung';
+  const von = (w.anzeigeName && p && p.toLowerCase() !== firma.toLowerCase()) ? p + ' | ' + firma : firma;
+  const adr = (mailCuId() && w.adressen[mailCuId()]) || 'info@nadigpfau.de';
+  el.textContent = 'Von: ' + von + ' <' + adr + '>\n\n…\n\n' + (sig || '(keine Signatur)');
+}
+function renderMailSignaturConfig(){
+  const s = mailSigEinstellungen();
+  const eigene = (mailCuId() && s.adressen && s.adressen[mailCuId()]) || '';
+  const schalter = MAIL_SIG_SCHALTER.map(([k, lbl]) => `
+    <label style="display:flex;align-items:center;gap:8px;font-size:12px;padding:3px 0;cursor:pointer">
+      <input type="checkbox" id="msig_${k}" style="width:15px;height:15px" ${s[k]?'checked':''} onchange="mailSigVorschauEinst()"> ${esc(lbl)}</label>`).join('');
+  return `
+    <div class="f" style="margin-bottom:6px"><label style="font-size:10px" for="msig_gruss">Grußformel</label>
+      <input type="text" id="msig_gruss" value="${esc(s.gruss||'')}" style="font-size:12px" oninput="mailSigVorschauEinst()"></div>
+    ${schalter}
+    <div class="f" style="margin:8px 0 6px"><label style="font-size:10px" for="msig_frei">Weitere Zeilen (optional, z. B. Erreichbarkeit)</label>
+      <textarea id="msig_frei" rows="2" style="font-size:12px;min-height:44px" oninput="mailSigVorschauEinst()">${esc(s.frei||'')}</textarea></div>
+    <div class="f" style="margin-bottom:6px"><label style="font-size:10px" for="msig_adresse">Meine Absenderadresse (leer = info@nadigpfau.de)</label>
+      <input type="text" id="msig_adresse" inputmode="email" autocomplete="off" value="${esc(eigene)}" placeholder="z. B. nadig@nadigpfau.de" style="font-size:12px" oninput="mailSigVorschauEinst()"></div>
+    <div style="font-size:11px;color:var(--ink-40);line-height:1.5;margin-bottom:8px">Eine eigene Adresse wirkt erst, wenn sie bei IONOS als Alias des Postfachs info@ angelegt
+      und im Backend freigegeben ist (App Setting MAIL_ABSENDER_ALIASE). Sonst geht die Mail unverändert über info@nadigpfau.de.</div>
+    <div class="f" style="margin-bottom:6px"><label style="font-size:10px" for="msig_gruppe">Vorschau für</label>
+      <select id="msig_gruppe" style="font-size:12px" onchange="mailSigVorschauEinst()">
+        <option value="dus">Düsseldorf / Monheim</option><option value="kr">Krefeld</option>
+        <option value="mg">Mönchengladbach + Hilden</option><option value="pfau">Amboßstr.</option></select></div>
+    <pre id="msigVorschau" style="white-space:pre-wrap;font:12px/1.5 var(--font,system-ui);background:var(--paper,#faf8f5);border:1px solid var(--ink-10);border-radius:8px;padding:8px 10px;margin:0 0 8px"></pre>
+    <button class="btn btn-sm btn-copper" data-action-click="mailSignaturSpeichern"><i class="ti ti-check"></i> Speichern</button>`;
+}
+async function mailSignaturSpeichern(){
+  if(!istVerwalter()){ toast('Nur für Admins'); return; }
+  const w = mailSigFormWerte();
+  const adr = (mailCuId() && w.adressen[mailCuId()]) || '';
+  if(adr && !/^[^@\s]+@nadigpfau\.de$/i.test(adr)){
+    toast('Absenderadresse muss auf @nadigpfau.de enden (IONOS lässt nur die Domain des Postfachs zu).', 6000); return;
+  }
+  const wert = {};
+  Object.keys(MAIL_SIGNATUR_DEFAULTS).forEach(k => { wert[k] = w[k]; });
+  _mailSigCache = wert;
+  await idbPut('settings', { id:'mail_signatur', value:wert, geaendert:nowIso() });
+  syncSoon();
+  mailSigVorschauEinst();
+  toast('E-Mail-Signatur gespeichert ✓');
+}
+/* A437: In der Mail-Maske - Vorschau der Signatur unter dem Text. */
+function tmSigVorschauZeichnen(){
+  const el = document.getElementById('tmSigVorschau');
+  const mit = document.getElementById('tmSig')?.checked;
+  const k = document.getElementById('tmSigKontakt');
+  if(k) k.disabled = !mit;
+  if(!el) return;
+  if(!mit){ el.style.display = 'none'; el.textContent = ''; return; }
+  const sel = document.getElementById('tmMieter');
+  const opt = sel?.options[sel.selectedIndex];
+  const obj = (sel && sel.value) ? (opt?.getAttribute('data-objekt') || '') : '';
+  el.textContent = mailSignatur(obj, { kontakt: !(k && !k.checked) }).replace(/^\n+/, '');
+  el.style.display = el.textContent ? '' : 'none';
+}
 const VERWALTER_STRASSE = 'Zur Verlach 37';
 const VERWALTER_ORT     = '40723 Hilden';
 const VERWALTER_ANSCHRIFT = VERWALTER_STRASSE + ', ' + VERWALTER_ORT;
@@ -22710,6 +22887,9 @@ async function ladeBriefkopfCache(){
     try{ const e=await idbGet('settings','briefkopf_'+k); if(e&&e.value) _briefkopfCache[k]=e.value; }catch(_){}
     try{ const o=await idbGet('settings','briefkopf_override_'+k); _briefkopfOverride[k]=(o&&o.value)||''; }catch(_){}
   }
+  /* A437: E-Mail-Signatur - zusammen mit dem Briefkopf, damit sie nach
+     einem Sync ueberall dort frisch ist, wo der Briefkopf neu geladen wird. */
+  try{ const s=await idbGet('settings','mail_signatur'); _mailSigCache=(s&&s.value)||null; }catch(_){}
 }
 /* v273 (R23): Ein Briefkopf ist erst brauchbar, wenn Name, Anschrift und ein
    Rückkanal gepflegt sind. Fehlt etwas, entstünde sonst ein Schreiben ohne
@@ -22873,7 +23053,8 @@ function renderBriefkopfConfig(){
         ${ovHtml}
         ${feld(g.key,'name','Voller Name (Gruß / Briefende)',b.name)}
         ${feld(g.key,'absender','Absenderzeile (über Adressfeld, ohne Vornamen)',b.absender||b.name)}
-        ${feld(g.key,'zusatz','Zusatz (optional)',b.zusatz)}
+        ${feld(g.key,'namen','Namenszeile (Briefe: rechts über der Anschrift, optional)',b.namen)}
+        ${feld(g.key,'zusatz','Zusatz (Briefe: rechts im Kopf; optional)',b.zusatz)}
         ${feld(g.key,'strasse','Straße & Hausnummer',b.strasse)}
         ${feld(g.key,'ort','PLZ & Ort',b.ort)}
         ${feld(g.key,'tel','Telefon',b.tel)}
@@ -22980,7 +23161,7 @@ function anschriftIstAlt(wert){
 
 async function saveBriefkopf(key){
   const g=f=>document.getElementById('bk_'+key+'_'+f)?.value.trim()||'';
-  const data={name:g('name'),absender:g('absender'),zusatz:g('zusatz'),strasse:g('strasse'),ort:g('ort'),tel:g('tel'),email:g('email')};
+  const data={name:g('name'),absender:g('absender'),namen:g('namen'),zusatz:g('zusatz'),strasse:g('strasse'),ort:g('ort'),tel:g('tel'),email:g('email')};
   _briefkopfCache[key]=data;
   await idbPut('settings',{id:'briefkopf_'+key, value:data, geaendert:nowIso()});
   clearTimeout(window._syncTimer);
@@ -27772,8 +27953,15 @@ async function druckeBrief(mieterId, objektId, opt) {
   /* A427: 131 px Breite entspricht den bisherigen 44 px Hoehe der Wortmarke.
      Der eigene Name in 16 pt: gemessen passt "Hausverwaltung Roland B. Nadig"
      samt Zusatzzeile in die 31-mm-Kopfzeile (smoke_A427 misst das nach). */
-  const logoSvg = briefkopfMarkeHTML(bk, 131, 16)
-    + (bk.zusatz ? `<div style="font-size:8pt;color:#555;margin-top:2px">${esc(bk.zusatz)}</div>` : '');
+  /* A437: Zusatz und Namenszeile stehen rechts im Kopf (Nutzerwunsch
+     09.10.) - unter dem Logo engte der Zusatz die Wortmarke ein. */
+  const logoSvg = briefkopfMarkeHTML(bk, 131, 16);
+  const kopfRechts = [
+    bk.namen ? `<strong style="color:#333">${esc(bk.namen)}</strong>` : '',
+    bk.zusatz ? esc(bk.zusatz) : '',
+    abs.strasse ? esc(abs.strasse) : '', abs.ort ? esc(abs.ort) : '',
+    abs.tel ? 'Tel: ' + esc(abs.tel) : '', abs.email ? esc(abs.email) : ''
+  ].filter(Boolean).join('<br>');
   const absRueck = `${abs.name||''}${abs.strasse?' · '+abs.strasse:''}${abs.ort?' · '+abs.ort:''}`;
 
   // Gewählte Unterschrift(en) laden (wie NKA)
@@ -27794,7 +27982,7 @@ async function druckeBrief(mieterId, objektId, opt) {
     return `<div class="brief-seite">
       <table class="bk-kopf"><tr>
         <td class="bk-l">${logoSvg}</td>
-        <td class="bk-r">${abs.strasse?esc(abs.strasse)+'<br>':''}${abs.ort?esc(abs.ort)+'<br>':''}${abs.tel?'Tel: '+esc(abs.tel)+'<br>':''}${abs.email?esc(abs.email):''}</td>
+        <td class="bk-r">${kopfRechts}</td>
       </tr></table>
       <div class="bk-abs">${esc(absRueck)}</div>
       <!-- v392: KEIN esc() um adressVollNamenVertrag - die Funktion liefert
@@ -29396,6 +29584,7 @@ async function telefonUebernehmen(i, j){
 
 registerActions({ modalTelefonAbgleich, telefonUebernehmen, telefonBehalten });   // A421
 registerActions({ tmVerlaufMehr, tmGesendetOeffnen, tmGesendetWeiterleiten });   // A433
+registerActions({ mailSignaturSpeichern });   // A437
 registerActions({ vormerkungenUmschalten, vormerkungErledigen, vormerkungLinkSenden, websiteNachrichtAntworten });   // A435
 
 /* Vorschlaege zur Bestaetigung. Angelegt wird als BEWOHNER, nicht als
@@ -38671,6 +38860,15 @@ async function renderSettings(){
       <div id="briefkopfConfigEl"></div>
     </div>`:''}
 
+    ${isAdmin?`<div class="settings-card" data-tab="objekte">
+      <div class="card-hdr"><i class="ti ti-writing"></i> E-Mail-Signatur</div>
+      <p style="font-size:13px;color:var(--ink-40);margin-bottom:12px;line-height:1.6">
+        Fußzeile der Mails aus der App. Anschrift, Telefon und Zusatz kommen aus dem Briefkopf der jeweiligen Objektgruppe.
+        In der Mail-Maske lassen sich Grußformel und Kontaktdaten je Mail abwählen.
+      </p>
+      <div id="mailSignaturConfigEl"></div>
+    </div>`:''}
+
     <div class="settings-card" data-tab="allgemein">
       <div class="card-hdr"><i class="ti ti-signature"></i> Meine Unterschrift</div>
       <p style="font-size:13px;color:var(--ink-40);margin-bottom:12px;line-height:1.6">
@@ -38831,6 +39029,7 @@ async function renderSettings(){
       await zaVerlaufInit();
     }catch(e){ console.warn('Zahlungsverlauf:', e); } }
   if(isAdmin){ const bkEl=document.getElementById('briefkopfConfigEl'); if(bkEl){ await ladeBriefkopfCache(); bkEl.innerHTML=renderBriefkopfConfig(); } }
+  if(isAdmin){ const msEl=document.getElementById('mailSignaturConfigEl'); if(msEl){ msEl.innerHTML=renderMailSignaturConfig(); mailSigVorschauEinst(); } }   // A437
   if(isAdmin){ const ivEl=document.getElementById('intervallConfigEl'); if(ivEl) ivEl.innerHTML=await renderIntervallConfig(); }
   if(isAdmin){ const pfEl=document.getElementById('portalFreigabeEl'); if(pfEl) pfEl.innerHTML=await renderPortalFreigabe(); }
   if(isAdmin){ const ssEl=document.getElementById('syncSchutzEl'); if(ssEl) ssEl.innerHTML=await renderSyncSchutz(); }
