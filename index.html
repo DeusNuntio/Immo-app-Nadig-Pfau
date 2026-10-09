@@ -590,6 +590,13 @@ button.chip.chip-active{background:var(--ink);color:#fff;border-color:var(--ink)
 .prio-h{background:var(--red)}
 .prio-m{background:var(--amber)}
 .prio-l{background:var(--green)}
+/* A438: Dringlichkeit als Farbton der ganzen Karte (Nutzerwunsch 09.10.:
+   der 4-px-Balken allein war kaum zu erkennen). Erledigte bleiben neutral. */
+.task-item.ton-h{background:#FAD9D5;border-color:#E8A39B}
+.task-item.ton-m{background:#FCE6C2;border-color:#E3B66A}
+.task-item.ton-l{background:#DDF0E4;border-color:#A9D3B8}
+.task-item[class*="ton-"] .t-prio{width:5px}
+.task-item[class*="ton-"] .t-meta,.task-item[class*="ton-"] .t-body>div{color:var(--ink-60)}
 .t-check{width:22px;height:22px;border-radius:6px;border:2px solid var(--ink-20);flex-shrink:0;cursor:pointer;display:flex;align-items:center;justify-content:center;margin-top:1px;transition:all .15s}
 .t-check.done{background:var(--green);border-color:var(--green);color:#fff}
 .t-body{flex:1;min-width:0}
@@ -1248,7 +1255,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=38;   // A398: +kr_abrechnungen
-const APP_VERSION = '2026-10-09-A437';
+const APP_VERSION = '2026-10-09-A438';
 /* v364 (12.08.2026) – offene Punkte abgearbeitet.
    1) D1/XLSX_SRI: Der im Code hinterlegte PowerShell-Befehl war FALSCH und
       konnte nie funktionieren - Invoke-WebRequest liefert unter .Content einen
@@ -8874,11 +8881,12 @@ async function oeffneSelbstauskuenfte(){
   }
   // Liste rendern (Klartext-Kopf), Detail erst beim Aufklappen entschlüsseln
   window._saInbox = {};
+  const _notizen = await saNotizenLaden(liste.map(e => e.id));   // A438
   let html='';
   for(const e of liste){
     window._saInbox[e.id]=e;
     const dt=e.zeitstempel?new Date(e.zeitstempel).toLocaleString('de-DE'):'';
-    html+=`<div style="border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:10px">
+    html+=`<div class="sa-karte" style="border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:10px;${saKartenStil(_notizen[e.id])}">
       <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap">
         <div><b>${esc(e.anzeigeName||'(ohne Namen)')}</b><br>
           <span style="font-size:12px;color:var(--ink-40)">${esc(e.objektName||'')} · ${esc(dt)}</span></div>
@@ -8887,10 +8895,103 @@ async function oeffneSelbstauskuenfte(){
         <button class="btn btn-sm" onclick="saDetailZeigen('${e.id}')"><i class="ti ti-eye"></i> Anzeigen</button>
         <button class="btn btn-sm btn-primary" onclick="saAlsInteressentImportieren('${e.id}')"><i class="ti ti-user-plus"></i> Als Interessent</button>
       </div>
+      ${saInternHTML(e.id, _notizen[e.id])}
       <div id="saDetail_${e.id}" style="margin-top:10px"></div>
     </div>`;
   }
   body.innerHTML=html;
+}
+
+/* A438: Interne Bewertung einer Selbstauskunft - Ampel, Kontakt-Haken,
+   Notiz. Nur Verwalter (der Posteingang ist ohnehin nur fuer sie offen).
+   Ablage je Selbstauskunft als eigener settings-Datensatz 'sa_notiz_<id>':
+   synchronisiert, und zwei Verwalter, die verschiedene Bewerber bearbeiten,
+   ueberschreiben einander nicht. Beim Uebernehmen als Interessent wandern
+   die Angaben in dessen Akte, beim Loeschen der Selbstauskunft verschwinden
+   sie mit (Art. 17 DSGVO) - es bleibt nichts verwaist liegen.
+   Die Haken tragen das Datum, an dem sie gesetzt wurden. */
+const SA_AMPEL = {
+  gruen:{ label:'Grün', bg:'#DDF0E4', rand:'#2E7D52' },
+  gelb: { label:'Gelb', bg:'#FCE6C2', rand:'#A86807' },
+  rot:  { label:'Rot',  bg:'#FAD9D5', rand:'#C0392B' }
+};
+const SA_HAKEN = [ ['telefoniert','telefoniert'], ['besichtigung','Besichtigung vereinbart'], ['email','E-Mail geschrieben'] ];
+const _saNotizen = {};   // Sitzungs-Zwischenspeicher je Selbstauskunft-ID
+async function saNotizenLaden(ids){
+  const raus = {};
+  for(const id of ids){
+    try{ const r = await idbGet('settings', 'sa_notiz_' + id); if(r && r.value) raus[id] = r.value; }catch(_){}
+  }
+  Object.assign(_saNotizen, raus);
+  return raus;
+}
+function saKartenStil(n){
+  const a = n && SA_AMPEL[n.ampel];
+  return a ? 'background:' + a.bg + ';border-color:' + a.rand + ';' : 'background:var(--white);';
+}
+function saInternHTML(id, n){
+  n = n || {};
+  const knopf = Object.keys(SA_AMPEL).map(k => {
+    const a = SA_AMPEL[k], an = n.ampel === k;
+    return `<button type="button" class="btn btn-sm" data-action-click="saAmpelSetzen" data-arg="${escAttr(id)}" data-arg2="${k}"
+      aria-pressed="${an}" title="${an ? 'Bewertung entfernen' : 'Als ' + a.label + ' bewerten'}"
+      style="padding:3px 9px;${an ? 'background:' + a.rand + ';color:#fff;border-color:' + a.rand : 'border-color:' + a.rand + ';color:' + a.rand}">
+      <span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${an ? '#fff' : a.rand};margin-right:4px"></span>${a.label}</button>`;
+  }).join('');
+  const haken = SA_HAKEN.map(([f, lbl]) => `
+    <label style="display:flex;align-items:center;gap:5px;cursor:pointer">
+      <input type="checkbox" style="width:15px;height:15px" ${n[f] ? 'checked' : ''}
+        data-action-change="saHakenSetzen" data-arg="${escAttr(id)}" data-arg2="${f}">
+      ${esc(lbl)}${n[f] ? ` <span style="color:var(--ink-40)">(${esc(fmtDate(n[f]))})</span>` : ''}</label>`).join('');
+  return `<div class="sa-intern" id="saIntern_${escAttr(id)}" style="margin-top:10px;border-top:1px dashed var(--ink-20,#c9d3df);padding-top:8px">
+    <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:12px">
+      <span style="color:var(--ink-60);font-weight:600"><i class="ti ti-lock"></i> Intern</span>${knopf}</div>
+    <div style="display:flex;gap:6px 14px;flex-wrap:wrap;font-size:12px;margin-top:7px">${haken}</div>
+    <textarea rows="2" lang="de" spellcheck="true" placeholder="Interne Notiz – nur für Verwalter sichtbar"
+      data-action-change="saNotizSetzen" data-arg="${escAttr(id)}"
+      style="width:100%;margin-top:7px;font-size:13px;font-family:inherit;min-height:44px;background:rgba(255,255,255,.75)">${esc(n.notiz || '')}</textarea>
+    ${n.geaendert ? `<div style="font-size:10px;color:var(--ink-40);margin-top:2px">zuletzt ${esc(new Date(n.geaendert).toLocaleString('de-DE'))}${n.von ? ' · ' + esc(n.von) : ''}</div>` : ''}
+  </div>`;
+}
+async function saNotizAendern(id, fn){
+  if(!istVerwalter()){ toast('Nur für Verwalter'); return; }
+  const n = Object.assign({}, _saNotizen[id] || {});
+  fn(n);
+  n.geaendert = nowIso();
+  n.von = (typeof CU !== 'undefined' && CU && CU.name) ? CU.name : '';
+  _saNotizen[id] = n;
+  try{ await idbPut('settings', { id:'sa_notiz_' + id, value:n, geaendert:n.geaendert }); }
+  catch(err){ console.warn('Selbstauskunft-Notiz:', err); toast('Notiz konnte nicht gespeichert werden.', 5000); return; }
+  syncSoon();
+  const box = document.getElementById('saIntern_' + id);
+  if(box){
+    const karte = box.closest ? box.closest('.sa-karte') : null;
+    if(karte) karte.setAttribute('style', karte.getAttribute('style').replace(/background:[^;]*;(border-color:[^;]*;)?/, '') + saKartenStil(n));
+    /* Die Notiz nicht neu aufbauen, solange darin getippt wird. */
+    if(document.activeElement && box.contains(document.activeElement) && document.activeElement.tagName === 'TEXTAREA'){
+      const s = box.lastElementChild; if(s && s.tagName === 'DIV') s.textContent = 'zuletzt ' + new Date(n.geaendert).toLocaleString('de-DE') + (n.von ? ' · ' + n.von : '');
+    } else box.outerHTML = saInternHTML(id, n);
+  }
+}
+function saAmpelSetzen(id, farbe){
+  return saNotizAendern(id, n => { n.ampel = (n.ampel === farbe) ? '' : farbe; });
+}
+function saHakenSetzen(id, feld){
+  const an = !!(this && this.checked);
+  return saNotizAendern(id, n => { n[feld] = an ? (n[feld] || today()) : ''; });
+}
+function saNotizSetzen(id){
+  const wert = this && this.value != null ? String(this.value) : '';
+  return saNotizAendern(id, n => { n.notiz = wert.replace(/\s+$/, ''); });
+}
+/* Fuer die Interessentenakte: eine lesbare Zeile. */
+function saNotizText(n){
+  if(!n) return '';
+  const teile = [];
+  if(n.ampel && SA_AMPEL[n.ampel]) teile.push('Bewertung: ' + SA_AMPEL[n.ampel].label);
+  SA_HAKEN.forEach(([f, lbl]) => { if(n[f]) teile.push(lbl + ' ' + fmtDate(n[f])); });
+  const kopf = teile.length ? '[Intern] ' + teile.join(' · ') : '';
+  return [kopf, n.notiz ? (kopf ? '' : '[Intern] ') + n.notiz : ''].filter(Boolean).join('\n');
 }
 
 // Detail entschlüsseln und anzeigen
@@ -8973,6 +9074,9 @@ async function saLoeschen(id, name, tage){
     return;
   }
   toast('Selbstauskunft gelöscht ✓');
+  /* A438: interne Notiz gehoert zur Selbstauskunft und geht mit. */
+  try{ await deleteMitTombstone('settings', 'sa_notiz_' + id); delete _saNotizen[id]; }
+  catch(err){ console.warn('Notiz löschen:', err); }
   const karte = document.getElementById('saDetail_'+id);
   const box = karte && karte.closest ? karte.closest('div[style*="border"]') : null;
   if(box) box.style.display='none';
@@ -8990,6 +9094,9 @@ async function saAlsInteressentImportieren(id){
   // Dublette? (gleiche Quelle-ID)
   const alle=await idbGetAll('interessenten').catch(()=>[]);
   if(alle.some(k=>k.quelleId===e.id)){ toast('Bereits importiert'); return; }
+  /* A438: interne Bewertung uebernehmen (Feld + lesbar in der Notiz). */
+  let _saN = _saNotizen[e.id] || null;
+  if(!_saN){ try{ const r = await idbGet('settings', 'sa_notiz_' + e.id); _saN = (r && r.value) || null; }catch(_){} }
   const rec={
     id:'i_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,6),
     objektId:b.objektId||null, objektName:b.objektName||'',
@@ -9002,7 +9109,8 @@ async function saAlsInteressentImportieren(id){
     geboren:p1.geboren||'', staat:p1.staat||'', familienstand:p1.familienstand||'',
     mietbeginn:b.einzug||'',
     haustiere:!!(sa.haustiere && sa.haustiere!=='keine'), raucher:(sa.raucher==='ja'),
-    notiz:b.nachricht||'',
+    notiz:[b.nachricht||'', saNotizText(_saN)].filter(Boolean).join('\n\n'),
+    saBewertung:_saN || null,           // A438
     selbstauskunft:obj,                 // vollständige Auskunft mitführen
     status:'neu', quelle:'website-sa', quelleId:e.id,
     erstellt:nowIso(), geaendert:nowIso()
@@ -9039,6 +9147,8 @@ async function saAlsInteressentImportieren(id){
       toast('Als gelesen markieren am Server fehlgeschlagen – beim nächsten Aufruf erscheint der Eintrag wieder.', 5000);
     }
   }
+  /* A438: steht jetzt in der Interessentenakte. */
+  if(_saN){ try{ await deleteMitTombstone('settings', 'sa_notiz_' + e.id); delete _saNotizen[e.id]; }catch(_){} }
   toast('Als Interessent übernommen ✓');
   // aus der Liste entfernen
   const karte=document.getElementById('saDetail_'+id);
@@ -9083,6 +9193,8 @@ async function renderMail(){
                                /* v362: NACH dem Aufbau - vorher stehen die
                                   Felder nicht im Dokument. */
                                mailVorbelegungAnwenden();
+                               window._tmAutoAnrede = '';   // A438: neue Maske
+                               tmAnredeAktualisieren();
                                /* A434: Ergebnis des letzten Versands, einmalig. */
                                if(window._tmLetzterStatus){
                                  const _s = document.getElementById('tmStatus');
@@ -9186,6 +9298,7 @@ async function mailRenderSA(body){
   const cnt=document.getElementById('mailCountSa'); if(cnt) cnt.textContent=liste.length?'('+liste.length+')':'';
   if(!liste.length){ body.innerHTML='<div class="empty"><i class="ti ti-inbox"></i><p>Keine neuen Selbstauskünfte.</p></div>'; return; }
   window._saInbox = {};
+  const _notizen = await saNotizenLaden(liste.map(e => e.id));   // A438
   let html='';
   for(const e of liste){
     window._saInbox[e.id]=e;
@@ -9195,7 +9308,7 @@ async function mailRenderSA(body){
        loeschen; die App erinnert daran, entscheidet aber nicht selbst. */
     const _tage = e.zeitstempel ? Math.floor((Date.now()-new Date(e.zeitstempel).getTime())/86400000) : null;
     const _alt  = _tage!=null && _tage >= SA_FRIST_TAGE;
-    html+=`<div style="border:1px solid var(--line);${inboxBalken('sa')}border-radius:10px;padding:12px;margin-bottom:10px;background:var(--white)">
+    html+=`<div class="sa-karte" style="border:1px solid var(--line);${inboxBalken('sa')}border-radius:10px;padding:12px;margin-bottom:10px;${saKartenStil(_notizen[e.id])}">
       <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap">
         <div><b>${esc(e.anzeigeName||'(ohne Namen)')}</b><br>
           <span style="font-size:12px;color:var(--ink-40)">${esc(e.objektName||'')} · ${esc(dt)}${_tage!=null?' · vor '+_tage+' Tag'+(_tage===1?'':'en'):''}</span></div>
@@ -9213,6 +9326,7 @@ async function mailRenderSA(body){
         <button class="btn btn-sm" onclick="saDetailZeigen('${e.id}')"><i class="ti ti-eye"></i> Anzeigen</button>
         <button class="btn btn-sm btn-primary" onclick="saAlsInteressentImportieren('${e.id}')"><i class="ti ti-user-plus"></i> Als Interessent</button>
       </div>
+      ${saInternHTML(e.id, _notizen[e.id])}
       <div id="saDetail_${e.id}" style="margin-top:10px"></div>
     </div>`;
   }
@@ -10425,6 +10539,7 @@ async function mailRenderMieterMail(body){
   // Mieterliste mit E-Mail
   let mieter=[]; try{ mieter=await idbGetAll('mieter'); }catch(e){ mieter=[]; }
   const mitMail=(mieter||[]).filter(m=>m && m.email && !istWohnungFaktischLeer(m)).sort((a,b)=>String(hauptmieterNameVoll(a)||'').localeCompare(String(hauptmieterNameVoll(b)||'')));
+  window._tmMieter = {}; mitMail.forEach(m => { window._tmMieter[m.id] = m; });   // A438: Anrede
   const opts=mitMail.map(m=>{
     const obj=getObj(m.objektId);
     const lbl=`${hauptmieterNameVoll(m)} · ${obj?.name||''} WE ${esc(String(m.weNr||''))}`;
@@ -10517,12 +10632,46 @@ async function mailRenderMieterMail(body){
    mitgehen. */
 function tmAnhaengeWiederherstellen(){ tmAnhaengeZeichnen(); }
 
+/* A438: Anrede in der Mieter-Mail. Mit Mieter die Vertragsanrede
+   ("Sehr geehrter Herr Muster,", Damen zuerst - wie im Brief), ohne Mieter
+   "Sehr geehrte" zum Weiterschreiben. Die Anrede ist immer die ERSTE Zeile
+   und wird nur ersetzt, solange sie unveraendert ist - eigener Text bleibt
+   unangetastet. Bei einer Antwort steht sie ueber dem Zitat. */
+const TM_ANREDE_OFFEN = 'Sehr geehrte';
+function tmAnredeFuer(mieterId){
+  const m = mieterId && window._tmMieter ? window._tmMieter[mieterId] : null;
+  if(!m) return TM_ANREDE_OFFEN;
+  try{ return anredeMitKomma(getAnredeVertragNachname(m)); }
+  catch(_){ return 'Sehr geehrte Damen und Herren,'; }
+}
+function tmAnredeAktualisieren(){
+  const el = document.getElementById('tmText');
+  if(!el) return;
+  const neu = tmAnredeFuer(document.getElementById('tmMieter')?.value || '');
+  const t = el.value, alt = window._tmAutoAnrede || '';
+  const zeilen = t.split('\n');
+  const z = tmZitatBeginn(t);
+  let pos;
+  if(!t.trim()){ el.value = neu + (neu === TM_ANREDE_OFFEN ? ' ' : '') + '\n\n'; pos = neu === TM_ANREDE_OFFEN ? neu.length + 1 : el.value.length; }
+  else if(alt && zeilen[0].trim() === alt.trim()){ zeilen[0] = neu + (neu === TM_ANREDE_OFFEN ? ' ' : ''); el.value = zeilen.join('\n'); pos = zeilen[0].length; }
+  else if(z && !t.slice(0, z.index).trim()){ el.value = neu + (neu === TM_ANREDE_OFFEN ? ' ' : '') + '\n\n' + t.replace(/^\s+/, '\n\n'); pos = neu.length + (neu === TM_ANREDE_OFFEN ? 1 : 2); }
+  else return;
+  window._tmAutoAnrede = neu;
+  if(document.activeElement === el){ try{ el.setSelectionRange(pos, pos); }catch(_){} }
+}
+/* Nur die Anrede, kein eigener Text? */
+function tmNurAnrede(text){
+  const t = String(text || '').trim();
+  return !t || t === String(window._tmAutoAnrede || '').trim() || t === TM_ANREDE_OFFEN;
+}
+
 function tenantMailMieterGewaehlt(){
   const sel=document.getElementById('tmMieter');
   const opt=sel?.options[sel.selectedIndex];
   const mailEl=document.getElementById('tmMail');
   if(mailEl && opt) mailEl.value=opt.getAttribute('data-mail')||'';
   tmSigVorschauZeichnen();   // A437: Briefkopf haengt am Objekt
+  tmAnredeAktualisieren();   // A438
 }
 
 async function tenantMailSenden(){
@@ -10550,7 +10699,7 @@ async function tenantMailSenden(){
   if(cc.length > TM_MAX_KOPIEN || bcc.length > TM_MAX_KOPIEN){
     st('<span style="color:#b91c1c;font-size:13px">Höchstens ' + TM_MAX_KOPIEN + ' Adressen je Feld (CC, BCC).</span>'); return;
   }
-  if(!text){ st('<span style="color:#b91c1c;font-size:13px">Bitte einen Text eingeben.</span>'); return; }
+  if(!text || tmNurAnrede(text)){ st('<span style="color:#b91c1c;font-size:13px">Bitte einen Text eingeben.</span>'); return; }   // A438: nur Anrede zaehlt nicht
   /* A428: Bei einer Antwort zaehlt nur der eigene Teil ueber dem Zitat -
      sonst ginge das Zitat allein als "Antwort" hinaus. */
   const _zitat = tmZitatBeginn(text);
@@ -17741,7 +17890,7 @@ function taskHTML(t) {
   const obj  = getObj(t.objektId);
   const done = t.status==='erledigt';
   const pc   = t.prio==='hoch'?'prio-h':t.prio==='mittel'?'prio-m':'prio-l';
-  return `<div class="task-item" style="cursor:pointer" onclick="showAufgabeDetail('${t.id}')">
+  return `<div class="task-item${done?'':' ton-'+pc.slice(5)}" style="cursor:pointer" onclick="showAufgabeDetail('${t.id}')">
     <div class="t-prio ${pc}"></div>
     <div class="t-check ${done?'done':''}" onclick="event.stopPropagation();toggleAufgabe('${t.id}')">
       ${done?'<i class="ti ti-check" style="font-size:12px"></i>':''}
@@ -17771,7 +17920,7 @@ function mangelHTML(m){
   const done=m.status==='behoben'||m.status==='erledigt';
   const pc=m.schwere==='schwerwiegend'?'prio-h':m.schwere==='mittel'?'prio-m':'prio-l';
   const istRep=m.istReparatur||m.type==='reparatur';
-  return `<div class="task-item" style="cursor:pointer" onclick="showMangelDetail('${m.id}')">
+  return `<div class="task-item${done?'':' ton-'+pc.slice(5)}" style="cursor:pointer" onclick="showMangelDetail('${m.id}')">
     <div class="t-prio ${pc}"></div>
     <div class="t-check ${done?'done':''}" onclick="event.stopPropagation();toggleMangel('${m.id}')">
       ${done?'<i class="ti ti-check" style="font-size:12px"></i>':''}
@@ -17804,7 +17953,7 @@ function reparaturHTML(r){
     ...(r.arbeit||[]).filter(a=>a.stunden>0).map(a=>`${a.stunden}h × ${fmtEur(a.stundensatz)}`),
     ...(r.teile||[]).filter(t=>t.bezeichnung&&t.bezeichnung!=='–').map(t=>`${t.bezeichnung}: ${fmtEur(t.betrag)}`),
   ].join(' · ');
-  return `<div class="task-item" style="cursor:pointer" onclick="showReparaturDetail('${r.id}')">
+  return `<div class="task-item${done?'':' ton-m'}" style="cursor:pointer" onclick="showReparaturDetail('${r.id}')">
     <div class="t-prio ${done?'prio-l':'prio-m'}"></div>
     <div class="t-check ${done?'done':''}" onclick="event.stopPropagation();toggleReparatur('${r.id}')">
       ${done?'<i class="ti ti-check" style="font-size:12px"></i>':''}
@@ -29585,6 +29734,7 @@ async function telefonUebernehmen(i, j){
 registerActions({ modalTelefonAbgleich, telefonUebernehmen, telefonBehalten });   // A421
 registerActions({ tmVerlaufMehr, tmGesendetOeffnen, tmGesendetWeiterleiten });   // A433
 registerActions({ mailSignaturSpeichern });   // A437
+registerActions({ saAmpelSetzen, saHakenSetzen, saNotizSetzen });   // A438
 registerActions({ vormerkungenUmschalten, vormerkungErledigen, vormerkungLinkSenden, websiteNachrichtAntworten });   // A435
 
 /* Vorschlaege zur Bestaetigung. Angelegt wird als BEWOHNER, nicht als
