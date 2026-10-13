@@ -597,6 +597,14 @@ button.chip.chip-active{background:var(--ink);color:#fff;border-color:var(--ink)
 .task-item.ton-l{background:#DDF0E4;border-color:#A9D3B8}
 .task-item[class*="ton-"] .t-prio{width:5px}
 .task-item[class*="ton-"] .t-meta,.task-item[class*="ton-"] .t-body>div{color:var(--ink-60)}
+/* A442: Posteingang - neu / wichtig */
+.pe-neu{display:inline-block;background:var(--red);color:#fff;font-size:10px;font-weight:700;line-height:16px;border-radius:8px;padding:0 6px;margin-left:6px;vertical-align:middle;letter-spacing:.02em}
+.pe-karte.pe-ungelesen{box-shadow:inset 3px 0 0 var(--red)}
+.pe-karte.pe-ungelesen b:first-child{font-weight:800}
+.pe-wichtig-pill{display:inline-block;background:#FCE6C2;color:#8A5300;border:1px solid #E3B66A;font-size:10px;font-weight:700;border-radius:8px;padding:0 6px;margin-left:6px;vertical-align:middle}
+.pe-wichtig-pill[hidden]{display:none}
+.pe-karte.pe-wichtig{border-color:#E3B66A!important}
+.btn.pe-an{background:#FCE6C2;border-color:#E3B66A;color:#8A5300}
 .t-check{width:22px;height:22px;border-radius:6px;border:2px solid var(--ink-20);flex-shrink:0;cursor:pointer;display:flex;align-items:center;justify-content:center;margin-top:1px;transition:all .15s}
 .t-check.done{background:var(--green);border-color:var(--green);color:#fff}
 .t-body{flex:1;min-width:0}
@@ -1255,7 +1263,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=38;   // A398: +kr_abrechnungen
-const APP_VERSION = '2026-10-13-A441';
+const APP_VERSION = '2026-10-13-A444';
 /* v364 (12.08.2026) – offene Punkte abgearbeitet.
    1) D1/XLSX_SRI: Der im Code hinterlegte PowerShell-Befehl war FALSCH und
       konnte nie funktionieren - Invoke-WebRequest liefert unter .Content einen
@@ -8880,6 +8888,7 @@ async function oeffneSelbstauskuenfte(){
     return;
   }
   // Liste rendern (Klartext-Kopf), Detail erst beim Aufklappen entschlüsseln
+  { const _pk = await saPapierkorbLaden(); liste = liste.filter(e => !_pk[e.id]); }   // A442
   window._saInbox = {};
   const _notizen = await saNotizenLaden(liste.map(e => e.id));   // A438
   let html='';
@@ -9009,6 +9018,11 @@ async function saDetailZeigen(id){
     return;
   }
   ziel.innerHTML = saAuskunftHTML(obj);
+  /* A442: angesehen = gelesen. */
+  const _k = ziel.closest ? ziel.closest('.pe-karte') : null;
+  if(_k){ _k.classList.remove('pe-ungelesen'); const p = _k.querySelector('.pe-neu'); if(p) p.remove(); }
+  peAlsGelesen('sa', [id]).then(() => { const c = document.getElementById('mailCountSa');
+    if(c && peListen().sa) c.innerHTML = peZahlHTML('sa', peListen().sa); }).catch(() => {});
 }
 
 /* A404: Der Ausgabeteil, herausgeloest aus saDetailZeigen. Wird von dort UND
@@ -9047,40 +9061,237 @@ function saAuskunftHTML(obj){
   return h;
 }
 
+/* A442: Papierkorb fuer Selbstauskuenfte. "Loeschen" legt die Auskunft fuer
+   3 Tage beiseite (settings 'sa_papierkorb_<id>', synchronisiert); erst dann
+   loescht die App sie am Server endgueltig - bei der naechsten Abfrage auf
+   irgendeinem Verwaltergeraet. Bis dahin: Wiederherstellen oder sofort
+   endgueltig loeschen. Die verschluesselten Angaben bleiben die 3 Tage auf
+   dem Server, wo sie ohnehin lagen. */
+const SA_PAPIERKORB_TAGE = 3;
+async function saPapierkorbLaden(){
+  const raus = {};
+  try{
+    for(const r of await idbGetAll('settings')){
+      if(r && typeof r.id === 'string' && r.id.startsWith('sa_papierkorb_') && r.value && r.value.id) raus[r.value.id] = r.value;
+    }
+  }catch(_){}
+  return raus;
+}
+function saPapierkorbEndgueltigAb(p){
+  return new Date(new Date(p.geloeschtAm).getTime() + SA_PAPIERKORB_TAGE * 86400000);
+}
+async function saPapierkorbLegen(e){
+  const wert = { id:e.id, anzeigeName:e.anzeigeName || '', objektName:e.objektName || '', zeitstempel:e.zeitstempel || '',
+                 geloeschtAm:nowIso(), von:(typeof CU !== 'undefined' && CU && CU.name) ? CU.name : '' };
+  await idbPut('settings', { id:'sa_papierkorb_' + e.id, value:wert, geaendert:nowIso() });
+  syncSoon();
+}
+async function saWiederherstellen(id){
+  try{ await deleteMitTombstone('settings', 'sa_papierkorb_' + id); }
+  catch(err){ toast('Wiederherstellen fehlgeschlagen.'); return; }
+  toast('Selbstauskunft wiederhergestellt ✓');
+  if(window._mailTab === 'sa' && document.getElementById('mailBody')) await mailRenderSA(document.getElementById('mailBody'));
+}
+/* Endgueltig: am Server loeschen, dann Papierkorb-Eintrag und interne Notiz. */
+async function saEndgueltigEntfernen(id){
+  const ok = await saServerLoeschen(id);
+  if(!ok) return false;
+  try{ await deleteMitTombstone('settings', 'sa_papierkorb_' + id); }catch(_){}
+  try{ await deleteMitTombstone('settings', 'sa_notiz_' + id); delete _saNotizen[id]; }catch(_){}
+  return true;
+}
+async function saEndgueltigLoeschen(id, name){
+  if(!confirm('Selbstauskunft von ' + (name || 'dieser Person') + ' jetzt endgültig löschen?\n\n'
+      + 'Die Angaben und Ihre interne Notiz werden vollständig entfernt. Keine Wiederherstellung.')) return;
+  if(await saEndgueltigEntfernen(id)){
+    toast('Selbstauskunft endgültig gelöscht ✓');
+    if(window._mailTab === 'sa' && document.getElementById('mailBody')) await mailRenderSA(document.getElementById('mailBody'));
+  } else toast('Löschen am Server fehlgeschlagen – der Eintrag bleibt im Papierkorb.', 6000);
+}
+/* Abgelaufene Papierkorb-Eintraege endgueltig loeschen. serverIds: die
+   aktuell am Server vorhandenen - was dort schon fehlt, verschwindet nur
+   lokal. Still; ein Fehlschlag wird beim naechsten Mal wiederholt. */
+async function saPapierkorbAufraeumen(serverIds){
+  const pk = await saPapierkorbLaden();
+  const jetzt = Date.now(), vorhanden = new Set((serverIds || []).map(String));
+  let n = 0;
+  for(const p of Object.values(pk)){
+    if(saPapierkorbEndgueltigAb(p).getTime() > jetzt) continue;
+    if(vorhanden.has(String(p.id))){ if(await saEndgueltigEntfernen(p.id)) n++; }
+    else{
+      try{ await deleteMitTombstone('settings', 'sa_papierkorb_' + p.id); await deleteMitTombstone('settings', 'sa_notiz_' + p.id); n++; }catch(_){}
+    }
+  }
+  return n;
+}
+function saPapierkorbHTML(liste){
+  if(!liste.length) return '';
+  const d = x => x ? new Date(x).toLocaleString('de-DE', {day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit'}) : '';
+  return `<div class="f-section-title" style="margin-top:18px"><i class="ti ti-trash"></i> Gelöscht – noch wiederherstellbar</div>`
+    + liste.map(p => `<div class="sa-papierkorb" style="border:1px dashed var(--ink-20,#c9d3df);border-radius:10px;padding:10px 12px;margin-bottom:8px;background:var(--ink-02,#f6fafd)">
+      <div style="font-size:13px;font-weight:600;color:var(--ink-60)">${esc(p.anzeigeName || '(ohne Namen)')}</div>
+      <div style="font-size:12px;color:var(--ink-40)">${esc(p.objektName || '')} · gelöscht ${esc(d(p.geloeschtAm))}${p.von ? ' von ' + esc(p.von) : ''}<br>
+        endgültig gelöscht ab ${esc(d(saPapierkorbEndgueltigAb(p)))}</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+        <button class="btn btn-sm btn-primary" data-action-click="saWiederherstellen" data-arg="${escAttr(p.id)}"><i class="ti ti-restore"></i> Wiederherstellen</button>
+        ${p._abgelehnt ? '<span style="font-size:11px;color:var(--ink-40);align-self:center">als abgelehnt abgelegt</span>'
+          : `<button class="btn btn-sm" data-action-click="saAblehnen" data-arg="${escAttr(p.id)}"><i class="ti ti-user-minus"></i> Als abgelehnt ablegen</button>`}
+        <button class="btn btn-sm btn-danger" data-action-click="saEndgueltigLoeschen" data-arg="${escAttr(p.id)}" data-arg2="${escAttr(p.anzeigeName || '')}"><i class="ti ti-trash-x"></i> Endgültig löschen</button>
+      </div></div>`).join('');
+}
+
+/* A444: Ablage "Abgelehnte Bewerbungen". settings 'bw_abgelehnt_<saId>'
+   (synchronisiert). Kein Abgleich mit neuen Bewerbungen - nur eine Liste
+   mit Suche. Loeschung 6 Monate nach der Ablehnung (DSK-OH 12.03.2026,
+   Abschn. D; § 21 AGG). */
+const BW_AUFBEWAHREN_MONATE = 6;
+async function bwAblageLaden(){
+  const raus = [];
+  try{
+    for(const r of await idbGetAll('settings')){
+      if(r && typeof r.id === 'string' && r.id.startsWith('bw_abgelehnt_') && r.value && r.value.id) raus.push(r.value);
+    }
+  }catch(_){}
+  return raus.sort((a, b) => String(b.abgelehntAm || '').localeCompare(String(a.abgelehntAm || '')));
+}
+function bwLoeschAm(e){
+  const d = new Date(e.abgelehntAm); d.setMonth(d.getMonth() + BW_AUFBEWAHREN_MONATE); return d;
+}
+async function bwAblageAufraeumen(){
+  let n = 0;
+  for(const e of await bwAblageLaden()){
+    if(!e.abgelehntAm || bwLoeschAm(e).getTime() > Date.now()) continue;
+    try{ await deleteMitTombstone('settings', 'bw_abgelehnt_' + e.id); n++; }catch(_){}
+  }
+  return n;
+}
+async function saAblehnen(id){
+  const e = (window._saInbox || {})[id];
+  if(!e){ toast('Selbstauskunft nicht gefunden – bitte neu laden.'); return; }
+  if(!confirm('„' + (e.anzeigeName || 'Bewerbung') + '“ als abgelehnt ablegen?\n\n'
+      + 'Die Selbstauskunft kommt in den Papierkorb (' + SA_PAPIERKORB_TAGE + ' Tage wiederherstellbar). '
+      + 'Name, E-Mail, Objekt und Ihre interne Bewertung bleiben ' + BW_AUFBEWAHREN_MONATE
+      + ' Monate unter „Abgelehnte Bewerbungen“ und werden dann automatisch gelöscht.')) return;
+  let email = '';
+  try{ if(e.daten){ const o = JSON.parse(await saEntschluessle(e.daten)); email = (o && o.basis && o.basis.email) || ''; } }catch(_){}
+  let n = _saNotizen[id];
+  if(!n){ try{ n = (await idbGet('settings', 'sa_notiz_' + id))?.value; }catch(_){} }
+  n = n || {};
+  const wert = {
+    id, name:e.anzeigeName || '', email, objektName:e.objektName || '',
+    beworbenAm:e.zeitstempel || '', abgelehntAm:nowIso(),
+    von:(typeof CU !== 'undefined' && CU && CU.name) ? CU.name : '',
+    ampel:n.ampel || '', notiz:n.notiz || '',
+    telefoniert:n.telefoniert || '', besichtigung:n.besichtigung || '', emailGeschrieben:n.email || ''
+  };
+  try{
+    await idbPut('settings', { id:'bw_abgelehnt_' + id, value:wert, geaendert:nowIso() });
+    const imPapierkorb = !!(await idbGet('settings', 'sa_papierkorb_' + id).catch(() => null));
+    if(!imPapierkorb) await saPapierkorbLegen(e);
+  }catch(err){ console.warn('Ablehnen:', err); toast('Ablehnen fehlgeschlagen.'); return; }
+  syncSoon();
+  toast('Als abgelehnt abgelegt ✓');
+  if(window._mailTab === 'sa' && document.getElementById('mailBody')) await mailRenderSA(document.getElementById('mailBody'));
+}
+async function bwLoeschen(id, name){
+  if(!confirm('Eintrag „' + (name || '') + '“ aus den abgelehnten Bewerbungen jetzt löschen?')) return;
+  try{ await deleteMitTombstone('settings', 'bw_abgelehnt_' + id); }catch(_){ toast('Löschen fehlgeschlagen.'); return; }
+  window._bwAblage = (window._bwAblage || []).filter(x => x.id !== id);
+  bwSuche.call(document.getElementById('bwSuche'));
+  const z = document.getElementById('bwAnzahl'); if(z) z.textContent = '(' + window._bwAblage.length + ')';
+}
+/* Umlaute in beiden Schreibweisen: "Kyffhäuser" findet man mit
+   "kyffhaeuser" UND "kyffhauser". */
+function bwNorm(s, kurz){
+  const u = kurz ? {'ä':'a','ö':'o','ü':'u'} : {'ä':'ae','ö':'oe','ü':'ue'};
+  return String(s || '').toLowerCase().replace(/[äöü]/g, c => u[c]).replace(/ß/g,'ss');
+}
+function bwTrefferListe(liste, suchtext){
+  const w = String(suchtext || '').split(/\s+/).filter(Boolean);
+  if(!w.length) return liste;
+  return liste.filter(e => {
+    const roh = [e.name, e.email, e.objektName, e.notiz].join(' ');
+    const h1 = bwNorm(roh), h2 = bwNorm(roh, true);
+    return w.every(x => { const a = bwNorm(x), b = bwNorm(x, true);
+      return h1.includes(a) || h2.includes(a) || h1.includes(b) || h2.includes(b); });
+  });
+}
+function bwEintragHTML(e){
+  const d = x => x ? new Date(x).toLocaleDateString('de-DE') : '';
+  const a = SA_AMPEL[e.ampel];
+  const haken = [e.telefoniert ? 'telefoniert ' + d(e.telefoniert) : '', e.besichtigung ? 'Besichtigung ' + d(e.besichtigung) : '',
+                 e.emailGeschrieben ? 'E-Mail ' + d(e.emailGeschrieben) : ''].filter(Boolean).join(' · ');
+  return `<div class="bw-eintrag" style="border:1px solid ${a ? a.rand : 'var(--line)'};border-radius:10px;padding:10px 12px;margin-bottom:8px;background:${a ? a.bg : 'var(--white)'}">
+    <div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap">
+      <b style="flex:1;min-width:0;overflow-wrap:anywhere">${esc(e.name || '(ohne Namen)')}</b>
+      ${a ? `<span style="font-size:11px;font-weight:700;color:${a.rand}">● ${a.label}</span>` : ''}</div>
+    <div style="font-size:12px;color:var(--ink-60);overflow-wrap:anywhere">${esc(e.email || '')}${e.email && e.objektName ? ' · ' : ''}${esc(e.objektName || '')}</div>
+    <div style="font-size:12px;color:var(--ink-40)">beworben ${esc(d(e.beworbenAm))} · abgelehnt ${esc(d(e.abgelehntAm))}${e.von ? ' von ' + esc(e.von) : ''} · gelöscht ab ${esc(d(bwLoeschAm(e)))}</div>
+    ${haken ? `<div style="font-size:12px;color:var(--ink-60);margin-top:2px">${esc(haken)}</div>` : ''}
+    ${e.notiz ? `<div style="font-size:13px;margin-top:6px;white-space:pre-wrap;overflow-wrap:anywhere">${esc(e.notiz)}</div>` : ''}
+    <div style="margin-top:6px"><button class="btn btn-sm" data-action-click="bwLoeschen" data-arg="${escAttr(e.id)}" data-arg2="${escAttr(e.name || '')}"><i class="ti ti-trash"></i> Jetzt löschen</button></div>
+  </div>`;
+}
+function bwSuche(){
+  const el = document.getElementById('bwListe'); if(!el) return;
+  const text = this && this.value != null ? this.value : '';
+  const t = bwTrefferListe(window._bwAblage || [], text);
+  el.innerHTML = t.length ? t.map(bwEintragHTML).join('')
+    : `<div style="font-size:12px;color:var(--ink-40);padding:6px 0">${text.trim() ? 'Kein Treffer.' : 'Keine abgelehnten Bewerbungen.'}</div>`;
+}
+function bwAblageHTML(liste){
+  window._bwAblage = liste;
+  return `<details class="bw-ablage" style="margin-top:18px">
+    <summary class="f-section-title" style="cursor:pointer"><i class="ti ti-archive"></i> Abgelehnte Bewerbungen <span id="bwAnzahl">(${liste.length})</span></summary>
+    <div style="font-size:11px;color:var(--ink-40);line-height:1.5;margin:4px 0 8px">Nur zur internen Dokumentation der Entscheidung.
+      Jeder Eintrag wird ${BW_AUFBEWAHREN_MONATE} Monate nach der Ablehnung automatisch gelöscht. Die App gleicht neue Bewerbungen nicht damit ab.</div>
+    <input type="search" id="bwSuche" placeholder="Suche: Name, E-Mail, Objekt, Notiz" autocomplete="off"
+      data-action-input="bwSuche" style="width:100%;margin-bottom:8px">
+    <div id="bwListe">${liste.length ? liste.map(bwEintragHTML).join('') : '<div style="font-size:12px;color:var(--ink-40);padding:6px 0">Keine abgelehnten Bewerbungen.</div>'}</div>
+  </details>`;
+}
+
 /* A402: Selbstauskunft endgueltig loeschen.
    Abgrenzung zu "als Interessent uebernehmen": dort bleibt der Datensatz
    serverseitig als 'verarbeitet' erhalten. Hier verschwindet er ganz - der
    Fall fuer Bewerber, aus denen kein Mietverhaeltnis geworden ist
    (Art. 17 Abs. 1 lit. a DSGVO). */
+/* A442: Loeschen legt in den Papierkorb (3 Tage), siehe saPapierkorbLegen. */
 async function saLoeschen(id, name, tage){
-  const key = (await idbGet('settings','backendKey').catch(()=>null))?.value;
-  if(!key){ toast('Kein Backend-Schlüssel hinterlegt – Löschen nicht möglich.', 6000); return; }
+  const e = (window._saInbox && window._saInbox[id]) || { id, anzeigeName:name || '' };
   if(!confirm('Selbstauskunft von ' + (name || 'dieser Person')
       + (tage!=null ? ' (vor ' + tage + ' Tagen eingegangen)' : '')
-      + ' endgültig löschen?\n\n'
-      + 'Die Angaben werden auf dem Server vollständig entfernt. '
-      + 'Es gibt keinen Papierkorb und keine Wiederherstellung.')) return;
+      + ' löschen?\n\nSie bleibt ' + SA_PAPIERKORB_TAGE + ' Tage unten unter „Gelöscht“ wiederherstellbar '
+      + 'und wird danach samt interner Notiz endgültig entfernt.')) return;
+  try{ await saPapierkorbLegen(e); }
+  catch(err){ toast('Löschen fehlgeschlagen.'); return; }
+  toast('In den Papierkorb gelegt – ' + SA_PAPIERKORB_TAGE + ' Tage wiederherstellbar.');
+  if(window._mailTab === 'sa' && document.getElementById('mailBody') && document.getElementById('mailBody').querySelector('.sa-karte')){
+    await mailRenderSA(document.getElementById('mailBody')); return;
+  }
+  const karte = document.getElementById('saDetail_'+id);
+  const box = karte && karte.closest ? karte.closest('div[style*="border"]') : null;
+  if(box) box.style.display='none';
+}
+/* A442: der bisherige Serverteil von saLoeschen. true = am Server entfernt
+   (auch: war schon weg). */
+async function saServerLoeschen(id){
+  const key = (await idbGet('settings','backendKey').catch(()=>null))?.value;
+  if(!key){ toast('Kein Backend-Schlüssel hinterlegt – Löschen nicht möglich.', 6000); return false; }
   try{
     const r = await fetchMitTimeout(BACKEND_AZURE+'/api/inbox-sa/delete',{
       method:'POST', headers:{'Content-Type':'application/json','x-functions-key':key},
       body:JSON.stringify({ id })
     });
+    if(r && r.status === 404) return true;   // A442: schon entfernt
     if(!r || !r.ok) throw new Error('HTTP '+(r ? r.status : 'ohne Antwort'));
   }catch(err){
     /* Nicht verschlucken - vgl. Befund R26, wo die Oberflaeche Erfolg meldete,
        waehrend serverseitig nichts geschah. */
     console.warn('Selbstauskunft löschen:', err);
-    toast('Löschen am Server fehlgeschlagen – der Eintrag ist weiterhin vorhanden.', 6000);
-    return;
+    return false;
   }
-  toast('Selbstauskunft gelöscht ✓');
-  /* A438: interne Notiz gehoert zur Selbstauskunft und geht mit. */
-  try{ await deleteMitTombstone('settings', 'sa_notiz_' + id); delete _saNotizen[id]; }
-  catch(err){ console.warn('Notiz löschen:', err); }
-  const karte = document.getElementById('saDetail_'+id);
-  const box = karte && karte.closest ? karte.closest('div[style*="border"]') : null;
-  if(box) box.style.display='none';
-  else if(karte && karte.parentElement) karte.parentElement.style.display='none';
+  return true;
 }
 
 // Import als Interessent + serverseitig als verarbeitet markieren
@@ -9207,6 +9418,161 @@ async function renderMail(){
 
 function setMailTab(t){ window._mailTab = t; renderMail(); }
 
+/* A442: Gelesen / Wichtig im Posteingang.
+   Arten: 'mail' (Postfach), 'web' (Website-Nachricht), 'vm' (Vormerkung),
+   'sa' (Selbstauskunft). Gelesen = "Anzeigen" geklickt (mail, sa) bzw. die
+   Karte war einmal auf dem Schirm (web, vm - dort steht der ganze Text schon
+   in der Karte). Zwei synchronisierte settings-Saetze, Eintraege aelter als
+   180 Tage fallen beim Schreiben heraus. Die rote Zahl unten zaehlt nur noch
+   Ungelesenes. */
+const PE_GELESEN = 'posteingang_gelesen', PE_WICHTIG = 'posteingang_wichtig';
+const PE_HALTEN_TAGE = 180;
+let _peGelesen = {}, _peWichtig = {}, _peGeladen = false;
+function peListen(){ return (window._peListen = window._peListen || {}); }
+async function peLaden(neu){
+  if(_peGeladen && !neu) return;
+  try{ _peGelesen = (await idbGet('settings', PE_GELESEN))?.value || {}; }catch(_){ _peGelesen = {}; }
+  try{ _peWichtig = (await idbGet('settings', PE_WICHTIG))?.value || {}; }catch(_){ _peWichtig = {}; }
+  _peGeladen = true;
+}
+function peIstNeu(art, id){ return !_peGelesen[art + ':' + id]; }
+function peIstWichtig(art, id){ return !!_peWichtig[art + ':' + id]; }
+function peNeuHTML(art, id){
+  return peIstNeu(art, id) ? `<span class="pe-neu" data-pe-neu="${escAttr(art + ':' + id)}">NEU</span>` : '';
+}
+function peWichtigPill(art, id){
+  return `<span class="pe-wichtig-pill" data-pe-pill="${escAttr(art + ':' + id)}"${peIstWichtig(art, id) ? '' : ' hidden'}><i class="ti ti-urgent"></i> Wichtig</span>`;
+}
+/* Knopfleiste nach dem Ansehen. */
+function peAktionenHTML(art, id){
+  const an = peIstWichtig(art, id);
+  return `<button class="btn btn-sm${an ? ' pe-an' : ''}" data-action-click="peWichtigUmschalten" data-arg="${escAttr(art)}" data-arg2="${escAttr(id)}"><i class="ti ti-urgent"></i> ${an ? 'Wichtig ✓' : 'Wichtig'}</button>
+    <button class="btn btn-sm" data-action-click="peWiedervorlageModal" data-arg="${escAttr(art)}" data-arg2="${escAttr(id)}"><i class="ti ti-calendar-plus"></i> Wiedervorlage</button>
+    <button class="btn btn-sm" data-action-click="peMangelAusNachricht" data-arg="${escAttr(art)}" data-arg2="${escAttr(id)}"><i class="ti ti-alert-triangle"></i> Mangel anlegen</button>`;
+}
+async function peSchreiben(satzId, aendern){
+  const alt = (await idbGet('settings', satzId).catch(() => null))?.value || {};
+  const wert = Object.assign({}, alt);
+  aendern(wert);
+  const grenze = new Date(Date.now() - PE_HALTEN_TAGE * 86400000).toISOString();
+  for(const k of Object.keys(wert)) if(String(wert[k]) < grenze) delete wert[k];
+  await idbPut('settings', { id:satzId, value:wert, geaendert:nowIso() });
+  syncSoon();
+  return wert;
+}
+async function peAlsGelesen(art, ids){
+  await peLaden();
+  ids = (ids || []).map(String).filter(id => id && peIstNeu(art, id));
+  if(!ids.length) return;
+  const jetzt = nowIso();
+  try{ _peGelesen = await peSchreiben(PE_GELESEN, w => ids.forEach(id => { w[art + ':' + id] = jetzt; })); }
+  catch(e){ console.warn('Gelesen-Markierung:', e); return; }
+  peBadgeAktualisieren();
+}
+/* Ungelesene einer Liste (ids). */
+function peNeuAnzahl(art, ids){ return (ids || []).filter(id => peIstNeu(art, id)).length; }
+/* Zaehler im Reiter: "(8)" plus rote Marke "2 neu". */
+function peZahlHTML(art, ids){
+  const n = (ids || []).length, neu = peNeuAnzahl(art, ids);
+  return (n ? '(' + n + ')' : '') + (neu ? '<span class="pe-neu">' + neu + ' neu</span>' : '');
+}
+/* Rote Zahl unten aus den zuletzt geladenen Listen - ohne neuen Abruf. */
+function peBadgeAktualisieren(){
+  const badge = document.getElementById('mailBadge'); if(!badge) return;
+  const L = peListen();
+  const n = ['mail','web','vm','sa'].reduce((s, a) => s + peNeuAnzahl(a, L[a]), 0);
+  badge.style.display = n ? 'flex' : 'none';
+  badge.textContent = n > 99 ? '99+' : n;
+}
+async function peWichtigUmschalten(art, id){
+  await peLaden();
+  const an = !peIstWichtig(art, id);
+  try{ _peWichtig = await peSchreiben(PE_WICHTIG, w => { if(an) w[art + ':' + id] = nowIso(); else delete w[art + ':' + id]; }); }
+  catch(e){ toast('Markierung nicht gespeichert.'); return; }
+  const k = art + ':' + id;
+  document.querySelectorAll('[data-pe-pill]').forEach(p => { if(p.getAttribute('data-pe-pill') === k) p.hidden = !an; });
+  document.querySelectorAll('[data-action-click="peWichtigUmschalten"]').forEach(b => {
+    if(b.getAttribute('data-arg') === art && b.getAttribute('data-arg2') === String(id)){
+      b.classList.toggle('pe-an', an); b.innerHTML = '<i class="ti ti-urgent"></i> ' + (an ? 'Wichtig ✓' : 'Wichtig');
+      const karte = b.closest ? b.closest('.pe-karte') : null; if(karte) karte.classList.toggle('pe-wichtig', an);
+    }
+  });
+  toast(an ? 'Als wichtig markiert' : 'Markierung entfernt');
+}
+/* Inhalt einer Nachricht fuer Wiedervorlage/Mangel - eine Stelle. */
+function peNachrichtDaten(art, id){
+  if(art === 'mail'){
+    const m = (window._postfachMails || {})[id]; if(!m) return null;
+    return { betreff:m.betreff || '(ohne Betreff)', von:m.vonName ? m.vonName + ' <' + (m.vonAdresse || '') + '>' : (m.vonAdresse || ''),
+             email:m.vonAdresse || '', datum:m.datum || '', text:mailTextLesbar(m.text || ''), objektName:'' };
+  }
+  if(art === 'web'){
+    const n = (window._webNachrichten || {})[id]; if(!n) return null;
+    const name = n.name || [n.vorname, n.nachname].filter(Boolean).join(' ');
+    return { betreff:'Website-Nachricht von ' + (name || n.email || ''), von:name ? name + ' <' + (n.email || '') + '>' : (n.email || ''),
+             email:n.email || '', datum:n.zeitstempel || n.erstellt || '', text:n.nachricht || n.text || '', objektName:n.objektName || n.objekt || '' };
+  }
+  return null;
+}
+function peBetreffOhnePraefix(b){ return String(b || '').replace(/^\s*((AW|WG|RE|FW|FWD|Antwort)\s*:\s*)+/i, '').trim(); }
+async function peWiedervorlageModal(art, id){
+  const d = peNachrichtDaten(art, id);
+  if(!d){ toast('Nachricht nicht mehr geladen – bitte neu öffnen.'); return; }
+  window._peWv = { art, id, d };
+  const t = new Date(); t.setDate(t.getDate() + 3);
+  const vor = t.toISOString().slice(0, 10);
+  showModal(`
+    <div class="m-title"><i class="ti ti-calendar-plus"></i> Wiedervorlage</div>
+    <div style="font-size:12px;color:var(--ink-60);margin-bottom:10px;overflow-wrap:anywhere">${esc(d.betreff)}<br><span style="color:var(--ink-40)">${esc(d.von)}</span></div>
+    <div class="f-row">
+      <div class="f"><label for="peWvDatum">Datum</label><input type="date" id="peWvDatum" value="${vor}"></div>
+      <div class="f"><label for="peWvZeit">Uhrzeit (optional)</label><input type="time" id="peWvZeit"></div>
+    </div>
+    <div class="f"><label for="peWvNotiz">Notiz</label><textarea id="peWvNotiz" rows="3" lang="de" spellcheck="true" placeholder="z. B. nachfassen, Antwort abwarten"></textarea></div>
+    <div class="f-row" style="margin-top:12px">
+      <button class="btn btn-copper btn-full" data-action-click="peWiedervorlageSpeichern"><i class="ti ti-check"></i> In den Kalender</button>
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
+    </div>`);
+}
+async function peWiedervorlageSpeichern(){
+  const w = window._peWv; if(!w) return;
+  const datum = document.getElementById('peWvDatum')?.value || '';
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(datum)){ toast('Bitte ein Datum wählen'); return; }
+  const mieter = w.d.email ? await postfachMieterZuAdresse(w.d.email).catch(() => null) : null;
+  const auszug = String(w.d.text || '').replace(/\s+\n/g, '\n').trim().slice(0, 800);
+  const notiz = [document.getElementById('peWvNotiz')?.value.trim() || '',
+    (w.art === 'mail' ? 'E-Mail' : 'Website-Nachricht') + ' von ' + w.d.von + (w.d.datum ? ' vom ' + new Date(w.d.datum).toLocaleString('de-DE') : '') + ':',
+    auszug].filter(Boolean).join('\n\n');
+  try{
+    await idbPut('termine', {
+      id:'wv_' + uid(), titel:'Wiedervorlage: ' + peBetreffOhnePraefix(w.d.betreff), typ:'sonstiges', datum,
+      uhrzeit:document.getElementById('peWvZeit')?.value || '', uhrzeitEnd:'', erinnerung:'',
+      objektId: mieter ? mieter.objektId || null : null, mieterId: mieter ? mieter.id : null, mieterName: mieter ? mieter.mieter || '' : '',
+      notiz, zugewiesen:'', status:'offen', erstellt:now(), ersteller:CU?.name || '',
+      quelle:'posteingang', quelleArt:w.art, quelleId:w.id
+    });
+  }catch(e){ console.warn('Wiedervorlage:', e); toast('Wiedervorlage konnte nicht gespeichert werden.'); return; }
+  window._peWv = null;
+  closeModal(); syncSoon();
+  toast('Wiedervorlage am ' + new Date(datum + 'T12:00:00').toLocaleDateString('de-DE') + ' im Kalender ✓');
+}
+/* Mangel aus einer Nachricht - wie die Uebernahme aus dem Mieterportal
+   (v339): Maske oeffnen, dann vorbelegen. Mieter ueber die Absenderadresse. */
+async function peMangelAusNachricht(art, id){
+  const d = peNachrichtDaten(art, id);
+  if(!d){ toast('Nachricht nicht mehr geladen – bitte neu öffnen.'); return; }
+  const mieter = d.email ? await postfachMieterZuAdresse(d.email).catch(() => null) : null;
+  try{ await modalAddMangel(mieter ? mieter.id : '', mieter ? mieter.objektId : ''); }
+  catch(e){ toast('Mangelmaske konnte nicht geöffnet werden'); return; }
+  setTimeout(() => {
+    const t = document.getElementById('mgTitel'); if(t) t.value = peBetreffOhnePraefix(d.betreff).slice(0, 120);
+    const b = document.getElementById('mgBeschr');
+    if(b) b.value = String(d.text || '').trim().slice(0, 3000)
+      + '\n\n(' + (art === 'mail' ? 'E-Mail' : 'Website-Nachricht') + ' von ' + d.von + (d.datum ? ' vom ' + new Date(d.datum).toLocaleDateString('de-DE') : '') + ')';
+    if(!mieter) toast('Absender keinem Mieter zugeordnet – Objekt und Wohnung bitte wählen.', 5000);
+  }, 60);
+}
+
 /* v352 (N7): Anzahl der Eintraege je Reiter, ohne ihn zu oeffnen.
    Die drei Abrufe laufen nebeneinander; faellt einer aus, bleiben die anderen
    Zahlen stehen. Der gerade geoeffnete Reiter wird ausgelassen, weil seine
@@ -9226,10 +9592,14 @@ async function postfachZaehlerNachtragen(aktiverTab){
     try{
       const r=await fetchMitTimeout(BACKEND_AZURE+q.pfad,{ headers:{'x-functions-key':key} });
       if(!r || !r.ok) return;                       // 404 = Endpunkt fehlt: keine Zahl, keine Falschaussage
-      const liste=await r.json().catch(()=>null);
+      let liste=await r.json().catch(()=>null);
       if(!Array.isArray(liste)) return;
+      /* A442: Selbstauskuenfte im Papierkorb zaehlen nicht; Ungelesene rot. */
+      if(q.tab==='sa'){ const pk = await saPapierkorbLaden(); liste = liste.filter(e => !pk[e.id]); }
+      await peLaden();
+      const art = q.tab==='sa' ? 'sa' : q.tab==='postfach' ? 'mail' : 'web';
       const el=document.getElementById(q.el);
-      if(el) el.textContent = liste.length ? '('+liste.length+')' : '';
+      if(el) el.innerHTML = peZahlHTML(art, liste.map(e => e.id));
     }catch(e){
       console.warn('Zähler '+q.tab+' nicht abrufbar:', e && e.message);
     }
@@ -9295,9 +9665,23 @@ async function mailRenderSA(body){
     body.innerHTML='<div class="empty"><i class="ti ti-wifi-off"></i><p>Backend nicht erreichbar.</p></div>';
     return;
   }
-  const cnt=document.getElementById('mailCountSa'); if(cnt) cnt.textContent=liste.length?'('+liste.length+')':'';
-  if(!liste.length){ body.innerHTML='<div class="empty"><i class="ti ti-inbox"></i><p>Keine neuen Selbstauskünfte.</p></div>'; return; }
+  /* A442: Papierkorb abtrennen, Abgelaufenes endgueltig loeschen. */
+  if(await saPapierkorbAufraeumen(liste.map(e => e.id))){
+    try{ const r2 = await fetchMitTimeout(BACKEND_AZURE+'/api/inbox-sa',{ headers:{'x-functions-key':key} }); if(r2.ok) liste = await r2.json().catch(() => liste); }catch(_){}
+  }
+  const _pk = await saPapierkorbLaden();
+  const _bw = await bwAblageLaden();   // A444
+  const _bwIds = new Set(_bw.map(x => x.id));
+  const _papier = liste.filter(e => _pk[e.id]).map(e => Object.assign({}, _pk[e.id], { anzeigeName:e.anzeigeName || _pk[e.id].anzeigeName,
+    daten:e.daten, _abgelehnt:_bwIds.has(e.id) }));
+  liste = liste.filter(e => !_pk[e.id]);
+  await peLaden();
+  peListen().sa = liste.map(e => e.id);
+  peBadgeAktualisieren();
+  const cnt=document.getElementById('mailCountSa'); if(cnt) cnt.innerHTML=peZahlHTML('sa', peListen().sa);
   window._saInbox = {};
+  _papier.forEach(p => { window._saInbox[p.id] = p; });
+  if(!liste.length){ body.innerHTML='<div class="empty"><i class="ti ti-inbox"></i><p>Keine neuen Selbstauskünfte.</p></div>' + saPapierkorbHTML(_papier) + bwAblageHTML(_bw); return; }
   const _notizen = await saNotizenLaden(liste.map(e => e.id));   // A438
   let html='';
   for(const e of liste){
@@ -9308,9 +9692,9 @@ async function mailRenderSA(body){
        loeschen; die App erinnert daran, entscheidet aber nicht selbst. */
     const _tage = e.zeitstempel ? Math.floor((Date.now()-new Date(e.zeitstempel).getTime())/86400000) : null;
     const _alt  = _tage!=null && _tage >= SA_FRIST_TAGE;
-    html+=`<div class="sa-karte" style="border:1px solid var(--line);${inboxBalken('sa')}border-radius:10px;padding:12px;margin-bottom:10px;${saKartenStil(_notizen[e.id])}">
+    html+=`<div class="sa-karte pe-karte${peIstNeu('sa', e.id)?' pe-ungelesen':''}" style="border:1px solid var(--line);${inboxBalken('sa')}border-radius:10px;padding:12px;margin-bottom:10px;${saKartenStil(_notizen[e.id])}">
       <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap">
-        <div><b>${esc(e.anzeigeName||'(ohne Namen)')}</b><br>
+        <div><b>${esc(e.anzeigeName||'(ohne Namen)')}</b>${peNeuHTML('sa', e.id)}<br>
           <span style="font-size:12px;color:var(--ink-40)">${esc(e.objektName||'')} · ${esc(dt)}${_tage!=null?' · vor '+_tage+' Tag'+(_tage===1?'':'en'):''}</span></div>
       </div>
       ${_alt?`<div style="margin-top:8px;font-size:12px;border:1px solid var(--amber,#b8860b);border-radius:8px;padding:6px 8px;background:var(--amber-l)">
@@ -9319,9 +9703,10 @@ async function mailRenderSA(body){
         <div style="margin-top:6px"><button class="btn btn-sm btn-danger"
           onclick="saLoeschen('${escJs(e.id)}','${escJs(e.anzeigeName||'')}',${_tage})">
           <i class="ti ti-trash"></i> Jetzt löschen</button></div></div>`
-       :`<div style="margin-top:6px"><button class="btn btn-sm"
+       :`<div style="margin-top:6px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-sm"
           onclick="saLoeschen('${escJs(e.id)}','${escJs(e.anzeigeName||'')}',${_tage==null?'null':_tage})">
-          <i class="ti ti-trash"></i> Löschen</button></div>`}
+          <i class="ti ti-trash"></i> Löschen</button>
+          <button class="btn btn-sm" data-action-click="saAblehnen" data-arg="${escAttr(e.id)}"><i class="ti ti-user-minus"></i> Ablehnen</button></div>`}
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
         <button class="btn btn-sm" onclick="saDetailZeigen('${e.id}')"><i class="ti ti-eye"></i> Anzeigen</button>
         <button class="btn btn-sm btn-primary" onclick="saAlsInteressentImportieren('${e.id}')"><i class="ti ti-user-plus"></i> Als Interessent</button>
@@ -9330,7 +9715,7 @@ async function mailRenderSA(body){
       <div id="saDetail_${e.id}" style="margin-top:10px"></div>
     </div>`;
   }
-  body.innerHTML=html;
+  body.innerHTML=html + saPapierkorbHTML(_papier) + bwAblageHTML(_bw);   // A442, A444
 }
 
 /* v347 (R59): Herkunftszeile. Dieser Reiter zeigt ausschliesslich das
@@ -9732,11 +10117,17 @@ function postfachDetailZeigen(id){
       ${anh?`<div style="margin-top:10px">${anh}</div>`:''}
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;border-top:1px solid var(--line);padding-top:10px">
         ${m.vonAdresse?`<button class="btn btn-sm btn-primary" onclick="postfachAntworten('${escJs(m.id)}')"><i class="ti ti-arrow-back-up"></i> Antworten</button>`:''}
-        <button class="btn btn-sm btn-copper" onclick="postfachWeiterleiten('${escJs(m.id)}')"><i class="ti ti-arrow-forward"></i> Weiterleiten</button>
+        <button class="btn btn-sm btn-copper" onclick="postfachWeiterleiten('${escJs(m.id)}')"><i class="ti ti-mail-forward"></i> Weiterleiten</button>
         ${(m.anhaenge||[]).length>1?`<button class="btn btn-sm" onclick="postfachAlleAnhaenge('${escJs(m.id)}')"><i class="ti ti-download"></i> Alle Anhänge speichern</button>`:''}
       </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">${peAktionenHTML('mail', m.id)}</div>
     </div>`;
   if(bilder.length) postfachVorschauLaden(m.id, bilder.map(a=>Number(a.nr)));
+  /* A442: angesehen = gelesen. */
+  const _karte = ziel.closest ? ziel.closest('.pe-karte') : null;
+  if(_karte){ _karte.classList.remove('pe-ungelesen'); const p = _karte.querySelector('.pe-neu'); if(p) p.remove(); }
+  peAlsGelesen('mail', [id]).then(() => { const c = document.getElementById('mailCountMail');
+    if(c && peListen().mail) c.innerHTML = peZahlHTML('mail', peListen().mail); }).catch(() => {});
 }
 
 async function mailRenderPostfach(body){
@@ -9777,9 +10168,12 @@ async function mailRenderPostfach(body){
     return;
   }
 
-  if(ordner==='offen'){
+  await peLaden();   // A442
+  if(ordner==='offen' && Array.isArray(liste)){
+    peListen().mail = liste.map(m => m.id);
     const cnt=document.getElementById('mailCountMail');
-    if(cnt) cnt.textContent=liste.length?'('+liste.length+')':'';
+    if(cnt) cnt.innerHTML=peZahlHTML('mail', peListen().mail);
+    peBadgeAktualisieren();
   }
   if(!Array.isArray(liste) || !liste.length){
     body.innerHTML=kopf+'<div class="empty"><i class="ti ti-mail-off"></i><p>Keine Nachrichten in diesem Ordner.</p></div>';
@@ -9801,8 +10195,9 @@ async function mailRenderPostfach(body){
         : `<button class="btn btn-sm btn-primary" onclick="postfachStatus('${escJs(m.id)}','erledigt')"><i class="ti ti-check"></i> Erledigt</button>
            <button class="btn btn-sm" onclick="postfachStatus('${escJs(m.id)}','geloescht')"><i class="ti ti-trash"></i> Papierkorb</button>`;
     const _h = postfachHerkunft(m.betreff);          // A400
-    html+=`<div style="border:1px solid var(--line);${inboxBalken(_h)}border-radius:10px;padding:12px;margin-bottom:10px;background:${POSTFACH_TON[_h]}">
-      <div><b>${esc(m.betreff||'(ohne Betreff)')}</b>${anzahl?` <i class="ti ti-paperclip" title="${anzahl} Anhang/Anhänge"></i>`:''}
+    const _neu = ordner==='offen' && peIstNeu('mail', m.id), _wi = peIstWichtig('mail', m.id);   // A442
+    html+=`<div class="pe-karte${_neu?' pe-ungelesen':''}${_wi?' pe-wichtig':''}" style="border:1px solid var(--line);${inboxBalken(_h)}border-radius:10px;padding:12px;margin-bottom:10px;background:${POSTFACH_TON[_h]}">
+      <div><b>${esc(m.betreff||'(ohne Betreff)')}</b>${ordner==='offen'?peNeuHTML('mail', m.id):''}${peWichtigPill('mail', m.id)}${anzahl?` <i class="ti ti-paperclip" title="${anzahl} Anhang/Anhänge"></i>`:''}
         ${POSTFACH_LABEL[_h]?`<span style="font-size:10px;padding:1px 6px;border-radius:6px;color:#fff;background:${INBOX_FARBE[_h]};vertical-align:middle">${POSTFACH_LABEL[_h]}</span>`:''}</div>
       <div style="font-size:12px;color:var(--ink-40);margin-top:2px">${esc(von)} · ${esc(dt)}</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
@@ -9848,7 +10243,13 @@ async function mailRenderNachrichten(body){
     body.innerHTML=NACHRICHTEN_HERKUNFT+'<div class="empty"><i class="ti ti-wifi-off"></i><p>Backend nicht erreichbar.</p></div>';
     return;
   }
-  const cnt=document.getElementById('mailCountMsg'); if(cnt) cnt.textContent=liste.length?'('+liste.length+')':'';
+  /* A442: Zaehler mit "neu"; was jetzt auf dem Schirm steht, gilt ab dem
+     naechsten Aufruf als gelesen (die NEU-Marke bleibt fuer diese Ansicht). */
+  await peLaden();
+  window._webNachrichten = {};
+  peListen().web = liste.map(n => n.id);
+  const cnt=document.getElementById('mailCountMsg'); if(cnt) cnt.innerHTML=peZahlHTML('web', peListen().web);
+  setTimeout(() => peAlsGelesen('web', peListen().web).catch(() => {}), 0);
   /* A435: kein return mehr bei leerer Liste - darunter folgen die Vormerkungen. */
   let html=NACHRICHTEN_HERKUNFT;
   if(!liste.length) html+='<div class="empty" style="padding:14px 0"><i class="ti ti-message-off"></i><p>Keine neuen Nachrichten.</p></div>';
@@ -9858,9 +10259,10 @@ async function mailRenderNachrichten(body){
     /* v394: Portal-Registrierungen kommen ueber dasselbe Kontaktformular
        herein und tragen den Betreff im Text - sie bekommen die Portalfarbe. */
     const _art = /portal[- ]?registrierung/i.test(String(n.betreff||n.nachricht||n.text||'')) ? 'portal' : 'website';
-    html+=`<div style="border:1px solid var(--line);${inboxBalken(_art)}border-radius:10px;padding:12px;margin-bottom:10px;background:var(--white)">
+    window._webNachrichten[n.id] = n;   // A442
+    html+=`<div class="pe-karte${peIstNeu('web', n.id)?' pe-ungelesen':''}${peIstWichtig('web', n.id)?' pe-wichtig':''}" style="border:1px solid var(--line);${inboxBalken(_art)}border-radius:10px;padding:12px;margin-bottom:10px;background:var(--white)">
       <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap">
-        <div><b>${esc(name)}</b> <span style="font-size:10px;padding:1px 6px;border-radius:6px;color:#fff;background:${INBOX_FARBE[_art]}">${_art==='portal'?'Portal':'Website'}</span><br><span style="font-size:12px;color:var(--ink-40)">${esc(n.email||'')}${n.telefon?' · '+esc(n.telefon):''} · ${esc(dt)}</span></div>
+        <div><b>${esc(name)}</b>${peNeuHTML('web', n.id)}${peWichtigPill('web', n.id)} <span style="font-size:10px;padding:1px 6px;border-radius:6px;color:#fff;background:${INBOX_FARBE[_art]}">${_art==='portal'?'Portal':'Website'}</span><br><span style="font-size:12px;color:var(--ink-40)">${esc(n.email||'')}${n.telefon?' · '+esc(n.telefon):''} · ${esc(dt)}</span></div>
       </div>
       ${n.objektName||n.objekt?`<div style="font-size:12px;color:var(--ink-60);margin-top:6px"><i class="ti ti-building"></i> ${esc(n.objektName||n.objekt)}</div>`:''}
       ${n.nachricht||n.text?`<div style="font-size:13px;color:var(--ink);margin-top:8px;white-space:pre-wrap;line-height:1.5">${esc(n.nachricht||n.text)}</div>`:''}
@@ -9870,6 +10272,7 @@ async function mailRenderNachrichten(body){
         <button class="btn btn-sm" onclick="mailNachrichtAblegen('${escJs(n.id||'')}','erledigt',this)"><i class="ti ti-check"></i> Erledigt</button>
         <button class="btn btn-sm" onclick="mailNachrichtAblegen('${escJs(n.id||'')}','geloescht',this)"><i class="ti ti-trash"></i> Papierkorb</button>
       </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">${peAktionenHTML('web', n.id)}</div>
     </div>`;
   }
   html+='<div id="vmBereich"></div>';
@@ -9904,9 +10307,10 @@ function vormerkungKarteHTML(gr){
   const mb = /^\d{4}-\d{2}-\d{2}$/.test(String(v.mietbeginn||'')) ? fmtDate(v.mietbeginn) : v.mietbeginn;
   const kinder = v.kinder && v.kinder !== '0' ? v.kinder + (v.kinderAlter ? ' (Alter: ' + v.kinderAlter + ')' : '') : (v.kinderAlter ? 'Alter: ' + v.kinderAlter : '');
   const idsArg = escAttr(gr.ids.join(','));
-  return `<div class="vm-karte" style="border:1px solid var(--line);${inboxBalken('website')}border-radius:10px;padding:12px;margin-bottom:10px;background:var(--white)${gr.erledigt?';opacity:.65':''}">
+  const _neu = !gr.erledigt && gr.ids.some(id => peIstNeu('vm', id));   // A442
+  return `<div class="vm-karte pe-karte${_neu?' pe-ungelesen':''}" style="border:1px solid var(--line);${inboxBalken('website')}border-radius:10px;padding:12px;margin-bottom:10px;background:var(--white)${gr.erledigt?';opacity:.65':''}">
     <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap">
-      <div><b>${esc(name)}</b> <span style="font-size:10px;padding:1px 6px;border-radius:6px;color:#fff;background:${INBOX_FARBE.website}">Vormerkung</span>
+      <div><b>${esc(name)}</b>${_neu ? '<span class="pe-neu">NEU</span>' : ''} <span style="font-size:10px;padding:1px 6px;border-radius:6px;color:#fff;background:${INBOX_FARBE.website}">Vormerkung</span>
         ${gr.anzahl > 1 ? `<span style="font-size:10px;padding:1px 6px;border-radius:6px;background:var(--ink-05);color:var(--ink-60)">${gr.anzahl}× vorgemerkt</span>` : ''}<br>
         <span style="font-size:12px;color:var(--ink-40)">${esc(v.email||'')}${v.telefon?' · '+esc(v.telefon):''} · ${esc(dt(v.zeitstempel))}</span></div>
     </div>
@@ -9943,7 +10347,7 @@ async function vormerkungenZeichnen(key){
      - erkennbar am fehlenden Feld 'erledigt'. */
   const altesBackend = liste.length && liste.some(v => !Object.prototype.hasOwnProperty.call(v, 'erledigt'));
   const kopf = `<div style="display:flex;align-items:center;gap:8px;margin:18px 0 8px">
-      <div style="font-size:14px;font-weight:700;flex:1"><i class="ti ti-bookmark"></i> Vormerkungen</div>
+      <div style="font-size:14px;font-weight:700;flex:1"><i class="ti ti-clipboard-list"></i> Vormerkungen</div>
       ${altesBackend ? '' : `<button class="btn btn-sm" data-action-click="vormerkungenUmschalten">${alle ? 'Nur offene' : 'Erledigte anzeigen'}</button>`}</div>`;
   if(altesBackend){
     el.innerHTML = kopf + '<div style="font-size:12px;color:var(--amber-d,#9a6b00);line-height:1.5"><i class="ti ti-info-circle"></i> '
@@ -9951,8 +10355,11 @@ async function vormerkungenZeichnen(key){
     return;
   }
   const gruppen = vormerkungenGruppieren(liste);
+  await peLaden();   // A442
+  if(!alle) peListen().vm = liste.map(v => v.id);
+  setTimeout(() => peAlsGelesen('vm', liste.map(v => v.id)).catch(() => {}), 0);
   el.innerHTML = kopf + (gruppen.length ? gruppen.map(vormerkungKarteHTML).join('')
-    : `<div class="empty" style="padding:14px 0"><i class="ti ti-bookmark-off"></i><p>${alle ? 'Keine Vormerkungen.' : 'Keine offenen Vormerkungen.'}</p></div>`);
+    : `<div class="empty" style="padding:14px 0"><i class="ti ti-clipboard-off"></i><p>${alle ? 'Keine Vormerkungen.' : 'Keine offenen Vormerkungen.'}</p></div>`);
 }
 
 function vormerkungenUmschalten(){
@@ -10472,7 +10879,7 @@ async function tmGesendetOeffnen(id){
   const anh = Array.isArray(v.anhaenge) ? v.anhaenge : [];
   const statusFehler = v.status && v.status !== 'gesendet';
   showModal(`
-    <div class="m-title"><i class="ti ti-mail-opened"></i> Gesendete Mail</div>
+    <div class="m-title"><i class="ti ti-mail"></i> Gesendete Mail</div>
     <div style="background:var(--ink-05);border-radius:10px;padding:10px 12px;margin-bottom:10px">
       ${zeile('Datum', v.gesendet ? esc(new Date(v.gesendet).toLocaleString('de-DE')) : '')}
       ${zeile('Status', `<span style="color:${statusFehler ? '#b91c1c' : 'var(--green)'}">${esc(TM_STATUS_TEXT[v.status] || v.status || '')}</span>`)}
@@ -10487,7 +10894,7 @@ async function tmGesendetOeffnen(id){
     </div>
     <div style="white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px;line-height:1.55;border:1px solid var(--ink-10);border-radius:10px;padding:10px 12px;max-height:50vh;overflow:auto">${esc(v.text || '')}</div>
     <div class="f-row" style="margin-top:12px">
-      <button class="btn btn-copper btn-full" data-action-click="tmGesendetWeiterleiten" data-arg="${escAttr(String(v.id))}"><i class="ti ti-arrow-forward"></i> Weiterleiten</button>
+      <button class="btn btn-copper btn-full" data-action-click="tmGesendetWeiterleiten" data-arg="${escAttr(String(v.id))}"><i class="ti ti-mail-forward"></i> Weiterleiten</button>
       <button class="btn btn-full" data-action-click="closeModal">Schließen</button>
     </div>`);
 }
@@ -18005,18 +18412,31 @@ async function updateMailBadge(){
   const key=(await idbGet('settings','backendKey').catch(()=>null))?.value;
   if(!key){ badge.style.display='none'; return; }
   eingangAbholen(key).catch(e => console.warn('Claude-Eingang:', e));   // A439
-  let sa=0, msg=0;
-  try{
-    const r1=await fetchMitTimeout(BACKEND_AZURE+'/api/inbox-sa',{ headers:{'x-functions-key':key} });
-    if(r1.ok){ const l=await r1.json().catch(()=>[]); sa=Array.isArray(l)?l.length:0; }
-  }catch(e){ console.warn('Zähler Selbstauskünfte:', e); }   // v244 (R26)
-  try{
-    const r2=await fetchMitTimeout(BACKEND_AZURE+'/api/inbox',{ headers:{'x-functions-key':key} });
-    if(r2.ok){ const l=await r2.json().catch(()=>[]); msg=Array.isArray(l)?l.length:0; }
-  }catch(e){ console.warn('Zähler Nachrichten:', e); }   // v244 (R26)
-  const n = sa + msg;
-  badge.style.display = n?'flex':'none';
-  badge.textContent = n>99?'99+':n;
+  /* A442: die rote Zahl zaehlt UNGELESENES aus allen vier Quellen
+     (Postfach, Website-Nachrichten, Vormerkungen, Selbstauskuenfte).
+     Selbstauskuenfte im Papierkorb zaehlen nicht; Abgelaufenes dort wird
+     hier endgueltig geloescht. */
+  await peLaden(true);
+  const holen = async (pfad) => {
+    try{ const r = await fetchMitTimeout(BACKEND_AZURE + pfad, { headers:{'x-functions-key':key} });
+         if(!r || !r.ok) return null; const l = await r.json().catch(() => null); return Array.isArray(l) ? l : null; }
+    catch(e){ console.warn('Zähler ' + pfad + ':', e); return null; }   // v244 (R26)
+  };
+  const [lSa, lWeb, lMail, lVm] = await Promise.all([holen('/api/inbox-sa'), holen('/api/inbox'),
+    holen('/api/mails?ordner=offen'), holen('/api/inbox?art=vormerkung')]);
+  if(lSa){
+    try{ await saPapierkorbAufraeumen(lSa.map(e => e.id)); }catch(_){}
+    try{ await bwAblageAufraeumen(); }catch(_){}   // A444: 6-Monats-Loeschung
+    const pk = await saPapierkorbLaden();
+    peListen().sa = lSa.filter(e => !pk[e.id]).map(e => e.id);
+  }
+  if(lWeb)  peListen().web  = lWeb.map(e => e.id);
+  if(lMail) peListen().mail = lMail.map(e => e.id);
+  /* Vor B6 liefert ?art=vormerkung die Nachrichten (ohne 'erledigt') - dann nicht doppelt zaehlen. */
+  if(lVm && !lVm.some(v => !Object.prototype.hasOwnProperty.call(v, 'erledigt'))) peListen().vm = lVm.map(e => e.id);
+  peBadgeAktualisieren();
+  const sa  = peNeuAnzahl('sa', peListen().sa);
+  const msg = peNeuAnzahl('web', peListen().web) + peNeuAnzahl('vm', peListen().vm) + peNeuAnzahl('mail', peListen().mail);
   // In-App-Notifier: nur bei echtem Anstieg gegenüber vorigem Abruf,
   // nicht beim allerersten Stand und nicht, während der Mail-Tab offen ist.
   if(_mailLetztStand){
@@ -18025,7 +18445,7 @@ async function updateMailBadge(){
     if((neuSa+neuMsg)>0 && curPage!=='mail'){
       const teile=[];
       if(neuSa)  teile.push(neuSa +' neue '+(neuSa===1 ?'Selbstauskunft':'Selbstauskünfte'));
-      if(neuMsg) teile.push(neuMsg+' neue '+(neuMsg===1?'Nachricht':'Nachrichten'));
+      if(neuMsg) teile.push(neuMsg+' neue '+(neuMsg===1?'Nachricht':'Nachrichten')+' im Posteingang');
       mailNotifierBanner(teile.join(' · '));
     }
   }
@@ -22998,15 +23418,12 @@ function mailSignaturAus(bk, firma, s){
     s.zusatz ? bk.zusatz : '',
     s.anschrift ? (bk.strasse || VERWALTER_STRASSE) : '',
     s.anschrift ? (bk.ort || VERWALTER_ORT) : '',
-    (s.tel && t(bk.tel)) ? 'Tel. ' + t(bk.tel) : '',
-    s.email ? (bk.email || 'info@nadigpfau.de') : ''
+    (s.tel && t(bk.tel)) ? 'Telefon: ' + t(bk.tel) : '',                 // A443
+    s.email ? 'E-Mail: ' + (bk.email || 'info@nadigpfau.de') : ''
   ].concat(String(s.frei || '').split('\n')).map(t).filter(Boolean);
   const kopf = [t(s.gruss), person].filter(Boolean);
-  // Ohne Personenzeile schliesst der Kontaktblock direkt an (Stand A436).
-  const teile = person
-    ? [kopf.join('\n'), kontakt.join('\n')]
-    : [kopf.concat(kontakt).join('\n')];
-  const sig = teile.filter(Boolean).join('\n\n');
+  /* A443: Name und Kontaktblock ohne Leerzeile (Wunschformat des Nutzers). */
+  const sig = kopf.concat(kontakt).join('\n');
   return sig ? '\n\n' + sig : '';
 }
 function mailSignatur(objektId, opt){
@@ -23073,7 +23490,7 @@ function renderMailSignaturConfig(){
     <div class="f" style="margin-bottom:6px"><label style="font-size:10px" for="msig_gruss">Grußformel</label>
       <input type="text" id="msig_gruss" value="${esc(s.gruss||'')}" style="font-size:12px" oninput="mailSigVorschauEinst()"></div>
     ${schalter}
-    <div class="f" style="margin:8px 0 6px"><label style="font-size:10px" for="msig_frei">Weitere Zeilen (optional, z. B. Erreichbarkeit)</label>
+    <div class="f" style="margin:8px 0 6px"><label style="font-size:10px" for="msig_frei">Weitere Zeilen (optional, z. B. „Web: https://www.nadigpfau.de“)</label>
       <textarea id="msig_frei" rows="2" style="font-size:12px;min-height:44px" oninput="mailSigVorschauEinst()">${esc(s.frei||'')}</textarea></div>
     <div class="f" style="margin-bottom:6px"><label style="font-size:10px" for="msig_adresse">Meine Absenderadresse (leer = info@nadigpfau.de)</label>
       <input type="text" id="msig_adresse" inputmode="email" autocomplete="off" value="${esc(eigene)}" placeholder="z. B. nadig@nadigpfau.de" style="font-size:12px" oninput="mailSigVorschauEinst()"></div>
@@ -29927,6 +30344,9 @@ registerActions({ mailSignaturSpeichern });   // A437
 registerActions({ saAmpelSetzen, saHakenSetzen, saNotizSetzen });   // A438
 registerActions({ aushangArchivOeffnen });   // A439
 registerActions({ tokErneutSenden, tokVerlaufMehr });   // A441
+registerActions({ peWichtigUmschalten, peWiedervorlageModal, peWiedervorlageSpeichern, peMangelAusNachricht,
+                  saWiederherstellen, saEndgueltigLoeschen });   // A442
+registerActions({ saAblehnen, bwLoeschen, bwSuche });   // A444
 registerActions({ vormerkungenUmschalten, vormerkungErledigen, vormerkungLinkSenden, websiteNachrichtAntworten });   // A435
 
 /* Vorschlaege zur Bestaetigung. Angelegt wird als BEWOHNER, nicht als
@@ -39283,7 +39703,7 @@ async function renderSettings(){
     </div>`:''}
 
     ${isAdmin?`<div class="settings-card" data-tab="objekte">
-      <div class="card-hdr"><i class="ti ti-writing"></i> E-Mail-Signatur</div>
+      <div class="card-hdr"><i class="ti ti-writing-sign"></i> E-Mail-Signatur</div>
       <p style="font-size:13px;color:var(--ink-40);margin-bottom:12px;line-height:1.6">
         Fußzeile der Mails aus der App. Anschrift, Telefon und Zusatz kommen aus dem Briefkopf der jeweiligen Objektgruppe.
         In der Mail-Maske lassen sich Grußformel und Kontaktdaten je Mail abwählen.
