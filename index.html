@@ -1255,7 +1255,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=38;   // A398: +kr_abrechnungen
-const APP_VERSION = '2026-10-09-A438';
+const APP_VERSION = '2026-10-13-A441';
 /* v364 (12.08.2026) – offene Punkte abgearbeitet.
    1) D1/XLSX_SRI: Der im Code hinterlegte PowerShell-Befehl war FALSCH und
       konnte nie funktionieren - Invoke-WebRequest liefert unter .Content einen
@@ -9866,6 +9866,7 @@ async function mailRenderNachrichten(body){
       ${n.nachricht||n.text?`<div style="font-size:13px;color:var(--ink);margin-top:8px;white-space:pre-wrap;line-height:1.5">${esc(n.nachricht||n.text)}</div>`:''}
       <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
         ${n.email?`<button class="btn btn-sm btn-primary" onclick="websiteNachrichtAntworten('${escJs(n.email)}','${escJs(n.name||'')}')"><i class="ti ti-mail-forward"></i> Antworten</button>`:''}
+        ${(n.email && _art==='website')?`<button class="btn btn-sm" data-action-click="vormerkungLinkSenden" data-arg="${escAttr(n.email)}" data-arg2="${escAttr(n.objektName||n.objekt||'')}"><i class="ti ti-send"></i> Selbstauskunft-Link</button>`:''}
         <button class="btn btn-sm" onclick="mailNachrichtAblegen('${escJs(n.id||'')}','erledigt',this)"><i class="ti ti-check"></i> Erledigt</button>
         <button class="btn btn-sm" onclick="mailNachrichtAblegen('${escJs(n.id||'')}','geloescht',this)"><i class="ti ti-trash"></i> Papierkorb</button>
       </div>
@@ -9912,6 +9913,7 @@ function vormerkungKarteHTML(gr){
     ${v.objektName?`<div style="font-size:12px;color:var(--ink-60);margin-top:6px"><i class="ti ti-building"></i> ${esc(v.objektName)}</div>`:''}
     <div style="margin-top:6px">
       ${zeile('Mietbeginn', mb)}${zeile('Erwachsene', v.erwachsene)}${zeile('Kinder', kinder)}${zeile('Empfohlen von', v.empfohlenVon)}
+      ${v.nachricht ? `<div style="font-size:13px;margin-top:8px;white-space:pre-wrap;line-height:1.5;overflow-wrap:anywhere">${esc(v.nachricht)}</div>` : ''}
       ${gr.anzahl > 1 ? zeile('Zuerst vorgemerkt', dt(gr.erste)) : ''}
       ${gr.erledigt ? zeile('Erledigt am', dt(gr.erledigt)) : ''}
     </div>
@@ -10044,7 +10046,9 @@ async function mailRenderToken(body){
         <button class="btn btn-primary" data-action-click="mailTokenSenden"><i class="ti ti-send"></i> Link senden</button>
       </div>
       <div id="mtTokStatus" style="margin-top:10px"></div>
-    </div>`;
+    </div>
+    <div id="mtTokVerlauf" style="margin-top:16px"></div>`;
+  tokVerlaufZeichnen().catch(e => console.warn('Link-Verlauf:', e));   // A441
   await mailTokInteressentBefuellen();
   /* A435: aus einer Vormerkung heraus geoeffnet - einmalig vorbelegen. */
   if(window._tokVorbelegung){
@@ -10052,6 +10056,91 @@ async function mailRenderToken(body){
     const m = document.getElementById('mtTokMail'), o = document.getElementById('mtTokObjekt');
     if(m) m.value = v.email; if(o && v.objekt) o.value = v.objekt;
   }
+}
+
+/* A441: Verlauf der verschickten Selbstauskunft-Links (Backend B10,
+   /api/token-liste). Je Adresse+Objekt traegt nur der NEUESTE Link den Knopf
+   "Erneut senden" - aeltere, laengst ersetzte Links sollen nicht dazu
+   verleiten, ein drittes Mal zu schicken. */
+const TOK_VERLAUF_SEITE = 20;
+function tokRestzeit(ablauf, jetzt){
+  const ms = new Date(ablauf).getTime() - (jetzt || Date.now());
+  if(!isFinite(ms)) return '';
+  if(ms <= 0) return '';
+  const std = Math.floor(ms / 3600000);
+  if(std < 24) return std < 1 ? 'läuft in unter 1 Std. ab' : 'noch ' + std + ' Std. gültig';
+  const tage = Math.floor(std / 24);
+  return 'noch ' + tage + (tage === 1 ? ' Tag' : ' Tage') + ' gültig';
+}
+function tokVerlaufAufbereiten(liste, jetzt){
+  const neueste = new Set(), gesehen = new Set();
+  liste.forEach((t, i) => {
+    const k = String(t.email || '').toLowerCase() + '|' + String(t.objektName || '').trim().toLowerCase();
+    if(!gesehen.has(k)){ gesehen.add(k); neueste.add(i); }
+  });
+  return liste.map((t, i) => Object.assign({}, t, {
+    _neuester: neueste.has(i),
+    _rest: t.status === 'offen' ? tokRestzeit(t.ablauf, jetzt) : ''
+  }));
+}
+function tokVerlaufZeileHTML(t, i){
+  const d = x => x ? new Date(x).toLocaleString('de-DE', {day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit'}) : '';
+  const tagD = x => x ? new Date(x).toLocaleDateString('de-DE') : '';
+  let chip;
+  if(t.status === 'eingegangen'){
+    chip = `<span class="chip chip-ok" style="font-size:11px"><i class="ti ti-circle-check"></i> Selbstauskunft eingegangen${t.eingegangenAm ? ' ' + esc(tagD(t.eingegangenAm)) : ''}</span>`;
+  } else if(t.status === 'offen'){
+    const knapp = /Std\./.test(t._rest);
+    chip = `<span class="chip ${knapp ? 'chip-warn' : 'chip-copper'}" style="font-size:11px"><i class="ti ti-clock"></i> ${esc(t._rest || 'gültig')} · bis ${esc(tagD(t.ablauf))}</span>`;
+  } else {
+    chip = `<span class="chip chip-err" style="font-size:11px"><i class="ti ti-clock-off"></i> abgelaufen ${esc(tagD(t.ablauf))}</span>`
+      + (t._neuester ? '' : ' <span style="font-size:11px;color:var(--ink-40)">· neuerer Link verschickt</span>');
+  }
+  const erneut = (t.status === 'abgelaufen' && t._neuester && t.email)
+    ? `<button class="btn btn-sm btn-primary" data-action-click="tokErneutSenden" data-arg="${i}" data-argnum style="margin-top:6px"><i class="ti ti-send"></i> Erneut senden</button>` : '';
+  return `<div class="tok-zeile" style="border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:8px;background:var(--white)${t.status==='abgelaufen' && !t._neuester ? ';opacity:.6' : ''}">
+    <div style="font-size:13px;font-weight:600;overflow-wrap:anywhere">${esc(t.name || t.email)}</div>
+    <div style="font-size:12px;color:var(--ink-40);overflow-wrap:anywhere">${t.name ? esc(t.email) + ' · ' : ''}${esc(t.objektName || 'ohne Objekt')}</div>
+    <div style="font-size:12px;color:var(--ink-60);margin:4px 0">gesendet ${esc(d(t.erstellt))}</div>
+    ${chip}${erneut ? '<div>' + erneut + '</div>' : ''}
+  </div>`;
+}
+async function tokVerlaufZeichnen(){
+  const el = document.getElementById('mtTokVerlauf'); if(!el) return;
+  const key = (await idbGet('settings','backendKey').catch(() => null))?.value;
+  if(!key){ el.innerHTML = ''; return; }
+  const kopf = '<div class="f-section-title"><i class="ti ti-history"></i> Verschickte Links</div>';
+  el.innerHTML = kopf + '<div style="font-size:12px;color:var(--ink-40)">Lade …</div>';
+  let liste;
+  try{
+    const r = await fetchMitTimeout(BACKEND_AZURE + '/api/token-liste', { headers:{ 'x-functions-key':key } });
+    if(r.status === 404){ el.innerHTML = kopf + '<div style="font-size:12px;color:var(--ink-40)">Der Verlauf erscheint, sobald Backend B10 (token-liste.js) eingespielt ist.</div>'; return; }
+    if(!r.ok) throw new Error('HTTP ' + r.status);
+    liste = await r.json();
+  }catch(e){
+    el.innerHTML = kopf + '<div style="font-size:12px;color:var(--red,#c0392b)"><i class="ti ti-alert-circle"></i> Verlauf konnte nicht geladen werden.</div>';
+    return;
+  }
+  window._tokVerlauf = tokVerlaufAufbereiten(Array.isArray(liste) ? liste : []);
+  if(!window._tokVerlauf.length){ el.innerHTML = kopf + '<div style="font-size:12px;color:var(--ink-40)">Noch keine Links verschickt.</div>'; return; }
+  const n = Math.min(window._tokVerlauf.length, window._tokVerlaufAnzahl || TOK_VERLAUF_SEITE);
+  el.innerHTML = kopf + window._tokVerlauf.slice(0, n).map(tokVerlaufZeileHTML).join('')
+    + (window._tokVerlauf.length > n ? `<button class="btn btn-sm btn-full" data-action-click="tokVerlaufMehr"><i class="ti ti-chevron-down"></i> Weitere anzeigen (${window._tokVerlauf.length - n})</button>` : '');
+}
+function tokVerlaufMehr(){
+  window._tokVerlaufAnzahl = (window._tokVerlaufAnzahl || TOK_VERLAUF_SEITE) + TOK_VERLAUF_SEITE;
+  return tokVerlaufZeichnen();
+}
+async function tokErneutSenden(i){
+  const t = (window._tokVerlauf || [])[i];
+  if(!t || !t.email) return;
+  if(!confirm('Neuen Selbstauskunft-Link an ' + t.email + (t.objektName ? ' (' + t.objektName + ')' : '') + ' senden?\n\nDer neue Link ist wieder 7 Tage gültig.')) return;
+  const m = document.getElementById('mtTokMail'), o = document.getElementById('mtTokObjekt');
+  if(m) m.value = t.email; if(o) o.value = t.objektName || '';
+  /* Vormerkdaten wie beim ersten Versand mitgeben (Vorbefuellung des Formulars). */
+  _saTokGewaehlt = (t.vorname || t.nachname || t.telefon)
+    ? { vorname:t.vorname || '', nachname:t.nachname || '', telefon:t.telefon || '', email:t.email } : null;
+  await mailTokenSenden();
 }
 
 // Dropdown der Mail-Token-UI befüllen (eigene IDs)
@@ -10113,6 +10202,7 @@ async function mailTokenSenden(){
       const oe=document.getElementById('mtTokObjekt'); if(oe) oe.value='';
       const se=document.getElementById('mtTokInteressent'); if(se) se.value='';
       _saTokGewaehlt=null;
+      tokVerlaufZeichnen().catch(e => console.warn('Link-Verlauf:', e));   // A441
     } else {
       setSt('<span style="color:var(--red,#c0392b);font-size:13px">Versand fehlgeschlagen ('+res.status+').</span>');
     }
@@ -17802,6 +17892,105 @@ async function updateBadge(){
   updateMailBadge();
 }
 
+/* A439: Claude-Eingang (Backend B8, app-eingang.js). Was der Nutzer Claude
+   diktiert ("To Do …", "Termin …"), liegt im Eingangsfach /api/eingang. Die
+   App holt es mit dem Mail-Zaehler ab (alle ~2 Minuten bei offener App, nur
+   Verwalter mit Backend-Schluessel) und legt es an.
+   Datensatz-ID = 'cl_' + Eingangs-ID: holen zwei Geraete gleichzeitig ab,
+   entsteht derselbe Datensatz, kein Doppel. Ein in der App bereits geloeschter
+   Eintrag (Grabstein) wird nicht wiederbelebt.
+   Vor B8 antwortet /api/eingang mit 404 - dann geschieht still nichts. */
+function eingangNorm(s){
+  return String(s||'').toLowerCase()
+    .replace(/ä/g,'ae').replace(/ö/g,'oe').replace(/ü/g,'ue').replace(/ß/g,'ss')
+    .replace(/strasse|str\.?(?=[\s\d]|$)/g,'').replace(/[^a-z0-9]/g,'');
+}
+function eingangObjektFinden(text){
+  const n = eingangNorm(text);
+  if(!n) return null;
+  const alle = (typeof OBJEKTE !== 'undefined') ? OBJEKTE : [];
+  const genau = alle.filter(o => eingangNorm(o.name) === n || eingangNorm(o.id) === n);
+  if(genau.length === 1) return genau[0];
+  const teil = alle.filter(o => eingangNorm(o.name).startsWith(n) || n.startsWith(eingangNorm(o.name)));
+  return teil.length === 1 ? teil[0] : null;
+}
+function eingangZuDatensatz(e){
+  if(!e || !e.id || !String(e.titel||'').trim()) return null;
+  const obj = e.objekt ? eingangObjektFinden(e.objekt) : null;
+  const objHinweis = (!obj && e.objekt) ? 'Objekt: ' + e.objekt : '';
+  const basis = { id:'cl_' + e.id, titel:String(e.titel).trim(), status:'offen', erstellt:now(),
+                  ersteller:'Claude (Diktat)', quelle:'claude', claudeEingang:e.id };
+  if(e.art === 'termin'){
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(String(e.datum||''))) return null;
+    return { store:'termine', rec:Object.assign(basis, {
+      typ: e.typ || 'sonstiges', datum:e.datum, uhrzeit:e.uhrzeit || '', uhrzeitEnd:e.uhrzeitEnde || '',
+      erinnerung:'', objektId: obj ? obj.id : null, mieterId:null, mieterName:'',
+      notiz:[e.notiz || '', e.ort ? 'Ort: ' + e.ort : '', objHinweis, e.wohnung ? 'WE ' + e.wohnung : ''].filter(Boolean).join('\n'),
+      zugewiesen:''
+    }) };
+  }
+  if(e.art === 'aufgabe'){
+    return { store:'aufgaben', rec:Object.assign(basis, {
+      objektId: obj ? obj.id : ALLGEMEIN_ID, mieterId:null, weNr: obj ? String(e.wohnung || '') : '',
+      prio: ['hoch','mittel','niedrig'].includes(e.prio) ? e.prio : 'mittel',
+      datum: /^\d{4}-\d{2}-\d{2}$/.test(String(e.faellig||'')) ? e.faellig : '',
+      beschreibung:[e.beschreibung || '', objHinweis, (!obj && e.wohnung) ? 'WE ' + e.wohnung : ''].filter(Boolean).join('\n'),
+      erstellerId:'claude', zugewiesen:'', zugewiesenName:''
+    }) };
+  }
+  return null;
+}
+let _eingangLaeuft = false;
+async function eingangAbholen(key){
+  if(_eingangLaeuft || !key || !istVerwalter()) return { auf:0, ter:0 };
+  _eingangLaeuft = true;
+  const erg = { auf:0, ter:0 };
+  try{
+    const r = await fetchMitTimeout(BACKEND_AZURE + '/api/eingang', { headers:{ 'x-functions-key':key } });
+    if(!r || !r.ok) return erg;
+    const liste = await r.json().catch(() => []);
+    if(!Array.isArray(liste) || !liste.length) return erg;
+    const tomb = ((await idbGet('settings','tombstones').catch(() => null)) || {}).value || {};
+    const erledigt = [];
+    for(const e of liste){
+      const z = eingangZuDatensatz(e);
+      if(z){
+        const begraben = tomb[z.store] && tomb[z.store][z.rec.id];
+        const da = await idbGet(z.store, z.rec.id).catch(() => null);
+        if(!begraben && !da){
+          try{ await idbPut(z.store, z.rec); }
+          catch(err){ console.warn('Claude-Eingang speichern:', err); continue; }   // nicht abhaken - naechster Versuch
+          if(z.store === 'termine') erg.ter++; else erg.auf++;
+        }
+      }
+      erledigt.push(e.id);   // auch Unbrauchbares abhaken, sonst kaeme es endlos wieder
+    }
+    if(erledigt.length){
+      try{
+        const q = await fetchMitTimeout(BACKEND_AZURE + '/api/eingang-abgeholt', { method:'POST',
+          headers:{ 'Content-Type':'application/json', 'x-functions-key':key }, body:JSON.stringify({ ids:erledigt }) });
+        if(!q || !q.ok) console.warn('Claude-Eingang: Abhaken fehlgeschlagen (' + (q ? q.status : '-') + ')');
+      }catch(err){ console.warn('Claude-Eingang abhaken:', err); }
+    }
+    if(erg.auf || erg.ter){
+      syncSoon();
+      const t = [];
+      if(erg.auf) t.push(erg.auf + (erg.auf === 1 ? ' To Do' : ' To Dos'));
+      if(erg.ter) t.push(erg.ter + (erg.ter === 1 ? ' Termin' : ' Termine'));
+      toast('Von Claude übernommen: ' + t.join(' und ') + ' ✓', 5000);
+      try{
+        if(typeof curPage !== 'undefined'){
+          if(curPage === 'aufgaben') await refreshAufgaben();
+          else if(curPage === 'kalender') await renderKalender();
+          else if(curPage === 'dash') await renderDash();
+        }
+      }catch(_){}
+    }
+  }catch(err){ console.warn('Claude-Eingang:', err); }
+  finally{ _eingangLaeuft = false; }
+  return erg;
+}
+
 // P9 – Mail-Badge: Anzahl offener Selbstauskünfte (+ Website-Nachrichten).
 // Schlank gehalten: nur für Verwalter mit hinterlegtem Backend-Key; Fehler werden ignoriert.
 let _mailBadgeLetzter = 0;
@@ -17815,6 +18004,7 @@ async function updateMailBadge(){
   _mailBadgeLetzter = Date.now();
   const key=(await idbGet('settings','backendKey').catch(()=>null))?.value;
   if(!key){ badge.style.display='none'; return; }
+  eingangAbholen(key).catch(e => console.warn('Claude-Eingang:', e));   // A439
   let sa=0, msg=0;
   try{
     const r1=await fetchMitTimeout(BACKEND_AZURE+'/api/inbox-sa',{ headers:{'x-functions-key':key} });
@@ -29735,6 +29925,8 @@ registerActions({ modalTelefonAbgleich, telefonUebernehmen, telefonBehalten }); 
 registerActions({ tmVerlaufMehr, tmGesendetOeffnen, tmGesendetWeiterleiten });   // A433
 registerActions({ mailSignaturSpeichern });   // A437
 registerActions({ saAmpelSetzen, saHakenSetzen, saNotizSetzen });   // A438
+registerActions({ aushangArchivOeffnen });   // A439
+registerActions({ tokErneutSenden, tokVerlaufMehr });   // A441
 registerActions({ vormerkungenUmschalten, vormerkungErledigen, vormerkungLinkSenden, websiteNachrichtAntworten });   // A435
 
 /* Vorschlaege zur Bestaetigung. Angelegt wird als BEWOHNER, nicht als
@@ -34678,9 +34870,20 @@ async function modalAushangErstellen(objektId, weNr, vormieterId){
     ? `<label style="display:flex;align-items:center;gap:8px;font-size:12px;margin-top:4px"><input type="checkbox" id="ausGrundriss" checked style="width:16px;height:16px"> Grundriss mit aufnehmen${wgrPdf?' <span style="color:var(--ink-40)">(PDF – erste Seite wird als Bild eingefügt)</span>':''}</label>`
     : '';
 
+  /* A439: gespeicherter Aushang - erneut drucken ohne neu zu erzeugen. */
+  const _archiv = await idbGet('dokumente', aushangArchivId(objektId, weNr)).catch(() => null);
+  const archivHtml = _archiv ? `
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:var(--green-l,#E6F4EC);border:1px solid var(--green,#2E7D52);border-radius:8px;padding:9px 11px;margin-bottom:12px">
+      <span style="flex:1;min-width:180px;font-size:12px"><i class="ti ti-archive"></i> <b>Gespeicherter Aushang</b><br>
+        <span style="color:var(--ink-60)">erstellt ${esc(String(_archiv.erstellt||''))}${_archiv.ersteller ? ' · ' + esc(_archiv.ersteller) : ''}</span></span>
+      <button class="btn btn-sm btn-copper" data-action-click="aushangArchivOeffnen" data-arg="${escAttr(objektId)}" data-arg2="${escAttr(String(weNr))}">
+        <i class="ti ti-printer"></i> Öffnen / drucken</button>
+    </div>` : '';
+
   showModal(`
     <div class="m-title"><i class="ti ti-printer"></i> Aushang erstellen · WE ${esc(String(weNr))}</div>
-    <div style="font-size:12px;color:var(--ink-40);margin-bottom:12px">Daten prüfen oder ergänzen, dann „Aushang erzeugen“. Vorbelegte Werte stammen aus den Wohnungs-Stammdaten${vm?' und vom letzten Mieter':''}.</div>
+    ${archivHtml}
+    <div style="font-size:12px;color:var(--ink-40);margin-bottom:12px">${_archiv ? 'Oder neu erzeugen (ersetzt den gespeicherten): ' : ''}Daten prüfen oder ergänzen, dann „Aushang erzeugen“. Vorbelegte Werte stammen aus den Wohnungs-Stammdaten${vm?' und vom letzten Mieter':''}.</div>
 
     <div class="f-row">
       <div class="f" style="flex:0 0 110px"><label>Zimmer</label><input type="number" inputmode="decimal" id="ausZimmer" min="0" step="1" value="${esc(zimmer)}"></div>
@@ -34700,6 +34903,7 @@ async function modalAushangErstellen(objektId, weNr, vormieterId){
 
     <div class="f-section-title" style="margin-top:10px"><i class="ti ti-photo"></i> Bilder für den Aushang</div>
     ${fotoWahl}
+    <div id="ausFotoHinweis" style="display:none;font-size:12px;color:var(--red,#c0392b);margin:2px 0 6px"><i class="ti ti-alert-triangle"></i> <span></span></div>
     ${grWahl}
 
     <label style="display:flex;align-items:center;gap:8px;font-size:12px;margin-top:12px;background:var(--copper-bg);padding:9px 11px;border-radius:8px">
@@ -34711,6 +34915,7 @@ async function modalAushangErstellen(objektId, weNr, vormieterId){
       <button class="btn btn-copper btn-full" onclick="aushangErzeugen('${objektId}','${escJs(String(weNr))}')"><i class="ti ti-printer"></i> Aushang erzeugen</button>
       <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
     </div>`);
+  aushangFotosPruefen(fotos).catch(e => console.warn('Fotostatus:', e));   // A439
 }
 
 function aushangFmtEur(v){
@@ -35136,6 +35341,61 @@ async function pdfErsteSeiteAlsBild(quelle, maxBreite){
 /* Liefert eine druckfertige Grundriss-dataURL für die WE:
    1) WE-Dokument (wohnungGrundrissId slot 'a') – PDF → gerastert, Bild → direkt;
    2) Fallback: altes Wohnungs-Stamm-Bild (stamm.grundriss). Bei Fehlern '' . */
+/* A439: Kommt das ORIGINAL eines ausgelagerten Fotos aus OneDrive?
+   fotoDruckQuelle faellt still auf das 96-px-Vorschaubild zurueck - fuer
+   Protokolle vertretbar, fuer Aushang und Homepage nicht (Nutzerbefund
+   13.10.: unscharfes Hauptfoto, kaputtes Bild auf der Website).
+   Liefert 'inline' | 'ok' | Grund. */
+const FOTO_STATUS_TEXT = {
+  'kein-eintrag':  'Datei-Eintrag fehlt auf diesem Gerät – Abgleich abwarten oder Foto neu hinterlegen',
+  'geloescht':     'Datei wurde aus OneDrive gelöscht – Foto neu hinterlegen',
+  'abgemeldet':    'nicht mit OneDrive angemeldet – unter Einstellungen neu verbinden',
+  'nicht-gefunden':'Datei in OneDrive nicht gefunden – Foto neu hinterlegen',
+  'leer':          'kein Foto'
+};
+async function fotoOriginalStatus(x){
+  if(typeof x === 'string') return x ? 'inline' : 'leer';
+  if(!istFotoRef(x)) return 'leer';
+  const rec = await idbGet('od_dateien', x.odId).catch(() => null);
+  if(!rec) return 'kein-eintrag';
+  if(rec.geloescht) return 'geloescht';
+  if(rec.pendingUpload && rec._blobB64) return 'ok';
+  const tok = await odGetToken().catch(() => null);
+  if(!tok) return 'abgemeldet';
+  return (await odDownloadUrl(x.odId)) ? 'ok' : 'nicht-gefunden';
+}
+/* Druckquelle mit Auskunft, ob es das Original ist. */
+async function fotoDruckQuelleGeprueft(x){
+  if(typeof x === 'string') return { src:x, voll:!!x, grund:x ? '' : 'leer' };
+  const src = await fotoDruckQuelle(x);
+  const voll = !!src && !(istFotoRef(x) && src === x.thumb);
+  return { src, voll, grund: voll ? '' : await fotoOriginalStatus(x) };
+}
+/* Kacheln im Aushang-Dialog nachtraeglich markieren (ohne den Dialog
+   aufzuhalten). */
+async function aushangFotosPruefen(fotos){
+  for(let i = 0; i < fotos.length; i++){
+    const st = await fotoOriginalStatus(fotos[i]);
+    const k = document.querySelector('.ausFotoChk[data-i="' + i + '"]');
+    const lbl = k ? k.closest('label') : null;
+    if(!lbl || st === 'ok' || st === 'inline') continue;
+    const img = lbl.querySelector('img'); if(img) img.style.outline = '3px solid var(--red,#c0392b)';
+    lbl.title = 'Nur Vorschaubild: ' + (FOTO_STATUS_TEXT[st] || st);
+    const z = document.getElementById('ausFotoHinweis');
+    if(z){ z.style.display = ''; z.dataset.n = String((parseInt(z.dataset.n || '0', 10) || 0) + 1);
+      z.querySelector('span').textContent = z.dataset.n + ' Foto(s) nur als Vorschaubild verfügbar: ' + (FOTO_STATUS_TEXT[st] || st) + '.'; }
+  }
+}
+/* Gespeicherten Aushang dieser Wohnung (archiviereAushangDokument) suchen. */
+function aushangArchivId(objektId, weNr){
+  const kennung = (typeof wohnungsKennung === 'function') ? wohnungsKennung(objektId, weNr) : (objektId + '-WE' + weNr);
+  return 'aushang_' + kennung.replace(/\W/g, '_');
+}
+async function aushangArchivOeffnen(objektId, weNr){
+  closeModal();
+  await openArchivDok(aushangArchivId(objektId, weNr));
+}
+
 async function aushangGrundrissBild(objektId, weNr, stammGrundriss){
   const wgr=await idbGet('dokumente', wohnungGrundrissId(objektId, weNr, 'a')).catch(()=>null);
   if(wgr && (wgr.data || wgr.ref)){
@@ -35179,8 +35439,20 @@ async function aushangErzeugen(objektId, weNr){
   // Aushang-Druck bettet die Bilder synchron ins HTML ein und /api/leerstand
   // erwartet Base64 (lädt selbst nach Azure Blob hoch). Alt-Strings unverändert;
   // Fallback bei Netzfehler ist das Inline-Thumbnail (fotoDruckQuelle).
-  const gewaehlt = [];
-  for(const f of gewaehltRoh){ const d = await fotoDruckQuelle(f); if(d) gewaehlt.push(d); }
+  /* A439: Original oder nur Vorschaubild? Vorher fragen, statt still einen
+     unscharfen Aushang zu drucken; auf die Homepage geht nur das Original. */
+  const gewaehlt = [], fuerHomepage = [], fehlend = [];
+  for(const f of gewaehltRoh){
+    const g = await fotoDruckQuelleGeprueft(f);
+    if(g.src) gewaehlt.push(g.src);
+    if(g.voll) fuerHomepage.push(g.src); else fehlend.push(g.grund);
+  }
+  if(fehlend.length){
+    const gruende = [...new Set(fehlend)].map(g => '• ' + (FOTO_STATUS_TEXT[g] || g)).join('\n');
+    if(!confirm(fehlend.length + ' von ' + gewaehltRoh.length + ' Fotos kommen nicht in voller Auflösung aus OneDrive:\n'
+        + gruende + '\n\nIm Aushang stünde dort nur ein unscharfes Vorschaubild'
+        + (homepage ? ', auf der Homepage fehlen diese Fotos' : '') + '.\n\nTrotzdem erzeugen?')) return;
+  }
   // v259: Grundriss (Bild ODER PDF) druckfertig auflösen
   const grundriss = (grChk && grChk.checked) ? await aushangGrundrissBild(objektId, weNr, stamm.grundriss) : '';
 
@@ -35208,13 +35480,13 @@ async function aushangErzeugen(objektId, weNr){
         flaeche: flaeche?flaeche+' m²':'', zimmer, miete: kalt?aushangFmtEur(kalt)+' €':'',
         nk: nk?aushangFmtEur(nk)+' €':'', status:'frei', energie, frei_ab:frei,
         empfehlung:'', sichtbar:true,
-        fotos: gewaehlt, grundriss: grundriss||''
+        fotos: fuerHomepage, grundriss: grundriss||''   // A439: keine Vorschaubilder auf die Website
       };
       const rec = (await idbGet('settings','homepage_leerstand').catch(()=>null)) || {id:'homepage_leerstand', value:{}};
       if(!rec.value || typeof rec.value!=='object') rec.value={};
       // v174: Bild-Payload NICHT in die Sync-JSON duplizieren (23a-Ziel).
       // Der Record dient nur der Schalter-Vorbelegung + Entfernen-Logik.
-      rec.value[kennung] = { ...datensatz, fotos: gewaehlt.length, grundriss: !!grundriss, vorgemerktAm: nowIso() };
+      rec.value[kennung] = { ...datensatz, fotos: fuerHomepage.length, grundriss: !!grundriss, vorgemerktAm: nowIso() };
       rec.geaendert = nowIso();
       await idbPut('settings', rec);
       clearTimeout(window._syncTimer);
