@@ -1263,7 +1263,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=38;   // A398: +kr_abrechnungen
-const APP_VERSION = '2026-10-13-A444';
+const APP_VERSION = '2026-10-15-A445';
 /* v364 (12.08.2026) – offene Punkte abgearbeitet.
    1) D1/XLSX_SRI: Der im Code hinterlegte PowerShell-Befehl war FALSCH und
       konnte nie funktionieren - Invoke-WebRequest liefert unter .Content einen
@@ -35771,8 +35771,20 @@ const FOTO_STATUS_TEXT = {
   'geloescht':     'Datei wurde aus OneDrive gelöscht – Foto neu hinterlegen',
   'abgemeldet':    'nicht mit OneDrive angemeldet – unter Einstellungen neu verbinden',
   'nicht-gefunden':'Datei in OneDrive nicht gefunden – Foto neu hinterlegen',
-  'leer':          'kein Foto'
+  'leer':          'kein Foto',
+  'zeit':          'Download aus OneDrive dauerte zu lange (langsame Verbindung) – später erneut versuchen',
+  'netz':          'Download aus OneDrive wurde abgebrochen oder blockiert – Verbindung prüfen, App neu laden',
+  'leer-antwort':  'OneDrive lieferte eine leere Datei – Foto neu hinterlegen',
+  'ok':            'Link vorhanden, Download aber fehlgeschlagen – später erneut versuchen'
 };
+/* A445: nie einen internen Kuerzel-Code anzeigen. */
+function fotoGrundText(g){
+  const s = String(g || '');
+  if(FOTO_STATUS_TEXT[s]) return FOTO_STATUS_TEXT[s];
+  const m = /^http-(\d+)$/.exec(s);
+  if(m) return 'OneDrive meldete Fehler ' + m[1] + ' beim Download – später erneut versuchen';
+  return s || 'unbekannter Fehler';
+}
 async function fotoOriginalStatus(x){
   if(typeof x === 'string') return x ? 'inline' : 'leer';
   if(!istFotoRef(x)) return 'leer';
@@ -35786,10 +35798,7 @@ async function fotoOriginalStatus(x){
 }
 /* Druckquelle mit Auskunft, ob es das Original ist. */
 async function fotoDruckQuelleGeprueft(x){
-  if(typeof x === 'string') return { src:x, voll:!!x, grund:x ? '' : 'leer' };
-  const src = await fotoDruckQuelle(x);
-  const voll = !!src && !(istFotoRef(x) && src === x.thumb);
-  return { src, voll, grund: voll ? '' : await fotoOriginalStatus(x) };
+  return fotoOriginalLaden(x);   // A445: Grund aus dem echten Download
 }
 /* Kacheln im Aushang-Dialog nachtraeglich markieren (ohne den Dialog
    aufzuhalten). */
@@ -35800,10 +35809,10 @@ async function aushangFotosPruefen(fotos){
     const lbl = k ? k.closest('label') : null;
     if(!lbl || st === 'ok' || st === 'inline') continue;
     const img = lbl.querySelector('img'); if(img) img.style.outline = '3px solid var(--red,#c0392b)';
-    lbl.title = 'Nur Vorschaubild: ' + (FOTO_STATUS_TEXT[st] || st);
+    lbl.title = 'Nur Vorschaubild: ' + fotoGrundText(st);
     const z = document.getElementById('ausFotoHinweis');
     if(z){ z.style.display = ''; z.dataset.n = String((parseInt(z.dataset.n || '0', 10) || 0) + 1);
-      z.querySelector('span').textContent = z.dataset.n + ' Foto(s) nur als Vorschaubild verfügbar: ' + (FOTO_STATUS_TEXT[st] || st) + '.'; }
+      z.querySelector('span').textContent = z.dataset.n + ' Foto(s) nur als Vorschaubild verfügbar: ' + fotoGrundText(st) + '.'; }
   }
 }
 /* Gespeicherten Aushang dieser Wohnung (archiviereAushangDokument) suchen. */
@@ -35868,7 +35877,7 @@ async function aushangErzeugen(objektId, weNr){
     if(g.voll) fuerHomepage.push(g.src); else fehlend.push(g.grund);
   }
   if(fehlend.length){
-    const gruende = [...new Set(fehlend)].map(g => '• ' + (FOTO_STATUS_TEXT[g] || g)).join('\n');
+    const gruende = [...new Set(fehlend)].map(g => '• ' + fotoGrundText(g)).join('\n');
     if(!confirm(fehlend.length + ' von ' + gewaehltRoh.length + ' Fotos kommen nicht in voller Auflösung aus OneDrive:\n'
         + gruende + '\n\nIm Aushang stünde dort nur ein unscharfes Vorschaubild'
         + (homepage ? ', auf der Homepage fehlen diese Fotos' : '') + '.\n\nTrotzdem erzeugen?')) return;
@@ -50891,21 +50900,41 @@ function blobZuDataUrl(blob){
    zeichnet ins Canvas und ruft toDataURL(); eine cross-origin-URL wuerde das
    Canvas "tainten" (SecurityError). Fallback: Inline-Thumbnail bzw. ''. */
 async function fotoDruckQuelle(x){
-  if(typeof x==='string') return x;
-  if(istFotoRef(x)){
+  return (await fotoOriginalLaden(x)).src;   // A445
+}
+
+/* A445: Original laden und sagen, ob es geklappt hat.
+   -> { src, voll, grund }. src faellt auf das Vorschaubild zurueck.
+   - data:-URL (Upload steht noch aus): direkt verwenden. fetch() darauf
+     verbietet die CSP (connect-src), das war der Fehler bis A444.
+   - sonst fetch mit FOTO_LADEN_MS; ein zweiter Versuch mit frischem Link.
+   Protokolliert wird nur der Host, nie der Link selbst. */
+const FOTO_LADEN_MS = 60000;
+async function fotoOriginalLaden(x, ms){
+  if(typeof x === 'string') return { src:x, voll:!!x, grund:x ? '' : 'leer' };
+  if(!istFotoRef(x)) return { src:'', voll:false, grund:'leer' };
+  const notbehelf = x.thumb || '';
+  let grund = '';
+  for(let versuch = 1; versuch <= 2; versuch++){
+    let url = null;
+    try{ url = await odDownloadUrl(x.odId); }catch(_){ url = null; }
+    if(!url){
+      const st = await fotoOriginalStatus(x).catch(() => 'ok');
+      return { src:notbehelf, voll:false, grund: st === 'inline' ? 'ok' : st };
+    }
+    if(url.startsWith('data:')) return { src:url, voll:true, grund:'' };
     try{
-      const url = await odDownloadUrl(x.odId);
-      if(url){
-        const resp = await fetchMitTimeout(url, {}, 30000);   // v329 (R32)
-        if(resp && resp.ok){
-          const blob = await resp.blob();
-          return await blobZuDataUrl(blob);
-        }
-      }
-    }catch(e){ console.warn('fotoDruckQuelle:', e); }
-    return x.thumb || '';
+      const resp = await fetchMitTimeout(url, {}, ms || FOTO_LADEN_MS);
+      if(resp && resp.ok){
+        const blob = await resp.blob();
+        if(blob && blob.size) return { src: await blobZuDataUrl(blob), voll:true, grund:'' };
+        grund = 'leer-antwort';
+      } else grund = 'http-' + (resp ? resp.status : 0);
+    }catch(e){ grund = (e && e.name === 'AbortError') ? 'zeit' : 'netz'; }
+    let host = ''; try{ host = new URL(url).host; }catch(_){}
+    console.warn('fotoOriginalLaden: Versuch ' + versuch + ' fehlgeschlagen (' + grund + ', ' + host + ')');
   }
-  return '';
+  return { src:notbehelf, voll:false, grund };
 }
 
 /* Synchron fuer Listen/Vorschau (ohne Netz): Alt-String -> direkt;
