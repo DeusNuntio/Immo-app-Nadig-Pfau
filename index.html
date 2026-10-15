@@ -1263,7 +1263,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=38;   // A398: +kr_abrechnungen
-const APP_VERSION = '2026-10-15-A445';
+const APP_VERSION = '2026-10-15-A446';
 /* v364 (12.08.2026) – offene Punkte abgearbeitet.
    1) D1/XLSX_SRI: Der im Code hinterlegte PowerShell-Befehl war FALSCH und
       konnte nie funktionieren - Invoke-WebRequest liefert unter .Content einen
@@ -19376,6 +19376,7 @@ async function archiviereNkaGesamt({objektId, von, bis, name, html}){
    ans Mieterportal ausgeliefert (weder mieterbezogen noch typ 'plan').
    Deterministische id pro Wohnung → erneute Erzeugung ersetzt den alten Aushang.
 ═══════════════════════════════════════════════════════════ */
+const AUSHANG_FASSUNGEN = 3;   // A446: neuester + zwei aeltere je Wohnung
 async function archiviereAushangDokument({objektId, weNr, html, zimmerTitel}){
   try{
     const kennung = (typeof wohnungsKennung==='function') ? wohnungsKennung(objektId, weNr) : (objektId+'-WE'+weNr);
@@ -19397,7 +19398,24 @@ async function archiviereAushangDokument({objektId, weNr, html, zimmerTitel}){
       size: new Blob([html]).size,
       geaendert: nowIso()
     };
+    /* A446: Bisher ersetzte jeder neue Aushang den alten. Jetzt wandert der
+       bisherige unter eigener id ins Archiv (Objekt -> Dokumente), behalten
+       werden AUSHANG_FASSUNGEN je Wohnung. Die feste id bleibt beim neuesten,
+       damit "Gespeicherter Aushang" im Dialog ihn weiter findet. Begrenzt,
+       weil jeder Aushang die Fotos eingebettet traegt und mitsynchronisiert. */
+    const bisher = await idbGet('dokumente', id).catch(() => null);
+    if(bisher && bisher.data){
+      const altId = id + '_v' + Date.now();
+      await idbPut('dokumente', Object.assign({}, bisher, { id:altId,
+        name: String(bisher.name || 'Aushang').replace(/ \(Fassung vom [^)]*\)$/, '') + ' (Fassung vom ' + (bisher.erstellt || '?') + ')',
+        geaendert: nowIso() }));
+    }
     await idbPut('dokumente', entry);
+    try{
+      const alte = (await idbGetAll('dokumente')).filter(d => d && String(d.id).startsWith(id + '_v'))
+        .sort((x, y) => String(y.id).localeCompare(String(x.id)));
+      for(const d of alte.slice(AUSHANG_FASSUNGEN - 1)) await deleteMitTombstone('dokumente', d.id);
+    }catch(e){ console.warn('Aushang-Archiv aufraeumen:', e); }
     clearTimeout(window._syncTimer);
     window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
     return id;
@@ -30347,6 +30365,7 @@ registerActions({ tokErneutSenden, tokVerlaufMehr });   // A441
 registerActions({ peWichtigUmschalten, peWiedervorlageModal, peWiedervorlageSpeichern, peMangelAusNachricht,
                   saWiederherstellen, saEndgueltigLoeschen });   // A442
 registerActions({ saAblehnen, bwLoeschen, bwSuche });   // A444
+registerActions({ aushangVorschlaegeNeu });   // A446
 registerActions({ vormerkungenUmschalten, vormerkungErledigen, vormerkungLinkSenden, websiteNachrichtAntworten });   // A435
 
 /* Vorschlaege zur Bestaetigung. Angelegt wird als BEWOHNER, nicht als
@@ -35267,27 +35286,35 @@ async function modalAushangErstellen(objektId, weNr, vormieterId){
     }
   }
 
-  // Vorschlagswerte
-  const vKalt = vm?.kaltmiete!=null ? vm.kaltmiete : (vm?.miete!=null ? vm.miete : '');
-  const vNk   = vm?.nkVorschuss!=null ? vm.nkVorschuss : (vm?.nk!=null ? vm.nk : '');
-  const zimmer  = stamm.zimmer || '';
-  const flaeche = stamm.flaeche || '';
-  const lage    = stamm.lage || stamm.etage || '';
-  const keller  = stamm.kellerNr || '';
+  // Vorschlagswerte - A446: zuletzt im Dialog Eingetragenes hat Vorrang
+  const gw = await aushangWerteLaden(objektId, weNr);
+  /* Leere gespeicherte Felder fallen auf den Vorschlag zurueck - ein
+     Zahlenfeld liefert bei "109,09" je nach Geraetesprache '' und wuerde den
+     Stammwert sonst dauerhaft ueberschreiben. */
+  const g = k => (gw && gw[k] != null && String(gw[k]).trim() !== '') ? gw[k] : null;
+  const vKalt = g('kalt') ?? (vm?.kaltmiete!=null ? vm.kaltmiete : (vm?.miete!=null ? vm.miete : ''));
+  const vNk   = g('nk') ?? (vm?.nkVorschuss!=null ? vm.nkVorschuss : (vm?.nk!=null ? vm.nk : ''));
+  const zimmer  = g('zimmer') ?? (stamm.zimmer || '');
+  const flaeche = g('flaeche') ?? (stamm.flaeche || '');
+  const lage    = g('lage') ?? (stamm.lage || stamm.etage || '');
+  const keller  = g('keller') ?? (stamm.kellerNr || '');
+  if(g('frei') != null) freiAbVorschlag = g('frei');
+  const energieWert = g('energie') ?? (stamm.energie || energieausweisText(gebStamm.energieausweis) || energieausweisText(stamm.energieausweis) || '');
+  const fotoGemerkt = gw && Array.isArray(gw.fotos) ? new Set(gw.fotos) : null;
 
   // Foto-Auswahlkacheln (alle vorausgewählt, max. 5 sinnvoll)
   let fotoWahl = '';
   if(fotos.length){
     fotoWahl = '<div style="display:flex;flex-wrap:wrap;gap:8px;margin:6px 0 4px">' + fotos.map((f,i)=>
       `<label style="position:relative;cursor:pointer">
-        <input type="checkbox" class="ausFotoChk" data-i="${i}" ${i<5?'checked':''} style="position:absolute;top:5px;left:5px;width:18px;height:18px;z-index:2">
+        <input type="checkbox" class="ausFotoChk" data-i="${i}" ${(fotoGemerkt ? fotoGemerkt.has(aushangFotoSchluessel(f)) : i<5)?'checked':''} style="position:absolute;top:5px;left:5px;width:18px;height:18px;z-index:2">
         <img src="${fotoThumbQuelle(f)}" style="width:78px;height:78px;border-radius:8px;border:1px solid var(--ink-10);object-fit:cover" alt="Foto">
       </label>`).join('') + '</div>';
   } else {
     fotoWahl = '<div style="font-size:12px;color:var(--amber);margin:4px 0"><i class="ti ti-alert-triangle"></i> Keine Wohnungsfotos hinterlegt. Du kannst sie über „Wohnungsinfos“ ergänzen – der Aushang funktioniert auch ohne.</div>';
   }
   const grWahl = grVorhanden
-    ? `<label style="display:flex;align-items:center;gap:8px;font-size:12px;margin-top:4px"><input type="checkbox" id="ausGrundriss" checked style="width:16px;height:16px"> Grundriss mit aufnehmen${wgrPdf?' <span style="color:var(--ink-40)">(PDF – erste Seite wird als Bild eingefügt)</span>':''}</label>`
+    ? `<label style="display:flex;align-items:center;gap:8px;font-size:12px;margin-top:4px"><input type="checkbox" id="ausGrundriss" ${gw && gw.grundriss === false ? '' : 'checked'} style="width:16px;height:16px"> Grundriss mit aufnehmen${wgrPdf?' <span style="color:var(--ink-40)">(PDF – erste Seite wird als Bild eingefügt)</span>':''}</label>`
     : '';
 
   /* A439: gespeicherter Aushang - erneut drucken ohne neu zu erzeugen. */
@@ -35303,7 +35330,9 @@ async function modalAushangErstellen(objektId, weNr, vormieterId){
   showModal(`
     <div class="m-title"><i class="ti ti-printer"></i> Aushang erstellen · WE ${esc(String(weNr))}</div>
     ${archivHtml}
-    <div style="font-size:12px;color:var(--ink-40);margin-bottom:12px">${_archiv ? 'Oder neu erzeugen (ersetzt den gespeicherten): ' : ''}Daten prüfen oder ergänzen, dann „Aushang erzeugen“. Vorbelegte Werte stammen aus den Wohnungs-Stammdaten${vm?' und vom letzten Mieter':''}.</div>
+    <div style="font-size:12px;color:var(--ink-40);margin-bottom:12px">${_archiv ? 'Oder neu erzeugen (ersetzt den gespeicherten): ' : ''}Daten prüfen oder ergänzen, dann „Aushang erzeugen“. ${gw
+      ? `Eingaben werden automatisch gespeichert – zuletzt ${esc(new Date(gw.geaendert).toLocaleString('de-DE'))}${gw.von ? ' · ' + esc(gw.von) : ''}. <button type="button" class="btn btn-sm" style="margin-top:6px" data-action-click="aushangVorschlaegeNeu" data-arg="${escAttr(objektId)}" data-arg2="${escAttr(String(weNr))}" data-arg3="${escAttr(vormieterId||'')}"><i class="ti ti-refresh"></i> Vorschläge neu laden</button>`
+      : `Vorbelegte Werte stammen aus den Wohnungs-Stammdaten${vm?' und vom letzten Mieter':''}. Was Sie hier ändern, wird für das nächste Mal gespeichert.`}</div>
 
     <div class="f-row">
       <div class="f" style="flex:0 0 110px"><label>Zimmer</label><input type="number" inputmode="decimal" id="ausZimmer" min="0" step="1" value="${esc(zimmer)}"></div>
@@ -35315,11 +35344,11 @@ async function modalAushangErstellen(objektId, weNr, vormieterId){
       <div class="f"><label for="ausNk">NK-Vorauszahlung €</label><input type="number" inputmode="decimal" id="ausNk" step="0.01" value="${esc(vNk)}" placeholder="z. B. 230"></div>
     </div>
     <div class="f-row">
-      <div class="f"><label for="ausFrei">Bezugsfrei ab</label><input type="text" id="ausFrei" value="${freiAbVorschlag}" placeholder="z. B. ab 01.09.2026 oder „voraussichtlich ab …“"></div>
+      <div class="f"><label for="ausFrei">Bezugsfrei ab</label><input type="text" id="ausFrei" value="${esc(freiAbVorschlag)}" placeholder="z. B. ab 01.09.2026 oder „voraussichtlich ab …“"></div>
       <div class="f"><label for="ausKeller">Keller / Abteil</label><input type="text" id="ausKeller" value="${esc(keller)}" placeholder="z. B. Kellerabteil Nr. 4"></div>
     </div>
     <div class="f"><label for="ausEnergie">Energieausweis-Angabe (Pflicht für Homepage, § 87 GEG)</label>
-      <input type="text" id="ausEnergie" value="${esc(stamm.energie || energieausweisText(gebStamm.energieausweis) || energieausweisText(stamm.energieausweis) || '')}" placeholder="z. B. Verbrauchsausweis · 118 kWh/(m²·a) · Gas · Bj. 1971 · Klasse D"></div>
+      <input type="text" id="ausEnergie" value="${esc(energieWert)}" placeholder="z. B. Verbrauchsausweis · 118 kWh/(m²·a) · Gas · Bj. 1971 · Klasse D"></div>
 
     <div class="f-section-title" style="margin-top:10px"><i class="ti ti-photo"></i> Bilder für den Aushang</div>
     ${fotoWahl}
@@ -35336,6 +35365,13 @@ async function modalAushangErstellen(objektId, weNr, vormieterId){
       <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
     </div>`);
   aushangFotosPruefen(fotos).catch(e => console.warn('Fotostatus:', e));   // A439
+  /* A446: jede Aenderung merken (verzoegert). Die Ereignisse haengen an den
+     Feldern selbst - #modalBody teilen sich alle Dialoge, dort angehaengt
+     wuerden sie sich bei jedem Oeffnen vermehren. */
+  const _merken = () => aushangWerteVormerken(objektId, weNr, fotos);
+  [...Object.values(AUSHANG_FELDER).map(id => document.getElementById(id)),
+   ...document.querySelectorAll('.ausFotoChk'), document.getElementById('ausGrundriss')]
+    .forEach(el => { if(el){ el.addEventListener('input', _merken); el.addEventListener('change', _merken); } });
 }
 
 function aushangFmtEur(v){
@@ -35815,6 +35851,52 @@ async function aushangFotosPruefen(fotos){
       z.querySelector('span').textContent = z.dataset.n + ' Foto(s) nur als Vorschaubild verfügbar: ' + fotoGrundText(st) + '.'; }
   }
 }
+/* A446: Eingaben des Aushang-Dialogs je Wohnung merken.
+   settings 'aushang_werte_<KENNUNG>' -> { zimmer, flaeche, lage, kalt, nk,
+   frei, keller, energie, fotos:[Schluessel], grundriss, geaendert, von }. */
+const AUSHANG_FELDER = { zimmer:'ausZimmer', flaeche:'ausFlaeche', lage:'ausLage', kalt:'ausKalt',
+  nk:'ausNk', frei:'ausFrei', keller:'ausKeller', energie:'ausEnergie' };
+function aushangWerteId(objektId, weNr){ return 'aushang_werte_' + wohnungsKennung(objektId, weNr); }
+/* Foto ueber seine Kennung wiederfinden - die Position aendert sich, sobald
+   ein Foto dazukommt oder geloescht wird. */
+function aushangFotoSchluessel(f){
+  if(f && typeof f === 'object' && f.odId) return 'od:' + f.odId;
+  const s = String(f || ''); return 's:' + s.length + ':' + s.slice(-24);
+}
+async function aushangWerteLaden(objektId, weNr){
+  const r = await idbGet('settings', aushangWerteId(objektId, weNr)).catch(() => null);
+  return (r && r.value && typeof r.value === 'object') ? r.value : null;
+}
+function aushangWerteAusDialog(fotos){
+  const w = {};
+  for(const [k, id] of Object.entries(AUSHANG_FELDER)){
+    const el = document.getElementById(id); if(el) w[k] = String(el.value || '').trim();
+  }
+  const chks = document.querySelectorAll('.ausFotoChk');
+  if(chks.length) w.fotos = [...chks].filter(c => c.checked).map(c => aushangFotoSchluessel(fotos[parseInt(c.dataset.i, 10)]));
+  const gr = document.getElementById('ausGrundriss'); if(gr) w.grundriss = !!gr.checked;
+  return w;
+}
+async function aushangWerteSpeichern(objektId, weNr, fotos){
+  if(!document.getElementById('ausKalt')) return;   // Dialog nicht (mehr) offen
+  const w = aushangWerteAusDialog(fotos || []);
+  w.geaendert = nowIso();
+  w.von = (typeof CU !== 'undefined' && CU && CU.name) ? CU.name : '';
+  try{ await idbPut('settings', { id:aushangWerteId(objektId, weNr), value:w, geaendert:w.geaendert }); syncSoon(); }
+  catch(e){ console.warn('Aushang-Werte:', e); toast('Eingaben konnten nicht gespeichert werden.', 5000); }
+}
+let _aushangSpeicherTimer = null;
+function aushangWerteVormerken(objektId, weNr, fotos){
+  clearTimeout(_aushangSpeicherTimer);
+  _aushangSpeicherTimer = setTimeout(() => aushangWerteSpeichern(objektId, weNr, fotos), 600);
+}
+async function aushangVorschlaegeNeu(objektId, weNr, vormieterId){
+  if(!confirm('Gespeicherte Eingaben verwerfen und die Vorschläge aus Stammdaten und letztem Mieter neu laden?')) return;
+  clearTimeout(_aushangSpeicherTimer);
+  try{ await deleteMitTombstone('settings', aushangWerteId(objektId, weNr)); syncSoon(); }catch(e){ console.warn('Aushang-Werte:', e); }
+  await modalAushangErstellen(objektId, weNr, vormieterId || null);
+}
+
 /* Gespeicherten Aushang dieser Wohnung (archiviereAushangDokument) suchen. */
 function aushangArchivId(objektId, weNr){
   const kennung = (typeof wohnungsKennung === 'function') ? wohnungsKennung(objektId, weNr) : (objektId + '-WE' + weNr);
@@ -35859,6 +35941,8 @@ async function aushangErzeugen(objektId, weNr){
   const keller  = (document.getElementById('ausKeller')?.value||'').trim();
   const energie = (document.getElementById('ausEnergie')?.value||'').trim();
   const homepage = !!document.getElementById('ausHomepage')?.checked;
+  clearTimeout(_aushangSpeicherTimer);
+  await aushangWerteSpeichern(objektId, weNr, fotos);   // A446
 
   // ausgewählte Fotos
   const gewaehltRoh = [];
@@ -36056,7 +36140,13 @@ function aushangDokumentHtml(d){
   .cta .steps span{display:flex;align-items:center;gap:5px}
   .cta .steps b{display:inline-flex;width:17px;height:17px;border-radius:50%;background:#1B5FA8;color:#fff;font-size:9px;align-items:center;justify-content:center;font-weight:700}
   .foot{grid-column:1 / -1;padding-top:7px;border-top:1px solid #e5e7eb;display:flex;justify-content:space-between;font-size:9.5px;color:#6b7280}
-  @media print{ @page{size:A4 landscape;margin:0} .sheet{padding:10mm 12mm} }
+  /* A446: Die Fusszeile rutschte auf eine zweite Seite (Nutzer-PDF 15.10.).
+     min-height:210mm ist exakt die Seitenhoehe - ein Bruchteil Rundung beim
+     Umrechnen mm -> px genuegt fuer den Umbruch. Im Druck deshalb feste Hoehe
+     knapp darunter, Ueberstand abschneiden statt umbrechen. */
+  @page{size:A4 landscape;margin:0}
+  @media print{ html,body{width:297mm;height:209mm;overflow:hidden}
+    .sheet{padding:10mm 12mm;height:209mm;min-height:0;overflow:hidden;break-after:avoid;page-break-after:avoid} }
 </style></head><body>
 <div class="sheet">
   <div class="head">
