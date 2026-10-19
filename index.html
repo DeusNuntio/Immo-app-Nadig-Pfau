@@ -2,7 +2,7 @@
 <html lang="de">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; object-src 'none'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdn.sheetjs.com; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob: https:; connect-src 'self' https://stnadigpfau.blob.core.windows.net https://cdn.jsdelivr.net https://func-nadigpfau-g7fghseafmftemeq.westeurope-01.azurewebsites.net https://api.nadigpfau.de https://graph.microsoft.com https://login.microsoftonline.com https://*.microsoftpersonalcontent.com https://*.sharepoint.com https://*.up.1drv.com; frame-src 'self' blob:; worker-src 'self' blob:; base-uri 'self'; form-action 'self';">
 <meta name="referrer" content="no-referrer">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -10,6 +10,17 @@
 <meta name="theme-color" content="#1B5FA8">
 <title>Nadig Pfau Immobilienverwaltung</title>
 <script>
+/* A451 (externer Review 3.3): Der Viewport sperrt das Zoomen nicht mehr (WCAG 1.4.4).
+   Nur auf iOS bleibt maximum-scale=1: WebKit ignoriert es seit iOS 10 beim Zoomen mit
+   zwei Fingern, verhindert aber das automatische Hineinzoomen in Eingabefelder unter
+   16 px. Android/Chrome beachten den Wert und bekommen ihn deshalb nicht. */
+(function(){
+  try{
+    const ios = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    const m = ios && document.querySelector('meta[name=viewport]');
+    if(m && !/maximum-scale/.test(m.content)) m.setAttribute('content', m.content + ', maximum-scale=1.0');
+  }catch(_){}
+})();
 /* v333 (Audit F3) – Rahmenschutz gegen Clickjacking.
    Hintergrund: 'frame-ancestors' wirkt NUR als echter HTTP-Header; im
    Meta-Tag wird die Direktive vom Browser ignoriert. GitHub Pages laesst
@@ -601,6 +612,8 @@ button.chip.chip-active{background:var(--ink);color:#fff;border-color:var(--ink)
 .pe-neu{display:inline-block;background:var(--red);color:#fff;font-size:10px;font-weight:700;line-height:16px;border-radius:8px;padding:0 6px;margin-left:6px;vertical-align:middle;letter-spacing:.02em}
 .pe-karte.pe-ungelesen{box-shadow:inset 3px 0 0 var(--red)}
 .pe-karte.pe-ungelesen b:first-child{font-weight:800}
+.pe-gelesen{font-size:11px;color:var(--ink-40);white-space:nowrap;text-align:right;margin-left:auto}
+.pe-gelesen.pe-rechts{float:right;margin-left:8px}
 .pe-wichtig-pill{display:inline-block;background:#FCE6C2;color:#8A5300;border:1px solid #E3B66A;font-size:10px;font-weight:700;border-radius:8px;padding:0 6px;margin-left:6px;vertical-align:middle}
 .pe-wichtig-pill[hidden]{display:none}
 .pe-karte.pe-wichtig{border-color:#E3B66A!important}
@@ -1263,7 +1276,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=38;   // A398: +kr_abrechnungen
-const APP_VERSION = '2026-10-18-A450';
+const APP_VERSION = '2026-10-19-A456';
 /* v364 (12.08.2026) – offene Punkte abgearbeitet.
    1) D1/XLSX_SRI: Der im Code hinterlegte PowerShell-Befehl war FALSCH und
       konnte nie funktionieren - Invoke-WebRequest liefert unter .Content einen
@@ -2661,6 +2674,12 @@ function openIDB(){
         if(!db.objectStoreNames.contains(s)){
           const store=db.createObjectStore(s,{keyPath:'id'});
           (STORE_DEFS[s].index||[]).forEach(i=>store.createIndex(i,i));
+        } else {
+          /* A451 (externer Review B2): Ein spaeter in STORE_DEFS ergaenzter Index fehlte
+             bisher auf Geraeten, deren Store schon bestand - idbGetAll(store, index, ...)
+             warf dort. Greift bei der naechsten Erhoehung von DB_VER. */
+          const vorh=e.target.transaction.objectStore(s);
+          (STORE_DEFS[s].index||[]).forEach(i=>{ if(!vorh.indexNames.contains(i)) vorh.createIndex(i,i); });
         }
       });
     };
@@ -2700,18 +2719,24 @@ function idbGetAll(store,indexName,value){
 const _STAMP_STORES = ['mieter','users','tg'];
 // idbPut(store,obj, {keepStamp:true}) → vorhandenen Stempel NICHT überschreiben
 // (für Sync/Merge/Restore, wo der gemergte Stempel erhalten bleiben soll).
+/* A451: Stempelregel als eigene Funktion - idbPut und der Import in einer
+   Transaktion (idbAtomarSchreiben) muessen dieselbe Regel anwenden. */
+function idbStempeln(store,obj,opts){
+  if (obj && typeof obj === 'object') {
+    if (opts && opts.keepStamp) {
+      if (!obj.updatedAt) obj.updatedAt = new Date().toISOString();
+    } else if (_STAMP_STORES.includes(store)) {
+      // Bei normaler Bearbeitung immer aktualisieren, damit Änderungen "gewinnen".
+      obj.updatedAt = new Date().toISOString();
+    } else if (!obj.updatedAt) {
+      obj.updatedAt = new Date().toISOString();
+    }
+  }
+  return obj;
+}
 function idbPut(store,obj,opts){
   return new Promise((res,rej)=>{
-    if (obj && typeof obj === 'object') {
-      if (opts && opts.keepStamp) {
-        if (!obj.updatedAt) obj.updatedAt = new Date().toISOString();
-      } else if (_STAMP_STORES.includes(store)) {
-        // Bei normaler Bearbeitung immer aktualisieren, damit Änderungen "gewinnen".
-        obj.updatedAt = new Date().toISOString();
-      } else if (!obj.updatedAt) {
-        obj.updatedAt = new Date().toISOString();
-      }
-    }
+    idbStempeln(store,obj,opts);
     /* v365 (F1): Aufgeloest wird erst bei tx.oncomplete, nicht bei
        req.onsuccess. Nach der IndexedDB-Spezifikation ist ein Schreibvorgang
        erst mit dem Commit dauerhaft; dazwischen kann die Transaktion noch
@@ -2776,6 +2801,42 @@ function idbClear(store){
     catch(e){ rej(e); return; }
     tx.oncomplete = ()=>res();
     tx.onabort = tx.onerror = ()=>rej(tx.error || new Error('Leeren abgebrochen'));
+  });
+}
+
+/* A451 (externer Review A1): Mehrere Bereiche in EINER readwrite-Transaktion leeren
+   und beschreiben. Bricht ein Schreibvorgang ab (Speicher voll, ungueltiger
+   Schluessel), rollt IndexedDB die ganze Transaktion zurueck - es bleibt kein
+   Teilstand. leeren: [store, ...]; schreiben: {store: [[obj, opts], ...]}.
+   Aufgeloest wird erst bei oncomplete (wie idbPut seit v365). */
+function idbAtomarSchreiben(leeren, schreiben){
+  return new Promise((res,rej)=>{
+    const stores=[...new Set([...(leeren||[]), ...Object.keys(schreiben||{})])];
+    if(!stores.length){ res(0); return; }
+    let tx;
+    try { tx = idb.transaction(stores,'readwrite'); }
+    catch(e){ rej(e); return; }
+    let n = 0, fehler = null;
+    tx.oncomplete = ()=>res(n);
+    tx.onabort = tx.onerror = ()=>{
+      const err = fehler || tx.error || new Error('Schreiben abgebrochen');
+      idbQuotaMelden(err);
+      rej(err);
+    };
+    try {
+      for(const s of (leeren||[])) tx.objectStore(s).clear();
+      for(const s in (schreiben||{})){
+        const os = tx.objectStore(s);
+        for(const [obj, opts] of schreiben[s]){
+          const rq = os.put(idbStempeln(s, obj, opts));
+          rq.onerror = ()=>{ if(!fehler) fehler = rq.error; };
+          n++;
+        }
+      }
+    } catch(e){
+      fehler = e;
+      try { tx.abort(); } catch(_){}
+    }
   });
 }
 
@@ -9652,7 +9713,35 @@ async function peLaden(neu){
   _peGeladen = true;
 }
 function peIstNeu(art, id){ return !_peGelesen[art + ':' + id]; }
-function peIstWichtig(art, id){ return !!_peWichtig[art + ':' + id]; }
+function peIstWichtig(art, id){ const v = _peWichtig[art + ':' + id]; return !!v && !(typeof v === 'object' && v.aus); }   // A454
+/* A454: Eintraege sind bis A453 Zeitstempel ('2026-…'), ab A454 {am, von} bzw. bei
+   ausgeschaltetem "Wichtig" {am, aus:true}. peZeit liest beide Formen. */
+function peZeit(v){ return typeof v === 'string' ? v : (v && typeof v === 'object' && v.am) || ''; }
+/* A454: Die beiden Saetze werden beim Abgleich eintragsweise vereinigt statt als Ganzes
+   ersetzt. gelesen: die frueheste Markierung bleibt (wer zuerst gelesen hat);
+   wichtig: die juengste Aenderung gewinnt (auch das Ausschalten). */
+const PE_VEREINIGEN = { posteingang_gelesen:'frueher', posteingang_wichtig:'spaeter' };
+function peKartenVereinigen(a, b, regel){
+  const out = Object.assign({}, a || {});
+  for(const k of Object.keys(b || {})){
+    const x = out[k], y = b[k];
+    if(!x){ out[k] = y; continue; }
+    const tx = peZeit(x), ty = peZeit(y);
+    if(ty && (regel === 'frueher' ? ty < tx : ty > tx)) out[k] = y;
+  }
+  return out;
+}
+/* A454: rechts auf der Karte "gelesen: Name · TT.MM. HH:MM" - damit niemand doppelt liest. */
+function peGelesenHTML(art, id, rechts){
+  const v = _peGelesen[art + ':' + id];
+  if(!v) return '';
+  const am = peZeit(v), von = (typeof v === 'object' && v.von) || '';
+  const d = am ? new Date(am) : null;
+  const wann = d && !isNaN(d) ? d.toLocaleDateString('de-DE', {day:'2-digit', month:'2-digit'}) + ' '
+    + d.toLocaleTimeString('de-DE', {hour:'2-digit', minute:'2-digit'}) : '';
+  return `<span class="pe-gelesen${rechts ? ' pe-rechts' : ''}" title="gelesen${von ? ' von ' + escAttr(von) : ''}${wann ? ' am ' + escAttr(wann) : ''}">`
+    + `<i class="ti ti-eye"></i> ${von ? esc(von) + ' · ' : 'gelesen '}${esc(wann)}</span>`;
+}
 function peNeuHTML(art, id){
   return peIstNeu(art, id) ? `<span class="pe-neu" data-pe-neu="${escAttr(art + ':' + id)}">NEU</span>` : '';
 }
@@ -9671,7 +9760,7 @@ async function peSchreiben(satzId, aendern){
   const wert = Object.assign({}, alt);
   aendern(wert);
   const grenze = new Date(Date.now() - PE_HALTEN_TAGE * 86400000).toISOString();
-  for(const k of Object.keys(wert)) if(String(wert[k]) < grenze) delete wert[k];
+  for(const k of Object.keys(wert)) if(peZeit(wert[k]) < grenze) delete wert[k];   // A454
   await idbPut('settings', { id:satzId, value:wert, geaendert:nowIso() });
   syncSoon();
   return wert;
@@ -9681,7 +9770,8 @@ async function peAlsGelesen(art, ids){
   ids = (ids || []).map(String).filter(id => id && peIstNeu(art, id));
   if(!ids.length) return;
   const jetzt = nowIso();
-  try{ _peGelesen = await peSchreiben(PE_GELESEN, w => ids.forEach(id => { w[art + ':' + id] = jetzt; })); }
+  const von = (typeof CU !== 'undefined' && CU && CU.name) ? CU.name : '';   // A454
+  try{ _peGelesen = await peSchreiben(PE_GELESEN, w => ids.forEach(id => { w[art + ':' + id] = { am:jetzt, von }; })); }
   catch(e){ console.warn('Gelesen-Markierung:', e); return; }
   peBadgeAktualisieren();
 }
@@ -9703,7 +9793,10 @@ function peBadgeAktualisieren(){
 async function peWichtigUmschalten(art, id){
   await peLaden();
   const an = !peIstWichtig(art, id);
-  try{ _peWichtig = await peSchreiben(PE_WICHTIG, w => { if(an) w[art + ':' + id] = nowIso(); else delete w[art + ':' + id]; }); }
+  /* A454: Ausschalten als {aus:true} vermerken statt loeschen - sonst brachte das
+     eintragsweise Vereinigen den Eintrag vom anderen Geraet zurueck. */
+  const von = (typeof CU !== 'undefined' && CU && CU.name) ? CU.name : '';
+  try{ _peWichtig = await peSchreiben(PE_WICHTIG, w => { w[art + ':' + id] = an ? { am:nowIso(), von } : { am:nowIso(), von, aus:true }; }); }
   catch(e){ toast('Markierung nicht gespeichert.'); return; }
   const k = art + ':' + id;
   document.querySelectorAll('[data-pe-pill]').forEach(p => { if(p.getAttribute('data-pe-pill') === k) p.hidden = !an; });
@@ -9911,7 +10004,7 @@ async function mailRenderSA(body){
     html+=`<div class="sa-karte pe-karte${peIstNeu('sa', e.id)?' pe-ungelesen':''}" style="border:1px solid var(--line);${inboxBalken('sa')}border-radius:10px;padding:12px;margin-bottom:10px;${saKartenStil(_notizen[e.id])}">
       <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap">
         <div><b>${esc(e.anzeigeName||'(ohne Namen)')}</b>${peNeuHTML('sa', e.id)}<br>
-          <span style="font-size:12px;color:var(--ink-40)">${esc(e.objektName||'')} · ${esc(dt)}${_tage!=null?' · vor '+_tage+' Tag'+(_tage===1?'':'en'):''}</span></div>
+          <span style="font-size:12px;color:var(--ink-40)">${esc(e.objektName||'')} · ${esc(dt)}${_tage!=null?' · vor '+_tage+' Tag'+(_tage===1?'':'en'):''}</span></div>${peGelesenHTML('sa', e.id)}
       </div>
       ${_alt?`<div style="margin-top:8px;font-size:12px;border:1px solid var(--amber,#b8860b);border-radius:8px;padding:6px 8px;background:var(--amber-l)">
         <i class="ti ti-clock-exclamation"></i> Liegt seit ${_tage} Tagen vor. Wenn daraus kein Mietverhältnis
@@ -10413,7 +10506,7 @@ async function mailRenderPostfach(body){
     const _h = postfachHerkunft(m.betreff);          // A400
     const _neu = ordner==='offen' && peIstNeu('mail', m.id), _wi = peIstWichtig('mail', m.id);   // A442
     html+=`<div class="pe-karte${_neu?' pe-ungelesen':''}${_wi?' pe-wichtig':''}" style="border:1px solid var(--line);${inboxBalken(_h)}border-radius:10px;padding:12px;margin-bottom:10px;background:${POSTFACH_TON[_h]}">
-      <div><b>${esc(m.betreff||'(ohne Betreff)')}</b>${ordner==='offen'?peNeuHTML('mail', m.id):''}${peWichtigPill('mail', m.id)}${anzahl?` <i class="ti ti-paperclip" title="${anzahl} Anhang/Anhänge"></i>`:''}
+      <div>${peGelesenHTML('mail', m.id, true)}<b>${esc(m.betreff||'(ohne Betreff)')}</b>${ordner==='offen'?peNeuHTML('mail', m.id):''}${peWichtigPill('mail', m.id)}${anzahl?` <i class="ti ti-paperclip" title="${anzahl} Anhang/Anhänge"></i>`:''}
         ${POSTFACH_LABEL[_h]?`<span style="font-size:10px;padding:1px 6px;border-radius:6px;color:#fff;background:${INBOX_FARBE[_h]};vertical-align:middle">${POSTFACH_LABEL[_h]}</span>`:''}</div>
       <div style="font-size:12px;color:var(--ink-40);margin-top:2px">${esc(von)} · ${esc(dt)}</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
@@ -10478,7 +10571,7 @@ async function mailRenderNachrichten(body){
     window._webNachrichten[n.id] = n;   // A442
     html+=`<div class="pe-karte${peIstNeu('web', n.id)?' pe-ungelesen':''}${peIstWichtig('web', n.id)?' pe-wichtig':''}" style="border:1px solid var(--line);${inboxBalken(_art)}border-radius:10px;padding:12px;margin-bottom:10px;background:var(--white)">
       <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap">
-        <div><b>${esc(name)}</b>${peNeuHTML('web', n.id)}${peWichtigPill('web', n.id)} <span style="font-size:10px;padding:1px 6px;border-radius:6px;color:#fff;background:${INBOX_FARBE[_art]}">${_art==='portal'?'Portal':'Website'}</span><br><span style="font-size:12px;color:var(--ink-40)">${esc(n.email||'')}${n.telefon?' · '+esc(n.telefon):''} · ${esc(dt)}</span></div>
+        <div><b>${esc(name)}</b>${peNeuHTML('web', n.id)}${peWichtigPill('web', n.id)} <span style="font-size:10px;padding:1px 6px;border-radius:6px;color:#fff;background:${INBOX_FARBE[_art]}">${_art==='portal'?'Portal':'Website'}</span><br><span style="font-size:12px;color:var(--ink-40)">${esc(n.email||'')}${n.telefon?' · '+esc(n.telefon):''} · ${esc(dt)}</span></div>${peGelesenHTML('web', n.id)}
       </div>
       ${n.objektName||n.objekt?`<div style="font-size:12px;color:var(--ink-60);margin-top:6px"><i class="ti ti-building"></i> ${esc(n.objektName||n.objekt)}</div>`:''}
       ${n.nachricht||n.text?`<div style="font-size:13px;color:var(--ink);margin-top:8px;white-space:pre-wrap;line-height:1.5">${esc(n.nachricht||n.text)}</div>`:''}
@@ -10528,7 +10621,7 @@ function vormerkungKarteHTML(gr){
     <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap">
       <div><b>${esc(name)}</b>${_neu ? '<span class="pe-neu">NEU</span>' : ''} <span style="font-size:10px;padding:1px 6px;border-radius:6px;color:#fff;background:${INBOX_FARBE.website}">Vormerkung</span>
         ${gr.anzahl > 1 ? `<span style="font-size:10px;padding:1px 6px;border-radius:6px;background:var(--ink-05);color:var(--ink-60)">${gr.anzahl}× vorgemerkt</span>` : ''}<br>
-        <span style="font-size:12px;color:var(--ink-40)">${esc(v.email||'')}${v.telefon?' · '+esc(v.telefon):''} · ${esc(dt(v.zeitstempel))}</span></div>
+        <span style="font-size:12px;color:var(--ink-40)">${esc(v.email||'')}${v.telefon?' · '+esc(v.telefon):''} · ${esc(dt(v.zeitstempel))}</span></div>${peGelesenHTML('vm', gr.ids.find(id => !peIstNeu('vm', id)) || gr.ids[0])}
     </div>
     ${v.objektName?`<div style="font-size:12px;color:var(--ink-60);margin-top:6px"><i class="ti ti-building"></i> ${esc(v.objektName)}</div>`:''}
     <div style="margin-top:6px">
@@ -18563,18 +18656,52 @@ function eingangZuDatensatz(e){
   }
   return null;
 }
+/* A456: Mangel aus dem Claude-Eingang (B12, mangel_anlegen). Datensatz 'cl_' + Eingangs-ID wie bei
+   Aufgaben: holen zwei Geraete gleichzeitig ab, entsteht EIN Mangel. Erkennt die App das Objekt
+   nicht, wird ein To Do angelegt statt den Eintrag zu verwerfen; das Ergebnis geht an Claude zurueck. */
+async function eingangMangel(e, tomb){
+  const titel = String(e.titel || '').trim();
+  if(!e.id || !titel) return { text:'nicht übernommen: Titel fehlt' };
+  const id = 'cl_' + e.id;
+  const obj = e.objekt ? eingangObjektFinden(e.objekt) : null;
+  if(!obj){
+    const z = eingangZuDatensatz(Object.assign({}, e, { art:'aufgabe', prio: e.schwere === 'schwerwiegend' ? 'hoch' : 'mittel',
+      beschreibung: ['Mangel laut Claude – Objekt „' + (e.objekt || '') + '“ nicht erkannt, bitte zuordnen.', e.beschreibung || ''].filter(Boolean).join('\n') }));
+    if(!z) return { text:'nicht übernommen: Titel fehlt' };
+    if(tomb.aufgaben && tomb.aufgaben[z.rec.id]) return { text:'nicht übernommen: in der App bereits gelöscht' };
+    if(await idbGet('aufgaben', z.rec.id).catch(() => null)) return { text:'bereits als To Do angelegt' };
+    await idbPut('aufgaben', z.rec);
+    return { aufgabe:true, text:'als To Do angelegt – Objekt „' + (e.objekt || '') + '“ nicht erkannt' };
+  }
+  if(tomb.maengel && tomb.maengel[id]) return { text:'nicht übernommen: in der App bereits gelöscht' };
+  const da = await idbGet('maengel', id).catch(() => null);
+  if(da) return { text:'bereits angelegt' + (da.nummer ? ': ' + da.nummer : '') };
+  const nummer = await naechsteMangelNr(obj.id);
+  const m = {
+    id, type:'mangel', istReparatur:false, nummer, objektId:obj.id, mieterId:null, weNr:String(e.wohnung || ''),
+    titel, schwere: ['gering','mittel','schwerwiegend'].includes(e.schwere) ? e.schwere : 'mittel',
+    datum: /^\d{4}-\d{2}-\d{2}$/.test(String(e.datum || '')) ? e.datum : today(),
+    beschreibung:String(e.beschreibung || ''), kostenTeile:null, stunden:null, stundensatz:null, kostenArbeit:null, kosten:null,
+    status:'offen', fotos:[], portalMeldungId:null,
+    erstellt:now(), ersteller:'Claude (Diktat)', quelle:'claude', claudeEingang:e.id
+  };
+  await idbPut('maengel', m);
+  try{ bc && bc.postMessage({ type:'mangel_changed', data:{}, ts:Date.now() }); }catch(_){}
+  return { mangel:true, text:'angelegt: ' + nummer + ' (' + obj.name + (m.weNr ? ' WE ' + m.weNr : '') + ')' };
+}
 let _eingangLaeuft = false;
 let _eingangWartenGemeldet = false;   // A449: Hinweis "Sprachbenutzer fehlt" nur einmal je Sitzung
 async function eingangAbholen(key){
-  if(_eingangLaeuft || !key || !istVerwalter()) return { auf:0, ter:0, auftr:0 };
+  if(_eingangLaeuft || !key || !istVerwalter()) return { auf:0, ter:0, auftr:0, mng:0 };
   _eingangLaeuft = true;
-  const erg = { auf:0, ter:0, auftr:0 };
+  const erg = { auf:0, ter:0, auftr:0, mng:0 };   // A456: mng
   const hinweise = [];
   try{
     /* A449: ?arten=alle holt auch Auftraege (erledigt, stempel). Ohne den Zusatz
        liefert B11 nur Aufgaben/Termine - so hakt eine aeltere App keine
        Auftraege ab, die sie gar nicht ausfuehren kann. B8 ignoriert ihn. */
-    const r = await fetchMitTimeout(BACKEND_AZURE + '/api/eingang?arten=alle', { headers:{ 'x-functions-key':key } });
+    /* A456: &mangel=1 - B12 liefert Maengel nur an eine App, die sie anlegen kann. */
+    const r = await fetchMitTimeout(BACKEND_AZURE + '/api/eingang?arten=alle&mangel=1', { headers:{ 'x-functions-key':key } });
     if(!r || !r.ok) return erg;
     const liste = await r.json().catch(() => []);
     if(!Array.isArray(liste) || !liste.length) return erg;
@@ -18589,6 +18716,14 @@ async function eingangAbholen(key){
         if(a.warten){ if(!_eingangWartenGemeldet) hinweise.push(a.text); continue; }   // bleibt im Eingangsfach
         erledigt.push(e.id); ergebnisse[e.id] = a.text;
         if(a.ok) erg.auftr++; else hinweise.push('Claude-Auftrag ' + a.text);
+        continue;
+      }
+      if(e && e.art === 'mangel'){   // A456
+        let a;
+        try{ a = await eingangMangel(e, tomb); }
+        catch(err){ console.warn('Claude-Mangel:', err); continue; }   // nicht abhaken - naechster Versuch
+        erledigt.push(e.id); ergebnisse[e.id] = a.text;
+        if(a.mangel) erg.mng++; else if(a.aufgabe){ erg.auf++; hinweise.push('Claude-Mangel ' + a.text); }
         continue;
       }
       const z = eingangZuDatensatz(e);
@@ -18610,11 +18745,12 @@ async function eingangAbholen(key){
         if(!q || !q.ok) console.warn('Claude-Eingang: Abhaken fehlgeschlagen (' + (q ? q.status : '-') + ')');
       }catch(err){ console.warn('Claude-Eingang abhaken:', err); }
     }
-    if(erg.auf || erg.ter || erg.auftr){
+    if(erg.auf || erg.ter || erg.auftr || erg.mng){
       syncSoon();
       const t = [];
       if(erg.auf) t.push(erg.auf + (erg.auf === 1 ? ' To Do' : ' To Dos'));
       if(erg.ter) t.push(erg.ter + (erg.ter === 1 ? ' Termin' : ' Termine'));
+      if(erg.mng) t.push(erg.mng + (erg.mng === 1 ? ' Mangel' : ' Mängel'));   // A456
       if(erg.auftr) t.push(erg.auftr + (erg.auftr === 1 ? ' Auftrag' : ' Aufträge'));
       toast('Von Claude übernommen: ' + t.join(' und ') + ' ✓', 5000);
       try{
@@ -38948,6 +39084,20 @@ async function printProtHTML(d) {
   }
   const win = { _html:'', document:{ write(s){ win._html+=s; }, close(){} } };
   const datum = d.datum ? new Date(d.datum).toLocaleDateString('de-DE') : d.datum||'–';
+  /* A453: Jedes Foto erscheint klein mit Nummer in der Tabelle und gross im Anhang
+     (zwei je Seite). Bis A452 gab es nur die 70-80 px breiten Vorschaubilder. */
+  const fotoAnhang = [];
+  async function fotoAufnehmen(quelle, titel){
+    const o = await fotoOriginalLaden(quelle);
+    if(!o.src) return null;
+    const klein = await compressImg(o.src);
+    const gross = await compressImg(o.src, 1400, 1050, 0.8);
+    fotoAnhang.push({ gross, titel, nurVorschau: !o.voll });
+    return { klein, nr: fotoAnhang.length };
+  }
+  const fotoKlein = (f, b, h, extra) => `<figure style="display:inline-block;margin:2px;text-align:center;vertical-align:top">`
+    + `<img src="${f.klein}" style="width:${b}px;height:${h}px;object-fit:cover;border-radius:3px;border:1px solid #ccd;display:block${extra||''}" alt="Foto ${f.nr}">`
+    + `<figcaption style="font-size:7px;color:#666">Foto ${f.nr}</figcaption></figure>`;
   let roomRows = '';
   for (const r of ROOMS) {
     const rd = d.raeume?.[r]; if (!rd) continue;
@@ -38962,7 +39112,7 @@ async function printProtHTML(d) {
       const cps = await protoFotoWerte(rd.condPhotos?.[c], rd.condPhotoIds?.[c]);
       if (cps.length) {
         let imgs='';
-        for (const ph of cps){ const src=await fotoDruckQuelle(ph); if(!src) continue; const comp=await compressImg(src); imgs+=`<img src="${comp}" style="width:70px;height:52px;object-fit:cover;border-radius:3px;border:1px solid #ccd;margin:2px" alt="Foto">`; }
+        for (const ph of cps){ const f=await fotoAufnehmen(ph, r+' · '+c); if(!f) continue; imgs+=fotoKlein(f, 70, 52); }   // A453
         if (imgs) roomRows += `<tr><td colspan="3" style="padding:4px 8px;border:1px solid #dde"><div style="font-size:8px;font-weight:700;color:#777;margin-bottom:2px">Fotos zu „${c}"</div><div style="display:flex;flex-wrap:wrap;gap:3px">${imgs}</div></td></tr>`;
       }
     }
@@ -38972,9 +39122,8 @@ async function printProtHTML(d) {
     if (_roomFotos.length) {
       roomRows += `<tr><td colspan="3" style="padding:5px 8px;border:1px solid #dde"><div style="font-size:9px;font-weight:700;margin-bottom:3px">FOTOS (${_roomFotos.length})</div><div style="display:flex;flex-wrap:wrap;gap:4px">`;
       for (const p of _roomFotos) {
-        const src = await fotoDruckQuelle(p); if(!src) continue;
-        const comp = await compressImg(src);
-        roomRows += `<img src="${comp}" style="width:80px;height:60px;object-fit:cover;border-radius:3px;border:1px solid #ccd" alt="Foto">`;
+        const f = await fotoAufnehmen(p, r); if(!f) continue;   // A453
+        roomRows += fotoKlein(f, 80, 60);
       }
       roomRows += `</div></td></tr>`;
     }
@@ -38984,9 +39133,8 @@ async function printProtHTML(d) {
     let fotoCell = '';
     const _zFoto = await protoZaehlerFotoWert(z);
     if (_zFoto) {
-      const _zSrc = await fotoDruckQuelle(_zFoto);
-      if (_zSrc) { const comp = await compressImg(_zSrc);
-        fotoCell = `<img src="${comp}" style="width:60px;height:45px;object-fit:cover;border-radius:3px;border:1px solid #ccd;vertical-align:middle;margin-left:4px" alt="Foto">`; }
+      const f = await fotoAufnehmen(_zFoto, 'Zähler ' + (z.typ||'') + (z.nr ? ' Nr. ' + z.nr : '') + ' · Stand ' + z.stand + ' ' + (z.einheit||''));   // A453
+      if (f) fotoCell = fotoKlein(f, 60, 45, ';margin-left:4px');
     }
     mR += `<tr><td style="padding:3px 8px;border:1px solid #dde;font-size:10px">${z.typ}</td><td style="padding:3px 8px;border:1px solid #dde;font-size:10px">${z.nr}</td><td style="padding:3px 8px;border:1px solid #dde;font-size:10px;font-weight:700">${z.stand} ${esc(z.einheit)} ${fotoCell}</td></tr>`;
   }
@@ -39007,6 +39155,10 @@ tr{page-break-inside:avoid}
 .sig-box{border:1px solid #ccd;border-radius:4px;padding:7px;text-align:center}
 .sig-box img{max-width:100%;max-height:90px;width:auto;height:auto;object-fit:contain;display:block;margin:0 auto}.sig-box p{font-size:9px;color:#666;margin-top:3px;line-height:1.5}
 .footer{font-size:8px;color:#aaa;text-align:center;margin-top:12px;padding-top:8px;border-top:1px solid #eee}
+.foto-seite{page-break-before:always;break-before:page}
+.foto-gross{margin:0 0 6mm;page-break-inside:avoid;break-inside:avoid;text-align:center}
+.foto-gross img{display:block;margin:0 auto;max-width:100%;max-height:115mm;width:auto;height:auto;object-fit:contain;border:1px solid #ccd;border-radius:3px}
+.foto-gross figcaption{font-size:10px;color:#333;margin-top:2mm}
 @page{margin:1.2cm;size:A4}@media print{body{padding:0;-webkit-print-color-adjust:exact;print-color-adjust:exact}}</style><meta name="apple-mobile-web-app-title" content="Nadig Pfau Immobilienverwaltung">
 </head><body>
 <div class="hdr"><div><h1>Wohnungsübergabeprotokoll</h1><div class="sub">${esc(d.objektName)} · ${d.objektOrt||''} · WE ${d.weNr||'?'} · ${d.etage||''}</div></div><div class="art">${d.art||'Übergabe'}</div></div>
@@ -39061,6 +39213,10 @@ ${(d.aenderungen&&d.aenderungen.length)?`<div style="margin-top:12px;padding:8px
     <strong>${a.feld}:</strong> „${a.alt||'–'}" &rarr; „${a.neu||'–'}" · geändert von ${a.von} am ${a.wann}
   </div>`).join('')}
 </div>`:''}
+${fotoAnhang.length ? fotoAnhang.reduce((seiten, f, i) => { if(i % 2 === 0) seiten.push([]); seiten[seiten.length-1].push([f, i+1]); return seiten; }, [])
+  .map((paar, s) => `<div class="foto-seite">${s === 0 ? `<h2>Fotodokumentation (${fotoAnhang.length} ${fotoAnhang.length === 1 ? 'Foto' : 'Fotos'})</h2>` : ''}`
+    + paar.map(([f, nr]) => `<figure class="foto-gross"><img src="${f.gross}" alt="Foto ${nr}"><figcaption><strong>Foto ${nr}</strong> · ${esc(f.titel)}`
+      + `${f.nurVorschau ? ' · <em>nur Vorschaubild – Original war nicht erreichbar</em>' : ''}</figcaption></figure>`).join('') + `</div>`).join('') : ''}
 <div class="footer">Übergabeprotokoll · ${esc(d.objektName)} · WE ${d.weNr||'?'} · ${datum} · ${d.abgeschlossenAm||now()} · ${esc(absenderName(d.objektId))}</div>
 
 
@@ -41470,6 +41626,34 @@ function erfasseLeerungen(altSnapshot, obj){
   return obj;
 }
 
+/* A451 (externer Review A1): Grundpruefung einer Sicherung vor jedem Schreibzugriff.
+   Fehler = Datei wird nicht importiert. Eintraege ohne gueltige ID wurden schon bis
+   A450 beim Wiederherstellen/Zusammenfuehren uebersprungen; beim Ersetzen brachen sie
+   den Import mitten im Schreiben ab. Jetzt werden sie in allen Modi gezaehlt und
+   uebersprungen. 'fehlend' = Sync-Bereiche, die die Datei nicht enthaelt (aeltere
+   Sicherung) - sie bleiben auch beim Ersetzen unveraendert. */
+function backupIdGueltig(id){
+  return (typeof id === 'string' && id !== '') || (typeof id === 'number' && isFinite(id) && id !== 0);
+}
+function backupPruefen(backup){
+  const erg = { fehler:[], fehlend:[], ohneId:0, datensaetze:0 };
+  if(!backup || typeof backup !== 'object' || Array.isArray(backup)){
+    erg.fehler.push('Die Datei ist keine Sicherung dieser App.'); return erg;
+  }
+  const vorhanden = STORES_SYNC.filter(s => backup[s] != null);
+  erg.fehlend = STORES_SYNC.filter(s => backup[s] == null);
+  if(!vorhanden.length) erg.fehler.push('Die Datei enthält keinen bekannten Datenbereich.');
+  for(const s of vorhanden){
+    const liste = backup[s];
+    if(!Array.isArray(liste)){ erg.fehler.push('Bereich "' + s + '" ist keine Liste.'); continue; }
+    for(const it of liste){
+      if(!it || typeof it !== 'object' || Array.isArray(it)){ erg.fehler.push('Bereich "' + s + '" enthält einen ungültigen Eintrag.'); break; }
+      if(backupIdGueltig(it.id)) erg.datensaetze++; else erg.ohneId++;
+    }
+  }
+  return erg;
+}
+
 async function importBackup(input){
   if(!istSystemAdmin()){ toast('Nur für Admins'); return; }
   const file=input.files[0]; if(!file) return;
@@ -41486,6 +41670,8 @@ async function importBackup(input){
   (function(){
     try{
       const backup=JSON.parse(text);
+      const pr=backupPruefen(backup);   // A451
+      if(pr.fehler.length){ window._pendingBackup=null; toast('Backup nicht importiert: '+pr.fehler[0], 6000); return; }
       // Datei zwischenspeichern, Modus per Dialog wählen (drei klare Optionen).
       window._pendingBackup = backup;
       const datInfo = backup.exportedAt ? ('vom '+backup.exportedAt) : '';
@@ -41493,7 +41679,7 @@ async function importBackup(input){
       showModal(`
         <div class="m-title"><i class="ti ti-database-import"></i> Backup importieren</div>
         <div style="background:var(--ink-05);border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:13px;color:var(--ink-60)">
-          Sicherung ${esc(datInfo)}${anzM?` · ${anzM} Mieter`:''}. Bitte wähle, wie der Stand übernommen wird. Vor dem Import wird automatisch eine lokale Sicherung des aktuellen Standes angelegt.
+          Sicherung ${esc(datInfo)}${anzM?` · ${anzM} Mieter`:''}. Bitte wähle, wie der Stand übernommen wird. Der Import wird ganz oder gar nicht übernommen. Vorher wird der Mieterbestand lokal gesichert; für eine vollständige Rückfallmöglichkeit zuerst „Backup exportieren“.${pr.ohneId?` ${pr.ohneId} Einträge ohne gültige ID werden übersprungen.`:''}
         </div>
         <button class="btn btn-copper btn-full" style="margin-bottom:8px" onclick="importBackupAusfuehren('wiederherstellen')">
           <i class="ti ti-rotate-2"></i> Wiederherstellen <span style="opacity:.7;font-size:11px">(setzt sich überall durch)</span>
@@ -41506,7 +41692,8 @@ async function importBackup(input){
         <button class="btn btn-full btn-danger" style="margin-bottom:8px" onclick="importBackupAusfuehren('ersetzen')">
           <i class="ti ti-replace"></i> Vollständig ersetzen
         </button>
-        <div style="font-size:11px;color:var(--ink-40);margin:-4px 0 12px 2px">Lokale Daten werden komplett durch die Sicherung überschrieben. Nur verwenden, wenn der lokale Stand sicher verworfen werden soll.</div>
+        <div style="font-size:11px;color:var(--ink-40);margin:-4px 0 12px 2px">Die enthaltenen Bereiche werden komplett durch die Sicherung überschrieben. Nur verwenden, wenn der lokale Stand sicher verworfen werden soll.</div>
+        ${pr.fehlend.length?`<div style="font-size:11px;color:var(--amber);margin:-8px 0 12px 2px">Diese Sicherung enthält ${pr.fehlend.length} Bereich${pr.fehlend.length===1?'':'e'} nicht (${esc(pr.fehlend.join(', '))}); ${pr.fehlend.length===1?'er bleibt':'sie bleiben'} unverändert.</div>`:''}
         <button class="btn btn-full" onclick="window._pendingBackup=null;closeModal()">Abbrechen</button>`);
     }catch(err){ toast('Fehler beim Lesen: '+err.message); }
   })();
@@ -41519,54 +41706,61 @@ async function importBackupAusfuehren(modus){
   const backup = window._pendingBackup;
   if(!backup){ toast('Keine Backup-Datei geladen'); closeModal(); return; }
   closeModal();
-  const alleStores=STORES_SYNC;
+  /* A451 (externer Review A1): Modus und Aufbau vor dem ersten Schreibzugriff pruefen,
+     danach alle Bereiche in EINER Transaktion schreiben (idbAtomarSchreiben). Bis A450
+     schrieb jeder Modus Satz fuer Satz, und "Ersetzen" leerte einen Bereich, bevor die
+     Saetze geschrieben waren - ein Abbruch hinterliess einen Teilstand, gesichert war
+     nur der Mieterbestand. Die Regeln je Modus sind unveraendert. */
+  if(!['ersetzen','wiederherstellen','zusammenfuehren'].includes(modus)){ toast('Unbekannter Import-Modus'); return; }
+  const pr = backupPruefen(backup);
+  if(pr.fehler.length){ window._pendingBackup=null; toast('Backup nicht importiert: '+pr.fehler[0], 6000); return; }
+  const stores = STORES_SYNC.filter(s => Array.isArray(backup[s]));
   try{
     await erstelleMieterSnapshot('vor Import ('+modus+')');
-    if(modus==='ersetzen'){
-      for(const s of alleStores){
-        if(backup[s]){ await idbClear(s); for(const item of backup[s]) await idbPut(s,item); }
-      }
-    } else if(modus==='wiederherstellen'){
-      // Frischer Zeitstempel: der wiederhergestellte Stand gewinnt beim Sync überall.
-      const NOW=nowIso();
-      for(const s of alleStores){
-        if(!backup[s]) continue;
-        for(const item of backup[s]){
-          if(!item||!item.id) continue;
-          const rec={...item};
+    const NOW = nowIso();
+    const schreiben = {};
+    for(const s of stores){
+      const liste = schreiben[s] = [];
+      for(const item of backup[s]){
+        if(!backupIdGueltig(item && item.id)) continue;
+        if(modus==='ersetzen'){
+          liste.push([item]);
+        } else if(modus==='wiederherstellen'){
+          // Frischer Zeitstempel: der wiederhergestellte Stand gewinnt beim Sync überall.
           // settings haben keinen Stempel-Bedarf; alle anderen Stores bekommen frischen updatedAt
+          const rec={...item};
           if(s!=='settings'){ rec.updatedAt=NOW; }
-          await idbPut(s, rec, {keepStamp:true});
-        }
-      }
-    } else {
-      // Zusammenführen: jüngerer Zeitstempel gewinnt, kein Feldverlust
-      for(const s of alleStores){
-        if(!backup[s]) continue;
-        for(const item of backup[s]){
-          if(!item||!item.id) continue;
+          liste.push([rec, {keepStamp:true}]);
+        } else {
+          // Zusammenführen: jüngerer Zeitstempel gewinnt, kein Feldverlust
           const local=await idbGet(s,item.id).catch(()=>null);
           const {merged}=mergeRecord(local, item);
-          await idbPut(s,merged,{keepStamp:true});
+          liste.push([merged, {keepStamp:true}]);
         }
       }
     }
+    await idbAtomarSchreiben(modus==='ersetzen' ? stores : [], schreiben);
     window._pendingBackup=null;
     // Nach Import lokalen Stand hochladen, damit alle Geräte ihn ziehen
     try{ await idbDelete('settings','lastSync'); }catch(_){}
-    const txt = modus==='wiederherstellen' ? 'Backup wiederhergestellt ✓ – wird auf allen Geräten übernommen'
+    const txt = (modus==='wiederherstellen' ? 'Backup wiederhergestellt ✓ – wird auf allen Geräten übernommen'
               : modus==='ersetzen' ? 'Backup vollständig übernommen ✓'
-              : 'Backup zusammengeführt ✓';
+              : 'Backup zusammengeführt ✓') + (pr.ohneId ? ` · ${pr.ohneId} ohne ID übersprungen` : '');
     toast(txt);
     await initApp();
     clearTimeout(window._syncTimer);
     window._syncTimer=setTimeout(()=>syncToOneDrive(),2000);
-  }catch(err){ toast('Fehler beim Import: '+err.message); }
+  }catch(err){ toast('Fehler beim Import: '+err.message+' – es wurde nichts übernommen.', 6000); }
 }
 
 async function confirmReset(){
   if(!istSystemAdmin()){ toast('Nur für Admins'); return; }
-  if(!confirm('ACHTUNG: Alle lokalen Daten werden unwiderruflich gelöscht. Fortfahren?')) return;
+  /* A451 (externer Review 3.3): Die Meldung versprach bis A450 "Alle lokalen Daten",
+     geleert werden aber nur die sieben Bereiche unten. Ist OneDrive verbunden, kann
+     der naechste Abgleich sie wieder herunterladen. */
+  if(!confirm('ACHTUNG: Auf diesem Gerät werden Mieter, Tiefgarage, Protokolle, Aufgaben, Mängel, Reparaturen und Einstellungen unwiderruflich gelöscht. '
+    + 'Alle anderen Bereiche (z. B. Buchungen, Dokumente, Fotos, Termine) bleiben erhalten. Ist OneDrive verbunden, kann der nächste Abgleich die Daten wieder herunterladen. '
+    + 'Zum vollständigen Entfernen vom Gerät die Website-Daten im Browser löschen. Fortfahren?')) return;
   for(const s of ['mieter','tg','protokolle','aufgaben','maengel','reparaturen','settings']) await idbClear(s);
   await ensureDefaultUsers();
   toast('Daten zurückgesetzt');
@@ -41651,6 +41845,7 @@ async function hmBackupErzeugen(){
 async function mergeFremdBackup(backup, stores){
   const rec = await idbGet('settings','tombstones').catch(()=>null) || {id:'tombstones', value:{}};
   const localTomb = rec.value || {};
+  const tombVorher = JSON.stringify(localTomb);   // A452: siehe syncFromOneDrive
   const remoteTomb = backup.tombstones || {};
   for (const st in remoteTomb){
     if (!stores.includes(st)) continue;
@@ -41669,7 +41864,7 @@ async function mergeFremdBackup(backup, stores){
       }
     }
   }
-  await idbPut('settings', {id:'tombstones', value: localTomb});
+  if (JSON.stringify(localTomb) !== tombVorher) await idbPut('settings', {id:'tombstones', value: localTomb});
   for (const st of stores){
     if (!backup[st]) continue;
     const tS = localTomb[st] || {};
@@ -42160,6 +42355,24 @@ const OD_SYNC_TIMEOUT = 90000; // 90 s
 let odTokens       = null;
 let lastSyncHash   = '';
 
+/* A452 (externer Review 3.2): Fingerabdruck fuer "keine Aenderungen". Bis A451 waren
+   es Laenge + letzte 30 Zeichen der JSON-Datei - eine gleich lange Aenderung mitten
+   darin (Miete 450 -> 460, ein Datum) galt als unveraendert und wurde nicht
+   hochgeladen (nachgestellt in e2e_sync_zwei_geraete.py). Jetzt SHA-256 ueber den
+   Inhalt OHNE updatedAt/updatedBy des Kopfes: die wechseln bei jedem Abgleich und
+   wuerden die Erkennung sonst immer aushebeln. Faellt Web Crypto aus, wird
+   hochgeladen - lieber einmal zu viel als eine Aenderung verschluckt. */
+async function syncInhaltHash(backup){
+  try{
+    const { updatedAt:_zeit, updatedBy:_von, ...inhalt } = backup || {};
+    const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(inhalt)));
+    return Array.from(new Uint8Array(d), b => b.toString(16).padStart(2,'0')).join('');
+  }catch(e){
+    console.warn('Sync-Fingerabdruck nicht berechenbar - es wird hochgeladen:', e && e.message);
+    return 'ohne-' + Date.now() + '-' + Math.random();
+  }
+}
+
 // ── Token speichern/laden ─────────────────────────────────
 async function odSaveTokens(t) {
   odTokens = {
@@ -42167,6 +42380,8 @@ async function odSaveTokens(t) {
     refresh_token: t.refresh_token || odTokens?.refresh_token || '',
     expires_at:    Date.now() + ((t.expires_in||3600) - 60) * 1000,
     user_name:     odTokens?.user_name || '',
+    konto:         odTokens?.konto || '',       // A455: login_hint fuer die stille Neuanmeldung
+    rt_ab:         odTokens?.rt_ab || 0,        // A455: Zeitpunkt der Anmeldung per Code
   };
   try { await odPersistTokens(); } catch(e) {}
 };
@@ -42242,8 +42457,10 @@ async function odGetToken() {
       const dauerhaftFehler = ['invalid_grant','invalid_client','unauthorized_client'].includes(t.error);
       if (dauerhaftFehler){
         console.warn('OneDrive-Token dauerhaft ungueltig ('+t.error+'):', t.error_description||'');
+        /* A455: Hinweis ablegen - der naechste Start erneuert die Anmeldung still. */
+        try { await idbPut('od_auth', { id:'still', konto: odTokens.konto || '', name: odTokens.user_name || '', ab: nowIso() }); } catch(_){}
         odTokens = null; await odClearTokens();
-        setSyncStatus('offline', {richtung:'Anmeldung', fehler:'Microsoft-Anmeldung abgelaufen ('+t.error+') – bitte neu anmelden'});
+        setSyncStatus('offline', {richtung:'Anmeldung', fehler:'Microsoft-Anmeldung abgelaufen – wird beim nächsten Start der App erneuert, sonst bitte neu anmelden'});
         return null;
       }
       console.warn('OneDrive-Token vorruebergehend nicht erneuerbar ('+t.error+') – Tokens bleiben erhalten.');
@@ -42347,12 +42564,13 @@ function odAnmeldungEmpfangen(){
     if (!d || d.typ !== 'od_anmeldung' || !d.tokens) return;
     try {
       await odSaveTokens(d.tokens);
+      if (odTokens) odTokens.rt_ab = Date.now();   // A455
       try {
         const me = await fetchMitTimeout('https://graph.microsoft.com/v1.0/me',
           {headers:{'Authorization':'Bearer '+odTokens.access_token}});
         const meData = await me.json();
         if (odTokens) {
-          odTokens.user_name = meData.displayName || meData.userPrincipalName || '';
+          odTokens.user_name = meData.displayName || meData.userPrincipalName || ''; odAnmeldungFrisch(meData);   // A455
           try { await odPersistTokens(); } catch(e) {}
         }
       } catch(e) { console.warn('Benutzername laden:', e); }   // nicht kritisch
@@ -42375,6 +42593,57 @@ function odAnmeldungEmpfangen(){
 }
 
 // ── OAuth-Code verarbeiten ────────────────────────────────
+/* A455: Stille Neuanmeldung. Microsoft gibt Browser-Apps Refresh-Tokens mit FESTER Laufzeit
+   von 24 Stunden (nicht verlaengerbar). Statt den Nutzer taeglich neu anmelden zu lassen,
+   leitet die App beim Start kurz zu Microsoft und zurueck (prompt=none) - ohne Eingabe,
+   solange die Microsoft-Sitzung besteht ("Angemeldet bleiben"). Nur beim Start, nie mitten
+   in der Arbeit; Schleifenschutz ueber zwei Zeitmarken im localStorage (keine Geheimnisse). */
+const OD_STILL_NACH_STUNDEN = 20;     // vor Ablauf der 24 h, damit ein langer Arbeitstag reicht
+const OD_STILL_PAUSE_MIN = 30;        // hoechstens ein Versuch je 30 Minuten
+const OD_STILL_FEHL_STUNDEN = 6;      // nach "Anmeldung noetig" so lange kein stiller Versuch
+async function odStillHinweis(){
+  try { return (await idbGet('od_auth','still')) || null; } catch(_){ return null; }
+}
+async function odStillAnmelden(){
+  try {
+    const jetzt = Date.now();
+    const lauf = +(localStorage.getItem('od_still_lauf') || 0);
+    const fehl = +(localStorage.getItem('od_still_fehl') || 0);
+    if (jetzt - lauf < OD_STILL_PAUSE_MIN * 60000) return false;
+    if (jetzt - fehl < OD_STILL_FEHL_STUNDEN * 3600000) return false;
+    if (navigator.onLine === false) return false;
+    const h = await odStillHinweis();
+    const konto = (odTokens && odTokens.konto) || (h && h.konto) || '';
+    const {verifier, challenge} = await pkceGen();
+    const state = crypto.getRandomValues(new Uint8Array(8)).reduce((s,b)=>s+b.toString(16).padStart(2,'0'),'');
+    localStorage.setItem('od_pkce_v', verifier);
+    localStorage.setItem('od_pkce_s', state);
+    localStorage.setItem('od_still_lauf', String(jetzt));
+    localStorage.setItem('od_still_aktiv', '1');
+    const params = new URLSearchParams({
+      client_id: OD_CLIENT_ID, response_type:'code', redirect_uri: OD_REDIRECT, scope: OD_SCOPES,
+      state, code_challenge: challenge, code_challenge_method:'S256', prompt:'none',
+    });
+    if (konto) params.set('login_hint', konto);
+    window.location.assign(OD_AUTH_URL + '?' + params);
+    return true;
+  } catch(e) { console.warn('Stille Anmeldung:', e && e.message); return false; }
+}
+/* Beim Start: nach 20 Stunden oder nach gescheiterter Erneuerung still neu anmelden. */
+async function odStillBeimStart(){
+  try { await odLoadTokens(); } catch(_){}
+  const alt = odTokens && odTokens.rt_ab && (Date.now() - odTokens.rt_ab > OD_STILL_NACH_STUNDEN * 3600000);
+  if (alt || (!odTokens && await odStillHinweis())) return await odStillAnmelden();
+  return false;
+}
+/* Nach einer Anmeldung per Code: Zeitpunkt merken, Hinweis und Fehlermarke loeschen. */
+function odAnmeldungFrisch(meData){
+  if (!odTokens) return;
+  if (meData) odTokens.konto = meData.userPrincipalName || meData.mail || odTokens.konto || '';
+  try { localStorage.removeItem('od_still_fehl'); } catch(_){}
+  idbDelete('od_auth','still').catch(()=>{});
+}
+
 async function handleOAuthRedirect() {
   const params = new URLSearchParams(window.location.search);
   const code   = params.get('code');
@@ -42386,6 +42655,16 @@ async function handleOAuthRedirect() {
     window.history.replaceState({}, '', window.location.pathname);
   }
 
+  /* A455: Rueckkehr einer stillen Anmeldung (prompt=none)? */
+  let still = false;
+  try { still = localStorage.getItem('od_still_aktiv') === '1'; localStorage.removeItem('od_still_aktiv'); } catch(_){}
+  if (error && still) {
+    try { localStorage.setItem('od_still_fehl', String(Date.now())); localStorage.removeItem('od_pkce_v'); localStorage.removeItem('od_pkce_s'); } catch(_){}
+    console.info('Stille Anmeldung nicht moeglich (' + error + ') - normale Anmeldung noetig.');
+    odTokens = null; await odClearTokens();
+    setSyncStatus('offline', {richtung:'Anmeldung', fehler:'Microsoft-Anmeldung abgelaufen – bitte unter OneDrive neu anmelden („Angemeldet bleiben“ anhaken)'});
+    return;
+  }
   if (error) {
     console.warn('OAuth Fehler:', error, params.get('error_description'));
     toast('Microsoft-Anmeldung fehlgeschlagen: ' + (params.get('error_description')||error));
@@ -42420,7 +42699,19 @@ async function handleOAuthRedirect() {
     });
     const t = await r.json();
     if (t.error) throw new Error(t.error_description||t.error);
+    if (still && !odTokens) {   // A455: Name und Konto der bisherigen Anmeldung uebernehmen
+      const vorher = await idbGet('od_auth','tokens').catch(()=>null), h = await odStillHinweis();
+      odTokens = { user_name: (vorher && vorher.user_name) || (h && h.name) || '', konto: (vorher && vorher.konto) || (h && h.konto) || '' };
+    }
     await odSaveTokens(t);
+    odTokens.rt_ab = Date.now();   // A455
+    if (still) {
+      odAnmeldungFrisch(null);
+      try { await odPersistTokens(); } catch(_){}
+      setSyncStatus('ok');
+      toast('OneDrive-Anmeldung erneuert ✓');
+      return;
+    }
 
     /* v256: Laeuft dieser Code im per window.open geoeffneten Anmeldefenster,
        gehoert das Ergebnis ins URSPRUNGSFENSTER – sonst bleibt eine zweite
@@ -42440,7 +42731,7 @@ async function handleOAuthRedirect() {
       {headers:{'Authorization':'Bearer '+odTokens.access_token}});
     const meData = await me.json();
     if (odTokens) {
-      odTokens.user_name = meData.displayName || meData.userPrincipalName || '';
+      odTokens.user_name = meData.displayName || meData.userPrincipalName || ''; odAnmeldungFrisch(meData);   // A455
       try { await odPersistTokens(); } catch(e) {}
     }
     setSyncStatus('ok');
@@ -42585,7 +42876,7 @@ async function syncToOneDrive() {
       try { toast('Hinweis: Datenmenge ' + Math.round(jsonBytes/1048576) + ' MB' + treiber
         + '. Sync kann länger dauern.', 9000); } catch(_){}
     }
-    const hash = json.length+'_'+json.slice(-30);
+    const hash = await syncInhaltHash(backup);   // A452
     if (hash === lastSyncHash) { setSyncStatus('ok', {richtung:'hochgeladen', hinweis:'keine Änderungen', bytes:jsonBytes}); syncInProgress=false; return; }   // v248/v254
     /* v254: segmentierter Upload mit Groessenpruefung (ersetzt den einzelnen PUT,
        der bei ~16 MB mitten in der Uebertragung abbrechen konnte). */
@@ -42683,6 +42974,11 @@ async function syncFromOneDrive() {
       }
       // Lokal noch vorhandene, aber getombstonete Datensätze entfernen
       for (const st in mergedTomb) {
+        /* A451 (externer Review): nur auf Sync-Bereiche anwenden - eine beschaedigte
+           Datei kann sonst geraeteeigene Bereiche (od_auth, mieter_snapshots) leeren.
+           Fremde Namen bleiben in mergedTomb und werden weitergereicht: Verwerfen
+           wuerde Loeschungen eines neueren Bereichs ueber ein aelteres Geraet tilgen. */
+        if (!STORES_SYNC.includes(st)) continue;
         for (const id in mergedTomb[st]) {
           const tombZeit = mergedTomb[st][id];
           const loc = await idbGet(st, id).catch(()=>null);
@@ -42694,7 +42990,10 @@ async function syncFromOneDrive() {
         }
       }
       // bereinigte Tombstones lokal speichern
-      await idbPut('settings', { id:'tombstones', value: mergedTomb });
+      /* A452: nur bei echter Aenderung schreiben. Das Neuschreiben stempelte den
+         Datensatz bei jedem Herunterladen neu; mit dem Inhalts-Fingerabdruck (syncInhaltHash)
+         wurde daraus ein Upload je Abgleich, abwechselnd auf allen Geraeten. */
+      if (JSON.stringify(mergedTomb) !== JSON.stringify(localTomb)) await idbPut('settings', { id:'tombstones', value: mergedTomb });
 
       // Merge: ID-basiert, nur übernehmen wenn remote neuer oder lokal fehlt
       const mergeStores = STORES_MERGE;
@@ -42783,10 +43082,22 @@ async function syncFromOneDrive() {
             }
           }
           const local = await idbGet('settings', item.id).catch(()=>null);
+          /* A454: Lese-/Wichtig-Markierungen eintragsweise vereinigen (siehe peKartenVereinigen).
+             Als Ganzes ersetzt, loeschte ein zweites Geraet die Markierungen des ersten. */
+          if (PE_VEREINIGEN[item.id] && local && local.value && item.value) {
+            const wert = peKartenVereinigen(local.value, item.value, PE_VEREINIGEN[item.id]);
+            if (JSON.stringify(wert) !== JSON.stringify(local.value)) {
+              const juenger = recStamp(item) > recStamp(local) ? item : local;
+              await idbPut('settings', Object.assign({}, juenger, { value: wert }), {keepStamp:true});
+              uebernommen++;
+            }
+            continue;
+          }
           const {merged, changed} = mergeRecord(local, item);
           await idbPut('settings', merged, {keepStamp:true});
           if(changed || !local) uebernommen++;
         }
+        _peGeladen = false;   // A454: Lesestatus beim naechsten Anzeigen frisch aus der Datenbank
         if(uebernommen){
           console.info('Abgleich: ' + uebernommen + ' Einstellung(en) übernommen.');
           try{ await ladeBriefkopfCache(); }catch(e){ console.warn('Briefkopf neu laden:', e); }
@@ -52672,10 +52983,13 @@ window.addEventListener('DOMContentLoaded', async () => {
   // OAuth-Redirect zuerst prüfen (kommt von Microsoft-Anmeldung)
   const urlParams = new URLSearchParams(window.location.search);
   if (urlParams.get('code') || urlParams.get('error')) {
+    let _still = false;   // A455: nach stiller Neuanmeldung normal weiterstarten (Sitzung, offenes Protokoll)
+    try { _still = localStorage.getItem('od_still_aktiv') === '1'; } catch(_){}
     // IDB öffnen, dann Redirect verarbeiten
     await openIDB().catch(()=>{});
     await ensureDefaultUsers().catch(()=>{});
     await handleOAuthRedirect();
+    if (!_still) {
     // handleOAuthRedirect() leitet im Erststart selbst auf den passenden Screen
     // (Setup/Login). Nur wenn danach Benutzer vorhanden sind und noch kein Screen
     // aktiv gesetzt wurde, auf den Login-Screen gehen.
@@ -52688,6 +53002,7 @@ window.addEventListener('DOMContentLoaded', async () => {
       showScreen('setupScreen');
     }
     return;
+    }
   }
 
   let dbOk = false;
@@ -52706,6 +53021,8 @@ window.addEventListener('DOMContentLoaded', async () => {
     return;
   }
   try { await ensureDefaultUsers(); } catch(err) { console.warn('ensureDefaultUsers:', err); }
+  // A455: abgelaufene Microsoft-Anmeldung still erneuern (kurzer Seitenwechsel, danach geht es hier weiter)
+  try { if (await odStillBeimStart()) return; } catch(err) { console.warn('Stille Anmeldung:', err); }
   try { await ensureTaetigkeitKat(); } catch(err) { console.warn('ensureTaetigkeitKat:', err); }
   try { await migriereKontaktInPersonen(); } catch(err) { console.warn('migriereKontaktInPersonen:', err); }
   try { await migriereFlaecheInStamm(); } catch(err) { console.warn('migriereFlaecheInStamm:', err); }
