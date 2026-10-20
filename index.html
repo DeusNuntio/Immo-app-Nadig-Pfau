@@ -1276,7 +1276,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=38;   // A398: +kr_abrechnungen
-const APP_VERSION = '2026-10-20-A458';
+const APP_VERSION = '2026-10-20-A460';
 /* v364 (12.08.2026) – offene Punkte abgearbeitet.
    1) D1/XLSX_SRI: Der im Code hinterlegte PowerShell-Befehl war FALSCH und
       konnte nie funktionieren - Invoke-WebRequest liefert unter .Content einen
@@ -18844,6 +18844,100 @@ async function eingangMangel(e, tomb, absender){
   try{ bc && bc.postMessage({ type:'mangel_changed', data:{}, ts:Date.now() }); }catch(_){}
   return { mangel:true, text:'angelegt: ' + nummer + ' (' + obj.name + (m.weNr ? ' WE ' + m.weNr : '') + ')' };
 }
+/* A459: Auftraege aus B13 (aendern | loeschen | mangel_erledigt). Grundlage war Claudes Spiegel; hier
+   wird gegen den aktuellen Datensatz geprueft: geloescht oder nicht vorhanden -> nicht ausgefuehrt. */
+const EINGANG_ZIELE = { aufgabe:'aufgaben', termin:'termine', mangel:'maengel' };
+const EINGANG_ZIEL_NAME = { aufgabe:'To Do', termin:'Termin', mangel:'Mangel' };
+function eingangAenderung(e){
+  try{ const o = JSON.parse(e.aenderung || '{}'); return (o && typeof o === 'object' && !Array.isArray(o)) ? o : {}; }catch(_){ return {}; }
+}
+function claudeVon(absender){ return absender ? absender.name + ' über Claude' : 'Claude (Sprachbefehl)'; }
+async function eingangAuftragAendern(e, tomb, absender){
+  const store = EINGANG_ZIELE[e.ziel], id = String(e.zielId || '');
+  if(!store || !id) return { ok:false, text:'nicht ausgeführt: Ziel unbekannt' };
+  if(tomb && tomb[store] && tomb[store][id]) return { ok:false, text:'nicht ausgeführt: in der App gelöscht' };
+  const x = await idbGet(store, id).catch(() => null);
+  if(!x) return { ok:false, text:'nicht ausgeführt: nicht gefunden' };
+  const a = eingangAenderung(e);
+  const s = v => String(v == null ? '' : v).trim();
+  const leer = v => s(v).toLowerCase() === 'keine';
+  const neu = [], hinweise = [];
+  if(s(a.titel)){ x.titel = s(a.titel).slice(0, 200); neu.push('Titel'); }
+  if(s(a.beschreibung)){ x.beschreibung = s(a.beschreibung); neu.push('Beschreibung'); }
+  if(s(a.beschreibung_ergaenzen)){ x.beschreibung = [x.beschreibung || '', s(a.beschreibung_ergaenzen)].filter(Boolean).join('\n'); neu.push('Beschreibung ergänzt'); }
+  let objektNeu = false;
+  if(s(a.objekt)){
+    const n = eingangNorm(a.objekt);
+    let obj = null, leeren = false;
+    if(e.ziel === 'aufgabe' && n === 'allgemein') obj = { id:ALLGEMEIN_ID, name:'Allgemein' };
+    else if(e.ziel === 'termin' && n === 'keine') leeren = true;
+    else obj = eingangObjektFinden(a.objekt);
+    if(obj && e.ziel === 'mangel' && istAllgemein(obj.id)) obj = null;
+    if(leeren){ x.objektId = null; neu.push('Objekt entfernt'); }
+    else if(obj){ if(x.objektId !== obj.id) objektNeu = true; x.objektId = obj.id; neu.push('Objekt ' + obj.name); }
+    else hinweise.push('Objekt „' + s(a.objekt) + '“ nicht erkannt');
+  }
+  if(e.ziel !== 'termin'){
+    if(s(a.wohnung)){ x.weNr = leer(a.wohnung) ? '' : s(a.wohnung).slice(0, 20); neu.push(leer(a.wohnung) ? 'WE entfernt' : 'WE ' + x.weNr); }
+    else if(objektNeu && x.weNr){ x.weNr = ''; hinweise.push('WE geleert (anderes Objekt)'); }
+    if(istAllgemein(x.objektId)) x.weNr = '';
+  }
+  if(e.ziel === 'aufgabe'){
+    if(s(a.faellig)){ if(leer(a.faellig)){ x.datum = ''; neu.push('Fälligkeit entfernt'); }
+      else if(/^\d{4}-\d{2}-\d{2}$/.test(s(a.faellig))){ x.datum = s(a.faellig); neu.push('fällig ' + fmtDate(x.datum)); } }
+    if(['hoch','mittel','niedrig'].includes(s(a.prio))){ x.prio = s(a.prio); neu.push('Priorität ' + x.prio); }
+  }
+  if(e.ziel === 'termin'){
+    if(/^\d{4}-\d{2}-\d{2}$/.test(s(a.datum))){ x.datum = s(a.datum); neu.push('Datum ' + fmtDate(x.datum)); }
+    if(s(a.uhrzeit)){ if(leer(a.uhrzeit)){ x.uhrzeit = ''; x.uhrzeitEnd = ''; neu.push('ganztägig'); }
+      else if(/^\d{2}:\d{2}$/.test(s(a.uhrzeit))){ x.uhrzeit = s(a.uhrzeit); neu.push('Uhrzeit ' + x.uhrzeit); } }
+    if(s(a.uhrzeitEnde)){ if(leer(a.uhrzeitEnde)){ x.uhrzeitEnd = ''; neu.push('Endzeit entfernt'); }
+      else if(/^\d{2}:\d{2}$/.test(s(a.uhrzeitEnde))){ x.uhrzeitEnd = s(a.uhrzeitEnde); neu.push('Endzeit ' + x.uhrzeitEnd); } }
+    if(s(a.typ)){ x.typ = s(a.typ); neu.push('Typ'); }
+    if(s(a.notiz_ergaenzen)){ x.notiz = [x.notiz || '', s(a.notiz_ergaenzen)].filter(Boolean).join('\n'); neu.push('Notiz ergänzt'); }
+  }
+  if(e.ziel === 'mangel'){
+    if(['gering','mittel','schwerwiegend'].includes(s(a.schwere))){ x.schwere = s(a.schwere); neu.push('Schwere ' + x.schwere); }
+    if(/^\d{4}-\d{2}-\d{2}$/.test(s(a.datum))){ x.datum = s(a.datum); neu.push('festgestellt ' + fmtDate(x.datum)); }
+  }
+  if(!neu.length) return { ok:false, text:'nicht ausgeführt: ' + (hinweise.join('; ') || 'keine Änderung') };
+  x.bearbeitetAm = now(); x.bearbeitetVon = claudeVon(absender);
+  if(e.ziel === 'mangel'){ x.kommentare = x.kommentare || []; x.kommentare.push({ autor:x.bearbeitetVon, datum:now(), text:'Geändert: ' + neu.join(', ') }); }
+  await idbPut(store, x);
+  try{ bc && bc.postMessage({ type: e.ziel === 'mangel' ? 'mangel_changed' : e.ziel === 'termin' ? 'termin_changed' : 'aufgabe_changed', data:{ id }, ts:Date.now() }); }catch(_){}
+  return { ok:true, text:'geändert: „' + (x.titel || '') + '“ (' + neu.join(', ') + ')' + (hinweise.length ? ' – ' + hinweise.join('; ') : '') };
+}
+async function eingangAuftragLoeschen(e, tomb){
+  const store = { aufgabe:'aufgaben', termin:'termine' }[e.ziel], id = String(e.zielId || '');
+  if(!store || !id) return { ok:false, text:'nicht ausgeführt: Ziel unbekannt' };
+  if(tomb && tomb[store] && tomb[store][id]) return { ok:false, text:'nicht ausgeführt: bereits gelöscht' };
+  const x = await idbGet(store, id).catch(() => null);
+  if(!x) return { ok:false, text:'nicht ausgeführt: nicht gefunden' };
+  await deleteMitTombstone(store, id);
+  try{ bc && bc.postMessage({ type: e.ziel === 'termin' ? 'termin_changed' : 'aufgabe_changed', data:{ id }, ts:Date.now() }); }catch(_){}
+  return { ok:true, text:'gelöscht: ' + EINGANG_ZIEL_NAME[e.ziel] + ' „' + (x.titel || '') + '“' };
+}
+async function eingangAuftragMangelErledigt(e, tomb, absender){
+  const id = String(e.zielId || '');
+  if(!id) return { ok:false, text:'nicht ausgeführt: keine Mangel-ID' };
+  if(tomb && tomb.maengel && tomb.maengel[id]) return { ok:false, text:'nicht ausgeführt: in der App gelöscht' };
+  const m = await idbGet('maengel', id).catch(() => null);
+  if(!m) return { ok:false, text:'nicht ausgeführt: nicht gefunden' };
+  if(m.status === 'behoben' || m.status === 'erledigt') return { ok:false, text:'nicht ausgeführt: bereits behoben' + (m.erledigtAm ? ' am ' + fmtDate(m.erledigtAm) : '') };
+  const z = new Date(e.zeitpunkt || e.erstellt);
+  const zeit = isNaN(z) ? new Date() : z;
+  const von = claudeVon(absender);
+  m.status = 'behoben';
+  m.erledigtAm = ymd(zeit);
+  erledigtVermerk(m, von, absender ? absender.id : '', zeit);
+  const notiz = String(e.notiz || '').trim();
+  m.kommentare = m.kommentare || [];
+  m.kommentare.push({ autor:von, datum:zeit.toLocaleString('de-DE'), text:'Als erledigt markiert' + (notiz ? ': ' + notiz : '') });
+  await idbPut('maengel', m);
+  try{ await syncEinzugNachMangelStatus(id); }catch(err){ console.warn('Einzugsprotokoll nach Claude-Mangel:', err); }
+  try{ bc && bc.postMessage({ type:'mangel_changed', data:{ id }, ts:Date.now() }); }catch(_){}
+  return { ok:true, text:'behoben: „' + (m.nummer ? m.nummer + ' ' : '') + (m.titel || '') + '“' };
+}
 let _eingangLaeuft = false;
 let _eingangWartenGemeldet = false;   // A449: Hinweis "Sprachbenutzer fehlt" nur einmal je Sitzung
 async function eingangAbholen(key){
@@ -18856,7 +18950,8 @@ async function eingangAbholen(key){
        liefert B11 nur Aufgaben/Termine - so hakt eine aeltere App keine
        Auftraege ab, die sie gar nicht ausfuehren kann. B8 ignoriert ihn. */
     /* A456: &mangel=1 - B12 liefert Maengel nur an eine App, die sie anlegen kann. */
-    const r = await fetchMitTimeout(BACKEND_AZURE + '/api/eingang?arten=alle&mangel=1', { headers:{ 'x-functions-key':key } });
+    /* A459: &aendern=1 - B13 liefert Aenderungs-/Loeschauftraege nur an eine App, die sie ausfuehren kann. */
+    const r = await fetchMitTimeout(BACKEND_AZURE + '/api/eingang?arten=alle&mangel=1&aendern=1', { headers:{ 'x-functions-key':key } });
     if(!r || !r.ok) return erg;
     const liste = await r.json().catch(() => []);
     if(!Array.isArray(liste) || !liste.length) return erg;
@@ -18870,6 +18965,17 @@ async function eingangAbholen(key){
         try{ a = e.art === 'erledigt' ? await eingangAuftragErledigt(e, tomb, absender) : await eingangAuftragStempel(e); }
         catch(err){ console.warn('Claude-Auftrag:', err); continue; }   // nicht abhaken - naechster Versuch
         if(a.warten){ if(!_eingangWartenGemeldet) hinweise.push(a.text); continue; }   // bleibt im Eingangsfach
+        erledigt.push(e.id); ergebnisse[e.id] = a.text;
+        if(a.ok) erg.auftr++; else hinweise.push('Claude-Auftrag ' + a.text);
+        continue;
+      }
+      if(e && (e.art === 'aendern' || e.art === 'loeschen' || e.art === 'mangel_erledigt')){   // A459
+        let a;
+        try{
+          a = e.art === 'aendern' ? await eingangAuftragAendern(e, tomb, absender)
+            : e.art === 'loeschen' ? await eingangAuftragLoeschen(e, tomb)
+            : await eingangAuftragMangelErledigt(e, tomb, absender);
+        }catch(err){ console.warn('Claude-Auftrag:', err); continue; }   // nicht abhaken - naechster Versuch
         erledigt.push(e.id); ergebnisse[e.id] = a.text;
         if(a.ok) erg.auftr++; else hinweise.push('Claude-Auftrag ' + a.text);
         continue;
@@ -19128,6 +19234,13 @@ async function spiegelBauen(modus){
                hinweis:r.jederzeit ? 'jederzeit kündbar' : (r.verlaengert ? 'stillschweigend verlängert' : '') };
     });
 
+  /* A459: offene Maengel fuer maengel_anzeigen / mangel_aendern / mangel_erledigen (B13). */
+  const maengel = (await idbGetAll('maengel').catch(() => []))
+    .filter(m => m.status !== 'behoben' && m.status !== 'erledigt' && !privat.has(m.objektId))
+    .map(m => ({ id:m.id, nummer:m.nummer || '', titel:kurz(m.titel, 200), beschreibung:kurz(m.beschreibung, 500),
+                 schwere:m.schwere || 'mittel', datum:/^\d{4}-\d{2}-\d{2}$/.test(m.datum || '') ? m.datum : '',
+                 objekt:name(m.objektId), we:String(m.weNr || ''), reparatur:!!(m.istReparatur || m.type === 'reparatur') }))
+    .slice(0, 500);
   const taetigkeiten = (await getTaetigkeitKat(true).catch(() => [])).map(k => ({ id:k.id, name:k.name }));
 
   const sb = await sprachBenutzerId();
@@ -19137,7 +19250,7 @@ async function spiegelBauen(modus){
     const seg = offen ? offenesSegment(offen) : null;
     stempeluhr = { eingerichtet:true, laeuft:!!offen, seit:offen ? offen.start : '', taetigkeit:seg ? seg.katName : '', pause:offen ? pauseAktiv(offen) : false };
   }
-  return { version:1, stand:nowIso(), modus, aufgaben, termine, wohnungen, vertraege, taetigkeiten, stempeluhr };
+  return { version:1, stand:nowIso(), modus, aufgaben, termine, wohnungen, vertraege, taetigkeiten, stempeluhr, maengel };
 }
 
 /* Rueckgabe { status, grund } - status: geschoben | unveraendert | geloescht | aus |
@@ -37448,7 +37561,7 @@ async function modalKaution(mieterId){
     </div>
     <div class="f-row">
       <div class="f"><label for="kdBetrag">Vereinbarter Betrag (€)</label>
-        <input type="number" inputmode="decimal" id="kdBetrag" value="${betr||''}" step="0.01"></div>
+        <input type="number" inputmode="decimal" id="kdBetrag" value="${betr||''}" step="0.01" oninput="kautionSaldoRender()"></div>
       <div class="f"><label for="kdEingang">Eingang / Beginn</label>
         <input type="date" id="kdEingang" value="${kd.eingang||''}"></div>
     </div>
@@ -37754,6 +37867,7 @@ function kautionArtChange(){
   show('kdVersBlock',  art==='versicherung');
   // Anlage-Block für Bürgschaft ausblenden (kein Kautionskonto)
   show('kdAnlageBlock', art!=='versicherung');
+  kautionSaldoRender();   // A460: Grundbetrag haengt an der Art (Raten vs. Betrag)
 }
 
 function kautionRatenCollect(){
@@ -37779,8 +37893,9 @@ function kautionRatenToggleErhalten(i){
   if(r && r.erhalten && !r.erhaltenAm) r.erhaltenAm = today();
   kautionRatenRender();
 }
+/* A460: Zeichnen liest das Formular NICHT erneut - nach "+" fehlt die neue Zeile dort noch und die
+   Liste fiel auf den alten Stand zurueck. Hinzufuegen/Entfernen/"erhalten" lesen vorher selbst. */
 function kautionRatenRender(){
-  window._kautionRaten = kautionRatenCollect().length?kautionRatenCollect():window._kautionRaten;
   const wrap=document.getElementById('kdRatenListe'); if(!wrap) return;
   const ps=window._kautionRaten||[];
   wrap.innerHTML = ps.map((r,i)=>{
@@ -37791,7 +37906,7 @@ function kautionRatenRender(){
         <div class="f" style="max-width:130px"><label style="font-size:9px" for="kdRatenDat_${i}">Fällig am</label>
           <input type="date" id="kdRatenDat_${i}" value="${r.datum||''}" style="font-size:12px"></div>
         <div class="f"><label style="font-size:9px" for="kdRatenBet_${i}">Betrag (€)</label>
-          <input type="number" inputmode="decimal" id="kdRatenBet_${i}" value="${r.betrag||''}" step="0.01" style="font-size:12px"></div>
+          <input type="number" inputmode="decimal" id="kdRatenBet_${i}" value="${r.betrag||''}" step="0.01" style="font-size:12px" oninput="kautionSaldoRender()"></div>
         <button type="button" class="btn btn-sm btn-danger" onclick="kautionRatenRemove(${i})" style="flex-shrink:0"><i class="ti ti-trash"></i></button>
       </div>
       <div class="f-row" style="align-items:flex-end">
@@ -37831,16 +37946,14 @@ function kautionBewCollect(){
   }
   return out;
 }
-function kautionBewRender(){
-  const cur=kautionBewCollect();
-  window._kautionBew = cur.length?cur:window._kautionBew;
+function kautionBewRender(){   // A460: wie kautionRatenRender - kein erneutes Lesen des Formulars
   const wrap=document.getElementById('kdBewListe'); if(!wrap) return;
   const ps=window._kautionBew||[];
   wrap.innerHTML = ps.map((b,i)=>`
     <div style="border:1px solid var(--ink-10);border-radius:8px;padding:8px;margin-bottom:6px">
       <div class="f-row" style="margin-bottom:4px;align-items:flex-end">
         <div class="f"><label style="font-size:9px" for="kdBewArt_${i}">Art</label>
-          <select id="kdBewArt_${i}" style="font-size:12px">
+          <select id="kdBewArt_${i}" style="font-size:12px" onchange="kautionSaldoRender()">
             ${KAUTION_BEW_ARTEN.map(x=>`<option value="${x.val}" ${b.art===x.val?'selected':''}>${x.label}</option>`).join('')}
           </select></div>
         <div class="f" style="max-width:120px"><label style="font-size:9px" for="kdBewDat_${i}">Datum</label>
@@ -37848,7 +37961,7 @@ function kautionBewRender(){
       </div>
       <div class="f-row" style="align-items:flex-end">
         <div class="f" style="max-width:120px"><label style="font-size:9px" for="kdBewBet_${i}">Betrag (€)</label>
-          <input type="number" inputmode="decimal" id="kdBewBet_${i}" value="${b.betrag||''}" step="0.01" style="font-size:12px"></div>
+          <input type="number" inputmode="decimal" id="kdBewBet_${i}" value="${b.betrag||''}" step="0.01" style="font-size:12px" oninput="kautionSaldoRender()"></div>
         <div class="f"><label style="font-size:9px" for="kdBewNot_${i}">Notiz</label>
           <input type="text" id="kdBewNot_${i}" value="${esc(b.notiz||'')}" style="font-size:12px"></div>
         <button class="btn btn-sm btn-danger" onclick="kautionBewRemove(${i})" style="flex-shrink:0"><i class="ti ti-trash"></i></button>
@@ -37862,7 +37975,7 @@ function kautionBewRemove(i){ window._kautionBew=kautionBewCollect().filter((_,x
 function kautionSaldoRender(){
   const art=document.getElementById('kdArt')?.value;
   const betrag=parseBetrag(document.getElementById('kdBetrag')?.value);
-  const raten=rc(kautionRatenCollect().reduce((s,r)=>s+parseBetrag(r.betrag),0));
+  const raten=rc(kautionRatenCollect().filter(rateIstErhalten).reduce((s,r)=>s+parseBetrag(r.betrag),0));   // A460: wie kautionSaldo
   const bew=kautionBewCollect();
   const zins=rc(bew.filter(b=>b.art==='zins').reduce((s,b)=>s+parseBetrag(b.betrag),0));
   const abgang=rc(bew.filter(b=>b.art==='verrechnung'||b.art==='auszahlung').reduce((s,b)=>s+parseBetrag(b.betrag),0));
