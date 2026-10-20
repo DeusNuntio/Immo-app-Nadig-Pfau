@@ -492,6 +492,12 @@ button.chip.chip-active{background:var(--ink);color:#fff;border-color:var(--ink)
 .stat.hl .stat-n{color:var(--copper)}
 
 /* ── MIETER LIST ── */
+.mieter-row.we-leer{border:2px solid var(--red)}   /* A461: leer oder wird leer */
+.dash-klapp>summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:6px;margin-bottom:0}
+.dash-klapp>summary::-webkit-details-marker{display:none}
+.dash-klapp>summary .ti-chevron-down{margin-left:auto;transition:transform .15s}
+.dash-klapp[open]>summary{margin-bottom:8px}
+.dash-klapp[open]>summary .ti-chevron-down{transform:rotate(180deg)}
 .mieter-row{background:var(--white);border-radius:var(--radius);border:1px solid var(--ink-10);padding:11px 13px;margin-bottom:7px;cursor:pointer;display:flex;gap:11px;align-items:center;transition:border-color .15s}
 .mieter-verstorben{opacity:.55;filter:grayscale(1)}
 .mieter-verstorben .m-avatar{background:var(--ink-20)!important}
@@ -1276,7 +1282,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=38;   // A398: +kr_abrechnungen
-const APP_VERSION = '2026-10-20-A460';
+const APP_VERSION = '2026-10-20-A461';
 /* v364 (12.08.2026) – offene Punkte abgearbeitet.
    1) D1/XLSX_SRI: Der im Code hinterlegte PowerShell-Befehl war FALSCH und
       konnte nie funktionieren - Invoke-WebRequest liefert unter .Content einen
@@ -3254,6 +3260,8 @@ document.addEventListener('DOMContentLoaded', () => {
     'anlageVExport',
     'asAufstellungDrucken',
     'aufToggleDone',
+    'protFotosAlleLaden',     // A461
+    'protFotosTeilen',        // A461
     'aufgabenDruckStarten',   // A458
     'modalAufgabenDruck',     // A458
     'ausstempeln',
@@ -4391,6 +4399,23 @@ async function renderDash() {
     </div>`;
   }
 
+  // A461: leere und demnaechst leere Wohnungen
+  let _leerListe = [];
+  try{ _leerListe = await leereWohnungen(myObj, allMieter); }catch(e){ console.warn('Leere Wohnungen:', e); }
+  if (_leerListe.length) {
+    const _jetzt = _leerListe.filter(x => x.leer).length, _bald = _leerListe.length - _jetzt;
+    html += `<div class="card" style="border-color:var(--red);margin-bottom:12px">
+      <div class="card-hdr" style="color:var(--red)"><i class="ti ti-home-off"></i> Leere Wohnungen (${_jetzt} leer${_bald ? ', ' + _bald + ' werden frei' : ''})</div>
+      ${_leerListe.slice(0, 8).map(x => `<div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--ink-10);cursor:pointer" onclick="showObjekt('${escJs(x.objektId)}')">
+        <div style="width:6px;height:6px;border-radius:50%;background:${x.leer ? 'var(--red)' : 'var(--amber)'};flex-shrink:0"></div>
+        <div style="flex:1;font-size:13px;color:var(--ink)">${esc(x.objekt)} · WE ${esc(x.we)}</div>
+        <div style="font-size:11px;color:${x.leer ? 'var(--red)' : 'var(--ink-40)'}">${esc(leerAbText(x))}</div>
+        <i class="ti ti-chevron-right" style="font-size:13px;color:var(--ink-40)"></i>
+      </div>`).join('')}
+      ${_leerListe.length > 8 ? `<div style="font-size:12px;color:var(--ink-40);padding-top:6px">+${_leerListe.length - 8} weitere – in den Objekten rot umrandet</div>` : ''}
+    </div>`;
+  }
+
   // Letzte Protokolle
   // Offene Entwürfe
   const drafts = prots.filter(p=>!p._papierkorb&&myObj.some(o=>o.id===p.objektId)&&p.status==='draft')
@@ -4411,14 +4436,15 @@ async function renderDash() {
     .sort((a,b)=>new Date(b.datum||b.erstellt)-new Date(a.datum||a.erstellt))
     .slice(0,3);
   if (lastProts.length) {
-    html += `<div class="card" style="margin-bottom:12px">
-      <div class="card-hdr"><i class="ti ti-clipboard-check"></i> Letzte Protokolle</div>
+    /* A461: eingeklappt - aufklappen per Tipp auf die Ueberschrift */
+    html += `<details class="card dash-klapp" style="margin-bottom:12px">
+      <summary class="card-hdr"><i class="ti ti-clipboard-check"></i> Letzte Protokolle (${lastProts.length})<i class="ti ti-chevron-down"></i></summary>
       ${lastProts.map(p=>`<div class="activity-item" onclick="editProtokoll('${p.id}')" style="cursor:pointer">
         <div class="activity-dot ${p.art?.includes('Einzug')?'green':''}"></div>
         <div class="activity-text">${p.mieterName||'–'} · WE ${p.weNr||'?'} · ${esc(p.objektName||'')}</div>
         <div class="activity-time">${fmtDate(p.datum)}</div>
       </div>`).join('')}
-    </div>`;
+    </details>`;
   }
 
   // Objekte
@@ -17235,6 +17261,51 @@ function istWohnungFaktischLeer(m){
   d.setHours(0,0,0,0);
   return d<=heute;
 }
+/* A461: Leerstand einer Wohnung. Leer = Haken "steht leer" oder Auszug vorbei; wird leer = Auszug in der
+   Zukunft und kein Nachmieter fuer dieselbe WE. ab = erster leerer Tag (Tag nach dem Auszug), ISO. */
+function isoPlusTage(iso, n){ const d = new Date(String(iso).slice(0, 10) + 'T12:00:00'); d.setDate(d.getDate() + n); return ymd(d); }
+function wohnungLeerInfo(m, nachmieterWE){
+  if(!m || m._vormieter || m._zukuenftig || m._tgMieter) return null;
+  if(nachmieterWE && nachmieterWE.has(String(m.weNr))) return null;
+  const aus = _auszugISOvon(m);
+  const ab = (aus && /^\d{4}-\d{2}-\d{2}/.test(aus)) ? isoPlusTage(aus, 1) : '';
+  if(m.leerstand) return { leer:true, ab };
+  if(!ab) return null;
+  return { leer: ab <= today(), ab };
+}
+function leerAbText(i){ return i.leer ? (i.ab ? 'leer seit ' + fmtDate(i.ab) : 'leer') : 'leer ab ' + fmtDate(i.ab); }
+/* Alle leeren und leer werdenden Wohnungen der Objekte - dieselbe Auswahl wie die Leerstand-Zeilen der
+   Objektansicht (Wohnungs-Stammdaten + Vormieter), dazu aktive Mieter mit Auszug ohne Nachmieter. */
+async function leereWohnungen(objekte, alleMieter){
+  const out = [];
+  for(const o of (objekte || [])){
+    if(o.tiefgarage) continue;
+    const mo = (alleMieter || []).filter(m => m.objektId === o.id && !m._tgMieter);
+    const zukWE = new Set(mo.filter(m => m._zukuenftig).map(m => String(m.weNr)));
+    const belegt = new Set();
+    for(const m of mo.filter(x => !x._vormieter && !x._zukuenftig)){
+      const we = String(m.weNr || '').trim(); if(!we) continue;
+      belegt.add(we);
+      const li = wohnungLeerInfo(m, zukWE);
+      if(li) out.push(Object.assign({ objektId:o.id, objekt:o.name, we }, li));
+    }
+    let stamm = {};
+    try{ stamm = await ladeWohnungsStamm(o.id); }catch(_){}
+    const vormieter = mo.filter(m => m._vormieter);
+    const kandidaten = new Set([...Object.keys(stamm || {}), ...vormieter.map(v => String(v.weNr || '').trim())]);
+    for(const we of kandidaten){
+      if(!we || belegt.has(we) || zukWE.has(we)) continue;
+      const vm = vormieter.filter(v => String(v.weNr) === we)
+        .sort((a, b) => String(_auszugISOvon(b) || '').localeCompare(String(_auszugISOvon(a) || '')))[0];
+      const aus = vm && _auszugISOvon(vm);
+      out.push({ objektId:o.id, objekt:o.name, we, leer:true, ab: (aus && /^\d{4}-\d{2}-\d{2}/.test(aus)) ? isoPlusTage(aus, 1) : '' });
+    }
+  }
+  const weZahl = w => { const n = parseFloat(w); return isNaN(n) ? 1e9 : n; };
+  return out.sort((a, b) => (a.leer === b.leer ? 0 : a.leer ? -1 : 1)
+    || (a.leer ? 0 : String(a.ab).localeCompare(String(b.ab)))
+    || a.objekt.localeCompare(b.objekt, 'de') || weZahl(a.we) - weZahl(b.we));
+}
 async function renderObjMieter(el){
   await aktiviereFaelligeMieterwechsel();
   const all=(await idbGetAll('mieter','objektId',currentObjId));
@@ -17247,6 +17318,7 @@ async function renderObjMieter(el){
   // Zukünftige Mieter separat
   const zukuenftig = all.filter(m=>m._zukuenftig)
     .sort((a,b)=>new Date(a.einzugISO||0)-new Date(b.einzugISO||0));
+  const zukWEset = new Set(zukuenftig.map(z=>String(z.weNr)));   // A461
 
   // Offene Aufgaben & Mängel je Mieter/WE zählen (für Badges)
   const objAufgaben=(await idbGetAll('aufgaben','objektId',currentObjId)).filter(a=>a.status!=='erledigt');
@@ -17319,10 +17391,11 @@ async function renderObjMieter(el){
     const anzeigeName = vpName
       ? vpName
       : (namen.length>1 ? namen.join(' · ') : (namen[0]||m.mieter));
-    h+=`<div class="mieter-row${alleVerstorben?' mieter-verstorben':''}" onclick="showMieter('${m.id}')">
+    const _leer = wohnungLeerInfo(m, zukWEset);   // A461: wird leer (Auszug ohne Nachmieter)
+    h+=`<div class="mieter-row${alleVerstorben?' mieter-verstorben':''}${_leer?' we-leer':''}" onclick="showMieter('${m.id}')">
       <div class="m-avatar">${ini}</div>
       <div class="m-body">
-        <div class="m-name">${m.leerstand?'<span class="chip chip-warn" style="font-size:10px;margin-right:4px"><i class="ti ti-home-off" style="font-size:9px"></i> Leerstand</span>':''}${alleVerstorben?'<span class="chip" style="font-size:10px;margin-right:4px;background:var(--ink-10);color:var(--ink-40)"><i class="ti ti-grave" style="font-size:9px"></i> verstorben</span>':''} ${esc(anzeigeName)}</div>
+        <div class="m-name">${_leer?`<span class="chip chip-err" style="font-size:10px;margin-right:4px"><i class="ti ti-door-exit" style="font-size:9px"></i> ${esc(leerAbText(_leer))}</span>`:''}${m.leerstand?'<span class="chip chip-warn" style="font-size:10px;margin-right:4px"><i class="ti ti-home-off" style="font-size:9px"></i> Leerstand</span>':''}${alleVerstorben?'<span class="chip" style="font-size:10px;margin-right:4px;background:var(--ink-10);color:var(--ink-40)"><i class="ti ti-grave" style="font-size:9px"></i> verstorben</span>':''} ${esc(anzeigeName)}</div>
         <div class="m-sub">${esc(m.etage||'')} · Einzug: ${esc(m.einzug||'–')}${m.leerstand?'':` · <i class="ti ti-users" style="font-size:11px"></i> ${pers} ${pers===1?'Person':'Personen'}`}</div>
         ${istAdmin && !m.leerstand && mieteProQm(m)!==null?`<div class="m-sub" style="margin-top:2px"><i class="ti ti-square-rounded-percentage" style="font-size:11px"></i> ${mieteProQmHTML(m, stamm&&stamm.mietspiegel)}${m.flaeche?` <span style="color:var(--ink-40);font-size:11px">· ${esc(String(m.flaeche).replace('.',','))} m²</span>`:''}${stamm&&stamm.mietspiegel?` <span style="color:var(--ink-40);font-size:11px">(Mietspiegel ${String(stamm.mietspiegel).replace('.',',')} €/m²)</span>`:''}</div>`:''}
         <div class="m-sub" style="display:flex;gap:8px;flex-wrap:wrap">
@@ -17365,10 +17438,12 @@ async function renderObjMieter(el){
         const etage=stamm.etage||vm?.etage||'';
         const flaeche=stamm.flaeche||vm?.flaeche||'';
         const sub=[etage?('Etage '+esc(String(etage))):'', flaeche?(qm(flaeche)+' m²'):''].filter(Boolean).join(' · ');
-        h+=`<div class="mieter-row" style="border-style:dashed;background:var(--ink-02)" onclick="modalLeerstandWE('${currentObjId}','${escJs(String(we))}','${vm?vm.id:''}')">
+        const _vmAus = vm ? _auszugISOvon(vm) : null;   // A461: leer seit Tag nach dem Auszug
+        const _seit = (_vmAus && /^\d{4}-\d{2}-\d{2}/.test(_vmAus)) ? isoPlusTage(_vmAus, 1) : '';
+        h+=`<div class="mieter-row we-leer" style="border-style:dashed;background:var(--ink-02)" onclick="modalLeerstandWE('${currentObjId}','${escJs(String(we))}','${vm?vm.id:''}')">
           <div class="m-avatar" style="background:var(--ink-10);color:var(--ink-40)"><i class="ti ti-home-off"></i></div>
           <div class="m-body">
-            <div class="m-name">Leerstand${sub?`<span style="font-weight:400;color:var(--ink-40);font-size:12px"> · ${sub}</span>`:''}</div>
+            <div class="m-name">${_seit && _seit <= today() ? 'Leer seit ' + esc(fmtDate(_seit)) : 'Leerstand'}${sub?`<span style="font-weight:400;color:var(--ink-40);font-size:12px"> · ${sub}</span>`:''}</div>
             <div style="font-size:11px;color:var(--ink-40)">${vm?('Letzter Mieter: '+esc(vm.mieter||'')+(vm.auszug?' (Auszug '+esc(vm.auszug)+')':'')):'Keine aktuellen Mieterdaten'}</div>
           </div>
           <div class="m-we">WE ${esc(String(we))}</div>
@@ -17428,6 +17503,7 @@ async function renderObjProtokolle(el){
           <div class="prot-sub">${fmtDate(p.datum)} · <span class="chip chip-${p.art?.includes('Auszug')?'warn':'ok'}" style="font-size:10px;padding:1px 6px">${p.art||'Übergabe'}</span></div>
         </div>
         <button class="btn btn-sm" onclick="event.stopPropagation();printProt('${p.id}')"><i class="ti ti-printer"></i></button>
+        <button class="btn btn-sm" title="Fotos als JPEG" onclick="event.stopPropagation();protFotosSpeichern('${p.id}')"><i class="ti ti-photo"></i></button>
       </div>`;
     });
   }
@@ -18025,6 +18101,7 @@ ${nurTg?'':`
         ${istEntwurf
           ?`<button class="btn btn-sm btn-danger" title="Entwurf löschen" onclick="event.stopPropagation();loescheProtEntwurfMieter('${p.id}','${id}')"><i class="ti ti-trash"></i></button>`
           :`<button class="btn btn-sm" onclick="event.stopPropagation();printProt('${p.id}')"><i class="ti ti-printer"></i> PDF</button>
+            <button class="btn btn-sm" title="Fotos als JPEG" onclick="event.stopPropagation();protFotosSpeichern('${p.id}')"><i class="ti ti-photo"></i></button>
             <button class="btn btn-sm btn-danger" title="Protokoll löschen" onclick="event.stopPropagation();loescheProtEntwurfMieter('${p.id}','${id}')"><i class="ti ti-trash"></i></button>`}
       </div>`;
     });
@@ -39315,6 +39392,7 @@ async function viewProtokoll(id){
     ${aendH}
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:16px">
       <button class="btn btn-sm btn-copper" onclick="printProt('${id}')"><i class="ti ti-printer"></i> PDF / Drucken</button>
+      <button class="btn btn-sm" onclick="protFotosSpeichern('${id}')"><i class="ti ti-photo"></i> Fotos (JPEG)</button>
       ${!String(p.art||'').includes('Einzug')?`<button class="btn btn-sm" onclick="einzugAusAbnahme('${id}')"><i class="ti ti-arrow-down-circle"></i> Einzugsprotokoll erzeugen</button>`:''}
       ${istAdmin?`<button class="btn btn-sm" onclick="adminEditProtokoll('${id}')"><i class="ti ti-edit"></i> Ändern (Admin)</button>`:''}
       <button class="btn btn-sm" data-action-click="closeModal">Schließen</button>
@@ -39355,6 +39433,93 @@ async function adminEditProtokoll(id){
   renderProt(0);
 }
 
+/* A461: Alle Fotos eines Protokolls als einzelne JPEG-Dateien (Originalgroesse, soweit in OneDrive vorhanden).
+   Zwei Schritte: erst laden (dauert), dann im Dialog speichern - das Teilen-Menue verlangt einen frischen Tipp. */
+async function protFotosSammeln(d){
+  const liste = [];
+  for(const r of ROOMS){
+    const rd = d.raeume && d.raeume[r]; if(!rd || rd.vorhanden === false) continue;
+    for(const c of condsForRoom(r)){
+      for(const ph of await protoFotoWerte(rd.condPhotos && rd.condPhotos[c], rd.condPhotoIds && rd.condPhotoIds[c])) liste.push({ quelle:ph, titel:r + ' ' + c });
+    }
+    for(const ph of await protoFotoWerte(rd.photos, rd.photoIds)) liste.push({ quelle:ph, titel:r });
+  }
+  for(const z of (d.zaehler || []).filter(z => z.stand)){
+    const f = await protoZaehlerFotoWert(z);
+    if(f) liste.push({ quelle:f, titel:'Zaehler ' + (z.typ || '') + (z.nr ? ' ' + z.nr : '') });
+  }
+  return liste;
+}
+function dateinameSicher(s){
+  return String(s || '').replace(/ä/g,'ae').replace(/ö/g,'oe').replace(/ü/g,'ue').replace(/Ä/g,'Ae').replace(/Ö/g,'Oe').replace(/Ü/g,'Ue').replace(/ß/g,'ss')
+    .replace(/[^A-Za-z0-9._-]+/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '').slice(0, 60);
+}
+function bildAlsJpeg(src){
+  return new Promise((fertig, fehler) => {
+    const img = new Image();
+    img.onload = () => {
+      const c = document.createElement('canvas');
+      c.width = img.naturalWidth; c.height = img.naturalHeight;
+      const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height); g.drawImage(img, 0, 0);
+      c.toBlob(b => b ? fertig(b) : fehler(new Error('JPEG nicht erzeugt')), 'image/jpeg', 0.92);
+    };
+    img.onerror = () => fehler(new Error('Bild nicht lesbar'));
+    img.src = src;
+  });
+}
+let _protFotoDateien = [];
+async function protFotosSpeichern(id){
+  const d = await idbGet('protokolle', id).catch(() => null);
+  if(!d){ toast('Protokoll nicht gefunden'); return; }
+  const liste = await protFotosSammeln(d);
+  if(!liste.length){ toast('Dieses Protokoll hat keine Fotos'); return; }
+  showModal(`<div class="m-title"><i class="ti ti-photo"></i> Fotos als JPEG</div>
+    <div id="pfStatus" style="font-size:13px;color:var(--ink-60)">Lade ${liste.length} ${liste.length === 1 ? 'Foto' : 'Fotos'} in Originalgröße …</div>`);
+  _protFotoDateien.forEach(f => { try{ URL.revokeObjectURL(f.url); }catch(_){} });
+  _protFotoDateien = [];
+  const basis = dateinameSicher(['Protokoll', d.objektName, d.weNr ? 'WE' + d.weNr : '', String(d.datum || '').slice(0, 10)].filter(Boolean).join('_'));
+  let nurVorschau = 0, fehlt = 0;
+  for(let i = 0; i < liste.length; i++){
+    const st = document.getElementById('pfStatus');
+    if(st) st.textContent = 'Lade Foto ' + (i + 1) + ' von ' + liste.length + ' …';
+    try{
+      const o = await fotoOriginalLaden(liste[i].quelle);
+      if(!o.src){ fehlt++; continue; }
+      if(!o.voll) nurVorschau++;
+      const blob = await bildAlsJpeg(o.src);
+      const name = basis + '_' + String(i + 1).padStart(2, '0') + '_' + dateinameSicher(liste[i].titel) + '.jpg';
+      _protFotoDateien.push({ name, blob, url:URL.createObjectURL(blob), titel:liste[i].titel, vorschau:!o.voll });
+    }catch(e){ console.warn('Protokollfoto:', e); fehlt++; }
+  }
+  const teilenGeht = (() => { try{ return !!(navigator.canShare && navigator.canShare({ files:[new File([new Blob()], 't.jpg', { type:'image/jpeg' })] })); }catch(_){ return false; } })();
+  showModal(`<div class="m-title"><i class="ti ti-photo"></i> Fotos als JPEG (${_protFotoDateien.length})</div>
+    ${nurVorschau || fehlt ? `<div style="font-size:12px;color:var(--amber);margin-bottom:8px"><i class="ti ti-alert-triangle"></i> ${nurVorschau ? nurVorschau + ' nur als Vorschaubild (Original in OneDrive nicht erreichbar)' : ''}${nurVorschau && fehlt ? ', ' : ''}${fehlt ? fehlt + ' nicht ladbar' : ''}.</div>` : ''}
+    <div style="max-height:46vh;overflow:auto;border:1px solid var(--ink-10);border-radius:8px;padding:4px 8px;margin-bottom:10px">
+      ${_protFotoDateien.map(f => `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--ink-10)">
+        <img src="${f.url}" alt="" style="width:46px;height:34px;object-fit:cover;border-radius:4px;flex-shrink:0">
+        <div style="flex:1;font-size:12px;word-break:break-all">${esc(f.name)}${f.vorschau ? ' <span style="color:var(--amber)">(Vorschau)</span>' : ''}</div>
+        <a class="btn btn-sm" href="${f.url}" download="${escAttr(f.name)}" title="Einzeln speichern"><i class="ti ti-download"></i></a>
+      </div>`).join('')}
+    </div>
+    <div class="f-row">
+      <button class="btn btn-copper btn-full" data-action-click="protFotosAlleLaden"><i class="ti ti-download"></i> Alle herunterladen</button>
+      ${teilenGeht ? `<button class="btn btn-full" data-action-click="protFotosTeilen"><i class="ti ti-share"></i> Teilen / speichern</button>` : ''}
+    </div>
+    <button class="btn btn-full" style="margin-top:8px" data-action-click="closeModal">Schließen</button>`);
+}
+async function protFotosAlleLaden(){
+  for(const f of _protFotoDateien){
+    const a = document.createElement('a'); a.href = f.url; a.download = f.name;
+    document.body.appendChild(a); a.click(); a.remove();
+    await new Promise(r => setTimeout(r, 350));   // sonst verwirft der Browser Folge-Downloads
+  }
+  toast(_protFotoDateien.length + ' Fotos heruntergeladen ✓');
+}
+async function protFotosTeilen(){
+  const files = _protFotoDateien.map(f => new File([f.blob], f.name, { type:'image/jpeg' }));
+  try{ await navigator.share({ files, title:'Protokollfotos' }); }
+  catch(e){ if(!(e && e.name === 'AbortError')){ console.warn('Teilen:', e); toast('Teilen nicht möglich – bitte „Alle herunterladen“'); } }
+}
 async function printProt(id){
   const p=await idbGet('protokolle',id);
   if(p) printProtHTML(p);
@@ -53027,8 +53192,38 @@ let camTorchModus='aus';        // 'aus' | 'an' | 'auto'
 let camZoomKann=false;          // meldet die Kamera die Faehigkeit zoom?
 const CAM_DUNKEL_SCHWELLE = 60; // mittlere Helligkeit 0..255, darunter gilt: zu dunkel
 
+/* A461: Die App haelt das Hochformat fest. Haelt man das Handy quer, liefert die Kamera das Bild trotzdem
+   hochkant - der Raum liegt dann auf der Seite. Die Schwerkraft (devicemotion) verraet die Haltung; beim
+   Ausloesen wird das Bild entsprechend gedreht. Ohne Sensor (PC) bleibt alles wie bisher. */
+let _camSchwere = null;
+function camLageMerken(e){
+  const g = e && e.accelerationIncludingGravity;
+  if(g && g.x != null && g.y != null) _camSchwere = { x:g.x, y:g.y, t:Date.now() };
+}
+/* Drehung im Uhrzeigersinn (Grad), die das Bild aufrecht macht. Android: x > 0 = linke Kante unten. iOS meldet
+   die Achsen mit umgekehrtem Vorzeichen. Erst ab deutlicher Neigung (> 6 m/s²) - schraeg gehalten bleibt es. */
+function camAutoDrehung(s){
+  s = s || _camSchwere;
+  if(!s || Date.now() - s.t > 3000) return 0;
+  const ios = /iPhone|iPad|iPod/.test(navigator.userAgent || '');
+  const x = ios ? -s.x : s.x, y = ios ? -s.y : s.y;
+  if(Math.abs(x) > Math.abs(y) && Math.abs(x) > 6) return x > 0 ? 270 : 90;
+  if(y < -6) return 180;
+  return 0;
+}
+function canvasDrehen(quelle, grad){
+  if(!grad) return quelle;
+  const c = document.createElement('canvas');
+  const quer = grad === 90 || grad === 270;
+  c.width = quer ? quelle.height : quelle.width; c.height = quer ? quelle.width : quelle.height;
+  const g = c.getContext('2d');
+  g.translate(c.width / 2, c.height / 2); g.rotate(grad * Math.PI / 180);
+  g.drawImage(quelle, -quelle.width / 2, -quelle.height / 2);
+  return c;
+}
 async function openCam(){
   camShots=0; camTorchAn=false; camTorchModus='aus';
+  try{ window.removeEventListener('devicemotion', camLageMerken); window.addEventListener('devicemotion', camLageMerken, { passive:true }); }catch(_){}   // A461
   const ov=document.getElementById('camOverlay');
   ov.style.display='flex';
   document.getElementById('camShotCount').style.display='none';
@@ -53208,12 +53403,14 @@ async function camCapture(){
   canvas.width=v.videoWidth; canvas.height=v.videoHeight;
   canvas.getContext('2d').drawImage(v,0,0);
   if(autoLichtAn) await camTorchSetzen(false);
+  const _dreh = camAutoDrehung();   // A461: quer gehalten -> aufrecht
+  const _bild = canvasDrehen(canvas, _dreh);
   // kurzes visuelles Feedback
   const sh=document.getElementById('camShutter');
   sh.style.background='rgba(255,255,255,.7)'; setTimeout(()=>sh.style.background='rgba(255,255,255,.25)',120);
   let data;
   try {
-    const blob=await new Promise(res=>canvas.toBlob(res,'image/jpeg',0.85));
+    const blob=await new Promise(res=>_bild.toBlob(res,'image/jpeg',0.85));   // A461: ggf. gedreht
     data=await compressFoto(blob);
   } catch(e){ console.warn('Aufnahme:', e); toast('Foto konnte nicht verarbeitet werden'); return; }
   if(data){
@@ -53299,6 +53496,7 @@ function camPickGallery(){
 }
 
 function closeCam(){
+  try{ window.removeEventListener('devicemotion', camLageMerken); }catch(_){} _camSchwere = null;   // A461
   if(camStream){ camStream.getTracks().forEach(t=>t.stop()); camStream=null; }
   camTorchAn=false;
   const ov=document.getElementById('camOverlay');
