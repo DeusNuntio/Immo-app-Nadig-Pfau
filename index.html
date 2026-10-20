@@ -1276,7 +1276,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=38;   // A398: +kr_abrechnungen
-const APP_VERSION = '2026-10-19-A456';
+const APP_VERSION = '2026-10-20-A458';
 /* v364 (12.08.2026) – offene Punkte abgearbeitet.
    1) D1/XLSX_SRI: Der im Code hinterlegte PowerShell-Befehl war FALSCH und
       konnte nie funktionieren - Invoke-WebRequest liefert unter .Content einen
@@ -3254,6 +3254,8 @@ document.addEventListener('DOMContentLoaded', () => {
     'anlageVExport',
     'asAufstellungDrucken',
     'aufToggleDone',
+    'aufgabenDruckStarten',   // A458
+    'modalAufgabenDruck',     // A458
     'ausstempeln',
     'ausweisAlleLoeschen',
     'backendKeyLoeschen',
@@ -18439,6 +18441,26 @@ function aufgabeSichtbarFuerUser(a){
   if(a.istIntervall) return true;
   return false;
 }
+/* A458: Auswahl der Aufgaben-Seite (Standort, Objekt, Benutzer) - fuer Liste UND Druck. */
+function aufFilterPruefer(myIds, flt){
+  const lgObjIds = flt.lg ? (LIEGENSCHAFTEN.find(l=>l.id===flt.lg)?.objektIds||[]) : null;
+  const passFilter = x => flt.obj ? x.objektId===flt.obj : lgObjIds ? lgObjIds.includes(x.objektId) : myIds.includes(x.objektId);
+  // Objektuebergreifende "Allgemein"-Aufgaben bleiben sichtbar, solange nicht auf ein Objekt/Standort gefiltert wird.
+  const passFilterAuf = x => istAllgemein(x.objektId) ? (!flt.obj && !lgObjIds) : passFilter(x);
+  return { passFilter, passFilterAuf };
+}
+async function aufgabenFuerFilter(myIds, flt){
+  const { passFilterAuf } = aufFilterPruefer(myIds, flt);
+  return (await idbGetAll('aufgaben')).filter(a=>istAllgemein(a.objektId)||myIds.includes(a.objektId)).filter(aufgabeSichtbarFuerUser).filter(passFilterAuf);
+}
+async function maengelFuerFilter(myIds, flt){
+  const { passFilter } = aufFilterPruefer(myIds, flt);
+  const roh = (await idbGetAll('maengel')).filter(m=>myIds.includes(m.objektId)).filter(passFilter);
+  const altReps = (await idbGetAll('reparaturen')).filter(r=>myIds.includes(r.objektId))
+    .filter(r=>r.type!=='austausch')   // v323: nicht in der Aufgabenliste
+    .filter(passFilter).map(r=>({...r,istReparatur:true,_altStore:true}));
+  return [...roh, ...altReps];
+}
 async function renderAufgaben(){
   await syncIntervallTodos().catch(()=>{});
   const myObj=await getMyObjekte();
@@ -18450,24 +18472,9 @@ async function renderAufgaben(){
   // Objekt-Auswahl auf Liegenschaft einschränken
   const lgObjIds = flt.lg ? (LIEGENSCHAFTEN.find(l=>l.id===flt.lg)?.objektIds||[]) : null;
   const sichtbareObj = lgObjIds ? myObj.filter(o=>lgObjIds.includes(o.id)) : myObj;
-  function passFilter(x){
-    if(flt.obj) return x.objektId===flt.obj;
-    if(lgObjIds) return lgObjIds.includes(x.objektId);
-    return myIds.includes(x.objektId);
-  }
-  // Aufgaben-Filter lässt objektübergreifende "Allgemein"-Aufgaben durch,
-  // solange nicht bewusst auf ein einzelnes Objekt/Standort gefiltert wird.
-  function passFilterAuf(x){
-    if(istAllgemein(x.objektId)) return !flt.obj && !lgObjIds;
-    return passFilter(x);
-  }
-
-  const aufgaben=(await idbGetAll('aufgaben')).filter(a=>istAllgemein(a.objektId)||myIds.includes(a.objektId)).filter(aufgabeSichtbarFuerUser).filter(passFilterAuf);
-  const maengelRaw=(await idbGetAll('maengel')).filter(m=>myIds.includes(m.objektId)).filter(passFilter);
-  const altReps=(await idbGetAll('reparaturen')).filter(r=>myIds.includes(r.objektId))
-    .filter(r=>r.type!=='austausch')   // v323: nicht in der Aufgabenliste
-    .filter(passFilter).map(r=>({...r,istReparatur:true,_altStore:true}));
-  const maengel=[...maengelRaw,...altReps];
+  // A458: Auswahl ausgelagert (aufgabenFuerFilter/maengelFuerFilter), der Druck nutzt dieselbe
+  const aufgaben=await aufgabenFuerFilter(myIds, flt);
+  const maengel=await maengelFuerFilter(myIds, flt);
   const el=document.getElementById('page-aufgaben');
 
   const offen=aufgaben.filter(a=>a.status!=='erledigt');
@@ -18488,6 +18495,7 @@ async function renderAufgaben(){
     <button class="btn btn-sm" data-action-click="aufToggleDone" title="Erledigte ein-/ausblenden">
       <i class="ti ti-${flt.hideDone?'eye-off':'eye'}"></i> ${flt.hideDone?'Erledigte aus':'Erledigte an'}
     </button>
+    <button class="btn btn-sm" data-action-click="modalAufgabenDruck" title="Liste drucken" aria-label="Liste drucken"><i class="ti ti-printer"></i></button>
   </div>`;
 
   let h=`<div class="tab-bar">
@@ -18546,6 +18554,153 @@ async function renderAufgaben(){
 function aufFilterLg(v){ window._aufFilter=window._aufFilter||{}; window._aufFilter.lg=v; window._aufFilter.obj=''; renderAufgaben(); }
 function aufFilterObj(v){ window._aufFilter=window._aufFilter||{}; window._aufFilter.obj=v; renderAufgaben(); }
 function aufToggleDone(){ window._aufFilter=window._aufFilter||{hideDone:true}; window._aufFilter.hideDone=!window._aufFilter.hideDone; renderAufgaben(); }
+
+/* A458: To-Do- bzw. Maengelliste drucken. Gedruckt wird die Auswahl der Ansicht (Standort,
+   Objekt, Suche) des aktiven Reiters; Umfang und Darstellung waehlt der Dialog. */
+function aufDruckErledigt(x){ return x.status==='erledigt' || x.status==='behoben'; }
+function aufDruckFilterText(flt){
+  flt = flt || {};
+  const t = [];
+  if(flt.obj){ const o = getObj(flt.obj); t.push('Objekt ' + (o ? o.name : flt.obj)); }
+  else if(flt.lg){ const l = LIEGENSCHAFTEN.find(x => x.id === flt.lg); t.push('Standort ' + (l ? l.name : flt.lg)); }
+  else t.push('alle Standorte und Objekte');
+  const q = String(flt.q || '').trim();
+  if(q) t.push('Suche „' + q + '“');
+  return t.join(', ');
+}
+function aufDruckSuchtext(x){
+  const o = getObj(x.objektId);
+  return [x.nummer, x.titel, x.beschreibung, istAllgemein(x.objektId) ? 'Allgemein' : (o && o.name), x.weNr ? 'WE ' + x.weNr : '',
+    x.weNr ? mieterFuerWe(x.objektId, x.weNr) : '', x.zugewiesenName, x.prio, x.schwere].filter(Boolean).join(' ').toLowerCase();
+}
+function modalAufgabenDruck(){
+  const tab = window._aufTab || 'todos';
+  if(tab === 'einkauf'){ toast('Drucken gibt es für To Dos und Mängel.'); return; }
+  const istMng = tab === 'maengel';
+  showModal(`
+    <div class="m-title"><i class="ti ti-printer"></i> ${istMng ? 'Mängelliste' : 'To-Do-Liste'} drucken</div>
+    <div class="f"><label for="adUmfang">Umfang</label><select id="adUmfang">
+      <option value="offen">Nur offene</option>
+      <option value="alle">Offene und ${istMng ? 'behobene' : 'erledigte'}</option></select></div>
+    <label style="display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:14px;cursor:pointer"><input type="checkbox" id="adBeschr" checked style="width:16px;height:16px"> Beschreibung mitdrucken</label>
+    <label style="display:flex;align-items:center;gap:8px;margin-bottom:12px;font-size:14px;cursor:pointer"><input type="checkbox" id="adGruppe" checked style="width:16px;height:16px"> Nach Objekt gruppieren</label>
+    <div style="font-size:12px;color:var(--ink-40);margin-bottom:12px;line-height:1.5">Gedruckt wird die Auswahl der Liste: ${esc(aufDruckFilterText(window._aufFilter))}.</div>
+    <div class="f-row">
+      <button class="btn btn-full btn-copper" data-action-click="aufgabenDruckStarten"><i class="ti ti-printer"></i> Drucken</button>
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
+    </div>`);
+}
+async function aufgabenDruckStarten(){
+  const istMng = (window._aufTab || 'todos') === 'maengel';
+  const opt = {
+    alle: document.getElementById('adUmfang')?.value === 'alle',
+    beschr: !!document.getElementById('adBeschr')?.checked,
+    gruppe: !!document.getElementById('adGruppe')?.checked
+  };
+  try{
+    const flt = window._aufFilter || {};
+    const myIds = (await getMyObjekte()).map(o => o.id);
+    await ladeMieterWeCache();
+    let liste = istMng ? await maengelFuerFilter(myIds, flt) : await aufgabenFuerFilter(myIds, flt);
+    const q = String(flt.q || '').trim().toLowerCase();
+    if(q) liste = liste.filter(x => aufDruckSuchtext(x).includes(q));
+    if(!opt.alle) liste = liste.filter(x => !aufDruckErledigt(x));
+    if(!liste.length){ toast('Keine Einträge zum Drucken'); return; }
+    closeModal();
+    oeffneDruckDokument(aufDruckHTML(liste, istMng, opt, flt), istMng ? 'Mängelliste' : 'To-Do-Liste');
+  }catch(e){ console.warn('Liste drucken:', e); toast('Drucken fehlgeschlagen'); }
+}
+function aufDruckHTML(liste, istMng, opt, flt){
+  const heute = today();
+  const jetzt = new Date();
+  const stand = jetzt.toLocaleDateString('de-DE') + ', ' + jetzt.toLocaleTimeString('de-DE', { hour:'2-digit', minute:'2-digit' }) + ' Uhr';
+  const titel = istMng ? 'Mängelliste' : 'To-Do-Liste';
+  const objName = x => istAllgemein(x.objektId) ? 'Allgemein' : ((getObj(x.objektId) || {}).name || '–');
+  const datumVon = x => x.datum || '';   // To Do: faellig, Mangel: festgestellt
+  const rang = x => istMng ? schwerePrio(x.schwere) : prioPrio(x.prio);
+  const sortiere = (a, b) => {
+    const ea = aufDruckErledigt(a), eb = aufDruckErledigt(b);
+    if(ea !== eb) return ea ? 1 : -1;
+    if(ea) return String(b.erledigtZeit || b.erledigtAm || '').localeCompare(String(a.erledigtZeit || a.erledigtAm || ''));
+    const r = rang(a) - rang(b); if(r) return r;
+    const da = datumVon(a) || '9999', db = datumVon(b) || '9999';
+    return da < db ? -1 : da > db ? 1 : String(a.titel || '').localeCompare(String(b.titel || ''), 'de');
+  };
+  const zeile = x => {
+    const erl = aufDruckErledigt(x);
+    const d = datumVon(x);
+    const ueberf = !istMng && !erl && d && d < heute;
+    const we = x.weNr ? 'WE ' + x.weNr + (mieterFuerWe(x.objektId, x.weNr) ? ' · ' + mieterFuerWe(x.objektId, x.weNr) : '') : '';
+    const ort = opt.gruppe ? (we || '–') : [objName(x), we].filter(Boolean).join(', ');
+    const unter = [];
+    if(!istMng && x.zugewiesenName) unter.push('Zuständig: ' + x.zugewiesenName);
+    if(istMng && (x.istReparatur || x.type === 'reparatur')) unter.push('Reparatur');
+    let beschr = '';
+    if(opt.beschr && x.beschreibung){
+      const b = String(x.beschreibung);
+      beschr = '<div class="b">' + esc(b.length > 600 ? b.slice(0, 600) + '…' : b).replace(/\n/g, '<br>') + '</div>';
+    }
+    const ei = erl ? erledigtInfo(x) : null;
+    const erlZeile = ei ? '<div class="e">' + esc(['erledigt' + (ei.wann ? ' ' + ei.wann : ''), ei.von, ei.dauer].filter(Boolean).join(' · ')) + '</div>' : '';
+    const stufe = istMng ? (x.schwere || '–') : (x.prio || '–');
+    return '<tr class="' + (erl ? 'erl' : '') + (ueberf ? ' ueberf' : '') + '">'
+      + '<td class="box">' + (erl ? '&#9745;' : '&#9744;') + '</td>'
+      + '<td><div class="t">' + (x.nummer ? '<span class="nr">' + esc(x.nummer) + '</span> ' : '') + esc(x.titel || '') + '</div>'
+      + (unter.length ? '<div class="u">' + esc(unter.join(' · ')) + '</div>' : '') + beschr + erlZeile + '</td>'
+      + '<td>' + esc(ort) + '</td>'
+      + '<td class="dat">' + (d ? esc(fmtDate(d)) + (ueberf ? '<br><b>überfällig</b>' : '') : '–') + '</td>'
+      + '<td class="st st-' + esc(stufe) + '">' + esc(stufe) + '</td>'
+      + '<td class="notiz"></td></tr>';
+  };
+  const kopf = '<thead><tr><th class="box"></th><th>' + (istMng ? 'Mangel' : 'Aufgabe') + '</th><th>' + (opt.gruppe ? 'WE' : 'Objekt / WE')
+    + '</th><th>' + (istMng ? 'festgestellt' : 'fällig') + '</th><th>' + (istMng ? 'Schwere' : 'Prio') + '</th><th class="notiz">Notiz</th></tr></thead>';
+  let rumpf = '';
+  if(opt.gruppe){
+    const gruppen = {};
+    liste.forEach(x => { (gruppen[x.objektId || ''] = gruppen[x.objektId || ''] || []).push(x); });
+    const ids = Object.keys(gruppen).sort((a, b) => {
+      const aa = istAllgemein(a), ab = istAllgemein(b);
+      if(aa !== ab) return aa ? 1 : -1;
+      return objName({ objektId:a }).localeCompare(objName({ objektId:b }), 'de');
+    });
+    ids.forEach(id => {
+      const g = gruppen[id].sort(sortiere);
+      const offen = g.filter(x => !aufDruckErledigt(x)).length;
+      rumpf += '<tbody class="grp"><tr class="gk"><td colspan="6">' + esc(objName({ objektId:id })) + ' <span>(' + offen + ' offen'
+        + (g.length > offen ? ', ' + (g.length - offen) + (istMng ? ' behoben' : ' erledigt') : '') + ')</span></td></tr>'
+        + g.map(zeile).join('') + '</tbody>';
+    });
+  } else {
+    rumpf = '<tbody>' + liste.slice().sort(sortiere).map(zeile).join('') + '</tbody>';
+  }
+  const offenGes = liste.filter(x => !aufDruckErledigt(x)).length;
+  const druckSkript = '<scr' + 'ipt>(function(){var p=function(){setTimeout(function(){window.focus();window.print();},500);};'
+    + 'if(document.readyState===\'complete\'){p();}else{window.addEventListener(\'load\',p);}})()</scr' + 'ipt>';
+  return '<!doctype html><html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+    + '<title>' + esc(titel + ' ' + jetzt.toLocaleDateString('de-DE')) + '</title><style>'
+    + '@page{size:A4;margin:14mm 12mm 16mm}'
+    + 'body{font-family:Arial,Helvetica,sans-serif;font-size:10pt;color:#1a1a1a;margin:0;-webkit-print-color-adjust:exact;print-color-adjust:exact}'
+    + 'h1{font-size:16pt;margin:0 0 2mm}.meta{font-size:9pt;color:#555;margin-bottom:4mm}'
+    + 'table{width:100%;border-collapse:collapse}thead{display:table-header-group}'
+    + 'th{text-align:left;font-size:8.5pt;text-transform:uppercase;letter-spacing:.03em;color:#444;background:#eee;padding:4px 5px;border-bottom:1px solid #999}'
+    + 'td{padding:5px;border-bottom:1px solid #ccc;vertical-align:top}tr{page-break-inside:avoid;break-inside:avoid}'
+    + '.box{width:7mm;font-size:14pt;line-height:1;text-align:center;padding-top:3px}'
+    + '.t{font-weight:bold}.nr{color:#666;font-weight:normal}.u{font-size:8.5pt;color:#555;margin-top:1px}'
+    + '.b{font-size:8.5pt;color:#333;margin-top:2px}.e{font-size:8.5pt;color:#2E7D52;margin-top:2px}'
+    + '.dat{white-space:nowrap;width:20mm}.st{width:17mm}.notiz{width:28%}'
+    + '.st-hoch,.st-schwerwiegend{font-weight:bold;color:#b00020}'
+    + '.ueberf .dat{color:#b00020}.erl td{color:#777}.erl .t{text-decoration:line-through;font-weight:normal}'
+    + '.gk td{background:#f3ece4;font-weight:bold;font-size:10.5pt;border-bottom:1px solid #999;padding-top:7px}.gk span{font-weight:normal;color:#555;font-size:9pt}'
+    + '.fuss{margin-top:5mm;font-size:8pt;color:#777}'
+    + '@media screen{body{padding:14px;max-width:210mm;margin:0 auto}}'
+    + '</style></head><body>'
+    + '<h1>' + esc(titel) + '</h1>'
+    + '<div class="meta">Stand ' + esc(stand) + ' · ' + esc(aufDruckFilterText(flt)) + ' · ' + offenGes + ' offen'
+    + (liste.length > offenGes ? ', ' + (liste.length - offenGes) + (istMng ? ' behoben' : ' erledigt') : '') + '</div>'
+    + '<table>' + kopf + rumpf + '</table>'
+    + '<div class="fuss">Gedruckt' + (CU && CU.name ? ' von ' + esc(CU.name) : '') + ' am ' + esc(stand) + '</div>'
+    + druckSkript + '</body></html>';
+}
 
 // Freitextsuche Aufgaben/Mängel (v170, additiv): filtert die bereits gerenderten
 // Karten des aktiven Tabs per Ein-/Ausblenden – kein Re-Render, kein Fokusverlust.
@@ -18630,12 +18785,12 @@ function eingangObjektFinden(text){
   const teil = alle.filter(o => eingangNorm(o.name).startsWith(n) || n.startsWith(eingangNorm(o.name)));
   return teil.length === 1 ? teil[0] : null;
 }
-function eingangZuDatensatz(e){
+function eingangZuDatensatz(e, absender){   // A457: absender = claudeAbsender()
   if(!e || !e.id || !String(e.titel||'').trim()) return null;
   const obj = e.objekt ? eingangObjektFinden(e.objekt) : null;
   const objHinweis = (!obj && e.objekt) ? 'Objekt: ' + e.objekt : '';
-  const basis = { id:'cl_' + e.id, titel:String(e.titel).trim(), status:'offen', erstellt:now(),
-                  ersteller:'Claude (Diktat)', quelle:'claude', claudeEingang:e.id };
+  const basis = { id:'cl_' + e.id, titel:String(e.titel).trim(), status:'offen', erstellt:claudeErstellt(e),
+                  ersteller:claudeErsteller(absender), quelle:'claude', claudeEingang:e.id };
   if(e.art === 'termin'){
     if(!/^\d{4}-\d{2}-\d{2}$/.test(String(e.datum||''))) return null;
     return { store:'termine', rec:Object.assign(basis, {
@@ -18659,14 +18814,14 @@ function eingangZuDatensatz(e){
 /* A456: Mangel aus dem Claude-Eingang (B12, mangel_anlegen). Datensatz 'cl_' + Eingangs-ID wie bei
    Aufgaben: holen zwei Geraete gleichzeitig ab, entsteht EIN Mangel. Erkennt die App das Objekt
    nicht, wird ein To Do angelegt statt den Eintrag zu verwerfen; das Ergebnis geht an Claude zurueck. */
-async function eingangMangel(e, tomb){
+async function eingangMangel(e, tomb, absender){
   const titel = String(e.titel || '').trim();
   if(!e.id || !titel) return { text:'nicht übernommen: Titel fehlt' };
   const id = 'cl_' + e.id;
   const obj = e.objekt ? eingangObjektFinden(e.objekt) : null;
   if(!obj){
     const z = eingangZuDatensatz(Object.assign({}, e, { art:'aufgabe', prio: e.schwere === 'schwerwiegend' ? 'hoch' : 'mittel',
-      beschreibung: ['Mangel laut Claude – Objekt „' + (e.objekt || '') + '“ nicht erkannt, bitte zuordnen.', e.beschreibung || ''].filter(Boolean).join('\n') }));
+      beschreibung: ['Mangel laut Claude – Objekt „' + (e.objekt || '') + '“ nicht erkannt, bitte zuordnen.', e.beschreibung || ''].filter(Boolean).join('\n') }), absender);
     if(!z) return { text:'nicht übernommen: Titel fehlt' };
     if(tomb.aufgaben && tomb.aufgaben[z.rec.id]) return { text:'nicht übernommen: in der App bereits gelöscht' };
     if(await idbGet('aufgaben', z.rec.id).catch(() => null)) return { text:'bereits als To Do angelegt' };
@@ -18683,7 +18838,7 @@ async function eingangMangel(e, tomb){
     datum: /^\d{4}-\d{2}-\d{2}$/.test(String(e.datum || '')) ? e.datum : today(),
     beschreibung:String(e.beschreibung || ''), kostenTeile:null, stunden:null, stundensatz:null, kostenArbeit:null, kosten:null,
     status:'offen', fotos:[], portalMeldungId:null,
-    erstellt:now(), ersteller:'Claude (Diktat)', quelle:'claude', claudeEingang:e.id
+    erstellt:claudeErstellt(e), ersteller:claudeErsteller(absender), quelle:'claude', claudeEingang:e.id
   };
   await idbPut('maengel', m);
   try{ bc && bc.postMessage({ type:'mangel_changed', data:{}, ts:Date.now() }); }catch(_){}
@@ -18708,10 +18863,11 @@ async function eingangAbholen(key){
     const tomb = ((await idbGet('settings','tombstones').catch(() => null)) || {}).value || {};
     const erledigt = [];
     const ergebnisse = {};
+    const absender = await claudeAbsender();   // A457
     for(const e of liste){
       if(e && (e.art === 'erledigt' || e.art === 'stempel')){
         let a;
-        try{ a = e.art === 'erledigt' ? await eingangAuftragErledigt(e, tomb) : await eingangAuftragStempel(e); }
+        try{ a = e.art === 'erledigt' ? await eingangAuftragErledigt(e, tomb, absender) : await eingangAuftragStempel(e); }
         catch(err){ console.warn('Claude-Auftrag:', err); continue; }   // nicht abhaken - naechster Versuch
         if(a.warten){ if(!_eingangWartenGemeldet) hinweise.push(a.text); continue; }   // bleibt im Eingangsfach
         erledigt.push(e.id); ergebnisse[e.id] = a.text;
@@ -18720,13 +18876,13 @@ async function eingangAbholen(key){
       }
       if(e && e.art === 'mangel'){   // A456
         let a;
-        try{ a = await eingangMangel(e, tomb); }
+        try{ a = await eingangMangel(e, tomb, absender); }
         catch(err){ console.warn('Claude-Mangel:', err); continue; }   // nicht abhaken - naechster Versuch
         erledigt.push(e.id); ergebnisse[e.id] = a.text;
         if(a.mangel) erg.mng++; else if(a.aufgabe){ erg.auf++; hinweise.push('Claude-Mangel ' + a.text); }
         continue;
       }
-      const z = eingangZuDatensatz(e);
+      const z = eingangZuDatensatz(e, absender);
       if(z){
         const begraben = tomb[z.store] && tomb[z.store][z.rec.id];
         const da = await idbGet(z.store, z.rec.id).catch(() => null);
@@ -18771,7 +18927,7 @@ async function eingangAbholen(key){
 /* A449: Auftrag "Aufgabe erledigt" (B11, aufgabe_erledigen). Die ID stammt aus
    dem Spiegel; ist die Aufgabe inzwischen erledigt, geloescht oder unbekannt,
    wird nichts geaendert und das Ergebnis an Claude zurueckgemeldet. */
-async function eingangAuftragErledigt(e, tomb){
+async function eingangAuftragErledigt(e, tomb, absender){
   const id = String(e.aufgabeId || '');
   if(!id) return { ok:false, text:'nicht ausgeführt: keine Aufgaben-ID' };
   if(tomb && tomb.aufgaben && tomb.aufgaben[id]) return { ok:false, text:'nicht ausgeführt: Aufgabe wurde gelöscht' };
@@ -18782,7 +18938,7 @@ async function eingangAuftragErledigt(e, tomb){
   const zeit = isNaN(z) ? new Date() : z;
   a.status = 'erledigt';
   a.erledigtAm = zeit.toLocaleDateString('de-DE');   // Format wie toggleAufgabe
-  a.erledigtVon = 'Claude (Sprachbefehl)';
+  erledigtVermerk(a, absender ? absender.name + ' über Claude' : 'Claude (Sprachbefehl)', absender ? absender.id : '', zeit);   // A457
   const notiz = String(e.notiz || '').trim();
   if(notiz) a.beschreibung = [a.beschreibung || '', 'Erledigt-Notiz (Claude, ' + zeit.toLocaleString('de-DE') + '): ' + notiz].filter(Boolean).join('\n');
   await idbPut('aufgaben', a);
@@ -19052,6 +19208,8 @@ async function renderConnectorConfig(){
       Beträge erst freigeben, wenn die Übermittlung an Claude rechtlich geklärt ist (Konzept, Entscheidung E2).</div>
     <div class="f"><label for="sprachBenutzerSel">Arbeitszeit per Sprachbefehl buchen auf</label>
       <select id="sprachBenutzerSel" data-action-change="sprachBenutzerSetzen"><option value="">— niemand (Befehle warten) —</option>${users.map(u => `<option value="${escAttr(u.id)}" ${sb === u.id ? 'selected' : ''}>${esc(u.name || u.id)}</option>`).join('')}</select></div>
+    <div style="font-size:11px;color:var(--ink-40);margin:-4px 0 10px;line-height:1.5">Der Name steht auch bei To Dos, Terminen und Mängeln,
+      die Claude anlegt oder als erledigt meldet („… über Claude“).</div>
     <div id="spiegelStandInfo" style="font-size:12px;color:var(--ink-60);margin-bottom:8px">${spiegelStandText(stand, modus)}</div>
     <button class="btn btn-full" data-action-click="spiegelJetztSchieben"><i class="ti ti-refresh"></i> Jetzt abgleichen</button>`;
 }
@@ -19215,6 +19373,7 @@ function taskHTML(t) {
         <span class="chip chip-${t.prio==='hoch'?'err':t.prio==='mittel'?'warn':'ok'}" style="font-size:10px;padding:1px 6px">${t.prio||'–'}</span>
         ${t.istIntervall?`<span title="Wiederkehrende Pflichttätigkeit"><i class="ti ti-repeat" style="font-size:11px;color:var(--copper)"></i></span>`:''}
         ${t.zugewiesenName?`<span title="Zugewiesen an"><i class="ti ti-user-check" style="font-size:10px;color:var(--copper)"></i> ${esc(t.zugewiesenName)}</span>`:''}
+        ${done?erledigtKurzHTML(t):''}
       </div>
       ${t.beschreibung?`<div style="font-size:12px;color:var(--ink-40);margin-top:3px">${esc(t.beschreibung.slice(0,60))}${t.beschreibung.length>60?'…':''}</div>`:''}
     </div>
@@ -19244,6 +19403,7 @@ function mangelHTML(m){
         ${m.weNr?`<span>WE ${esc(m.weNr)}${mieterFuerWe(m.objektId,m.weNr)?' · '+esc(mieterFuerWe(m.objektId,m.weNr)):''}</span>`:''}
         <span>${esc(m.datum||'')}</span>
         <span class="chip chip-${done?'ok':'err'}" style="font-size:10px;padding:1px 6px">${done?'Behoben':'Offen'}</span>
+        ${done?erledigtKurzHTML(m):''}
         ${m.kosten?`<span class="chip chip-copper" style="font-size:10px;padding:1px 6px">${fmtEur(m.kosten)}</span>`:''}
       </div>
       ${m.beschreibung?`<div style="font-size:12px;color:var(--ink-40);margin-top:3px;font-style:italic">${esc(m.beschreibung.slice(0,60))}${m.beschreibung.length>60?'…':''}</div>`:''}
@@ -19434,11 +19594,87 @@ async function toggleIntervall(objId,taetId,aktiv){
 /* ═══════════════════════════════════════════════════════════
    CRUD – AUFGABEN / MÄNGEL
 ═══════════════════════════════════════════════════════════ */
+/* A457: Erledigt-Vermerk fuer To Dos und Maengel. erledigtAm bleibt im alten Format (To Do
+   'TT.MM.JJJJ', Mangel 'JJJJ-MM-TT'), dazu erledigtZeit (ISO), erledigtVonId und erledigtNachMin
+   (Minuten seit 'erstellt'). Die Dauer wird beim Abhaken gespeichert, nicht erst berechnet. */
+function zeitAusText(s){
+  if(!s) return null;
+  const t = String(s).trim();
+  let m = t.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})(?:,?\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
+  if(m){ const d = new Date(+m[3], +m[2] - 1, +m[1], +(m[4] || 0), +(m[5] || 0), +(m[6] || 0)); return isNaN(d) ? null : d; }
+  m = t.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if(m) return new Date(+m[1], +m[2] - 1, +m[3]);
+  if(/^\d{4}-\d{2}-\d{2}T/.test(t)){ const d = new Date(t); return isNaN(d) ? null : d; }
+  return null;
+}
+function tagBeginn(d){ return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime(); }
+function dauerText(min){
+  min = Math.max(0, Math.round(min || 0));
+  if(min < 1) return 'sofort';
+  if(min < 60) return 'nach ' + min + ' Min.';
+  if(min < 1440){ const h = Math.floor(min / 60), r = min % 60; return 'nach ' + h + ' Std.' + (r ? ' ' + r + ' Min.' : ''); }
+  const tage = Math.floor(min / 1440), h = Math.floor((min % 1440) / 60);
+  return 'nach ' + tage + (tage === 1 ? ' Tag' : ' Tagen') + (tage < 7 && h ? ' ' + h + ' Std.' : '');
+}
+function erledigtVermerk(x, von, vonId, zeit){
+  zeit = (zeit instanceof Date && !isNaN(zeit)) ? zeit : new Date();
+  x.erledigtVon = von || '';
+  x.erledigtVonId = vonId || '';
+  x.erledigtZeit = zeit.toISOString();
+  const start = zeitAusText(x.erstellt);
+  x.erledigtNachMin = (start && zeit >= start) ? Math.round((zeit - start) / 60000) : null;
+}
+function erledigtVermerkLoeschen(x){ delete x.erledigtZeit; delete x.erledigtVonId; delete x.erledigtNachMin; }
+function erledigtInfo(x){
+  if(!x) return null;
+  let wann = '', kurz = '';
+  const d = x.erledigtZeit ? new Date(x.erledigtZeit) : null;
+  if(d && !isNaN(d)){
+    kurz = d.toLocaleDateString('de-DE', { day:'2-digit', month:'2-digit', year:'numeric' });
+    wann = kurz + ', ' + d.toLocaleTimeString('de-DE', { hour:'2-digit', minute:'2-digit' }) + ' Uhr';
+  } else if(x.erledigtAm){
+    wann = kurz = /^\d{4}-\d{2}-\d{2}$/.test(x.erledigtAm) ? fmtDate(x.erledigtAm) : String(x.erledigtAm);
+  }
+  if(!wann && !x.erledigtVon) return null;
+  let dauer = '';
+  if(typeof x.erledigtNachMin === 'number') dauer = dauerText(x.erledigtNachMin);
+  else {   // Altbestand: nur das Datum ist bekannt
+    const s = zeitAusText(x.erstellt), e = zeitAusText(x.erledigtAm);
+    if(s && e){ const tage = Math.round((tagBeginn(e) - tagBeginn(s)) / 86400000);
+      if(tage >= 0) dauer = tage === 0 ? 'am selben Tag' : 'nach ' + tage + (tage === 1 ? ' Tag' : ' Tagen'); }
+  }
+  return { wann, kurz, von: x.erledigtVon || '', dauer };
+}
+function erledigtZeileHTML(x){
+  const i = erledigtInfo(x); if(!i) return '';
+  return '<span class="erl-info"><i class="ti ti-circle-check" style="font-size:12px;color:var(--green,#2E7D52)"></i> Erledigt'
+    + (i.wann ? ' am ' + esc(i.wann) : '') + (i.von ? ' von ' + esc(i.von) : '') + (i.dauer ? ' · ' + esc(i.dauer) : '') + '</span>';
+}
+function erledigtKurzHTML(x){
+  const i = erledigtInfo(x); if(!i) return '';
+  const teile = [i.kurz, i.von, i.dauer].filter(Boolean).map(esc).join(' · ');
+  return teile ? '<span class="erl-info" title="Erledigt"><i class="ti ti-circle-check" style="font-size:11px;color:var(--green,#2E7D52)"></i> ' + teile + '</span>' : '';
+}
+/* A457: Von Claude stammende Eintraege tragen den Sprachbenutzer (Einstellungen → Daten →
+   Claude-Connector). Ohne ihn bleibt es bei "Claude (Diktat)" bzw. "Claude (Sprachbefehl)". */
+async function claudeAbsender(){
+  try{
+    const id = await sprachBenutzerId(); if(!id) return null;
+    const u = (await idbGetAll('users').catch(() => [])).find(x => x.id === id);
+    return (u && u.name) ? { id:u.id, name:String(u.name) } : null;
+  }catch(_){ return null; }
+}
+function claudeErsteller(absender){ return absender ? absender.name + ' über Claude' : 'Claude (Diktat)'; }
+function claudeErstellt(e){   // Zeitpunkt des Diktats statt der Abholung, Format wie now()
+  const d = (e && e.erstellt) ? new Date(e.erstellt) : null;
+  return (d && !isNaN(d)) ? d.toLocaleString('de-DE') : now();
+}
 async function toggleAufgabe(id){
   const a=await idbGet('aufgaben',id); if(!a) return;
   a.status=a.status==='erledigt'?'offen':'erledigt';
   a.erledigtAm=a.status==='erledigt'?new Date().toLocaleDateString('de-DE'):'';
   a.erledigtVon=a.status==='erledigt'?(CU?.name||''):'';
+  if(a.status==='erledigt') erledigtVermerk(a, CU?.name||'', CU?.id||'', new Date()); else erledigtVermerkLoeschen(a);   // A457
   await idbPut('aufgaben',a);
   if(a.status==='erledigt' && a.istIntervall){ await intervallErledigt(a); }
   bcSend('aufgabe_changed',{id});
@@ -19464,7 +19700,7 @@ async function toggleMangel(id){
   }
   // Wieder öffnen
   m.status='offen';
-  delete m.erledigtFoto; delete m.erledigtAm; delete m.erledigtVon;
+  delete m.erledigtFoto; delete m.erledigtAm; delete m.erledigtVon; erledigtVermerkLoeschen(m);
   await idbPut(store,m); bcSend('mangel_changed',{id});
   await refreshAufgaben(); if(curPage==='objekt') await renderObjTab('maengel');
   await renderDash(); toast('Wieder geöffnet');
@@ -19506,7 +19742,7 @@ async function mangelErledigenSpeichern(id, store){
   const m=await idbGet(store,id); if(!m) return;
   m.status = (store==='reparaturen'?'erledigt':'behoben');
   m.erledigtAm = today();
-  m.erledigtVon = CU?.name||'';
+  erledigtVermerk(m, CU?.name||'', CU?.id||'', new Date());   // A457: Uhrzeit, Benutzer, Dauer
   if(_erledigtFoto){
     m.erledigtFoto=_erledigtFoto;
     m.fotos=m.fotos||[];
@@ -32822,8 +33058,8 @@ async function showAufgabeDetail(id) {
     <div style="font-size:13px;color:var(--ink-40);margin-bottom:10px;display:flex;flex-direction:column;gap:4px">
       <span><i class="ti ti-building" style="font-size:12px"></i> ${obj?.name||'–'}${a.weNr?' · WE '+a.weNr:''}</span>
       ${a.datum?`<span><i class="ti ti-calendar" style="font-size:12px"></i> Fällig: ${fmtDate(a.datum)}</span>`:''}
-      ${a.ersteller?`<span><i class="ti ti-user" style="font-size:12px"></i> ${a.ersteller} · ${a.erstellt||''}</span>`:''}
-      ${a.erledigtAm?`<span><i class="ti ti-check" style="font-size:12px"></i> Erledigt am: ${a.erledigtAm}</span>`:''}
+      ${a.ersteller?`<span><i class="ti ti-user" style="font-size:12px"></i> ${esc(a.ersteller)} · ${esc(a.erstellt||'')}</span>`:''}
+      ${done?erledigtZeileHTML(a):''}
     </div>
     ${a.beschreibung?`<div style="background:var(--ink-05);border-radius:8px;padding:10px;font-size:13px;line-height:1.6;margin-bottom:12px">${esc(a.beschreibung)}</div>`:''}
     <div style="display:flex;gap:7px;flex-wrap:wrap">
@@ -37832,6 +38068,7 @@ async function saveMangel(){
     portalMeldungId: window._mangelAusMeldung || null,
     erstellt:now(),ersteller:CU?.name||'',
   };
+  if(entry.status==='behoben'){ entry.erledigtAm=today(); erledigtVermerk(entry, CU?.name||'', CU?.id||'', new Date()); }   // A457
   await idbPut('maengel',entry);
   /* v339: Ist der Mangel schon beim Anlegen erledigt, die Meldung gleich
      mitschliessen. Fehler bleiben still - der Mangel ist gespeichert, das
@@ -51548,7 +51785,8 @@ async function showMangelDetail(id, store='maengel') {
       <span><i class="ti ti-building" style="font-size:12px"></i> ${obj?.name||'–'}</span>
       ${mieter?`<span><i class="ti ti-user" style="font-size:12px"></i> ${mieter.mieter} · WE ${mieter.weNr}</span>`:''}
       <span><i class="ti ti-calendar" style="font-size:12px"></i> ${m.datum||m.erstellt||'–'}</span>
-      <span><i class="ti ti-user-circle" style="font-size:12px"></i> ${m.ersteller||'–'}</span>
+      <span><i class="ti ti-user-circle" style="font-size:12px"></i> ${esc(m.ersteller||'–')}</span>
+      ${done?erledigtZeileHTML(m):''}
     </div>
     ${m.beschreibung?`<div style="background:var(--ink-05);border-radius:8px;padding:10px;font-size:13px;color:var(--ink);margin-bottom:12px;line-height:1.6">${esc(m.beschreibung)}</div>`:''}
 
@@ -51619,7 +51857,7 @@ async function toggleMangelFromDetail(id, store) {
   }
   // Wieder öffnen
   m.status='offen';
-  delete m.erledigtFoto; delete m.erledigtAm; delete m.erledigtVon;
+  delete m.erledigtFoto; delete m.erledigtAm; delete m.erledigtVon; erledigtVermerkLoeschen(m);
   if (!m.kommentare) m.kommentare = [];
   m.kommentare.push({ autor:CU?.name||'–', datum:now(), text:'Status geändert zu: offen' });
   await idbPut(store, m);
