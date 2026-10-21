@@ -18,7 +18,7 @@
    ───────────────────────────────────────────────────────────────────────── */
 'use strict';
 
-const CACHE = 'nadigpfau-A461';
+const CACHE = 'nadigpfau-A463';
 
 /* v329 (R32): Wie lange die Navigation auf das Netz wartet, bevor die
    gecachte Fassung ausgeliefert wird. Siehe Kommentar am fetch-Handler. */
@@ -91,6 +91,9 @@ self.addEventListener('fetch', event => {
 
      Ohne gecachte Fassung (Erstinstallation) wird unveraendert gewartet. */
   if (req.mode === 'navigate') {
+    /* A463: Nur die App selbst. Die Rueckkehrseite der Microsoft-Anmeldung (auth.html, im versteckten
+       Fenster) darf weder die App ausgeliefert bekommen noch als index.html im Cache landen. */
+    if (!/\/(index\.html)?$/.test(url.pathname)) return;
     event.respondWith((async () => {
       const cache = await caches.open(CACHE);
       const netzP = fetch(req).then(res => {

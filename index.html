@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; object-src 'none'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdn.sheetjs.com; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob: https:; connect-src 'self' https://stnadigpfau.blob.core.windows.net https://cdn.jsdelivr.net https://func-nadigpfau-g7fghseafmftemeq.westeurope-01.azurewebsites.net https://api.nadigpfau.de https://graph.microsoft.com https://login.microsoftonline.com https://*.microsoftpersonalcontent.com https://*.sharepoint.com https://*.up.1drv.com; frame-src 'self' blob:; worker-src 'self' blob:; base-uri 'self'; form-action 'self';">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; object-src 'none'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdn.sheetjs.com; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob: https:; connect-src 'self' https://stnadigpfau.blob.core.windows.net https://cdn.jsdelivr.net https://func-nadigpfau-g7fghseafmftemeq.westeurope-01.azurewebsites.net https://api.nadigpfau.de https://graph.microsoft.com https://login.microsoftonline.com https://*.microsoftpersonalcontent.com https://*.sharepoint.com https://*.up.1drv.com; frame-src 'self' blob: https://login.microsoftonline.com https://login.live.com; worker-src 'self' blob:; base-uri 'self'; form-action 'self';">
 <meta name="referrer" content="no-referrer">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -1282,7 +1282,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=38;   // A398: +kr_abrechnungen
-const APP_VERSION = '2026-10-20-A461';
+const APP_VERSION = '2026-10-21-A463';
 /* v364 (12.08.2026) – offene Punkte abgearbeitet.
    1) D1/XLSX_SRI: Der im Code hinterlegte PowerShell-Befehl war FALSCH und
       konnte nie funktionieren - Invoke-WebRequest liefert unter .Content einen
@@ -3261,6 +3261,8 @@ document.addEventListener('DOMContentLoaded', () => {
     'asAufstellungDrucken',
     'aufToggleDone',
     'protFotosAlleLaden',     // A461
+    'odNeuVerbinden', 'odNeuVerbindenWeg',                      // A463
+    'hmFreigabeBereitstellen', 'hmFreigabeEinladen', 'hmCodeKopieren', 'hmCodeUebernehmen', 'hmFreigabeEntfernen',   // A463
     'protFotosTeilen',        // A461
     'aufgabenDruckStarten',   // A458
     'modalAufgabenDruck',     // A458
@@ -4057,6 +4059,7 @@ async function initApp(){
   }catch(e){ /* optionales Feature, kein Blocker */ }
   // v196 (A3): Geraete-Sync-Profil laden - bestimmt, welche Daten dieses Geraet synchronisiert
   try{ const pr=await idbGet('settings','syncProfil'); if(pr?.value==='hm') SYNC_PROFIL='hm'; }catch(e){}
+  await hmFreigabeLaden();   // A463
   await geraetBindungLaden();   // v336 (R50): vor dem ersten Login verfügbar
   await migriereBenutzernamenVoll().catch(e=>console.warn('Namensmigration:', e));
   // v323: Bestandsreparaturen als Kleinreparatur kennzeichnen (siehe
@@ -14159,7 +14162,7 @@ const SETTINGS_GEHEIM = ['backendKey','saEncKey','portalEncKey'];   // v299: +po
    Alles, was NICHT hier und nicht in SETTINGS_GEHEIM steht, ist eine
    Geschaeftseinstellung (Briefkopf, Eigentuemerliste, Wartungsintervalle,
    Pausenregel) und gehoert auf alle Geraete. */
-const SETTINGS_GERAET = ['geraetBindung','syncProfil','lastSync','lastSyncHM',
+const SETTINGS_GERAET = ['geraetBindung','syncProfil','hmFreigabe','lastSync','lastSyncHM',   // A463: hmFreigabe
                          'niimbotDichte','fibuBreit','zaLetztesKonto','lastGenBackup',
                          'lastImport'];
 /* A422: cryptoConfig stand hier bis A421. Der Eintrag traegt den KDF-Salt der
@@ -16392,6 +16395,32 @@ async function aktiviereFaelligeMieterwechsel() {
       await idbPut('mieter', neu);
       geaendert = true;
     }
+    /* A462: Mieterwechsel nachziehen, der ohne "zukuenftigen Mieter" erfasst wurde. Stehen auf derselben WE zwei
+       aktuelle Mieter und ist der aeltere vor dem Einzug des neueren ausgezogen (beide Daten erreicht), wird der
+       aeltere Vormieter - wie beim regulaeren Wechsel; sein Auszugsdatum bleibt. Sonst zaehlte er weiter als
+       aktueller Mieter (Dashboard "leer", Nebenkostenabrechnung). */
+    const heuteISO = ymd(heute), _gruppen = new Map();
+    for (const m of alle) {
+      if (!m || m._deleted || m._vormieter || m._zukuenftig || m._tgMieter || m.leerstand || !String(m.mieter||'').trim()) continue;
+      const k = weSchluessel(m.weNr); if (!k) continue;
+      const g = m.objektId + '|' + k;
+      if (!_gruppen.has(g)) _gruppen.set(g, []);
+      _gruppen.get(g).push(m);
+    }
+    for (const liste of _gruppen.values()) {
+      if (liste.length < 2) continue;
+      liste.sort((a,b)=>String(_einzugISOvon(a)||'').localeCompare(String(_einzugISOvon(b)||'')));
+      for (let i = 0; i < liste.length - 1; i++) {
+        const alt = liste[i], neu = liste[i+1];
+        const aus = _isoDatum(_auszugISOvon(alt)), ein = _isoDatum(_einzugISOvon(neu));
+        if (!aus || !ein || !(aus < ein && aus < heuteISO && ein <= heuteISO)) continue;
+        const _vorId = neu._vormieterId;
+        await mieterZuVormieter(alt, neu);
+        if (_vorId && _vorId !== alt.id) neu._vormieterId = _vorId;
+        await idbPut('mieter', neu);
+        geaendert = true;
+      }
+    }
     if (geaendert) {
       clearTimeout(window._syncTimer);
       window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
@@ -17261,50 +17290,162 @@ function istWohnungFaktischLeer(m){
   d.setHours(0,0,0,0);
   return d<=heute;
 }
-/* A461: Leerstand einer Wohnung. Leer = Haken "steht leer" oder Auszug vorbei; wird leer = Auszug in der
-   Zukunft und kein Nachmieter fuer dieselbe WE. ab = erster leerer Tag (Tag nach dem Auszug), ISO. */
+/* A462: Leerstand aus der Belegungs-Zeitleiste je Wohnung. Belegt ist ein Tag, wenn ein Mietverhaeltnis
+   (aktuell, Vormieter oder zukuenftig) ihn abdeckt: Einzug <= Tag <= Auszug, fehlendes Datum = offen.
+   Luecken dazwischen sind Leerstand. Bis A461 wurde jeder aktuelle Datensatz einzeln geprueft - eine wieder
+   vermietete Wohnung galt als leer, solange der alte Mieter noch nicht Vormieter war (Befund WE 30).
+   Ein "steht leer"-Datensatz ohne Auszug belegt nichts; mit Auszug zaehlt er bis zum Auszug. */
 function isoPlusTage(iso, n){ const d = new Date(String(iso).slice(0, 10) + 'T12:00:00'); d.setDate(d.getDate() + n); return ymd(d); }
-function wohnungLeerInfo(m, nachmieterWE){
-  if(!m || m._vormieter || m._zukuenftig || m._tgMieter) return null;
-  if(nachmieterWE && nachmieterWE.has(String(m.weNr))) return null;
-  const aus = _auszugISOvon(m);
-  const ab = (aus && /^\d{4}-\d{2}-\d{2}/.test(aus)) ? isoPlusTage(aus, 1) : '';
-  if(m.leerstand) return { leer:true, ab };
-  if(!ab) return null;
-  return { leer: ab <= today(), ab };
+function weSchluessel(w){ return String(w == null ? '' : w).trim(); }
+function _isoDatum(s){ return (s && /^\d{4}-\d{2}-\d{2}/.test(String(s))) ? String(s).slice(0, 10) : ''; }
+function belegungsZeiten(recs){
+  return (recs || [])
+    .filter(m => m && !m._deleted && !m._tgMieter && String(m.mieter || '').trim() && !(m.leerstand && !_isoDatum(_auszugISOvon(m))))
+    .map(m => ({ von:_isoDatum(_einzugISOvon(m)), bis:_isoDatum(_auszugISOvon(m)), m }))
+    .filter(z => !(z.von && z.bis && z.bis < z.von))
+    .sort((a, b) => a.von.localeCompare(b.von));
 }
-function leerAbText(i){ return i.leer ? (i.ab ? 'leer seit ' + fmtDate(i.ab) : 'leer') : 'leer ab ' + fmtDate(i.ab); }
-/* Alle leeren und leer werdenden Wohnungen der Objekte - dieselbe Auswahl wie die Leerstand-Zeilen der
-   Objektansicht (Wohnungs-Stammdaten + Vormieter), dazu aktive Mieter mit Auszug ohne Nachmieter. */
+/* Leerstandsluecken im Zeitraum [von, bis] (ISO; bis '' = offen). Je Luecke: von, bis (auf den Zeitraum
+   begrenzt), ende (letzter leerer Tag ohne Begrenzung, '' = kein Nachmieter erfasst), vorher/nachher
+   (angrenzende Mietverhaeltnisse oder null). */
+function leerLuecken(zeiten, von, bis){
+  const out = [], ENDE = bis || '9999-12-31';
+  let tag = von, schutz = 0;
+  while(tag && tag <= ENDE && schutz++ < 500){
+    const z = zeiten.find(x => (!x.von || x.von <= tag) && (!x.bis || x.bis >= tag));
+    if(z){ if(!z.bis) break; tag = isoPlusTage(z.bis, 1); continue; }
+    const nach = zeiten.filter(x => x.von && x.von > tag).sort((a, b) => a.von.localeCompare(b.von))[0] || null;
+    const vor = zeiten.filter(x => x.bis && x.bis < tag).sort((a, b) => b.bis.localeCompare(a.bis))[0] || null;
+    const ende = nach ? isoPlusTage(nach.von, -1) : '';
+    out.push({ von:tag, bis: (ende && ende <= ENDE) ? ende : (bis || ''), ende, vorher: vor ? vor.m : null, nachher: nach ? nach.m : null });
+    if(!nach) break;
+    tag = nach.von;
+  }
+  return out;
+}
+/* Stand heute: null = belegt und kein Leerstand absehbar; sonst { leer, ab, bis, nachmieterAb }.
+   leer = heute leer (ab = erster leerer Tag, '' wenn unbekannt); sonst wird leer ab `ab`. */
+function wohnungStatusHeute(zeiten, heute){
+  const l = leerLuecken(zeiten, heute, '')[0];
+  if(!l) return null;
+  const nachmieterAb = l.nachher ? _isoDatum(_einzugISOvon(l.nachher)) : '';
+  if(l.von <= heute){
+    const aus = l.vorher ? _isoDatum(_auszugISOvon(l.vorher)) : '';
+    return { leer:true, ab: aus ? isoPlusTage(aus, 1) : '', bis:l.ende, nachmieterAb };
+  }
+  return { leer:false, ab:l.von, bis:l.ende, nachmieterAb };
+}
+function leerAbText(i){
+  if(i.leer) return (i.ab ? 'leer seit ' + fmtDate(i.ab) : 'leer') + (i.nachmieterAb ? ' · neuer Mieter ab ' + fmtDate(i.nachmieterAb) : '');
+  return 'leer ab ' + fmtDate(i.ab) + (i.bis ? ' bis ' + fmtDate(i.bis) : '');
+}
+/* Datensaetze eines Objekts je WE (getrimmte Nummer); Wohnungen aus den Stammdaten auch ohne Mieter. */
+function weGruppieren(recs, stamm){
+  const jeWE = new Map();
+  Object.keys(stamm || {}).forEach(w => { const k = weSchluessel(w); if(k) jeWE.set(k, []); });
+  (recs || []).forEach(m => {
+    if(!m || m._deleted || m._tgMieter) return;
+    const k = weSchluessel(m.weNr); if(!k) return;
+    if(!jeWE.has(k)) jeWE.set(k, []);
+    jeWE.get(k).push(m);
+  });
+  return jeWE;
+}
+/* Alle leeren und leer werdenden Wohnungen der Objekte - Dashboard-Karte und Objektansicht (roter Rahmen). */
 async function leereWohnungen(objekte, alleMieter){
-  const out = [];
+  const out = [], heute = today();
   for(const o of (objekte || [])){
-    if(o.tiefgarage) continue;
-    const mo = (alleMieter || []).filter(m => m.objektId === o.id && !m._tgMieter);
-    const zukWE = new Set(mo.filter(m => m._zukuenftig).map(m => String(m.weNr)));
-    const belegt = new Set();
-    for(const m of mo.filter(x => !x._vormieter && !x._zukuenftig)){
-      const we = String(m.weNr || '').trim(); if(!we) continue;
-      belegt.add(we);
-      const li = wohnungLeerInfo(m, zukWE);
-      if(li) out.push(Object.assign({ objektId:o.id, objekt:o.name, we }, li));
-    }
+    if(!o || o.tiefgarage) continue;
     let stamm = {};
     try{ stamm = await ladeWohnungsStamm(o.id); }catch(_){}
-    const vormieter = mo.filter(m => m._vormieter);
-    const kandidaten = new Set([...Object.keys(stamm || {}), ...vormieter.map(v => String(v.weNr || '').trim())]);
-    for(const we of kandidaten){
-      if(!we || belegt.has(we) || zukWE.has(we)) continue;
-      const vm = vormieter.filter(v => String(v.weNr) === we)
-        .sort((a, b) => String(_auszugISOvon(b) || '').localeCompare(String(_auszugISOvon(a) || '')))[0];
-      const aus = vm && _auszugISOvon(vm);
-      out.push({ objektId:o.id, objekt:o.name, we, leer:true, ab: (aus && /^\d{4}-\d{2}-\d{2}/.test(aus)) ? isoPlusTage(aus, 1) : '' });
+    const jeWE = weGruppieren((alleMieter || []).filter(m => m && m.objektId === o.id), stamm);
+    for(const [we, recs] of jeWE){
+      const st = wohnungStatusHeute(belegungsZeiten(recs), heute);
+      if(st) out.push(Object.assign({ objektId:o.id, objekt:o.name, we }, st));
     }
   }
   const weZahl = w => { const n = parseFloat(w); return isNaN(n) ? 1e9 : n; };
   return out.sort((a, b) => (a.leer === b.leer ? 0 : a.leer ? -1 : 1)
     || (a.leer ? 0 : String(a.ab).localeCompare(String(b.ab)))
-    || a.objekt.localeCompare(b.objekt, 'de') || weZahl(a.we) - weZahl(b.we));
+    || String(a.objekt || '').localeCompare(String(b.objekt || ''), 'de') || weZahl(a.we) - weZahl(b.we));
+}
+/* A462: Leerstandszeiten einer Wohnung im Zeitraum [von, bis], fuer die Anzeige im Objekt. */
+function leerDauerText(von, bis){
+  const a = new Date(von + 'T12:00:00'), e = new Date(bis + 'T12:00:00');
+  const e1 = new Date(e); e1.setDate(e1.getDate() + 1);
+  if(a.getDate() === 1 && e1.getDate() === 1){
+    const n = (e1.getFullYear() - a.getFullYear()) * 12 + e1.getMonth() - a.getMonth();
+    return n + (n === 1 ? ' Monat' : ' Monate');
+  }
+  const tage = Math.round((e - a) / 864e5) + 1;
+  return tage + (tage === 1 ? ' Tag' : ' Tage');
+}
+function leerstandsZeitenWE(recs, von, bis){
+  return leerLuecken(belegungsZeiten(recs), von, bis).map(l => ({
+    von:l.von, bis:l.bis, andauernd: l.bis === bis && (!l.ende || l.ende > bis), ohneVormieter: !l.vorher,
+    nachmieterAb: l.nachher ? _isoDatum(_einzugISOvon(l.nachher)) : '' }));
+}
+/* A462: Leerstand fuer die Nebenkostenabrechnung - nach demselben Monatsprinzip wie wohnMonate(): Ein Monat ist
+   fuer eine Wohnung leer, wenn ihn kein abgerechnetes Mietverhaeltnis beruehrt. Wohnungen aus den
+   Wohnungs-Stammdaten und allen Mieterdatensaetzen des Objekts. Flaeche: Stammdaten, sonst juengster Datensatz.
+   Personen je leerem Monat: juengster abgerechneter Mieter der WE, sonst juengster Datensatz, sonst 1 - wie
+   bisher (volle Personenzahl x Monate). */
+async function nkaLeerstandErmitteln(objektIds, mieter, von, bis){
+  const monate = monatsErste(von, bis).map(ymd);
+  const out = [];
+  if(!monate.length) return out;
+  const jungZuerst = l => l.slice().sort((a, b) => String(_einzugISOvon(b) || '').localeCompare(String(_einzugISOvon(a) || '')));
+  for(const oid of (objektIds || [])){
+    const o = getObj(oid);
+    if(!o || o.tiefgarage) continue;
+    let stamm = {}, alle = [];
+    try{ stamm = await ladeWohnungsStamm(oid); }catch(_){}
+    try{ alle = await idbGetAll('mieter', 'objektId', oid); }catch(_){}
+    const stammT = {};
+    Object.keys(stamm || {}).forEach(k => { stammT[weSchluessel(k)] = stamm[k] || {}; });
+    for(const [we, recs] of weGruppieren(alle, stamm)){
+      const tn = (mieter || []).filter(m => m.objektId === oid && weSchluessel(m.weNr) === we);
+      const idx = [];
+      monate.forEach((mo, i) => { if(!tn.some(m => wohnMonate(m, mo, mo) > 0)) idx.push(i); });
+      if(!idx.length) continue;
+      const flaeche = parseFloat(stammT[we] && stammT[we].flaeche) || (jungZuerst(recs).map(r => parseFloat(r.flaeche)).find(f => f > 0)) || 0;
+      const pq = jungZuerst(tn)[0] || jungZuerst(recs)[0];
+      const personen = (pq && parseInt(pq.personen)) || 1;
+      const zeitraeume = [];
+      idx.forEach((i, n) => {
+        if(n && idx[n - 1] === i - 1) zeitraeume[zeitraeume.length - 1].bisMonat = monate[i];
+        else zeitraeume.push({ vonMonat:monate[i], bisMonat:monate[i] });
+      });
+      out.push({ objektId:oid, objekt:o.name, we, monate:idx.length, flaeche, personen,
+        fm:flaeche * idx.length, pm:personen * idx.length, zeitraeume,
+        ohneDaten: !recs.some(r => String(r.mieter || '').trim()) });
+    }
+  }
+  return out;
+}
+async function nkaLeerInfoZeigen(zielId, objektIds, mieter, von, bis){
+  const nr = (nkaLeerInfoZeigen._lauf = (nkaLeerInfoZeigen._lauf || 0) + 1);   // nur der juengste Aufruf zeichnet
+  let l = [];
+  try{ l = await nkaLeerstandErmitteln(objektIds, mieter, von, bis); }catch(e){ console.warn('NKA-Leerstand:', e); }
+  const el = document.getElementById(zielId);
+  if(!el || nr !== nkaLeerInfoZeigen._lauf) return;
+  if(!l.length){
+    el.innerHTML = '<div style="font-size:11px;color:var(--ink-40);margin:-2px 0 8px 23px">Kein Leerstand im Zeitraum (laut Ein-/Auszugsdaten).</div>';
+    return;
+  }
+  const mt = iso => iso.slice(5, 7) + '/' + iso.slice(0, 4);
+  const mehrereObjekte = new Set(l.map(x => x.objektId)).size > 1;
+  const f2 = x => (Math.round(x * 100) / 100).toFixed(2).replace('.', ',');
+  const fm = l.reduce((s, x) => s + x.fm, 0);
+  el.innerHTML = '<div style="border:1.5px solid var(--amber);border-radius:var(--radius);padding:8px 10px;margin:0 0 10px;font-size:12px;line-height:1.5">'
+    + '<b>Leerstand im Zeitraum</b> (ganze Monate ohne Mieter):'
+    + l.map(x => '<div>' + (mehrereObjekte ? esc(x.objekt || '') + ' · ' : '') + 'WE ' + esc(x.we) + ' · '
+        + x.zeitraeume.map(z => z.vonMonat === z.bisMonat ? mt(z.vonMonat) : mt(z.vonMonat) + '–' + mt(z.bisMonat)).join(', ')
+        + ' · ' + x.monate + (x.monate === 1 ? ' Monat' : ' Monate')
+        + (x.flaeche ? ' · ' + f2(x.flaeche) + ' m²' : ' · <span style="color:var(--red)">Fläche fehlt</span>')
+        + (x.ohneDaten ? ' · <span style="color:var(--ink-40)">keine Mieterdaten</span>' : '') + '</div>').join('')
+    + '<div style="color:var(--ink-40);margin-top:4px">Zusammen ' + f2(fm) + ' m²-Monate. Ohne Haken bei „Leerstand auf die Mieter umlegen“ '
+    + 'trägt der Vermieter diesen Anteil; jeder Mieter zahlt nur seine eigenen Monate.</div></div>';
 }
 async function renderObjMieter(el){
   await aktiviereFaelligeMieterwechsel();
@@ -17318,7 +17459,8 @@ async function renderObjMieter(el){
   // Zukünftige Mieter separat
   const zukuenftig = all.filter(m=>m._zukuenftig)
     .sort((a,b)=>new Date(a.einzugISO||0)-new Date(b.einzugISO||0));
-  const zukWEset = new Set(zukuenftig.map(z=>String(z.weNr)));   // A461
+  const _weStatus = new Map();   // A462: Leerstand je WE aus der Zeitleiste - dieselbe Auswertung wie das Dashboard
+  try{ (await leereWohnungen([getObj(currentObjId)], all)).forEach(x => _weStatus.set(x.we, x)); }catch(e){ console.warn('Leerstand-Status:', e); }
 
   // Offene Aufgaben & Mängel je Mieter/WE zählen (für Badges)
   const objAufgaben=(await idbGetAll('aufgaben','objektId',currentObjId)).filter(a=>a.status!=='erledigt');
@@ -17391,7 +17533,7 @@ async function renderObjMieter(el){
     const anzeigeName = vpName
       ? vpName
       : (namen.length>1 ? namen.join(' · ') : (namen[0]||m.mieter));
-    const _leer = wohnungLeerInfo(m, zukWEset);   // A461: wird leer (Auszug ohne Nachmieter)
+    const _leer = _weStatus.get(weSchluessel(m.weNr)) || null;   // A462
     h+=`<div class="mieter-row${alleVerstorben?' mieter-verstorben':''}${_leer?' we-leer':''}" onclick="showMieter('${m.id}')">
       <div class="m-avatar">${ini}</div>
       <div class="m-body">
@@ -17413,21 +17555,23 @@ async function renderObjMieter(el){
   // werden als Leerstand-Zeile gezeigt – so verschwindet keine Wohnung mehr aus
   // der Liste, nur weil ihr aktueller Mieter entfernt/getrennt wurde.
   try{
-    const aktiveWE = new Set(mieter.map(m=>String(m.weNr)));
-    const zukWE    = new Set(zukuenftig.map(m=>String(m.weNr)));
+    const aktiveWE = new Set(mieter.map(m=>weSchluessel(m.weNr)));       // A462: getrimmt wie das Dashboard
+    const zukWE    = new Set(zukuenftig.map(m=>weSchluessel(m.weNr)));
     // Vormieter UND faktisch leere (noch nicht getrennte) Mieter als Quelle
     // für 'Letzter Mieter' der Leerstand-Zeile verwenden.
     const vormieter = [...all.filter(m=>m._vormieter), ...aktivUndLeer];
     const vormieterProWE = {};
     vormieter.forEach(v=>{
-      const k=String(v.weNr);
+      const k=weSchluessel(v.weNr);   // A462
       const prev=vormieterProWE[k];
       // jüngsten Vormieter je WE behalten (nach Auszug bzw. Stempel)
       if(!prev || new Date(v.auszugISO||v.updatedAt||0) > new Date(prev.auszugISO||prev.updatedAt||0)) vormieterProWE[k]=v;
     });
-    const stammWohnungen = await ladeWohnungsStamm(currentObjId);
+    const _stammRoh = await ladeWohnungsStamm(currentObjId);
+    const stammWohnungen = {};   // A462: Schluessel getrimmt
+    Object.keys(_stammRoh||{}).forEach(k=>{ const w=weSchluessel(k); if(w) stammWohnungen[w]=_stammRoh[k]; });
     // Kandidaten-WE: aus Stammdaten + aus Vormietern
-    const kandidatWE = new Set([...Object.keys(stammWohnungen||{}), ...Object.keys(vormieterProWE)]);
+    const kandidatWE = new Set([...Object.keys(stammWohnungen), ...Object.keys(vormieterProWE)]);
     const leerWE = [...kandidatWE].filter(we=> we!=='' && we!=null && !aktiveWE.has(String(we)) && !zukWE.has(String(we)));
     leerWE.sort((a,b)=>Number(a)-Number(b));
     if(leerWE.length){
@@ -17438,8 +17582,8 @@ async function renderObjMieter(el){
         const etage=stamm.etage||vm?.etage||'';
         const flaeche=stamm.flaeche||vm?.flaeche||'';
         const sub=[etage?('Etage '+esc(String(etage))):'', flaeche?(qm(flaeche)+' m²'):''].filter(Boolean).join(' · ');
-        const _vmAus = vm ? _auszugISOvon(vm) : null;   // A461: leer seit Tag nach dem Auszug
-        const _seit = (_vmAus && /^\d{4}-\d{2}-\d{2}/.test(_vmAus)) ? isoPlusTage(_vmAus, 1) : '';
+        const _st = _weStatus.get(weSchluessel(we));   // A462: dieselbe Zeitleiste wie das Dashboard
+        const _seit = (_st && _st.leer) ? _st.ab : '';
         h+=`<div class="mieter-row we-leer" style="border-style:dashed;background:var(--ink-02)" onclick="modalLeerstandWE('${currentObjId}','${escJs(String(we))}','${vm?vm.id:''}')">
           <div class="m-avatar" style="background:var(--ink-10);color:var(--ink-40)"><i class="ti ti-home-off"></i></div>
           <div class="m-body">
@@ -17452,15 +17596,39 @@ async function renderObjMieter(el){
     }
   }catch(e){ console.warn('Leerstand-Anzeige:', e); }
 
+  // A462: Leerstandszeiten seit 01.01. des Vorjahres - abgeleitet aus Ein-/Auszug aller Mietverhaeltnisse
+  try{
+    const _heute = today(), _start = (Number(_heute.slice(0, 4)) - 1) + '-01-01';
+    const _zeilen = [];
+    for(const [we, recs] of weGruppieren(all, await ladeWohnungsStamm(currentObjId)))
+      leerstandsZeitenWE(recs, _start, _heute).forEach(l => _zeilen.push(Object.assign({ we }, l)));
+    if(_zeilen.length){
+      const _nr = w => { const n = parseFloat(w); return isNaN(n) ? 1e9 : n; };
+      _zeilen.sort((a, b) => _nr(a.we) - _nr(b.we) || a.von.localeCompare(b.von));
+      h+=`<details class="card dash-klapp" id="objLeerZeiten" style="margin-top:16px">
+        <summary class="card-hdr"><i class="ti ti-calendar-off"></i> Leerstandszeiten seit 01.01.${_start.slice(0, 4)} (${_zeilen.length})<i class="ti ti-chevron-down"></i></summary>
+        ${_zeilen.map(z => `<div class="leerzeit" style="display:flex;gap:8px;padding:6px 0;border-bottom:1px solid var(--ink-10);font-size:13px">
+          <div style="width:52px;flex-shrink:0;font-weight:600">WE ${esc(z.we)}</div>
+          <div style="flex:1">${z.andauernd ? 'seit ' + esc(fmtDate(z.von)) + ' (dauert an' + (z.nachmieterAb ? ', neuer Mieter ab ' + esc(fmtDate(z.nachmieterAb)) : '') + ')'
+              : esc(fmtDate(z.von)) + ' – ' + esc(fmtDate(z.bis)) + ' · ' + esc(leerDauerText(z.von, z.bis))}
+            ${z.ohneVormieter ? '<div style="font-size:11px;color:var(--ink-40)">kein früherer Mieter erfasst – ggf. Vormieter nachtragen</div>' : ''}</div>
+        </div>`).join('')}
+        <div style="font-size:11px;color:var(--ink-40);margin-top:6px;line-height:1.5">Abgeleitet aus den Ein- und Auszugsdaten aller Mieter und Vormieter. Die Nebenkostenabrechnung rechnet ganze Monate ohne Mieter dem Vermieter zu.</div>
+      </details>`;
+    }
+  }catch(e){ console.warn('Leerstandszeiten:', e); }
+
   // Zukünftige Mieter unten als eigener Abschnitt
   if(zukuenftig.length){
     h+=`<div class="card-hdr" style="margin:16px 0 8px"><i class="ti ti-user-check"></i> Zukünftige Mieter (${zukuenftig.length})</div>`;
     zukuenftig.forEach(m=>{
       const ini=initials(m.mieter);
-      h+=`<div class="mieter-row" style="border-style:dashed;background:var(--ink-02)" onclick="showMieter('${m.id}')">
+      const _zl = _weStatus.get(weSchluessel(m.weNr));   // A462: WE steht bis zum Einzug leer
+      const _zLeer = _zl && _zl.leer ? _zl : null;
+      h+=`<div class="mieter-row${_zLeer?' we-leer':''}" style="border-style:dashed;background:var(--ink-02)" onclick="showMieter('${m.id}')">
         <div class="m-avatar" style="background:var(--amber)">${ini}</div>
         <div class="m-body">
-          <div class="m-name"><span class="chip chip-warn" style="font-size:10px;margin-right:4px"><i class="ti ti-clock" style="font-size:9px"></i> ab ${esc(m.einzug)}</span> ${esc(m.mieter)}</div>
+          <div class="m-name">${_zLeer?`<span class="chip chip-err" style="font-size:10px;margin-right:4px"><i class="ti ti-home-off" style="font-size:9px"></i> ${_zLeer.ab?'leer seit '+esc(fmtDate(_zLeer.ab)):'leer'}</span>`:''}<span class="chip chip-warn" style="font-size:10px;margin-right:4px"><i class="ti ti-clock" style="font-size:9px"></i> ab ${esc(m.einzug)}</span> ${esc(m.mieter)}</div>
           <div class="m-sub">${esc(m.etage||'')} · WE ${esc(m.weNr)}</div>
         </div>
         <div class="m-we">WE ${m.weNr}</div>
@@ -20759,7 +20927,7 @@ function odDateienDedupe(liste){
    geloescht - ohne Rueckfrage und ohne Oberflaeche. Wirft bei einem
    OneDrive-Fehler; der Satz bleibt dann unveraendert. */
 async function odDateiEntfernen(rec){
-  if(rec.odItemId) await odGraph('/me/drive/items/'+encodeURIComponent(rec.odItemId), {method:'DELETE'});
+  if(rec.odItemId) await odGraph(odItemAdresse(rec.odItemId), {method:'DELETE'});
   rec.geloescht=true; rec._blobB64=undefined; rec.pendingUpload=false;
   await idbPut('od_dateien', rec);
 }
@@ -20862,7 +21030,7 @@ async function odSyncWeDateien(gruppe, weNr){
     if(rec.gruppe!==st.gruppe || String(rec.weNr)!==weKey) continue;
     if(gesehenIds[rec.odItemId]) continue;
     try{
-      const chk=await odGraph('/me/drive/items/'+encodeURIComponent(rec.odItemId)+'?$select=id');
+      const chk=await odGraph(odItemAdresse(rec.odItemId)+'?$select=id');
       if(chk && chk.__notfound){ rec.geloescht=true; await idbPut('od_dateien', rec); entfernt++; }
     }catch(e){ /* Netz-/Auth-Fehler: Record behalten */ }
   }
@@ -21098,7 +21266,7 @@ async function dokRefLoeschen(dok){
   try{
     const ref = dok && dok.ref;
     if(!istFotoRef(ref)) return false;
-    await odGraph('/me/drive/items/'+encodeURIComponent(ref.odId), {method:'DELETE'});
+    await odGraph(odItemAdresse(ref.odId), {method:'DELETE'});
     return true;
   }catch(e){ console.warn('OneDrive-Datei nicht gelöscht:', e); return false; }
 }
@@ -21117,7 +21285,7 @@ async function dokRefLoeschen(dok){
 async function refDateiLoeschen(ref){
   if(!istFotoRef(ref) || !ref.odId) return false;
   try{
-    await odGraph('/me/drive/items/'+encodeURIComponent(ref.odId), {method:'DELETE'});
+    await odGraph(odItemAdresse(ref.odId), {method:'DELETE'});
     return true;
   }catch(e){ console.warn('OneDrive-Datei nicht geloescht:', ref.odId, e); return false; }
 }
@@ -21735,6 +21903,7 @@ function nkaDivisorenSetzen(liste, von, bis){
     f:  alle.reduce((s,m)=>s+flaechenMonate(m,von,bis),0),
     we: alle.reduce((s,m)=>s+weMonate(m,von,bis),0),
   };
+  nkaLeerInfoZeigen('nkaLeerInfo', [...new Set(alle.map(m=>m.objektId).filter(Boolean))], alle, von, bis);   // A462
 }
 
 function nkaSchlInfoText(schl){
@@ -22287,6 +22456,7 @@ async function modalNKA(objektId) {
       Leerstand auf die Mieter umlegen (Standard: aus – der Vermieter trägt den Leerstandsanteil)
     </label>
     <div style="font-size:11px;color:var(--ink-40);margin:-4px 0 8px 23px;line-height:1.5">Nicht anhaken, solange nach Fläche abgerechnet wird: Der auf leerstehende Wohnungen entfallende Anteil trägt der Vermieter (BGH VIII ZR 159/05).</div>
+    <div id="nkaLeerInfo"></div>
     ${kostenHTML}
     <div class="f-section-title" style="margin-top:8px"><i class="ti ti-playlist-add"></i> Eigene Kostenarten</div>
     <div id="nkaCustomList"></div>
@@ -22486,17 +22656,18 @@ async function erstelleNKA(objektId, korrektur) {
      NICHT angehakt (Standard) = Umlage auf die volle Flaeche, der
      Vermieter traegt den Leerstandsanteil (BGH VIII ZR 159/05). */
   const leerstandAufMieter = document.getElementById('nkaLeerstandUmlegen')?.checked || false;
-  const periodeMonate = anzahlMonate(von, bis) || 12;
 
   // Monatsbasierte Divisoren (Personen-, Flächen-, WE-Monate über alle Mieter)
   const sumPM  = mieter.reduce((s,m)=>s+personenMonate(m,von,bis),0);
   const sumFM  = mieter.reduce((s,m)=>s+flaechenMonate(m,von,bis),0);
   const sumWEM = mieter.reduce((s,m)=>s+weMonate(m,von,bis),0);
-  // Volle Periodensummen (für Leerstand-Umlage): aktuelle Sollwerte × Periodenmonate
-  const aktiv = mieter.filter(m=>!m._vormieter);
-  const vollFM  = aktiv.reduce((s,m)=>s+(parseFloat(m.flaeche)||0),0)*periodeMonate;
-  const vollPM  = aktiv.reduce((s,m)=>s+(parseInt(m.personen)||1),0)*periodeMonate;
-  const vollWEM = aktiv.length*periodeMonate;
+  /* A462: Leerstand je Wohnung in ganzen Monaten (nkaLeerstandErmitteln). Bis A461 galt als volle Summe
+     "aktuelle Mieter x Periodenmonate": eine Wohnung ohne aktuellen Mieter fehlte darin (ihr Leerstand ging
+     zulasten der Mieter), ein nicht zum Vormieter gemachter Altmieter zaehlte doppelt. */
+  const _leer = leerstandAufMieter ? [] : await nkaLeerstandErmitteln([objektId], mieter, von, bis);
+  const vollFM  = sumFM  + _leer.reduce((s,x)=>s+x.fm,0);
+  const vollPM  = sumPM  + _leer.reduce((s,x)=>s+x.pm,0);
+  const vollWEM = sumWEM + _leer.reduce((s,x)=>s+x.monate,0);
   // Effektive Divisoren je nach Leerstand-Schalter
   /* v375: Zweige getauscht. Bis v373 stand hier der volle Divisor im
      ANGEHAKTEN Zweig - genau umgekehrt zur Beschriftung. */
@@ -23370,6 +23541,7 @@ async function modalNKALiegenschaft(lgId){
       Leerstand auf die Mieter umlegen (Standard: aus – der Vermieter trägt den Leerstandsanteil)
     </label>
     <div style="font-size:11px;color:var(--ink-40);margin:-4px 0 8px 23px;line-height:1.5">Nicht anhaken, solange nach Fläche abgerechnet wird: Der auf leerstehende Wohnungen entfallende Anteil trägt der Vermieter (BGH VIII ZR 159/05).</div>
+    <div id="nkaLgLeerInfo"></div>
     ${gesamtFelder}
     <div style="margin:8px 0">
       <button type="button" class="btn btn-sm btn-copper" onclick="nkaLgBuchPanelToggle('${lgId}')">
@@ -23429,6 +23601,11 @@ async function modalNKALiegenschaftJahr(lgId, jahr){
 window.nkaLgDatumChange=function(){ nkaLgUpdateWohnmonate(); };
 function nkaLgUpdateWohnmonate(){
   const von=document.getElementById('nkaLgVon')?.value, bis=document.getElementById('nkaLgBis')?.value;
+  {  // A462: Leerstand der Liegenschaft (alle Haeuser, auch ohne Mieter im Zeitraum)
+    const _ids=new Set((window._nkaLgMieter||[]).map(m=>m.objektId));
+    const _lg=(typeof LIEGENSCHAFTEN!=='undefined'?LIEGENSCHAFTEN:[]).find(l=>(l.objektIds||[]).some(id=>_ids.has(id)));
+    nkaLeerInfoZeigen('nkaLgLeerInfo', _lg?_lg.objektIds:[..._ids], window._nkaLgMieter||[], von, bis);
+  }
   const n=anzahlMonate(von,bis);
   (window._nkaLgMieter||[]).forEach(m=>{
     const el=document.getElementById('nkaLgWohnM_'+m.id);
@@ -23686,15 +23863,15 @@ async function erstelleNKALiegenschaft(lgId, korrektur){
 
   /* v375: siehe Objektweg - angehakt = Leerstand zulasten der Mieter. */
   const leerstandAufMieter=document.getElementById('nkaLgLeerstand')?.checked||false;
-  const periodeMonate=anzahlMonate(von,bis)||12;
 
   // Divisoren (Flächen-/Personen-/WE-Monate) über alle Mieter
   const sumFM =mieter.reduce((s,m)=>s+flaechenMonate(m,von,bis),0);
   const sumPM =mieter.reduce((s,m)=>s+personenMonate(m,von,bis),0);
   const sumWEM=mieter.reduce((s,m)=>s+weMonate(m,von,bis),0);
-  const aktiv =mieter.filter(m=>!m._vormieter);
-  const vollFM=aktiv.reduce((s,m)=>s+(parseFloat(m.flaeche)||0),0)*periodeMonate;
-  const vollPM=aktiv.reduce((s,m)=>s+(parseInt(m.personen)||1),0)*periodeMonate;
+  /* A462: Leerstand wie im Objektweg (nkaLeerstandErmitteln), auch fuer die Gruppen-Divisoren. */
+  const _leerLg=leerstandAufMieter?[]:await nkaLeerstandErmitteln(lg.objektIds, mieter, von, bis);
+  const vollFM=sumFM+_leerLg.reduce((s,x)=>s+x.fm,0);
+  const vollPM=sumPM+_leerLg.reduce((s,x)=>s+x.pm,0);
   /* v375: Zweige getauscht, siehe Objektweg. */
   const gesamtWFL = leerstandAufMieter?sumFM:(vollFM||sumFM);
   const gesamtPers= leerstandAufMieter?sumPM:(vollPM||sumPM);
@@ -23707,6 +23884,7 @@ async function erstelleNKALiegenschaft(lgId, korrektur){
     const g=krefeldGruppeVonObjekt(m.objektId);
     if(g) gruppenFM[g]+=flaechenMonate(m,von,bis);
   });
+  _leerLg.forEach(x=>{ const g=krefeldGruppeVonObjekt(x.objektId); if(g) gruppenFM[g]+=x.fm; });   // A462
 
   // Kostenbeträge einlesen
   const kostenMap={};
@@ -32867,7 +33045,7 @@ async function ausstattungLoeschen(id){
   if(!confirm(`Eintrag „${r.gegenstand||r.titel||''}" vom ${ausstattungDatum(r.datum)} löschen?`)) return;
   for(const f of (r.fotos||[])){
     if(istFotoRef(f)){
-      await odGraph('/me/drive/items/'+encodeURIComponent(f.odId), {method:'DELETE'})
+      await odGraph(odItemAdresse(f.odId), {method:'DELETE'})
         .catch(e=>console.warn('Foto nicht gelöscht:', e));
     }
   }
@@ -37601,12 +37779,12 @@ function kautionSaldo(kd){
   return rc(grund + kautionZinsSumme(kd) - kautionAbgangSumme(kd));
 }
 
-async function modalKaution(mieterId){
+async function modalKaution(mieterId, entwurf){   // A462: entwurf = Formularstand bei Rueckkehr aus dem Zinsrechner
   if(!istVerwalter()){ toast('Nur für Admins'); return; }
   const m = await idbGet('mieter', mieterId);
   if(!m) return;
   const obj = getObj(m.objektId);
-  const kd = kautionDetailVon(m);
+  const kd = (entwurf && entwurf.mieterId === mieterId) ? entwurf.kd : kautionDetailVon(m);
   window._kautionMieterId = mieterId;
   window._kautionRaten = kd.raten.map(r=>({...r}));
   window._kautionBew   = kd.bewegungen.map(b=>({...b}));
@@ -37691,7 +37869,7 @@ async function modalKaution(mieterId){
       <textarea spellcheck="true" lang="de" id="kdNotiz" style="min-height:44px">${esc(kd.notiz||'')}</textarea></div>
 
     <div style="border-top:1px solid var(--ink-10);margin-top:8px;padding-top:8px">
-      <button class="btn btn-full" onclick="modalKautionZins('${mieterId}')"><i class="ti ti-percentage"></i> Zinsen berechnen (Bundesbank-Sparzins)</button>
+      <button class="btn btn-full" onclick="kautionZinsOeffnen('${mieterId}')"><i class="ti ti-percentage"></i> Zinsen berechnen (Bundesbank-Sparzins)</button>
     </div>
 
     <div class="f-row" style="margin-top:12px">
@@ -37704,14 +37882,55 @@ async function modalKaution(mieterId){
   kautionBewRender();
 }
 
+/* A462: Formularstand der Kaution - Speichern und Zinsrechner lesen dieselbe Quelle. */
+function kautionFormularLesen(kdBasis){
+  const kd = {...kdBasis};
+  kd.art        = document.getElementById('kdArt').value;
+  kd.status     = document.getElementById('kdStatus').value;
+  kd.betrag     = parseBetrag(document.getElementById('kdBetrag').value);
+  kd.eingang    = document.getElementById('kdEingang').value;
+  kd.kontoBank  = document.getElementById('kdBank')?.value?.trim()||'';
+  kd.verzinsung = document.getElementById('kdZins')?.value||'';
+  kd.kontoIban  = document.getElementById('kdIban')?.value?.trim()||'';
+  kd.versicherer= document.getElementById('kdVersicherer')?.value?.trim()||'';
+  kd.buergschaftNr=document.getElementById('kdBuergNr')?.value?.trim()||'';
+  kd.raten      = kautionRatenCollect().filter(r=>r.betrag||r.datum);
+  kd.bewegungen = kautionBewCollect().filter(b=>b.betrag||b.notiz);
+  kd.notiz      = document.getElementById('kdNotiz')?.value?.trim()||'';
+  return kd;
+}
+/* A462: Auszahlungen an den Mieter und Verrechnungen mindern ab ihrem Datum das verzinste Kapital und werden
+   deshalb in den Zinsrechner uebernommen. Zinsgutschriften nicht - die Zinsen rechnet der Rechner selbst. */
+function kautionAbzuegeAusBewegungen(kd){
+  return (kd.bewegungen || [])
+    .filter(b => (b.art === 'auszahlung' || b.art === 'verrechnung') && parseBetrag(b.betrag) > 0)
+    .map(b => ({ datum:b.datum || '', betrag:parseBetrag(b.betrag), grund:b.notiz || (b.art === 'auszahlung' ? 'Auszahlung an Mieter' : 'Verrechnung') }))
+    .sort((a, b) => String(a.datum).localeCompare(String(b.datum)));
+}
+/* A462: Aus dem Kautionsformular in den Zinsrechner - mit dem Stand im Formular, auch wenn noch nicht
+   gespeichert; "Zurueck" bringt diesen Stand wieder ins Formular (bis A461 ging er verloren). */
+async function kautionZinsOeffnen(mieterId){
+  const m = await idbGet('mieter', mieterId);
+  if(!m) return;
+  window._kautionEntwurf = document.getElementById('kdArt') ? { mieterId, kd:kautionFormularLesen(kautionDetailVon(m)) } : null;
+  await modalKautionZins(mieterId);
+}
+async function kautionZinsZurueck(mieterId){
+  const ent = window._kautionEntwurf;
+  window._kautionEntwurf = null;
+  await modalKaution(mieterId, ent);
+}
+
 // ── Kautionszins-Rechner (v77) ──────────────────────────────────
 async function modalKautionZins(mieterId){
   if(!istVerwalter()){ toast('Nur für Admins'); return; }
   const m=await idbGet('mieter', mieterId);
   if(!m) return;
-  const kd=kautionDetailVon(m);
+  /* A462: Formularstand der Kaution (falls von dort geoeffnet); Auszahlungen/Verrechnungen als Abzuege. */
+  const _ent = (window._kautionEntwurf && window._kautionEntwurf.mieterId === mieterId) ? window._kautionEntwurf : null;
+  const kd = _ent ? _ent.kd : kautionDetailVon(m);
   window._kzMieterId=mieterId;
-  window._kzAbzuege=[]; // {datum, betrag, grund}
+  window._kzAbzuege=kautionAbzuegeAusBewegungen(kd); // {datum, betrag, grund}
   const heute=today();
   const kautBetrag=parseBetrag(kd.betrag)||kautionRatenSumme(kd)||0;
   const beginn=kd.eingang || m.einzugISO || (m.einzug&&m.einzug.includes('.')?m.einzug.split('.').reverse().join('-'):'') || '';
@@ -37744,20 +37963,20 @@ async function modalKautionZins(mieterId){
         <div style="font-size:12px;font-weight:600;color:var(--ink-60)"><i class="ti ti-cash-banknote"></i> Bereits ausgezahlte Beträge / Abzüge</div>
         <button type="button" class="btn btn-sm" data-action-click="kzAbzugAdd"><i class="ti ti-plus"></i></button>
       </div>
-      <div style="font-size:11px;color:var(--ink-40);margin-bottom:6px">Ausgezahlte Teilbeträge mindern ab dem genannten Datum das verzinste Kapital.</div>
+      <div style="font-size:11px;color:var(--ink-40);margin-bottom:6px">Ausgezahlte Teilbeträge mindern ab dem genannten Datum das verzinste Kapital.${window._kzAbzuege.length ? ' Aus der Kaution übernommen: ' + window._kzAbzuege.length + (window._kzAbzuege.length === 1 ? ' Auszahlung/Verrechnung.' : ' Auszahlungen/Verrechnungen.') : ''}</div>
       <div id="kzAbzugListe"></div>
     </div>
 
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" onclick="kzBerechnen('${mieterId}')"><i class="ti ti-calculator"></i> Berechnen</button>
-      <button class="btn btn-full" onclick="modalKaution('${mieterId}')">Zurück</button>
+      <button class="btn btn-full" onclick="kautionZinsZurueck('${mieterId}')">Zurück</button>
     </div>
     <div id="kzErgebnis" style="margin-top:12px"></div>`);
   kzAbzugRender();
 }
 
-function kzAbzugAdd(){ (window._kzAbzuege=window._kzAbzuege||[]).push({datum:today(),betrag:'',grund:''}); kzAbzugRender(); }
-function kzAbzugDel(i){ window._kzAbzuege.splice(i,1); kzAbzugRender(); }
+function kzAbzugAdd(){ window._kzAbzuege=kzAbzugCollect(); window._kzAbzuege.push({datum:today(),betrag:'',grund:''}); kzAbzugRender(); }   // A462: Eingaben bleiben
+function kzAbzugDel(i){ window._kzAbzuege=kzAbzugCollect().filter((_,x)=>x!==i); kzAbzugRender(); }
 function kzAbzugCollect(){
   const out=[]; const list=window._kzAbzuege||[];
   for(let i=0;i<list.length;i++){
@@ -38066,19 +38285,7 @@ function kautionSaldoRender(){
 async function saveKaution(mieterId){
   const m = await idbGet('mieter', mieterId);
   if(!m) return;
-  const kd = kautionDetailVon(m);
-  kd.art        = document.getElementById('kdArt').value;
-  kd.status     = document.getElementById('kdStatus').value;
-  kd.betrag     = parseBetrag(document.getElementById('kdBetrag').value);
-  kd.eingang    = document.getElementById('kdEingang').value;
-  kd.kontoBank  = document.getElementById('kdBank')?.value?.trim()||'';
-  kd.verzinsung = document.getElementById('kdZins')?.value||'';
-  kd.kontoIban  = document.getElementById('kdIban')?.value?.trim()||'';
-  kd.versicherer= document.getElementById('kdVersicherer')?.value?.trim()||'';
-  kd.buergschaftNr=document.getElementById('kdBuergNr')?.value?.trim()||'';
-  kd.raten      = kautionRatenCollect().filter(r=>r.betrag||r.datum);
-  kd.bewegungen = kautionBewCollect().filter(b=>b.betrag||b.notiz);
-  kd.notiz      = document.getElementById('kdNotiz')?.value?.trim()||'';
+  const kd = kautionFormularLesen(kautionDetailVon(m));   // A462
   m.kautionDetail = kd;
   // Altfeld m.kaution synchron halten (für Listen/Export/Altfunktionen)
   m.kaution = kd.art==='raten' ? kautionRatenSumme(kd) : kd.betrag;
@@ -41152,6 +41359,14 @@ async function renderSettings(){
       <div id="onedriveSyncCard"></div>
     </div>`:''}
 
+    ${isAdmin && !istHmSyncGeraet()?`<div class="settings-card" data-tab="daten">
+      <div class="card-hdr"><i class="ti ti-user-share"></i> Hausmeister mit eigenem Microsoft-Konto</div>
+      <p style="font-size:13px;color:var(--ink-40);margin:0 0 10px;line-height:1.6">Der Hausmeister bekommt nur den Ordner
+        <b>NadigPfau/Hausmeister</b> (Hausmeister-Datei und seine Fotos), nicht dein übriges OneDrive.</p>
+      <div id="hmFreigabeEl"><button class="btn btn-primary btn-full" data-action-click="hmFreigabeBereitstellen">
+        <i class="ti ti-folder-plus"></i> Ordner bereitstellen und Einrichtungscode erzeugen</button></div>
+    </div>`:''}
+
     <div style="text-align:center;padding:14px 0 24px;color:var(--ink-40);font-size:12px">
       <i class="ti ti-package" style="font-size:14px"></i> Nadig Pfau Immobilienverwaltung<br>
       App-Version ${APP_VERSION}
@@ -42300,7 +42515,43 @@ const OD_FILE_URL   = 'https://graph.microsoft.com/v1.0/me/drive/root:/NadigPfau
    Grenze der Massnahme (dokumentiert): Solange alle Geraete mit demselben
    Microsoft-Konto syncen, ist die Trennung App-seitig. Harte Trennung erfordert
    ein eigenes Microsoft-Konto je Hausmeister mit Freigabe NUR auf die HM-Datei. */
-const OD_FILE_URL_HM = 'https://graph.microsoft.com/v1.0/me/drive/root:/NadigPfau/immo_daten_hm.json:/content';
+/* A463: Die Hausmeister-Datei liegt in einem EIGENEN Ordner. Nur dieser Ordner wird an das Microsoft-Konto
+   des Hausmeisters freigegeben - die harte Trennung, die oben als Grenze beschrieben ist. Bis A462 lag die
+   Datei direkt in NadigPfau/; sie wird im Uebergang noch gelesen (OD_FILE_URL_HM_ALT). */
+const HM_ORDNER = 'NadigPfau/Hausmeister';
+const OD_FILE_URL_HM_ALT = 'https://graph.microsoft.com/v1.0/me/drive/root:/NadigPfau/immo_daten_hm.json:/content';
+const OD_SCOPES_FREIGABE = 'Files.ReadWrite.All User.Read offline_access';   // Zugriff auf freigegebene Ordner
+let HM_FREIGABE = null;   // {driveId, itemId} - nur HM-Geraete mit eigenem Microsoft-Konto (settings/hmFreigabe)
+
+async function hmFreigabeLaden(){
+  try{ const pr=await idbGet('settings','syncProfil'); if(pr && pr.value==='hm') SYNC_PROFIL='hm'; }catch(_){}
+  try{
+    const f=await idbGet('settings','hmFreigabe');
+    HM_FREIGABE = (f && f.value && f.value.driveId && f.value.itemId) ? { driveId:String(f.value.driveId), itemId:String(f.value.itemId) } : null;
+  }catch(_){ HM_FREIGABE = null; }
+}
+function hmFreigabeAktiv(){ return !!(HM_FREIGABE && istHmSyncGeraet()); }
+function odScopes(){ return hmFreigabeAktiv() ? OD_SCOPES_FREIGABE : OD_SCOPES; }
+/* Graph-Adresse (ohne Basis-URL) fuer einen Pfad relativ zur Laufwerkswurzel, z. B. 'NadigPfau/Objekte/…'.
+   Mit Freigabe: nur innerhalb von HM_ORDNER, ueber Laufwerk und Ordner des Verwalters. */
+function odPfadAdresse(pfad){
+  const p = String(pfad || '');
+  if(!hmFreigabeAktiv()) return '/me/drive/root:/' + encodeURI(p);
+  const basis = '/drives/' + encodeURIComponent(HM_FREIGABE.driveId) + '/items/' + encodeURIComponent(HM_FREIGABE.itemId);
+  if(p === HM_ORDNER) return basis;
+  if(!p.startsWith(HM_ORDNER + '/')) throw new Error('Außerhalb des freigegebenen Hausmeister-Ordners: ' + p);
+  return basis + ':/' + encodeURI(p.slice(HM_ORDNER.length + 1));
+}
+function odKinderAdresse(pfad){
+  if(hmFreigabeAktiv() && String(pfad) === HM_ORDNER) return odPfadAdresse(pfad) + '/children';
+  return odPfadAdresse(pfad) + ':/children';
+}
+function odItemAdresse(id){
+  return hmFreigabeAktiv()
+    ? '/drives/' + encodeURIComponent(HM_FREIGABE.driveId) + '/items/' + encodeURIComponent(id)
+    : '/me/drive/items/' + encodeURIComponent(id);
+}
+function hmDateiUrl(){ return 'https://graph.microsoft.com/v1.0' + odPfadAdresse(HM_ORDNER + '/immo_daten_hm.json') + ':/content'; }
 
 let SYNC_PROFIL = 'voll';   // wird in initApp aus settings/syncProfil geladen
 
@@ -42584,8 +42835,15 @@ async function syncFromOneDriveHM(){
   }
   setSyncStatus('pending');
   try {
-    const geladenHM = await odDateiLaden(token, OD_FILE_URL_HM);
+    let geladenHM = await odDateiLaden(token, hmDateiUrl());
+    // A463: Uebergang - solange der Verwalter die neue Datei noch nicht geschrieben hat
+    if (geladenHM.status === 404 && !hmFreigabeAktiv()) geladenHM = await odDateiLaden(token, OD_FILE_URL_HM_ALT);
     if (geladenHM.status === 404){
+      if (hmFreigabeAktiv()){
+        setSyncStatus('offline', {richtung:'geladen', fehler:'Hausmeister-Ordner nicht gefunden – Freigabe in OneDrive und Anmeldung mit dem eingeladenen Konto prüfen'});
+        toast('Kein Zugriff auf den Hausmeister-Ordner. Bitte prüfen: Freigabe vorhanden und mit dem eingeladenen Microsoft-Konto angemeldet?', 9000);
+        return {ok:false, grund:'Hausmeister-Ordner nicht erreichbar'};
+      }
       setSyncStatus('offline', {richtung:'geladen',
         fehler:'Hausmeister-Datei noch nicht bereitgestellt'});
       toast('Hausmeister-Daten noch nicht bereitgestellt – bitte einmal am Verwalter-Gerät synchronisieren.');
@@ -42595,6 +42853,7 @@ async function syncFromOneDriveHM(){
       const eLeer = new Error('Hausmeister-Datei ist leer (0 Bytes) – vermutlich abgebrochener Upload');
       eLeer._korrupt = true; throw eLeer;
     }
+    hmKontoPruefen(token);   // A463: Warnung, falls doch das Verwalter-Konto angemeldet ist
     let backup;
     try { backup = JSON.parse(geladenHM.text); }
     catch(pe){
@@ -42639,7 +42898,7 @@ async function syncToOneDriveHM(){
     // beim Upload unveraendert erhalten.
     let remote = null;
     try {
-      const head = await fetchMitTimeout(OD_FILE_URL_HM, {headers:{'Authorization':'Bearer '+token}}, OD_SYNC_TIMEOUT);
+      const head = await fetchMitTimeout(hmDateiUrl(), {headers:{'Authorization':'Bearer '+token}}, OD_SYNC_TIMEOUT);   // A463
       if (head.ok) remote = await head.json();
     } catch(e){ /* offline/404: unten normaler Upload */ }
     if (remote){
@@ -42669,7 +42928,7 @@ async function syncToOneDriveHM(){
       }
     } catch(e){}
     const json = JSON.stringify(out);
-    const r = await fetchMitTimeout(OD_FILE_URL_HM, {
+    const r = await fetchMitTimeout(hmDateiUrl(), {   // A463
       method:'PUT',
       headers:{'Authorization':'Bearer '+token,'Content-Type':'application/json'},
       body: json,
@@ -42686,8 +42945,12 @@ async function syncToOneDriveHM(){
 
 // ── Verwalter-Geraet: HM-Aenderungen zurueckholen (VOR dem Voll-Upload) ──
 async function hmRueckwegMergen(token){
+  /* A463: neue Datei im Hausmeister-Ordner, im Uebergang zusaetzlich die alte (HM-Geraete mit A462) */
+  for (const url of [hmDateiUrl(), OD_FILE_URL_HM_ALT]) await hmRueckwegMergenAus(token, url);
+}
+async function hmRueckwegMergenAus(token, url){
   try {
-    const r = await fetchMitTimeout(OD_FILE_URL_HM, {headers:{'Authorization':'Bearer '+token}}, OD_SYNC_TIMEOUT);
+    const r = await fetchMitTimeout(url, {headers:{'Authorization':'Bearer '+token}}, OD_SYNC_TIMEOUT);
     if (!r.ok) return;
     const remote = await r.json();
     if (!remote || !remote.updatedAt) return;
@@ -42705,9 +42968,11 @@ async function hmRueckwegMergen(token){
 async function hmDateiSchreiben(token){
   try {
     const b = await hmBackupErzeugen();
+    // A463: Ordner sicherstellen; scheitert das, schreibt der PUT unten trotzdem (Graph legt den Pfad an)
+    if (!window._hmOrdnerDa){ try { await odEnsureFolder(HM_ORDNER); window._hmOrdnerDa = true; } catch(eo){ console.warn('Hausmeister-Ordner:', eo && eo.message); } }
     // v254: ueber den gepruefften Schreibweg – eine abgeschnittene HM-Datei blieb
     // bisher unbemerkt und haette Hausmeister-Geraete lahmgelegt.
-    await odDateiSchreiben(token, OD_FILE_URL_HM, JSON.stringify(b));
+    await odDateiSchreiben(token, hmDateiUrl(), JSON.stringify(b));
     await idbPut('settings', {id:'lastSyncHM', value: b.updatedAt});
   } catch(e){ console.warn('HM-Datei schreiben:', e); }
 }
@@ -42778,6 +43043,135 @@ async function genBackupSichern(token, json){
    Bestand bleibt auf dem Verwalter-Geraet und in OneDrive vollstaendig erhalten.
    Ruecknahme hm->voll ist auf dem HM-Geraet bewusst nicht per UI moeglich (kein
    Admin-Benutzer mehr vorhanden); Rueckweg = Browser-Websitedaten loeschen + Neuanmeldung. */
+/* ── A463: Hausmeister mit eigenem Microsoft-Konto ───────────────────────────────────────────
+   Verwalter: Ordner NadigPfau/Hausmeister anlegen, Hausmeister-Datei hineinschreiben, Einrichtungscode
+   zeigen (Laufwerk + Ordner, kein Geheimnis: ohne Freigabe nutzlos). Optional Einladung per E-Mail ueber
+   Microsoft (die Adresse wird nicht gespeichert). HM-Geraet: Code eingeben, mit dem eigenen Konto anmelden. */
+const HM_CODE_PRAEFIX = 'NPHM1.';
+function hmCodeBauen(driveId, itemId){
+  const b = btoa(unescape(encodeURIComponent(JSON.stringify({ d:driveId, i:itemId }))));
+  return HM_CODE_PRAEFIX + b.replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+}
+function hmCodeLesen(code){
+  try{
+    const c = String(code||'').trim().replace(/\s+/g,'');
+    if(!c.startsWith(HM_CODE_PRAEFIX)) return null;
+    let b = c.slice(HM_CODE_PRAEFIX.length).replace(/-/g,'+').replace(/_/g,'/');
+    while(b.length % 4) b += '=';
+    const o = JSON.parse(decodeURIComponent(escape(atob(b))));
+    const gut = x => typeof x === 'string' && /^[A-Za-z0-9!_.\-]{1,200}$/.test(x);
+    return (o && gut(o.d) && gut(o.i)) ? { driveId:o.d, itemId:o.i } : null;
+  }catch(_){ return null; }
+}
+async function hmFreigabeBereitstellen(){
+  const el = document.getElementById('hmFreigabeEl');
+  if(!odTokens){ toast('Bitte zuerst mit OneDrive anmelden'); return; }
+  if(el) el.innerHTML = '<div style="font-size:13px;color:var(--ink-40)"><i class="ti ti-loader"></i> Ordner wird bereitgestellt …</div>';
+  try{
+    const ordner = await odEnsureFolder(HM_ORDNER);
+    if(!ordner || !ordner.id) throw new Error('Ordner konnte nicht angelegt werden');
+    let driveId = ordner.parentReference && ordner.parentReference.driveId;
+    if(!driveId){ const dr = await odGraph('/me/drive?$select=id'); driveId = dr && dr.id; }
+    if(!driveId) throw new Error('Laufwerk nicht ermittelbar');
+    const token = await odGetToken();
+    if(token) await hmDateiSchreiben(token);
+    window._hmOrdnerId = ordner.id;
+    const code = hmCodeBauen(driveId, ordner.id);
+    if(el) el.innerHTML = `
+      <div style="font-size:13px;line-height:1.6;margin-bottom:8px"><i class="ti ti-circle-check" style="color:var(--green)"></i>
+        Ordner <b>NadigPfau/Hausmeister</b> ist bereit, die Hausmeister-Datei liegt darin.</div>
+      <div class="f"><label for="hmCodeAnzeige">Einrichtungscode für das Hausmeister-Gerät</label>
+        <input type="text" id="hmCodeAnzeige" readonly value="${esc(code)}" style="font-family:monospace;font-size:12px"></div>
+      <button class="btn btn-sm" data-action-click="hmCodeKopieren"><i class="ti ti-copy"></i> Code kopieren</button>
+      <div style="border-top:1px solid var(--ink-10);margin-top:12px;padding-top:10px">
+        <div class="f"><label for="hmEinladeMail">Freigeben für (E-Mail-Adresse seines Microsoft-Kontos)</label>
+          <input type="email" id="hmEinladeMail" autocomplete="off" placeholder="name@beispiel.de"></div>
+        <button class="btn btn-sm btn-copper" data-action-click="hmFreigabeEinladen"><i class="ti ti-mail-forward"></i> Ordner freigeben (Kann bearbeiten)</button>
+        <div style="font-size:11px;color:var(--ink-40);margin-top:6px;line-height:1.5">Die Adresse wird nicht gespeichert. Alternativ in OneDrive
+          den Ordner NadigPfau/Hausmeister → Teilen → Person einladen → „Kann bearbeiten“.</div>
+      </div>
+      <div style="font-size:12px;color:var(--ink-60);margin-top:10px;line-height:1.6"><b>Am Hausmeister-Gerät:</b> OneDrive-Symbol oben →
+        „Einrichtungscode“ einfügen → „Code übernehmen“ → mit seinem eigenen Microsoft-Konto anmelden.</div>`;
+  }catch(e){
+    console.warn('Hausmeister-Ordner:', e && e.message);
+    if(el) el.innerHTML = `<div style="font-size:13px;color:var(--red)"><i class="ti ti-alert-triangle"></i> ${esc(String(e && e.message || e))}</div>
+      <button class="btn btn-sm" style="margin-top:8px" data-action-click="hmFreigabeBereitstellen"><i class="ti ti-refresh"></i> Erneut versuchen</button>`;
+  }
+}
+async function hmCodeKopieren(){
+  const i = document.getElementById('hmCodeAnzeige');
+  if(!i) return;
+  try{ await navigator.clipboard.writeText(i.value); toast('Code kopiert'); }
+  catch(_){ i.select(); toast('Bitte den markierten Code kopieren'); }
+}
+async function hmFreigabeEinladen(){
+  const feld = document.getElementById('hmEinladeMail');
+  const mail = String(feld && feld.value || '').trim();
+  if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(mail)){ toast('Bitte eine gültige E-Mail-Adresse eingeben'); return; }
+  try{
+    let id = window._hmOrdnerId;
+    if(!id){ const o = await odGraph(odPfadAdresse(HM_ORDNER) + '?$select=id'); id = o && o.id; }
+    if(!id || id === undefined) throw new Error('Ordner nicht gefunden – zuerst bereitstellen');
+    await odGraph('/me/drive/items/' + encodeURIComponent(id) + '/invite', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ recipients:[{ email:mail }], requireSignIn:true, sendInvitation:true, roles:['write'],
+        message:'Zugang zum Hausmeister-Ordner der Nadig Pfau App' }) });
+    if(feld) feld.value = '';
+    toast('Ordner freigegeben – Microsoft schickt eine Einladung an diese Adresse');
+  }catch(e){
+    console.warn('Freigabe per Einladung fehlgeschlagen:', e && e.message);   // ohne Adresse
+    toast('Freigabe fehlgeschlagen. Bitte in OneDrive selbst teilen: Ordner NadigPfau/Hausmeister → Teilen → „Kann bearbeiten“.', 9000);
+  }
+}
+async function hmCodeUebernehmen(){
+  const feld = document.getElementById('hmCodeEingabe');
+  const f = hmCodeLesen(feld && feld.value);
+  if(!f){ toast('Der Code ist ungültig – bitte vollständig einfügen (beginnt mit NPHM1.)'); return; }
+  if(!istHmSyncGeraet()){ toast('Nur auf Hausmeister-Geräten'); return; }
+  await idbPut('settings', { id:'hmFreigabe', value:f });
+  HM_FREIGABE = f;
+  /* Die bisherige Anmeldung (ggf. das Verwalter-Konto) wird verworfen - ab jetzt das eigene Konto. */
+  odTokens = null; await odClearTokens();
+  await idbDelete('od_auth','still').catch(()=>{});
+  try { localStorage.removeItem('od_still_fehl'); localStorage.removeItem('od_fenster_fehl'); } catch(_){}
+  setSyncStatus('offline', {richtung:'Anmeldung', fehler:'Bitte mit dem eigenen Microsoft-Konto anmelden'});
+  closeModal();
+  toast('Code übernommen – jetzt mit dem eigenen Microsoft-Konto anmelden');
+  msalLogin();
+}
+async function hmFreigabeEntfernen(){
+  if(!confirm('Freigabe auf diesem Gerät entfernen? Das Gerät meldet sich von OneDrive ab.')) return;
+  await idbDelete('settings','hmFreigabe').catch(()=>{});
+  HM_FREIGABE = null;
+  odTokens = null; await odClearTokens();
+  setSyncStatus('offline');
+  closeModal();
+  toast('Freigabe entfernt');
+}
+/* Warnt einmal je Sitzung, wenn auf einem Freigabe-Geraet doch das Konto des Verwalters angemeldet ist. */
+async function hmKontoPruefen(token){
+  if(!hmFreigabeAktiv() || window._hmKontoGeprueft) return;
+  window._hmKontoGeprueft = true;
+  try{
+    const r = await fetchMitTimeout('https://graph.microsoft.com/v1.0/me/drive?$select=id', {headers:{'Authorization':'Bearer '+token}}, 15000);
+    const d = r.ok ? await r.json() : null;
+    if(d && d.id && String(d.id).toLowerCase() === HM_FREIGABE.driveId.toLowerCase())
+      toast('Achtung: Angemeldet ist das Konto des Verwalters. Für die Trennung bitte mit dem eigenen Microsoft-Konto anmelden.', 10000);
+  }catch(_){}
+}
+function hmFreigabeHtml(){
+  if(!istHmSyncGeraet()) return '';
+  return `<div style="border-top:1px solid var(--ink-10);margin-top:12px;padding-top:10px">
+    <div style="font-weight:600;font-size:13px;margin-bottom:6px"><i class="ti ti-user-share"></i> Eigenes Microsoft-Konto (Hausmeister)</div>
+    ${HM_FREIGABE
+      ? `<div style="font-size:12px;color:var(--ink-60);line-height:1.6">Aktiv: Dieses Gerät nutzt nur den freigegebenen Hausmeister-Ordner.</div>
+         <button class="btn btn-sm" style="margin-top:6px" data-action-click="hmFreigabeEntfernen"><i class="ti ti-unlink"></i> Freigabe entfernen</button>`
+      : `<div class="f"><label for="hmCodeEingabe">Einrichtungscode vom Verwalter</label>
+           <input type="text" id="hmCodeEingabe" autocomplete="off" placeholder="NPHM1.…" style="font-family:monospace;font-size:12px"></div>
+         <button class="btn btn-sm btn-primary" data-action-click="hmCodeUebernehmen"><i class="ti ti-key"></i> Code übernehmen</button>`}
+  </div>`;
+}
+
 async function syncProfilUmstellen(){
   const sel = document.getElementById('syncProfilSel');
   if (!sel) return;
@@ -42951,6 +43345,11 @@ async function odLoadTokens() {
 async function odGetToken() {
   if (!odTokens) return null;
   if (Date.now() < odTokens.expires_at) return odTokens.access_token;
+  /* A463: Die Anmeldung gilt bei Microsoft fest 24 h. Ab 20 h wird sie unsichtbar im versteckten Fenster
+     erneuert (wie Microsofts MSAL in der Familien-App) - nicht erst beim naechsten Start. */
+  if (odTokens.rt_ab && Date.now() - odTokens.rt_ab > OD_STILL_NACH_STUNDEN * 3600000 && odFensterErlaubt()){
+    if (await odStillImFenster()) return odTokens && odTokens.access_token;
+  }
   if (!odTokens.refresh_token) { odTokens = null; return null; }
   try {
     const r = await fetchMitTimeout(OD_TOKEN_URL, {
@@ -42958,7 +43357,7 @@ async function odGetToken() {
       headers:{'Content-Type':'application/x-www-form-urlencoded'},
       body: new URLSearchParams({
         client_id: OD_CLIENT_ID, grant_type:'refresh_token',
-        refresh_token: odTokens.refresh_token, scope: OD_SCOPES,
+        refresh_token: odTokens.refresh_token, scope: odScopes(),   // A463
       }),
     });
     let t=null;
@@ -42971,11 +43370,13 @@ async function odGetToken() {
       // erneut sein Microsoft-Passwort eingeben (Nutzerbefund).
       const dauerhaftFehler = ['invalid_grant','invalid_client','unauthorized_client'].includes(t.error);
       if (dauerhaftFehler){
+        if (odFensterErlaubt() && await odStillImFenster()) return odTokens && odTokens.access_token;   // A463
         console.warn('OneDrive-Token dauerhaft ungueltig ('+t.error+'):', t.error_description||'');
         /* A455: Hinweis ablegen - der naechste Start erneuert die Anmeldung still. */
         try { await idbPut('od_auth', { id:'still', konto: odTokens.konto || '', name: odTokens.user_name || '', ab: nowIso() }); } catch(_){}
         odTokens = null; await odClearTokens();
         setSyncStatus('offline', {richtung:'Anmeldung', fehler:'Microsoft-Anmeldung abgelaufen – wird beim nächsten Start der App erneuert, sonst bitte neu anmelden'});
+        odNeuVerbindenZeigen();   // A463
         return null;
       }
       console.warn('OneDrive-Token vorruebergehend nicht erneuerbar ('+t.error+') – Tokens bleiben erhalten.');
@@ -43020,7 +43421,7 @@ async function msalLogin() {
     localStorage.setItem('od_pkce_s', state);
     const params = new URLSearchParams({
       client_id: OD_CLIENT_ID, response_type:'code',
-      redirect_uri: OD_REDIRECT, scope: OD_SCOPES,
+      redirect_uri: OD_REDIRECT, scope: odScopes(),   // A463
       state, code_challenge: challenge, code_challenge_method:'S256',
       prompt:'select_account',
     });
@@ -43089,7 +43490,7 @@ function odAnmeldungEmpfangen(){
           try { await odPersistTokens(); } catch(e) {}
         }
       } catch(e) { console.warn('Benutzername laden:', e); }   // nicht kritisch
-      setSyncStatus('ok');
+      setSyncStatus('ok'); odNeuVerbindenWeg();   // A463
       toast('✓ Mit OneDrive verbunden: ' + ((odTokens&&odTokens.user_name)||''));
       const setupAktiv = document.getElementById('setupScreen')?.classList.contains('active')
         || (typeof CU==='undefined' || !CU);
@@ -43136,7 +43537,7 @@ async function odStillAnmelden(){
     localStorage.setItem('od_still_lauf', String(jetzt));
     localStorage.setItem('od_still_aktiv', '1');
     const params = new URLSearchParams({
-      client_id: OD_CLIENT_ID, response_type:'code', redirect_uri: OD_REDIRECT, scope: OD_SCOPES,
+      client_id: OD_CLIENT_ID, response_type:'code', redirect_uri: OD_REDIRECT, scope: odScopes(),   // A463
       state, code_challenge: challenge, code_challenge_method:'S256', prompt:'none',
     });
     if (konto) params.set('login_hint', konto);
@@ -43144,11 +43545,116 @@ async function odStillAnmelden(){
     return true;
   } catch(e) { console.warn('Stille Anmeldung:', e && e.message); return false; }
 }
-/* Beim Start: nach 20 Stunden oder nach gescheiterter Erneuerung still neu anmelden. */
+/* A463: Stille Erneuerung im VERSTECKTEN FENSTER (iframe) statt Seitenwechsel - so macht es Microsofts
+   MSAL-Bibliothek (Familien-App). Microsoft leitet bei prompt=none ohne Eingabe auf die eigene Rueckkehrseite
+   auth.html zurueck, solange die Microsoft-Sitzung im Browser besteht ("Angemeldet bleiben"). Die Seite
+   enthaelt nichts; das Hauptfenster liest die Adresse (gleiche Herkunft) und loest den Code mit PKCE ein.
+   Code und Pruefwert verlassen das Hauptfenster nicht, gespeichert wird nur das Ergebnis (wie bisher). */
+const OD_REDIRECT_FENSTER = OD_REDIRECT + 'auth.html';
+const OD_FENSTER_MS = 10000;          // laenger wartet niemand; danach gilt der Versuch als gescheitert
+const OD_FENSTER_PAUSE_MIN = 60;      // nach einem Fehlschlag so lange kein neuer Fensterversuch
+let _odFensterLauf = null;
+function odFensterErlaubt(){
+  if (navigator.onLine === false) return false;
+  try { return Date.now() - (+(localStorage.getItem('od_fenster_fehl') || 0)) > OD_FENSTER_PAUSE_MIN * 60000; } catch(_){ return true; }
+}
+function odStillImFenster(){
+  if (_odFensterLauf) return _odFensterLauf;
+  _odFensterLauf = (async () => {
+    let f = null;
+    try {
+      if (!document.body) return false;
+      const h = await odStillHinweis();
+      const konto = (odTokens && odTokens.konto) || (h && h.konto) || '';
+      const {verifier, challenge} = await pkceGen();
+      const state = 'f' + crypto.getRandomValues(new Uint8Array(8)).reduce((s,b)=>s+b.toString(16).padStart(2,'0'),'');
+      const params = new URLSearchParams({
+        client_id: OD_CLIENT_ID, response_type:'code', redirect_uri: OD_REDIRECT_FENSTER, scope: odScopes(),
+        state, code_challenge: challenge, code_challenge_method:'S256', prompt:'none',
+      });
+      if (konto) params.set('login_hint', konto);
+      f = document.createElement('iframe');
+      f.title = 'Microsoft-Anmeldung'; f.setAttribute('aria-hidden', 'true'); f.tabIndex = -1;
+      f.style.cssText = 'position:absolute;width:0;height:0;border:0;visibility:hidden';
+      document.body.appendChild(f);
+      f.src = OD_AUTH_URL + '?' + params;
+      const adresse = await new Promise(res => {
+        const ende = Date.now() + OD_FENSTER_MS;
+        const tick = setInterval(() => {
+          let href = '';
+          try { href = f.contentWindow.location.href; } catch(_){ href = ''; }   // Microsoft-Seite: nicht lesbar
+          if (href && href.startsWith(OD_REDIRECT_FENSTER)) { clearInterval(tick); res(href); return; }
+          if (Date.now() > ende) { clearInterval(tick); res(''); }
+        }, 100);
+      });
+      const p = adresse ? new URL(adresse).searchParams : null;
+      if (!p || p.get('state') !== state || p.get('error') || !p.get('code')) {
+        try { localStorage.setItem('od_fenster_fehl', String(Date.now())); } catch(_){}
+        console.info('OneDrive: stille Erneuerung im Fenster nicht möglich' + (p && p.get('error') ? ' (' + p.get('error') + ')' : ''));
+        return false;
+      }
+      const r = await fetchMitTimeout(OD_TOKEN_URL, {
+        method:'POST',
+        headers:{'Content-Type':'application/x-www-form-urlencoded'},
+        body: new URLSearchParams({ client_id: OD_CLIENT_ID, grant_type:'authorization_code',
+          code: p.get('code'), redirect_uri: OD_REDIRECT_FENSTER, code_verifier: verifier }),
+      });
+      let tk = null; try { tk = await r.json(); } catch(_){ tk = null; }
+      if (!tk || tk.error || !tk.access_token) {
+        try { localStorage.setItem('od_fenster_fehl', String(Date.now())); } catch(_){}
+        return false;
+      }
+      if (!odTokens) {   // nach verworfener Anmeldung: Name und Konto aus dem Hinweis
+        const vorher = await idbGet('od_auth','tokens').catch(()=>null);
+        odTokens = { user_name: (vorher && vorher.user_name) || (h && h.name) || '', konto: (vorher && vorher.konto) || (h && h.konto) || '' };
+      }
+      await odSaveTokens(tk);
+      odTokens.rt_ab = Date.now();
+      odAnmeldungFrisch(null);
+      try { await odPersistTokens(); } catch(_){}
+      try { localStorage.removeItem('od_fenster_fehl'); } catch(_){}
+      odNeuVerbindenWeg();
+      return true;
+    } catch(e) {
+      console.warn('OneDrive-Fenstererneuerung:', e && e.message);
+      return false;
+    } finally {
+      try { if (f) f.remove(); } catch(_){}
+      _odFensterLauf = null;
+    }
+  })();
+  return _odFensterLauf;
+}
+/* A463: Leiste statt stiller Abmeldung, wenn Microsoft eine Eingabe verlangt. */
+function odNeuVerbindenZeigen(){
+  try {
+    if (!document.body || document.getElementById('odNeuBanner')) return;
+    const d = document.createElement('div');
+    d.id = 'odNeuBanner'; d.setAttribute('role', 'alert');
+    d.style.cssText = 'position:fixed;left:12px;right:12px;bottom:calc(78px + env(safe-area-inset-bottom));z-index:9000;'
+      + 'background:var(--white,#fff);border:2px solid var(--red,#dc2626);border-radius:12px;padding:10px 12px;'
+      + 'box-shadow:0 6px 20px rgba(0,0,0,.18);display:flex;align-items:center;gap:10px;font-size:13px;color:var(--ink,#1e293b)';
+    d.innerHTML = '<i class="ti ti-cloud-x" style="color:var(--red,#dc2626);font-size:20px"></i>'
+      + '<div style="flex:1;line-height:1.4"><b>OneDrive getrennt</b><br>Die Microsoft-Anmeldung ist abgelaufen.</div>'
+      + '<button class="btn btn-primary btn-sm" data-action-click="odNeuVerbinden">Neu verbinden</button>'
+      + '<button class="btn btn-sm" aria-label="Hinweis schließen" data-action-click="odNeuVerbindenWeg"><i class="ti ti-x"></i></button>';
+    document.body.appendChild(d);
+  } catch(_){}
+}
+function odNeuVerbindenWeg(){ try { const d = document.getElementById('odNeuBanner'); if (d) d.remove(); } catch(_){} }
+function odNeuVerbinden(){ odNeuVerbindenWeg(); msalLogin(); }
+
+/* Beim Start: nach 20 Stunden oder nach gescheiterter Erneuerung still neu anmelden.
+   A463: zuerst im versteckten Fenster (kein Seitenwechsel); die Weiterleitung (A455) bleibt der Rueckfall,
+   z. B. wenn der Browser Anmelde-Cookies in fremden Fenstern sperrt. */
 async function odStillBeimStart(){
   try { await odLoadTokens(); } catch(_){}
+  await hmFreigabeLaden();
   const alt = odTokens && odTokens.rt_ab && (Date.now() - odTokens.rt_ab > OD_STILL_NACH_STUNDEN * 3600000);
-  if (alt || (!odTokens && await odStillHinweis())) return await odStillAnmelden();
+  if (alt || (!odTokens && await odStillHinweis())) {
+    if (odFensterErlaubt() && await odStillImFenster()) { await idbDelete('od_auth','still').catch(()=>{}); return false; }
+    return await odStillAnmelden();
+  }
   return false;
 }
 /* Nach einer Anmeldung per Code: Zeitpunkt merken, Hinweis und Fehlermarke loeschen. */
@@ -43178,6 +43684,7 @@ async function handleOAuthRedirect() {
     console.info('Stille Anmeldung nicht moeglich (' + error + ') - normale Anmeldung noetig.');
     odTokens = null; await odClearTokens();
     setSyncStatus('offline', {richtung:'Anmeldung', fehler:'Microsoft-Anmeldung abgelaufen – bitte unter OneDrive neu anmelden („Angemeldet bleiben“ anhaken)'});
+    setTimeout(odNeuVerbindenZeigen, 1500);   // A463: nach dem Start sichtbar
     return;
   }
   if (error) {
@@ -43249,7 +43756,7 @@ async function handleOAuthRedirect() {
       odTokens.user_name = meData.displayName || meData.userPrincipalName || ''; odAnmeldungFrisch(meData);   // A455
       try { await odPersistTokens(); } catch(e) {}
     }
-    setSyncStatus('ok');
+    setSyncStatus('ok'); odNeuVerbindenWeg();   // A463
     toast('✓ Mit OneDrive verbunden: ' + (odTokens.user_name||''));
     // Wenn die App noch nicht entsperrt ist (Erststart/Login), Benutzer laden statt Settings
     const setupAktiv = document.getElementById('setupScreen')?.classList.contains('active')
@@ -43749,18 +44256,21 @@ async function odGraph(path, opts={}){
 }
 
 /* Ordner anlegen (idempotent). pfad relativ zu drive root, ohne fuehrenden /. */
-async function odEnsureFolder(pfad){
-  // Pruefen, ob schon vorhanden
-  const enc=encodeURI(pfad);
-  const ex=await odGraph(`/me/drive/root:/${enc}`).catch(()=>({__notfound:true}));
+async function odEnsureFolder(pfad, _tiefe){
+  // Pruefen, ob schon vorhanden (A463: Adresse je nach Freigabe)
+  const ex=await odGraph(odPfadAdresse(pfad)).catch(()=>({__notfound:true}));
   if(ex && !ex.__notfound && ex.id) return ex;
   // Eltern + Name trennen, dann anlegen
   const parts=pfad.split('/');
   const name=parts.pop();
   const parent=parts.join('/');
-  const parentRef = parent
-    ? `/me/drive/root:/${encodeURI(parent)}:/children`
-    : `/me/drive/root/children`;
+  /* A463: fehlende Elternordner zuerst anlegen (der Ordnerbaum-Abgleich, der das sonst erledigt,
+     laeuft auf Hausmeister-Geraeten mit Freigabe nicht). Nie oberhalb des freigegebenen Ordners. */
+  if(parent && (_tiefe||0) < 12 && !(hmFreigabeAktiv() && pfad === HM_ORDNER)){
+    const pe=await odGraph(odPfadAdresse(parent)).catch(()=>({__notfound:true}));
+    if(!pe || pe.__notfound || !pe.id) await odEnsureFolder(parent, (_tiefe||0)+1);
+  }
+  const parentRef = parent ? odKinderAdresse(parent) : `/me/drive/root/children`;
   return odGraph(parentRef, {
     method:'POST',
     headers:{'Content-Type':'application/json'},
@@ -43927,7 +44437,7 @@ async function odVerwaisteLoeschen(){
     const f = _odVerwaist[i];
     if(el) el.innerHTML = `<span style="color:var(--ink-40)">Lösche ${i+1} von ${_odVerwaist.length} …</span>`;
     try{
-      await odGraph('/me/drive/items/'+encodeURIComponent(f.id), {method:'DELETE'});
+      await odGraph(odItemAdresse(f.id), {method:'DELETE'});
       /* v322: Der Spiegel-Record in od_dateien speist die Dateiliste beim
          Mieter. Ohne dieses Entwerten bliebe die geloeschte Datei dort
          sichtbar, bis der naechste Dateisync sie als fehlend erkennt. */
@@ -44007,6 +44517,9 @@ async function odGebaeudeListe(st, mieterAlle){
    Inhalte bleiben in OneDrive; lokal nur Metadaten. */
 async function syncDateibaum(silent){
   if(odBaumSyncLauft){ return; }
+  /* A463: Hausmeister mit eigenem Konto sieht nur den freigegebenen Ordner - kein Baum-Abgleich,
+     nur die eigenen wartenden Fotos hochladen. */
+  if(hmFreigabeAktiv()){ await odPendingFlush(); return; }
   const token=await odGetToken();
   if(!token){ if(!silent) toast('Bitte zuerst mit OneDrive anmelden'); return; }
   odBaumSyncLauft=true;
@@ -44151,11 +44664,11 @@ async function odDownloadUrl(recId){
       return 'data:'+(rec.mime||'image/jpeg')+';base64,'+rec._blobB64;
     }
     if(rec.odItemId){
-      const meta=await odGraph(`/me/drive/items/${rec.odItemId}?$select=@microsoft.graph.downloadUrl,name`);
+      const meta=await odGraph(odItemAdresse(rec.odItemId) + '?$select=@microsoft.graph.downloadUrl,name');   // A463
       const url=meta && meta['@microsoft.graph.downloadUrl'];
       if(url) return url;
     }
-    const meta=await odGraph(`/me/drive/root:/${encodeURI(rec.pfad)}:/?$select=@microsoft.graph.downloadUrl`);
+    const meta=await odGraph(odPfadAdresse(rec.pfad) + ':/?$select=@microsoft.graph.downloadUrl');   // A463
     return (meta && meta['@microsoft.graph.downloadUrl']) || null;
   }catch(e){ return null; }
 }
@@ -44175,7 +44688,8 @@ async function odDateiHochladen(gruppe, knoten, kategorie, file, gebaeude){
   if(!st){ toast('Standort unbekannt'); return; }
   const knotenPfad=odKnotenPfad(st.ordner, knoten, gebaeude||'');
   const kat=(kategorie && kategorie!=='(wurzel)') ? odSafeName(kategorie) : '';
-  const ordnerPfad = kat ? knotenPfad+'/'+kat : knotenPfad;
+  let ordnerPfad = kat ? knotenPfad+'/'+kat : knotenPfad;
+  if(hmFreigabeAktiv()) ordnerPfad = HM_ORDNER + '/Fotos/' + ordnerPfad.replace(/^NadigPfau\//, '');   // A463
   const b64=await new Promise((res,rej)=>{
     const fr=new FileReader();
     fr.onload=()=>res(String(fr.result).split(',')[1]||'');
@@ -44210,13 +44724,14 @@ async function odDateiHochladen(gruppe, knoten, kategorie, file, gebaeude){
 async function odPendingFlush(){
   let ok=0, fehler=0;
   try{
-    const pending=(await idbGetAll('od_dateien')).filter(r=>r && r.pendingUpload && r._blobB64 && !r.geloescht);
+    const pending=(await idbGetAll('od_dateien')).filter(r=>r && r.pendingUpload && r._blobB64 && !r.geloescht
+      && (!hmFreigabeAktiv() || String(r.pfad||'').startsWith(HM_ORDNER + '/')));   // A463
     for(const rec of pending){
       try{
         await odEnsureFolder(rec.ordner);
         const bytes=Uint8Array.from(atob(rec._blobB64), c=>c.charCodeAt(0));
         const up=await odGraph(
-          `/me/drive/root:/${encodeURI(rec.pfad)}:/content`,
+          odPfadAdresse(rec.pfad) + ':/content',   // A463
           { method:'PUT',
             headers:{'Content-Type': rec.mime||'application/octet-stream'},
             body: bytes });
@@ -44521,6 +45036,7 @@ function showSyncInfo(){
       <button class="btn btn-primary btn-full" onclick="msalLogin();closeModal()">
         <i class="ti ti-brand-windows"></i> Mit Microsoft anmelden
       </button>`}
+    ${hmFreigabeHtml()}
     <button class="btn btn-full" style="margin-top:8px" data-action-click="closeModal">Schließen</button>`);
 };
 
