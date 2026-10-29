@@ -1350,7 +1350,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=39;   // A398: +kr_abrechnungen · A466: +excel_cache
-const APP_VERSION = '2026-10-25-A470';
+const APP_VERSION = '2026-10-29-A472';
 /* v364 (12.08.2026) – offene Punkte abgearbeitet.
    1) D1/XLSX_SRI: Der im Code hinterlegte PowerShell-Befehl war FALSCH und
       konnte nie funktionieren - Invoke-WebRequest liefert unter .Content einen
@@ -4646,6 +4646,7 @@ async function renderDash() {
       </div>`;
     }
   }
+  if(typeof dashVersionHTML === 'function') html += dashVersionHTML();   // A472
   el.innerHTML = html;
   stempelTimerStart();
 }
@@ -5665,7 +5666,7 @@ async function renderInteressenten(el, objektId){
           </div>
           ${(k.telefon||k.email)?`<div style="font-size:12px;color:var(--ink-60);margin-top:3px">
             ${k.telefon?`<i class="ti ti-phone"></i> <a href="tel:${esc(k.telefon)}">${esc(k.telefon)}</a>  `:''}
-            ${k.email?`<i class="ti ti-mail"></i> <a href="mailto:${esc(k.email)}">${esc(k.email)}</a>`:''}
+            ${k.email?`<i class="ti ti-mail"></i> <a href="#" data-action-click="interessentMailOeffnen" data-arg="${escAttr(k.id)}">${esc(k.email)}</a>`:''}
           </div>`:''}
           <div style="margin-top:6px"><span class="chip" style="background:${si.farbe}22;color:${si.farbe};font-size:10px;padding:2px 8px">${si.label}</span></div>
         </div>
@@ -5675,6 +5676,7 @@ async function renderInteressenten(el, objektId){
         <button class="btn btn-sm" onclick="modalInteressentNeu('${k.objektId||''}','${k.id}')"><i class="ti ti-pencil"></i> Bearbeiten</button>
         ${k.status!=='uebernommen'?`<button class="btn btn-sm btn-copper" onclick="interessentZuMieter('${k.id}')"><i class="ti ti-user-check"></i> Als Mieter übernehmen</button>`:''}
       ${k.status!=='uebernommen'?`<button class="btn btn-sm btn-copper" onclick="mvStartAusInteressent('${k.id}')"><i class="ti ti-file-text"></i> Mietvertrag erstellen</button>`:''}
+        ${(k.objektId && k.weNr && (k.status==='zusage'||k.status==='uebernommen'))?`<button class="btn btn-sm" data-action-click="absageModal" data-arg="${escAttr(k.objektId)}" data-arg2="${escAttr(String(k.weNr))}"><i class="ti ti-mail-x"></i> Absage an übrige</button>`:''}
         <button class="btn btn-sm btn-danger" onclick="deleteInteressent('${k.id}')"><i class="ti ti-trash"></i></button>
       </div>
     </div>`;
@@ -5887,8 +5889,10 @@ async function modalInteressentDetail(id){
         <i class="ti ti-info-circle"></i> Bewerberangaben. Entsteht kein Mietverhältnis,
         sind sie zu löschen (Art. 5 Abs. 1 lit. e DSGVO).</div>
     </div>`:''}
+    ${typeof interessentKontaktHTML === 'function' ? await interessentKontaktHTML(k) : ''}
     <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:14px">
       <button class="btn btn-sm" onclick="modalInteressentNeu('${k.objektId||''}','${k.id}')"><i class="ti ti-pencil"></i> Bearbeiten</button>
+      ${(k.objektId && k.weNr && (k.status==='zusage'||k.status==='uebernommen'))?`<button class="btn btn-sm" data-action-click="absageModal" data-arg="${escAttr(k.objektId)}" data-arg2="${escAttr(String(k.weNr))}"><i class="ti ti-mail-x"></i> Absage an übrige Bewerber</button>`:''}
       ${k.status!=='uebernommen'?`<button class="btn btn-sm btn-copper" onclick="interessentZuMieter('${k.id}')"><i class="ti ti-user-check"></i> Als Mieter übernehmen</button>`:''}
       ${k.status!=='uebernommen'?`<button class="btn btn-sm btn-copper" onclick="mvStartAusInteressent('${k.id}')"><i class="ti ti-file-text"></i> Mietvertrag erstellen</button>`:''}
       <button class="btn btn-full" style="margin-top:4px" data-action-click="closeModal">Schließen</button>
@@ -5901,6 +5905,12 @@ async function deleteInteressent(id){
   if(!k) return;
   if(!confirm(`Interessent „${k.name||''}" wirklich löschen?`)) return;
   // löscht und setzt Tombstone, damit der Eintrag beim Sync nicht zurückkehrt
+  /* A472: In der Interessentenakte abgelegte Unterlagen gehen mit (Art. 17 DSGVO), solange er kein Mieter ist. */
+  if(k.status !== 'uebernommen'){
+    for(const d of (await idbGetAll('dokumente').catch(()=>[])).filter(d => d && d.interessentId === id && !d.mieterId)){
+      try{ await dokVollstaendigLoeschen(d.id); }catch(e){ console.warn('Interessent-Dokument löschen:', e); }
+    }
+  }
   await deleteMitTombstone('interessenten', id);
   clearTimeout(window._syncTimer);
   window._syncTimer = setTimeout(()=>syncToOneDrive(), 3000);
@@ -9396,7 +9406,10 @@ function saInternHTML(id, n){
     <label style="display:flex;align-items:center;gap:5px;cursor:pointer">
       <input type="checkbox" style="width:15px;height:15px" ${n[f] ? 'checked' : ''}
         data-action-change="saHakenSetzen" data-arg="${escAttr(id)}" data-arg2="${f}">
-      ${esc(lbl)}${n[f] ? ` <span style="color:var(--ink-40)">(${esc(fmtDate(n[f]))})</span>` : ''}</label>`).join('');
+      ${esc(lbl)}${(f === 'besichtigung' && n.besichtigungTermin && n.besichtigungTermin.datum)
+        ? ` <span style="color:var(--ink-60)">am ${esc(fmtDate(n.besichtigungTermin.datum))}${n.besichtigungTermin.uhrzeit ? ', ' + esc(n.besichtigungTermin.uhrzeit) + ' Uhr' : ''}</span>
+           <button type="button" class="btn btn-sm" style="padding:1px 7px" data-action-click="besichtigungModal" data-arg="sa" data-arg2="${escAttr(id)}" title="Termin ändern"><i class="ti ti-pencil"></i></button>`
+        : (n[f] ? ` <span style="color:var(--ink-40)">(${esc(fmtDate(n[f]))})</span>` : '')}</label>`).join('');   // A472
   return `<div class="sa-intern" id="saIntern_${escAttr(id)}" style="margin-top:10px;border-top:1px dashed var(--ink-20,#c9d3df);padding-top:8px">
     <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:12px">
       <span style="color:var(--ink-60);font-weight:600"><i class="ti ti-lock"></i> Intern</span>${knopf}</div>
@@ -9432,6 +9445,7 @@ function saAmpelSetzen(id, farbe){
 }
 function saHakenSetzen(id, feld){
   const an = !!(this && this.checked);
+  if(feld === 'besichtigung' && typeof saBesichtigungHaken === 'function') return saBesichtigungHaken(id, an);   // A472: Datum/Uhrzeit -> Kalender
   return saNotizAendern(id, n => { n[feld] = an ? (n[feld] || today()) : ''; });
 }
 function saNotizSetzen(id){
@@ -9772,6 +9786,11 @@ async function saAlsInteressentImportieren(id){
     status:'neu', quelle:'website-sa', quelleId:e.id,
     erstellt:nowIso(), geaendert:nowIso()
   };
+  /* A472: Wohnung aus Kennung oder Freitext, vereinbarte Besichtigung mitnehmen. */
+  const _w = typeof saWohnungAufloesen === 'function' ? saWohnungAufloesen(b.objektId, b.objektName) : null;
+  if(_w){ if(!rec.objektId) rec.objektId = _w.objektId; if(_w.weNr && !rec.weNr) rec.weNr = _w.weNr;
+    if(!rec.objektName || /^Aushang /i.test(rec.objektName)) rec.objektName = (getObj(_w.objektId) || {}).name || rec.objektName || ''; }
+  if(_saN && _saN.besichtigungTermin){ rec.besichtigungTermin = _saN.besichtigungTermin; rec.status = 'eingeladen'; }
   await idbPut('interessenten', rec);
   // Lokale Archivablage der Selbstauskunft (Store selbstauskuenfte)
   try{
@@ -9927,7 +9946,9 @@ function peAktionenHTML(art, id){
   const an = peIstWichtig(art, id);
   return `<button class="btn btn-sm${an ? ' pe-an' : ''}" data-action-click="peWichtigUmschalten" data-arg="${escAttr(art)}" data-arg2="${escAttr(id)}"><i class="ti ti-urgent"></i> ${an ? 'Wichtig ✓' : 'Wichtig'}</button>
     <button class="btn btn-sm" data-action-click="peWiedervorlageModal" data-arg="${escAttr(art)}" data-arg2="${escAttr(id)}"><i class="ti ti-calendar-plus"></i> Wiedervorlage</button>
-    <button class="btn btn-sm" data-action-click="peMangelAusNachricht" data-arg="${escAttr(art)}" data-arg2="${escAttr(id)}"><i class="ti ti-alert-triangle"></i> Mangel anlegen</button>`;
+    <button class="btn btn-sm" data-action-click="peMangelAusNachricht" data-arg="${escAttr(art)}" data-arg2="${escAttr(id)}"><i class="ti ti-alert-triangle"></i> Mangel anlegen</button>
+    <button class="btn btn-sm" data-action-click="peToDoAusNachricht" data-arg="${escAttr(art)}" data-arg2="${escAttr(id)}"><i class="ti ti-checkbox"></i> ToDo anlegen</button>
+    <button class="btn btn-sm" data-action-click="peTerminAusNachricht" data-arg="${escAttr(art)}" data-arg2="${escAttr(id)}"><i class="ti ti-calendar-event"></i> Termin anlegen</button>`;   // A472
 }
 async function peSchreiben(satzId, aendern){
   const alt = (await idbGet('settings', satzId).catch(() => null))?.value || {};
@@ -10235,11 +10256,13 @@ async function mailRenderSA(body){
         <button class="btn btn-sm" onclick="saDetailZeigen('${escJs(e.id)}')"><i class="ti ti-eye"></i> Anzeigen</button>
         <button class="btn btn-sm btn-primary" onclick="saAlsInteressentImportieren('${escJs(e.id)}')"><i class="ti ti-user-plus"></i> Als Interessent</button>
       </div>
+      <div id="saKontakt_${escAttr(e.id)}"><div style="font-size:11px;color:var(--ink-40);margin-top:6px">Wohnung und Kontakt werden geladen …</div></div>
       ${saInternHTML(e.id, _notizen[e.id])}
       <div id="saDetail_${escAttr(e.id)}" style="margin-top:10px"></div>
     </div>`;
   }
   body.innerHTML=html + saPapierkorbHTML(_papier) + bwAblageHTML(_bw);   // A442, A444
+  if(typeof saKartenErgaenzen === 'function') saKartenErgaenzen(liste).catch(err => console.warn('Selbstauskunft-Kontakt:', err));   // A472
 }
 
 /* v347 (R59): Herkunftszeile. Dieser Reiter zeigt ausschliesslich das
@@ -10638,7 +10661,9 @@ function postfachDetailZeigen(id){
     + `<button class="btn btn-sm" style="flex-shrink:0" onclick="postfachAnhang('${escJs(m.id)}',${Number(a.nr)})" title="Ansehen" aria-label="Anhang ansehen">`
     + `<i class="ti ti-eye"></i></button>`
     + `<button class="btn btn-sm btn-copper" style="flex-shrink:0" onclick="postfachAnhangSpeichern('${escJs(m.id)}',${Number(a.nr)},'${escJs(voll)}')" title="Herunterladen" aria-label="Anhang herunterladen">`
-    + `<i class="ti ti-download"></i></button></div>`;
+    + `<i class="ti ti-download"></i></button>`
+    + `<button class="btn btn-sm" style="flex-shrink:0" data-action-click="postfachAnhangInsArchiv" data-arg="${escAttr(m.id)}" data-arg2="${Number(a.nr)}" data-arg3="${escAttr(voll)}" data-argnum="2" title="In die Akte legen" aria-label="Anhang in die Akte legen">`
+    + `<i class="ti ti-folder-plus"></i></button></div>`;   // A472
   }).join('');
   /* v363: Fuer jedes Bild ein Platz, der nach dem Aufklappen gefuellt wird. */
   const bilder = (m.anhaenge||[]).filter(istBildAnhang);
@@ -10655,6 +10680,9 @@ function postfachDetailZeigen(id){
         ${m.vonAdresse?`<button class="btn btn-sm btn-primary" onclick="postfachAntworten('${escJs(m.id)}')"><i class="ti ti-arrow-back-up"></i> Antworten</button>`:''}
         <button class="btn btn-sm btn-copper" onclick="postfachWeiterleiten('${escJs(m.id)}')"><i class="ti ti-mail-forward"></i> Weiterleiten</button>
         ${(m.anhaenge||[]).length>1?`<button class="btn btn-sm" onclick="postfachAlleAnhaenge('${escJs(m.id)}')"><i class="ti ti-download"></i> Alle Anhänge speichern</button>`:''}
+        ${m.vonAdresse?`<button class="btn btn-sm" data-action-click="postfachSaLink" data-arg="${escAttr(m.id)}"><i class="ti ti-send"></i> Selbstauskunft-Link</button>`:''}
+        <button class="btn btn-sm" data-action-click="postfachMailInsArchiv" data-arg="${escAttr(m.id)}"><i class="ti ti-folder-plus"></i> In die Akte</button>
+        <button class="btn btn-sm" data-action-click="postfachDrucken" data-arg="${escAttr(m.id)}"><i class="ti ti-printer"></i> Drucken</button>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">${peAktionenHTML('mail', m.id)}</div>
     </div>`;
@@ -10804,6 +10832,7 @@ async function mailRenderNachrichten(body){
       <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
         ${n.email?`<button class="btn btn-sm btn-primary" onclick="websiteNachrichtAntworten('${escJs(n.email)}','${escJs(n.name||'')}')"><i class="ti ti-mail-forward"></i> Antworten</button>`:''}
         ${(n.email && _art==='website')?`<button class="btn btn-sm" data-action-click="vormerkungLinkSenden" data-arg="${escAttr(n.email)}" data-arg2="${escAttr(n.objektName||n.objekt||'')}"><i class="ti ti-send"></i> Selbstauskunft-Link</button>`:''}
+        <button class="btn btn-sm" data-action-click="webNachrichtDrucken" data-arg="${escAttr(n.id||'')}"><i class="ti ti-printer"></i> Drucken</button>
         <button class="btn btn-sm" onclick="mailNachrichtAblegen('${escJs(n.id||'')}','erledigt',this)"><i class="ti ti-check"></i> Erledigt</button>
         <button class="btn btn-sm" onclick="mailNachrichtAblegen('${escJs(n.id||'')}','geloescht',this)"><i class="ti ti-trash"></i> Papierkorb</button>
       </div>
@@ -10999,6 +11028,7 @@ async function mailRenderToken(body){
     const v = window._tokVorbelegung; window._tokVorbelegung = null;
     const m = document.getElementById('mtTokMail'), o = document.getElementById('mtTokObjekt');
     if(m) m.value = v.email; if(o && v.objekt) o.value = v.objekt;
+    if(v.vorname || v.nachname) _saTokGewaehlt = { vorname:v.vorname || '', nachname:v.nachname || '', telefon:'', email:v.email };   // A472
   }
 }
 
@@ -11154,6 +11184,886 @@ async function mailTokenSenden(){
     setSt('<span style="color:var(--red,#c0392b);font-size:13px">Backend nicht erreichbar.</span>');
   }
 }
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   A472 (29.10.2026): Kommunikation mit Mietern und Bewerbern an einer Stelle.
+   Nutzerauftrag 29.10.2026, 12:36. Grundsaetze:
+   - Nichts doppelt speichern. Das Archiv des Mieters ZEIGT gesendete Mails
+     (tenant_mails), Kautionsquittungen (kautionsquittungen) und den Aushang
+     seiner Wohnung, statt sie zu kopieren - die Sync-Datei ist schon gross.
+   - Der Verlauf einer Person haengt an ihrer E-Mail-Adresse und an den
+     Verknuepfungen Selbstauskunft -> Interessent (quelleId) -> Mieter
+     (interessent.mieterId). So bleibt alles bei ihr, wenn sie vom Bewerber
+     zum Interessenten und zum Mieter wird.
+   - Kontaktdaten des jetzigen Mieters gehen nur an Bewerber, wenn in seiner
+     Akte die Einwilligung vermerkt ist (Art. 6 Abs. 1 lit. a DSGVO;
+     Entscheidung des Nutzers 29.10.2026). Sonst nur Hausmeister/Verwaltung.
+   ═══════════════════════════════════════════════════════════════════════════ */
+function a472Mail(s){ return String(s || '').trim().toLowerCase(); }
+function a472Datum(x){ if(!x) return ''; const d = new Date(x); return isNaN(d) ? String(x) : d.toLocaleDateString('de-DE'); }
+function a472DatumZeit(x){ if(!x) return ''; const d = new Date(x); return isNaN(d) ? String(x)
+  : d.toLocaleString('de-DE', { day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit' }); }
+function a472CuName(){ return (typeof CU !== 'undefined' && CU && CU.name) ? CU.name : ''; }
+
+/* ── Drucken von Nachrichten ─────────────────────────────────────────────── */
+function nachrichtDruckHTML(titel, felder, text, zusatzHtml){
+  const jetzt = new Date();
+  const zeilen = (felder || []).filter(f => f && f[1] != null && String(f[1]).trim() !== '')
+    .map(f => '<tr><th>' + esc(f[0]) + '</th><td>' + esc(String(f[1])) + '</td></tr>').join('');
+  const druckSkript = '<scr' + 'ipt>(function(){var p=function(){setTimeout(function(){window.focus();window.print();},500);};'
+    + 'if(document.readyState===\'complete\'){p();}else{window.addEventListener(\'load\',p);}})()</scr' + 'ipt>';
+  return '<!doctype html><html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+    + '<title>' + esc(titel) + '</title><style>'
+    + '@page{size:A4;margin:16mm 14mm}body{font-family:Arial,Helvetica,sans-serif;font-size:10.5pt;color:#1a1a1a;margin:0}'
+    + 'h1{font-size:15pt;margin:0 0 4mm}table.k{border-collapse:collapse;margin-bottom:5mm;width:100%}'
+    + 'table.k th{text-align:left;vertical-align:top;color:#555;font-weight:normal;width:32mm;padding:2px 6px 2px 0}'
+    + 'table.k td{padding:2px 0;overflow-wrap:anywhere}.t{white-space:normal;line-height:1.5;border-top:1px solid #bbb;padding-top:4mm;overflow-wrap:anywhere}'
+    + '.z{margin-top:5mm}.z div{line-height:1.6}.f{margin-top:8mm;font-size:8.5pt;color:#777;border-top:1px solid #ddd;padding-top:2mm}'
+    + '</style></head><body><h1>' + esc(titel) + '</h1>'
+    + (zeilen ? '<table class="k">' + zeilen + '</table>' : '')
+    + (text ? '<div class="t">' + esc(String(text)).replace(/\n/g, '<br>') + '</div>' : '')
+    + (zusatzHtml ? '<div class="z">' + zusatzHtml + '</div>' : '')
+    + '<div class="f">Gedruckt am ' + esc(jetzt.toLocaleDateString('de-DE') + ', ' + jetzt.toLocaleTimeString('de-DE', { hour:'2-digit', minute:'2-digit' }))
+    + ' Uhr' + (a472CuName() ? ' von ' + esc(a472CuName()) : '') + ' · Nadig Pfau Immobilienverwaltung · vertraulich</div>'
+    + druckSkript + '</body></html>';
+}
+function nachrichtDrucken(titel, felder, text, zusatzHtml){
+  return oeffneDruckDokument(nachrichtDruckHTML(titel, felder, text, zusatzHtml), titel);
+}
+async function tmGesendetDrucken(id){
+  const v = await idbGet('tenant_mails', String(id || '')).catch(() => null);
+  if(!v){ toast('Mail nicht gefunden'); return; }
+  const an = v.empfaengerName && v.empfaengerName !== v.email ? v.empfaengerName + ' <' + (v.email || '') + '>' : (v.email || '');
+  nachrichtDrucken('Gesendete E-Mail', [
+    ['Datum', a472DatumZeit(v.gesendet)], ['Von', v.absender || 'info@nadigpfau.de'], ['An', an],
+    ['CC', (v.cc || []).join(', ')], ['Betreff', v.betreff || '(ohne Betreff)'],
+    ['Anhänge', (v.anhaenge || []).map(a => a.name || 'Anhang').join(', ')],
+    ['Status', (typeof TM_STATUS_TEXT !== 'undefined' && TM_STATUS_TEXT[v.status]) || v.status || '']], v.text || '');
+}
+function postfachDrucken(id){
+  const m = (window._postfachMails || {})[id];
+  if(!m){ toast('Nachricht nicht mehr geladen – bitte neu öffnen.'); return; }
+  nachrichtDrucken('E-Mail', [
+    ['Datum', a472DatumZeit(m.datum)], ['Von', m.vonName ? m.vonName + ' <' + (m.vonAdresse || '') + '>' : (m.vonAdresse || '')],
+    ['An', m.an || ''], ['Betreff', m.betreff || '(ohne Betreff)'],
+    ['Anhänge', (m.anhaenge || []).map(a => a.name || 'Anhang').join(', ')]], mailTextLesbar(m.text || '') || '(kein Text)');
+}
+function webNachrichtDrucken(id){
+  const n = (window._webNachrichten || {})[id];
+  if(!n){ toast('Nachricht nicht mehr geladen – bitte neu öffnen.'); return; }
+  const name = n.name || [n.vorname, n.nachname].filter(Boolean).join(' ');
+  nachrichtDrucken('Website-Nachricht', [
+    ['Datum', a472DatumZeit(n.zeitstempel || n.erstellt)], ['Von', name], ['E-Mail', n.email || ''], ['Telefon', n.telefon || ''],
+    ['Objekt', n.objektName || n.objekt || '']], n.nachricht || n.text || '');
+}
+async function saBasisHolen(id){
+  window._saBasis = window._saBasis || {};
+  if(window._saBasis[id]) return window._saBasis[id];
+  const e = (window._saInbox || {})[id];
+  if(!e || !e.daten) return null;
+  try{ const o = JSON.parse(await saEntschluessle(e.daten)); window._saBasis[id] = o; return o; }
+  catch(err){ console.warn('Selbstauskunft entschlüsseln:', err && err.name); return null; }
+}
+async function saDrucken(id){
+  const e = (window._saInbox || {})[id];
+  const o = await saBasisHolen(id);
+  if(!e || !o){ toast('Selbstauskunft konnte nicht entschlüsselt werden.'); return; }
+  const b = o.basis || {};
+  const w = saWohnungAufloesen(b.objektId, b.objektName || e.objektName);
+  const wt = w ? await wohnungText(w.objektId, w.weNr) : (b.objektName || e.objektName || '');
+  nachrichtDrucken('Selbstauskunft – ' + (e.anzeigeName || ((b.vorname || '') + ' ' + (b.nachname || '')).trim()), [
+    ['Eingegangen', a472DatumZeit(e.zeitstempel)], ['Wohnung', wt]], '', saAuskunftHTML(o));
+}
+async function interessentDrucken(id){
+  const k = await idbGet('interessenten', id).catch(() => null);
+  if(!k){ toast('Nicht gefunden'); return; }
+  const sa = await saAuskunftZuInteressent(k).catch(() => null);
+  const wt = k.objektId ? await wohnungText(k.objektId, k.weNr) : (k.objektName || '');
+  const verlauf = await kontaktVerlaufSammeln(await interessentBezug(k));
+  const vz = verlauf.length ? '<b>Verlauf</b>' + verlauf.map(x => '<div>' + esc(a472DatumZeit(x.zeit) + ' · ' + x.titel + (x.zeile ? ' · ' + x.zeile : '')) + '</div>').join('') : '';
+  nachrichtDrucken('Interessent – ' + (k.name || ''), [
+    ['Wohnung', wt], ['Status', interessentStatusInfo(k.status).label], ['Telefon', k.telefon], ['E-Mail', k.email],
+    ['Anschrift', k.adresse], ['Personen', k.personen], ['Beruf', k.beruf], ['Mietbeginn', k.mietbeginn],
+    ['Besichtigung', k.besichtigungTermin ? a472Datum(k.besichtigungTermin.datum) + ' ' + (k.besichtigungTermin.uhrzeit || '') : '']],
+    k.notiz || '', (sa ? saAuskunftHTML(sa) : '') + vz);
+}
+
+/* ── Selbstauskunft-Link und Aufgaben aus einer Nachricht ───────────────── */
+function postfachSaLink(id){
+  const m = (window._postfachMails || {})[id];
+  if(!m || !m.vonAdresse){ toast('Zu dieser Nachricht ist keine Absenderadresse bekannt.'); return; }
+  const teile = String(m.vonName || '').replace(/["']/g, '').trim().split(/\s+/).filter(Boolean);
+  window._tokVorbelegung = { email:m.vonAdresse, objekt:'',
+    vorname: teile.length > 1 ? teile.slice(0, -1).join(' ') : '', nachname: teile.length ? teile[teile.length - 1] : '' };
+  setMailTab('token');
+}
+async function peToDoAusNachricht(art, id){
+  const d = peNachrichtDaten(art, id);
+  if(!d){ toast('Nachricht nicht mehr geladen – bitte neu öffnen.'); return; }
+  const mieter = d.email ? await postfachMieterZuAdresse(d.email).catch(() => null) : null;
+  try{ await modalAddAufgabe(mieter ? mieter.id : '', mieter ? mieter.objektId : ''); }
+  catch(e){ toast('Aufgabenmaske konnte nicht geöffnet werden'); return; }
+  setTimeout(() => {
+    const t = document.getElementById('aTitel'); if(t) t.value = peBetreffOhnePraefix(d.betreff).slice(0, 120);
+    const b = document.getElementById('aBeschr');
+    if(b) b.value = String(d.text || '').trim().slice(0, 3000)
+      + '\n\n(' + (art === 'mail' ? 'E-Mail' : 'Website-Nachricht') + ' von ' + d.von + (d.datum ? ' vom ' + a472Datum(d.datum) : '') + ')';
+    if(!mieter) toast('Absender keinem Mieter zugeordnet – Objekt bitte wählen.', 5000);
+  }, 60);
+}
+async function peTerminAusNachricht(art, id){
+  const d = peNachrichtDaten(art, id);
+  if(!d){ toast('Nachricht nicht mehr geladen – bitte neu öffnen.'); return; }
+  const mieter = d.email ? await postfachMieterZuAdresse(d.email).catch(() => null) : null;
+  try{ await modalAddTermin(today()); }
+  catch(e){ toast('Terminmaske konnte nicht geöffnet werden'); return; }
+  setTimeout(async () => {
+    const t = document.getElementById('tTitel'); if(t) t.value = peBetreffOhnePraefix(d.betreff).slice(0, 120);
+    const n = document.getElementById('tNotiz');
+    if(n) n.value = (art === 'mail' ? 'E-Mail' : 'Website-Nachricht') + ' von ' + d.von + (d.datum ? ' vom ' + a472Datum(d.datum) : '') + ':\n'
+      + String(d.text || '').trim().slice(0, 800);
+    if(mieter){
+      const o = document.getElementById('tObjekt');
+      if(o && Array.from(o.options).some(x => x.value === mieter.objektId)){
+        o.value = mieter.objektId;
+        try{ await loadMieterForTermin(mieter.objektId); }catch(_){}
+        const s = document.getElementById('tMieter');
+        if(s && Array.from(s.options).some(x => x.value === mieter.id)) s.value = mieter.id;
+      }
+    }
+  }, 60);
+}
+
+/* ── Ablage in der Akte (Mieter oder Interessent) ───────────────────────── */
+async function interessentZuAdresse(email){
+  const a = a472Mail(email); if(!a) return null;
+  const alle = await idbGetAll('interessenten').catch(() => []);
+  const t = (alle || []).filter(k => k && a472Mail(k.email) === a && k.status !== 'uebernommen')
+    .sort((x, y) => String(y.geaendert || y.erstellt || '').localeCompare(String(x.geaendert || x.erstellt || '')));
+  return t[0] || null;
+}
+/* Ziel waehlen: vorgeschlagen wird, wer zur Absenderadresse passt. */
+async function akteZielModal(email, titel, weiter){
+  const mieter = email ? await postfachMieterZuAdresse(email).catch(() => null) : null;
+  const inter = email ? await interessentZuAdresse(email).catch(() => null) : null;
+  const alleM = (await idbGetAll('mieter').catch(() => [])).filter(m => m && !m._vormieter && !m.leerstand && !m._tgMieter)
+    .sort((a, b) => String(hauptmieterNameVoll(a) || '').localeCompare(String(hauptmieterNameVoll(b) || ''), 'de'));
+  const alleI = (await idbGetAll('interessenten').catch(() => [])).filter(k => k && k.status !== 'uebernommen' && k.status !== 'absage')
+    .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'de'));
+  window._akteZielWeiter = weiter;
+  const vor = mieter ? 'm:' + mieter.id : inter ? 'i:' + inter.id : '';
+  const opt = (wert, text) => `<option value="${escAttr(wert)}"${wert === vor ? ' selected' : ''}>${esc(text)}</option>`;
+  showModal(`
+    <div class="m-title"><i class="ti ti-folder-plus"></i> In die Akte legen</div>
+    <div style="font-size:12px;color:var(--ink-60);margin-bottom:10px;overflow-wrap:anywhere">${esc(titel || '')}</div>
+    <div class="f"><label for="akteZiel">Akte</label><select id="akteZiel">
+      <option value="">– bitte wählen –</option>
+      ${alleM.length ? '<optgroup label="Mieter">' + alleM.map(m => opt('m:' + m.id, (hauptmieterNameVoll(m) || m.mieter || '') + ' · ' + ((getObj(m.objektId) || {}).name || '') + ' WE ' + (m.weNr || ''))).join('') + '</optgroup>' : ''}
+      ${alleI.length ? '<optgroup label="Interessenten">' + alleI.map(k => opt('i:' + k.id, (k.name || k.email || '') + (k.objektName ? ' · ' + k.objektName : '') + (k.weNr ? ' WE ' + k.weNr : ''))).join('') + '</optgroup>' : ''}
+    </select></div>
+    ${vor ? '<div style="font-size:11px;color:var(--ink-40);margin:-4px 0 10px">Vorgeschlagen nach der Absenderadresse.</div>' : ''}
+    <div class="f"><label for="akteNotiz">Notiz (optional)</label><input type="text" id="akteNotiz" placeholder="z. B. Gehaltsnachweis Oktober"></div>
+    <div class="f-row" style="margin-top:10px">
+      <button class="btn btn-copper btn-full" data-action-click="akteZielBestaetigen"><i class="ti ti-check"></i> Ablegen</button>
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button>
+    </div>`);
+}
+async function akteZielBestaetigen(){
+  const wert = document.getElementById('akteZiel')?.value || '';
+  const notiz = (document.getElementById('akteNotiz')?.value || '').trim();
+  if(!wert){ toast('Bitte eine Akte wählen'); return; }
+  const weiter = window._akteZielWeiter; window._akteZielWeiter = null;
+  closeModal();
+  if(typeof weiter !== 'function') return;
+  let ziel = null;
+  if(wert.startsWith('m:')){ const m = await idbGet('mieter', wert.slice(2)).catch(() => null); if(m) ziel = { mieterId:m.id, objektId:m.objektId, weNr:m.weNr, name:hauptmieterNameVoll(m) || m.mieter }; }
+  else if(wert.startsWith('i:')){ const k = await idbGet('interessenten', wert.slice(2)).catch(() => null); if(k) ziel = { interessentId:k.id, objektId:k.objektId || '', weNr:k.weNr || '', name:k.name || k.email }; }
+  if(!ziel){ toast('Akte nicht gefunden'); return; }
+  ziel.notiz = notiz;
+  await weiter(ziel);
+}
+async function dokInAkteSpeichern(ziel, d){
+  const dok = { id:uid(), name:d.name, typ:d.typ || 'sonstiges', notiz:ziel.notiz || d.notiz || '',
+    objektId:ziel.objektId || '', mieterId:ziel.mieterId || null, data:d.dataUrl, mimeType:d.mimeType || '',
+    size:d.size || 0, erstellt:now(), ersteller:a472CuName(), herkunft:d.herkunft || 'posteingang' };
+  if(ziel.interessentId) dok.interessentId = ziel.interessentId;
+  if(d.istHtml) dok.istHtml = true;
+  else{
+    const ref = await dokAuslagernRef(dok, d.dataUrl, ziel.weNr).catch(() => null);
+    if(ref){ dok.ref = ref; feldGeleert(dok, 'data'); }
+  }
+  await idbPut('dokumente', dok);
+  syncSoon();
+  return dok;
+}
+async function postfachAnhangInsArchiv(id, nr, name){
+  const m = (window._postfachMails || {})[id];
+  if(!m){ toast('Nachricht nicht mehr geladen – bitte neu öffnen.'); return; }
+  await akteZielModal(m.vonAdresse, 'Anhang „' + (name || 'Anhang') + '“ aus der E-Mail „' + (m.betreff || '') + '“', async ziel => {
+    const url = await postfachAnhangUrl(id, nr);
+    if(!url){ toast('Anhang konnte nicht geladen werden.', 4000); return; }
+    let blob;
+    try{
+      const r = await fetchMitTimeout(url, {}, 60000);
+      if(!r || !r.ok) throw new Error('HTTP ' + (r ? r.status : 'ohne Antwort'));
+      blob = await r.blob();
+    }catch(e){ console.warn('Anhang laden:', e && e.message); toast('Anhang konnte nicht geladen werden (Speicherkonto ohne Freigabe für diese App).', 6000); return; }
+    if(blob.size > 10 * 1024 * 1024){ toast('Anhang zu groß (max. 10 MB)'); return; }
+    const dataUrl = await new Promise((ok, f) => { const fr = new FileReader(); fr.onload = () => ok(fr.result); fr.onerror = f; fr.readAsDataURL(blob); });
+    await dokInAkteSpeichern(ziel, { name:String(name || 'Anhang'), typ:'sonstiges', dataUrl, mimeType:blob.type, size:blob.size });
+    toast('In der Akte von ' + ziel.name + ' abgelegt ✓');
+  });
+}
+async function postfachMailInsArchiv(id){
+  const m = (window._postfachMails || {})[id];
+  if(!m){ toast('Nachricht nicht mehr geladen – bitte neu öffnen.'); return; }
+  await akteZielModal(m.vonAdresse, 'E-Mail „' + (m.betreff || '(ohne Betreff)') + '“', async ziel => {
+    const html = nachrichtDruckHTML('E-Mail', [
+      ['Datum', a472DatumZeit(m.datum)], ['Von', m.vonName ? m.vonName + ' <' + (m.vonAdresse || '') + '>' : (m.vonAdresse || '')],
+      ['An', m.an || ''], ['Betreff', m.betreff || '(ohne Betreff)'], ['Anhänge', (m.anhaenge || []).map(a => a.name || 'Anhang').join(', ')]],
+      mailTextLesbar(m.text || '') || '(kein Text)').replace(/<scr(ipt|.)*?>[\s\S]*?window\.print\(\)[\s\S]*?<\/scr.{0,3}ipt>/gi, '');
+    await dokInAkteSpeichern(ziel, { name:'E-Mail: ' + (m.betreff || '(ohne Betreff)') + ' (' + a472Datum(m.datum) + ')', typ:'mail',
+      dataUrl:'data:text/html;charset=utf-8,' + encodeURIComponent(html), mimeType:'text/html', size:new Blob([html]).size, istHtml:true });
+    toast('E-Mail in der Akte von ' + ziel.name + ' abgelegt ✓');
+  });
+}
+
+/* ── Wohnung einer Bewerbung, jetziger Mieter, Ansprechpartner ─────────── */
+function a472Kompakt(s){
+  return String(s || '').toLowerCase().replace(/ä/g, 'ae').replace(/ö/g, 'oe').replace(/ü/g, 'ue').replace(/ß/g, 'ss')
+    .replace(/strasse/g, 'str').replace(/[^a-z0-9]/g, '');
+}
+/* Kennung der Website/des Aushangs (OBJEKT-WEn), sonst Objektname + "WE n" im Freitext. */
+function saWohnungAufloesen(objektId, objektName){
+  const objs = (typeof OBJEKTE !== 'undefined' && Array.isArray(OBJEKTE)) ? OBJEKTE : [];
+  const perId = id => objs.find(o => String(o.id).toLowerCase() === String(id || '').toLowerCase());
+  for(const q of [objektId, objektName]){
+    const k = /([A-Za-z0-9_]+)-WE\s*([A-Za-z0-9.\/-]+)/i.exec(String(q || ''));
+    if(k){ const o = perId(k[1]); if(o) return { objektId:o.id, weNr:k[2].trim() }; }
+  }
+  const weAus = t => { const r = /\b(?:WE|Wohnung|Whg\.?|Nr\.?)\s*(\d{1,3}[a-z]?)\b/i.exec(String(t || '')); return r ? r[1] : ''; };
+  const direkt = perId(objektId);
+  if(direkt) return { objektId:direkt.id, weNr:weAus(objektName) };
+  const text = a472Kompakt(objektName);
+  if(!text) return null;
+  let best = null;
+  for(const o of objs){
+    const n = a472Kompakt(o.name);
+    if(n.length >= 5 && text.includes(n) && (!best || n.length > a472Kompakt(best.name).length)) best = o;
+  }
+  return best ? { objektId:best.id, weNr:weAus(objektName) } : null;
+}
+async function wohnungText(objektId, weNr){
+  const o = getObj(objektId);
+  if(!o) return '';
+  let lage = '';
+  if(weNr){ try{ lage = (await getWohnungStamm(objektId, weNr)).lage || ''; }catch(_){} }
+  return o.name + (weNr ? ', WE ' + weNr : '') + (lage ? ' (' + lage + ')' : '');
+}
+/* Wer wohnt HEUTE in der Wohnung (nicht der kuenftige, nicht der ehemalige)? */
+async function wohnungAktuellerMieter(objektId, weNr){
+  if(!objektId || !weNr) return null;
+  const heute = today();
+  const alle = await idbGetAll('mieter', 'objektId', objektId).catch(() => []);
+  return (alle || []).find(m => m && !m._deleted && !m._tgMieter && !m.leerstand && !m._zukuenftig
+    && weSchluessel(m.weNr) === weSchluessel(weNr)
+    && (!_einzugISOvon(m) || _einzugISOvon(m) <= heute) && (!_auszugISOvon(m) || _auszugISOvon(m) >= heute)) || null;
+}
+function a472Telefon(m){
+  const p = personenVon(m).find(x => x && !x.verstorben && String(x.telefon || '').trim());
+  return String((p && p.telefon) || m.telefon || '').trim();
+}
+function a472PersonDativ(m){
+  const vp = (typeof vertragspartnerVon === 'function' ? vertragspartnerVon(m) : []) || [];
+  const p = vp[0] || personenVon(m)[0] || { name:m.mieter || '' };
+  const nn = (typeof nachnameAus === 'function' ? nachnameAus(p.name) : '') || p.name || '';
+  return (p.anrede === 'Frau' ? 'Frau ' : p.anrede === 'Herr' ? 'Herrn ' : '') + nn;
+}
+async function besichtigungKontakte(objektId, weNr){
+  const r = { mieterRec:null, mieter:null, hm:[] };
+  const m = await wohnungAktuellerMieter(objektId, weNr);
+  r.mieterRec = m;
+  if(m && m.besichtigungKontakt && m.besichtigungKontakt.ok){
+    const tel = a472Telefon(m);
+    if(tel) r.mieter = { name:a472PersonDativ(m), tel };
+  }
+  const o = getObj(objektId);
+  if(o){
+    const users = await idbGetAll('users').catch(() => []);
+    (users || []).filter(u => u && u.role === 'hm' && u.aktiv !== false && String(u.telBesichtigung || '').trim()
+      && ((u.objekte || []).includes(o.gruppe) || (u.objekte || []).includes(o.id)))
+      .forEach(u => r.hm.push({ name:u.name || 'Hausmeister', tel:String(u.telBesichtigung).trim() }));
+  }
+  return r;
+}
+function bewerberAnrede(anrede, vorname, nachname){
+  const nn = String(nachname || '').trim(), vn = String(vorname || '').trim();
+  if(anrede === 'Frau' && nn) return 'Sehr geehrte Frau ' + nn + ',';
+  if((anrede === 'Herr' || anrede === 'Herrn') && nn) return 'Sehr geehrter Herr ' + nn + ',';
+  const voll = (vn + ' ' + nn).trim();
+  return voll ? 'Guten Tag ' + voll + ',' : 'Guten Tag,';
+}
+async function besichtigungsText(p){
+  const wt = p.objektId ? await wohnungText(p.objektId, p.weNr) : String(p.objektName || '');
+  const k = p.objektId ? await besichtigungKontakte(p.objektId, p.weNr) : { hm:[] };
+  const z = [];
+  if(k.mieter) z.push('– ' + k.mieter.name + ' (wohnt derzeit in der Wohnung), Telefon ' + k.mieter.tel);
+  k.hm.forEach(h => z.push('– unseren Hausmeister ' + h.name + ', Telefon ' + h.tel));
+  const teile = [bewerberAnrede(p.anrede, p.vorname, p.nachname), '',
+    'vielen Dank für Ihr Interesse' + (wt ? ' an der Wohnung ' + wt : '') + '.', ''];
+  if(z.length){
+    teile.push('Bitte vereinbaren Sie einen Besichtigungstermin direkt mit', ...z, '',
+      'Falls Sie dort niemanden erreichen, melden Sie sich gern bei uns.');
+  } else {
+    teile.push('Gern zeigen wir Ihnen die Wohnung. Bitte nennen Sie uns zwei oder drei Termine, die Ihnen passen – wir melden uns dann mit einer Bestätigung.');
+  }
+  return { text:teile.join('\n'), wohnung:wt, kontakte:k };
+}
+
+/* ── Verlauf einer Person ───────────────────────────────────────────────── */
+async function interessentBezug(k){
+  return { emails:[k.email], interessentIds:[k.id], saIds:k.quelleId ? [k.quelleId] : [], mieterId:k.mieterId || '' };
+}
+async function mieterBezug(m){
+  const emails = (typeof tmAdressenDesMieters === 'function' ? tmAdressenDesMieters(m) : [m.email]).slice();
+  const inter = (await idbGetAll('interessenten').catch(() => [])).filter(k => k && k.mieterId === m.id);
+  inter.forEach(k => { if(k.email) emails.push(k.email); });
+  return { emails, interessentIds:inter.map(k => k.id), saIds:inter.map(k => k.quelleId).filter(Boolean), mieterId:m.id, interessenten:inter };
+}
+async function kontaktVerlaufSammeln(bz){
+  const em = new Set((bz.emails || []).map(a472Mail).filter(Boolean));
+  const iIds = new Set(bz.interessentIds || []), sIds = new Set(bz.saIds || []);
+  const raus = [];
+  (await idbGetAll('tenant_mails').catch(() => [])).forEach(v => {
+    if(!v || v._papierkorb) return;
+    if(!((bz.mieterId && v.mieterId === bz.mieterId) || em.has(a472Mail(v.email)) || (v.interessentId && iIds.has(v.interessentId)) || (v.saId && sIds.has(v.saId)))) return;
+    raus.push({ art:'mail', id:v.id, zeit:v.gesendet, titel:'E-Mail: ' + (v.betreff || '(ohne Betreff)'), zeile:'an ' + (v.email || ''), icon:'ti-mail' });
+  });
+  (await idbGetAll('termine').catch(() => [])).forEach(t => {
+    if(!t || t._deleted) return;
+    if(!((t.quelle === 'selbstauskunft' && sIds.has(t.quelleId)) || (t.quelle === 'interessent' && iIds.has(t.quelleId)))) return;
+    raus.push({ art:'termin', id:t.id, zeit:t.datum + 'T' + (t.uhrzeit || '00:00'), titel:'Besichtigung', zeile:a472Datum(t.datum) + (t.uhrzeit ? ', ' + t.uhrzeit + ' Uhr' : ''), icon:'ti-eye' });
+  });
+  (await idbGetAll('dokumente').catch(() => [])).forEach(d => {
+    if(!d || d._deleted || !d.interessentId || !iIds.has(d.interessentId)) return;
+    raus.push({ art:'dok', id:d.id, zeit:d.geaendert || '', titel:'Dokument: ' + (d.name || ''), zeile:d.erstellt || '', icon:'ti-paperclip', istHtml:!!d.istHtml });
+  });
+  if(sIds.size){
+    (await idbGetAll('selbstauskuenfte').catch(() => [])).forEach(s => {
+      if(s && sIds.has(s.id)) raus.push({ art:'sa', id:s.id, zeit:s.zeitstempel, titel:'Selbstauskunft eingegangen', zeile:s.objektName || '', icon:'ti-file-description' });
+    });
+  }
+  return raus.sort((a, b) => String(b.zeit || '').localeCompare(String(a.zeit || '')));
+}
+function kontaktVerlaufHTML(liste, zurueck){
+  if(!liste.length) return '<div style="font-size:12px;color:var(--ink-40)">Noch nichts gesendet oder vereinbart.</div>';
+  return liste.map(x => `<div style="display:flex;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid var(--ink-10);font-size:12px">
+    <i class="ti ${x.icon}" style="color:var(--ink-40)"></i>
+    <div style="flex:1;min-width:0"><div style="font-weight:600;overflow-wrap:anywhere">${esc(x.titel)}</div>
+      <div style="color:var(--ink-40)">${esc(x.art === 'termin' ? x.zeile : a472DatumZeit(x.zeit) + (x.zeile ? ' · ' + x.zeile : ''))}</div></div>
+    ${x.art === 'mail' ? `<button class="btn btn-sm" data-action-click="archivMailOeffnen" data-arg="${escAttr(x.id)}" data-arg2="${escAttr(zurueck || '')}" title="Öffnen"><i class="ti ti-eye"></i></button>
+      <button class="btn btn-sm" data-action-click="tmGesendetDrucken" data-arg="${escAttr(x.id)}" title="Drucken"><i class="ti ti-printer"></i></button>` : ''}
+    ${x.art === 'dok' && x.istHtml ? `<button class="btn btn-sm" data-action-click="openArchivDok" data-arg="${escAttr(x.id)}" title="Öffnen"><i class="ti ti-eye"></i></button>` : ''}
+    ${x.art === 'dok' && !x.istHtml ? `<button class="btn btn-sm" data-action-click="downloadDok" data-arg="${escAttr(x.id)}" title="Herunterladen"><i class="ti ti-download"></i></button>` : ''}
+  </div>`).join('');
+}
+/* Aus dem Archiv geoeffnet: "Zurueck" fuehrt wieder dorthin. zurueck = 'm:<id>' oder 'i:<id>'. */
+async function archivMailOeffnen(id, zurueck){
+  window._tmZurueck = zurueck ? { ziel:zurueck, id:String(id) } : null;
+  await tmGesendetOeffnen(id);
+}
+function tmZurueckZiel(id){ const z = window._tmZurueck; return (z && z.id === String(id)) ? z.ziel : ''; }
+function tmZurueckGehen(id){
+  const z = tmZurueckZiel(id); window._tmZurueck = null;
+  if(z.startsWith('m:')) return showMieterDokumente(z.slice(2));
+  if(z.startsWith('i:')) return modalInteressentDetail(z.slice(2));
+  closeModal();
+}
+
+/* ── Archiv des Mieters: was nicht im Speicher 'dokumente' liegt ───────── */
+async function mieterArchivExtrasHTML(objektId, mieterId){
+  if(!mieterId || !istVerwalter()) return '';
+  const m = await idbGet('mieter', mieterId).catch(() => null);
+  if(!m) return '';
+  const bz = await mieterBezug(m);
+  const verlauf = await kontaktVerlaufSammeln(bz);
+  const mails = verlauf.filter(x => x.art === 'mail');
+  const rest = verlauf.filter(x => x.art !== 'mail');
+  const kq = (await idbGetAll('kautionsquittungen').catch(() => [])).filter(x => x && !x._deleted && x.mieterId === m.id)
+    .sort((a, b) => String(b.erstelltAm || '').localeCompare(String(a.erstelltAm || '')));
+  const aush = (await idbGetAll('dokumente').catch(() => [])).filter(d => d && !d._deleted && d.typ === 'aushang' && !d.mieterId
+    && d.objektId === m.objektId && weSchluessel(d.weNr) === weSchluessel(m.weNr))
+    .sort((a, b) => String(b.geaendert || '').localeCompare(String(a.geaendert || '')));
+  const kopf = (icon, titel, n) => `<div class="card-hdr" style="margin:14px 0 6px"><i class="ti ${icon}"></i> ${titel} (${n})</div>`;
+  const zeile = (icon, titel, sub, knoepfe) => `<div style="background:var(--white);border:1px solid var(--ink-10);border-radius:var(--radius);padding:9px 12px;margin-bottom:6px;display:flex;gap:10px;align-items:center">
+    <i class="ti ${icon}" style="font-size:18px;color:var(--copper)"></i>
+    <div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600;overflow-wrap:anywhere">${esc(titel)}</div><div style="font-size:11px;color:var(--ink-40)">${esc(sub)}</div></div>
+    <div style="display:flex;gap:5px;flex-shrink:0">${knoepfe}</div></div>`;
+  let h = '';
+  if(mails.length) h += kopf('ti-mail', 'Gesendete E-Mails', mails.length) + kontaktVerlaufHTML(mails, 'm:' + m.id);
+  if(kq.length) h += kopf('ti-receipt', 'Kaution – Quittungen und Abrechnungen', kq.length) + kq.map(x => zeile(x.typ === 'endabrechnung' ? 'ti-file-invoice' : 'ti-receipt',
+    (x.typ === 'endabrechnung' ? 'Kautionsabrechnung' : 'Kautionsquittung') + (x.betrag != null && x.betrag !== '' ? ' · ' + fmtEur(x.betrag) : ''),
+    a472DatumZeit(x.erstelltAm) + (x.erstelltVon ? ' · ' + x.erstelltVon : ''),
+    `<button class="btn btn-sm" data-action-click="kqArchivOeffnen" data-arg="${escAttr(x.id)}" title="Öffnen / Drucken"><i class="ti ti-eye"></i></button>`)).join('');
+  if(aush.length) h += kopf('ti-printer', 'Aushang „Wohnung frei“ dieser Wohnung', aush.length) + aush.map(d => zeile('ti-printer', d.name || 'Aushang',
+    d.erstellt || '', `<button class="btn btn-sm" data-action-click="openArchivDok" data-arg="${escAttr(d.id)}" title="Öffnen / Drucken"><i class="ti ti-eye"></i></button>`)).join('');
+  if(bz.interessenten && bz.interessenten.length){
+    h += kopf('ti-user-search', 'Aus der Bewerbung', bz.interessenten.length) + bz.interessenten.map(k => zeile('ti-user', k.name || k.email || 'Bewerbung',
+      'Interessent seit ' + a472Datum(k.erstellt) + (k.quelle === 'website-sa' ? ' · Selbstauskunft über die Website' : ''),
+      `<button class="btn btn-sm" data-action-click="modalInteressentDetail" data-arg="${escAttr(k.id)}" title="Öffnen"><i class="ti ti-eye"></i></button>`)).join('')
+      + (rest.length ? kontaktVerlaufHTML(rest, 'm:' + m.id) : '');
+  }
+  return h;
+}
+async function kqArchivOeffnen(id){
+  const x = await idbGet('kautionsquittungen', id).catch(() => null);
+  if(!x || !x.html){ toast('Dokument nicht gefunden'); return; }
+  oeffneDruckDokument(x.html, x.typ === 'endabrechnung' ? 'Kautionsabrechnung' : 'Kautionsquittung');
+}
+
+/* ── Neuvermietung im Mieterblatt, Einwilligung fuer Besichtigungen ───── */
+async function whNvMieterKarteHTML(m){
+  if(!istVerwalter() || !m || m._vormieter || m._tgMieter) return '';
+  const info = await wohnungNeuvermietungInfo(m.objektId, m.weNr).catch(() => null);
+  if(!info) return '';
+  const w = info.werte || {};
+  const r = whNvRechnung(whNvZahl(w.kalt), whNvZahl(w.nk), parseInt(w.nkPers, 10) || 0, whNvZahl(w.nkPlus));
+  const alt = info.vorher;
+  const bisher = alt ? [whNvZahl(alt.miete ?? alt.kaltmiete) != null ? 'Kalt ' + whNvEur(whNvZahl(alt.miete ?? alt.kaltmiete)) : '',
+    whNvZahl(alt.nk ?? alt.nkVorschuss) != null ? 'NK ' + whNvEur(whNvZahl(alt.nk ?? alt.nkVorschuss)) : '',
+    parseInt(alt.personen) > 0 ? parseInt(alt.personen) + ' Pers.' : ''].filter(Boolean) : [];
+  const inter = (await idbGetAll('interessenten').catch(() => [])).filter(k => k && k.objektId === m.objektId
+    && weSchluessel(k.weNr) === weSchluessel(m.weNr) && k.status !== 'absage' && k.status !== 'uebernommen');
+  const eingeladen = inter.filter(k => k.status === 'eingeladen' || k.besichtigungTermin).length;
+  const titel = leerAbText(info.st);
+  const wohntHier = !!(await wohnungAktuellerMieter(m.objektId, m.weNr).then(x => x && x.id === m.id).catch(() => false));
+  const bk = m.besichtigungKontakt || {};
+  const tel = a472Telefon(m);
+  return `<div class="card" id="mvNvKarte" style="margin-bottom:12px;border:1.5px solid var(--red,#C0392B);background:var(--red-l,#FDECEA)">
+    <div class="card-hdr" style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+      <span><i class="ti ti-key"></i> Neuvermietung · ${esc(titel.charAt(0).toUpperCase() + titel.slice(1))}</span>
+      <button class="btn btn-sm" onclick="modalWohnungHeizNk('${escJs(m.objektId)}','${escJs(String(m.weNr || ''))}')"><i class="ti ti-pencil"></i> Bearbeiten</button></div>
+    ${bisher.length ? `<div style="font-size:12px;color:var(--ink-60)">Bisher: ${esc(bisher.join(' · '))}</div>` : ''}
+    <div style="font-size:13px;line-height:1.5;margin-top:4px">${r ? whNvErgebnisHTML(r) : '<span style="color:var(--ink-60)">Neue Miete noch nicht eingetragen.</span>'}</div>
+    ${info.nachher ? `<div style="font-size:12px;color:var(--ink-60);margin-top:4px">Neuer Mieter ab ${esc(fmtDate(_isoDatum(_einzugISOvon(info.nachher))))}</div>` : ''}
+    <div style="font-size:12px;color:var(--ink-60);margin-top:6px"><i class="ti ti-users"></i> ${inter.length} offene Bewerbung${inter.length === 1 ? '' : 'en'} für diese Wohnung${eingeladen ? ' · ' + eingeladen + ' zur Besichtigung eingeladen' : ''}</div>
+    ${wohntHier ? `<label style="display:flex;gap:8px;align-items:flex-start;font-size:12px;margin-top:8px;cursor:pointer;line-height:1.45">
+      <input type="checkbox" style="width:16px;height:16px;flex-shrink:0;margin-top:1px" ${bk.ok ? 'checked' : ''} data-action-change="besichtigungZustimmungSetzen" data-arg="${escAttr(m.id)}">
+      <span>Mieter ist einverstanden, dass Bewerber ihn für Besichtigungen anrufen. Sein Name und seine Telefonnummer${tel ? ' (' + esc(tel) + ')' : ''} stehen dann im Text an Bewerber.
+      ${bk.ok ? `<span style="color:var(--ink-40)">Eingetragen ${esc(fmtDate(bk.am))}${bk.von ? ' von ' + esc(bk.von) : ''}.</span>` : ''}
+      ${!tel ? '<span style="color:var(--red,#C0392B)">Keine Telefonnummer hinterlegt.</span>' : ''}</span></label>` : ''}
+  </div>`;
+}
+async function besichtigungZustimmungSetzen(mieterId){
+  if(!istVerwalter()){ toast('Nur für Verwalter'); return; }
+  const an = !!(this && this.checked);
+  const m = await idbGet('mieter', mieterId).catch(() => null);
+  if(!m){ toast('Mieter nicht gefunden'); return; }
+  const alt = JSON.parse(JSON.stringify(m));
+  if(an) m.besichtigungKontakt = { ok:true, am:today(), von:a472CuName() };
+  else m.besichtigungKontakt = { ok:false, am:today(), von:a472CuName() };
+  m.updatedAt = nowIso();
+  if(typeof erfasseLeerungen === 'function') erfasseLeerungen(alt, m);
+  await idbPut('mieter', m);
+  syncSoon();
+  toast(an ? 'Einwilligung vermerkt ✓' : 'Einwilligung entfernt');
+  if(typeof currentMieterId !== 'undefined' && currentMieterId === mieterId) await showMieter(mieterId);
+}
+
+/* ── Selbstauskuenfte: Wohnung, jetziger Mieter, Kontakt, Verlauf ──────── */
+async function saKartenErgaenzen(liste){
+  window._saKontakt = window._saKontakt || {};
+  const mails = await idbGetAll('tenant_mails').catch(() => []);
+  for(const e of liste){
+    const el = document.getElementById('saKontakt_' + e.id);
+    if(!el) continue;
+    const o = await saBasisHolen(e.id);
+    if(!o){ el.innerHTML = ''; continue; }
+    const b = o.basis || {}, p1 = (o.selbstauskunft || {}).person1 || {};
+    const w = saWohnungAufloesen(b.objektId, b.objektName || e.objektName);
+    const wt = w ? await wohnungText(w.objektId, w.weNr) : '';
+    let bewohnt = '';
+    if(w && w.weNr){
+      const mAkt = await wohnungAktuellerMieter(w.objektId, w.weNr);
+      const nv = await wohnungNeuvermietungInfo(w.objektId, w.weNr).catch(() => null);
+      bewohnt = [mAkt ? 'derzeit: ' + (hauptmieterNameVoll(mAkt) || mAkt.mieter || '') : 'derzeit unbewohnt', nv ? leerAbText(nv.st) : ''].filter(Boolean).join(' · ');
+    }
+    const tel = String(b.telefon || p1.telefon || '').trim();
+    const email = String(b.email || p1.email || '').trim();
+    const bt = await besichtigungsText({ anrede:p1.anrede || b.anrede, vorname:b.vorname, nachname:b.nachname,
+      objektId:w && w.objektId, weNr:w && w.weNr, objektName:b.objektName || e.objektName });
+    const sig = mailSignatur(w ? w.objektId : '', { kontakt:false });
+    window._saKontakt[e.id] = { email, tel, w, wohnung:bt.wohnung || b.objektName || e.objektName || '', text:bt.text,
+      name:((b.vorname || '') + ' ' + (b.nachname || '')).trim() || e.anzeigeName || '' };
+    const wa = tel ? waLink(tel) : '';
+    const gesendet = email ? mails.filter(v => v && !v._papierkorb && (a472Mail(v.email) === a472Mail(email) || v.saId === e.id)) : [];
+    el.innerHTML = `<div style="margin-top:8px;border:1px solid var(--line);border-radius:8px;padding:8px 10px;background:rgba(255,255,255,.7);font-size:12px;line-height:1.5">
+      <div><i class="ti ti-home"></i> <b>Bewirbt sich für:</b> ${esc(wt || b.objektName || e.objektName || '(keine Wohnung angegeben)')}${w && !w.weNr ? ' <span style="color:var(--amber-d,#9a6b00)">· Wohnungsnummer unbekannt</span>' : ''}${!w && (b.objektName || e.objektName) ? ' <span style="color:var(--amber-d,#9a6b00)">· keinem Objekt zugeordnet</span>' : ''}</div>
+      ${bewohnt ? `<div style="color:var(--ink-60)"><i class="ti ti-user"></i> ${esc(bewohnt)}</div>` : ''}
+      <div style="color:var(--ink-60);overflow-wrap:anywhere"><i class="ti ti-address-book"></i> ${esc([email, tel].filter(Boolean).join(' · ') || 'keine Kontaktdaten')}</div>
+      ${bt.kontakte && (bt.kontakte.mieter || bt.kontakte.hm.length) ? `<div style="color:var(--ink-60)"><i class="ti ti-key"></i> Besichtigung über: ${esc([bt.kontakte.mieter ? 'Mieter (Einwilligung liegt vor)' : '', ...bt.kontakte.hm.map(h => 'Hausmeister ' + h.name)].filter(Boolean).join(', '))}</div>`
+        : (w && w.weNr ? '<div style="color:var(--ink-40)"><i class="ti ti-key"></i> Kein Besichtigungskontakt hinterlegt – der Text bittet um Terminvorschläge.</div>' : '')}
+      ${gesendet.length ? `<div style="color:var(--ink-60)"><i class="ti ti-history"></i> ${gesendet.length} E-Mail${gesendet.length === 1 ? '' : 's'} gesendet, zuletzt ${esc(a472Datum(gesendet.map(v => v.gesendet).sort().pop()))}</div>` : ''}
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">
+        ${email ? `<button class="btn btn-sm btn-primary" data-action-click="saKontaktMail" data-arg="${escAttr(e.id)}"><i class="ti ti-mail"></i> E-Mail</button>` : ''}
+        ${tel ? `<a class="btn btn-sm btn-success" style="text-decoration:none" href="${telHref(tel)}"><i class="ti ti-phone"></i> Anrufen</a>` : ''}
+        ${wa ? `<a class="btn btn-sm" href="${escAttr(wa + '?text=' + encodeURIComponent(bt.text + sig))}" target="_blank" rel="noopener" style="background:#25D366;color:#fff;border-color:#25D366;text-decoration:none"><i class="ti ti-brand-whatsapp"></i> WhatsApp</a>` : ''}
+        <button class="btn btn-sm" data-action-click="saDrucken" data-arg="${escAttr(e.id)}"><i class="ti ti-printer"></i> Drucken</button>
+      </div></div>`;
+  }
+}
+function saKontaktMail(id){
+  const k = (window._saKontakt || {})[id];
+  if(!k || !k.email){ toast('Keine E-Mail-Adresse in der Selbstauskunft.'); return; }
+  window._mailVorbelegung = { art:'vorlage', email:k.email, betreff:'Besichtigung' + (k.wohnung ? ' – ' + k.wohnung : ''),
+    text:k.text, saId:id, objektId:k.w ? k.w.objektId : '' };
+  setMailTab('mieter');
+}
+
+/* ── Besichtigungstermin (Selbstauskunft oder Interessent) → Kalender ───── */
+async function besichtigungKontext(quelle, id){
+  if(quelle === 'sa'){
+    const e = (window._saInbox || {})[id]; if(!e) return null;
+    const o = await saBasisHolen(id) || {};
+    const b = o.basis || {};
+    const w = saWohnungAufloesen(b.objektId, b.objektName || e.objektName);
+    const n = _saNotizen[id] || {};
+    return { name:((b.vorname || '') + ' ' + (b.nachname || '')).trim() || e.anzeigeName || '', tel:b.telefon || '', email:b.email || '',
+      objektId:w ? w.objektId : '', weNr:w ? w.weNr : '', objektName:b.objektName || e.objektName || '', termin:n.besichtigungTermin || null };
+  }
+  const k = await idbGet('interessenten', id).catch(() => null); if(!k) return null;
+  return { name:k.name || '', tel:k.telefon || '', email:k.email || '', objektId:k.objektId || '', weNr:k.weNr || '', objektName:k.objektName || '',
+    termin:k.besichtigungTermin || null };
+}
+async function besichtigungModal(quelle, id){
+  const c = await besichtigungKontext(quelle, id);
+  if(!c){ toast('Datensatz nicht gefunden – bitte neu laden.'); return; }
+  window._bsKontext = { quelle, id, c };
+  const t = c.termin || {};
+  const morgen = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+  const wt = c.objektId ? await wohnungText(c.objektId, c.weNr) : c.objektName;
+  const users = (await idbGetAll('users').catch(() => [])).filter(u => u && u.aktiv !== false);
+  const o = getObj(c.objektId);
+  const hmVor = o ? users.find(u => u.role === 'hm' && ((u.objekte || []).includes(o.gruppe) || (u.objekte || []).includes(o.id))) : null;
+  let zuVor = t.zugewiesen != null ? t.zugewiesen : (hmVor ? hmVor.id : '');
+  showModal(`
+    <div class="m-title"><i class="ti ti-eye"></i> Besichtigung ${t.terminId ? 'ändern' : 'vereinbaren'}</div>
+    <div style="font-size:13px;margin-bottom:10px"><b>${esc(c.name)}</b>${wt ? '<br><span style="color:var(--ink-60)">' + esc(wt) + '</span>' : ''}</div>
+    <div class="f-row">
+      <div class="f"><label for="bsDatum">Datum</label><input type="date" id="bsDatum" value="${escAttr(t.datum || morgen)}"></div>
+      <div class="f"><label for="bsVon">Uhrzeit</label><input type="time" id="bsVon" value="${escAttr(t.uhrzeit || '')}"></div>
+      <div class="f"><label for="bsBis">bis (optional)</label><input type="time" id="bsBis" value="${escAttr(t.uhrzeitEnd || '')}"></div>
+    </div>
+    <div class="f"><label for="bsZu">Wer zeigt die Wohnung?</label><select id="bsZu"><option value="">– niemand zugewiesen –</option>
+      ${users.map(u => `<option value="${escAttr(u.id)}"${u.id === zuVor ? ' selected' : ''}>${esc(u.name)}${u.role === 'hm' ? ' (Hausmeister)' : ''}</option>`).join('')}</select></div>
+    <div class="f"><label for="bsNotiz">Notiz</label><input type="text" id="bsNotiz" value="${escAttr(t.notiz || '')}" placeholder="z. B. Treffpunkt Hauseingang"></div>
+    <div style="font-size:11px;color:var(--ink-40);margin-bottom:10px">Der Termin erscheint im Kalender als „Besichtigung“ mit Name und Telefon des Bewerbers.</div>
+    <div class="f-row">
+      <button class="btn btn-copper btn-full" data-action-click="besichtigungSpeichern"><i class="ti ti-calendar-plus"></i> In den Kalender</button>
+      <button class="btn btn-full" data-action-click="besichtigungAbbrechen">Abbrechen</button>
+    </div>`);
+}
+async function besichtigungAbbrechen(){
+  const k = window._bsKontext; window._bsKontext = null;
+  closeModal();
+  if(k && k.quelle === 'sa'){ const box = document.getElementById('saIntern_' + k.id); if(box) box.outerHTML = saInternHTML(k.id, _saNotizen[k.id]); }
+}
+async function besichtigungSpeichern(){
+  const k = window._bsKontext; if(!k) return;
+  const datum = document.getElementById('bsDatum')?.value || '';
+  const von = document.getElementById('bsVon')?.value || '';
+  const bis = document.getElementById('bsBis')?.value || '';
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(datum)){ toast('Bitte ein Datum wählen'); return; }
+  if(!/^\d{2}:\d{2}$/.test(von)){ toast('Bitte die Uhrzeit angeben'); return; }
+  if(bis && bis <= von){ toast('Das Ende liegt vor dem Beginn'); return; }
+  const c = k.c;
+  const zu = document.getElementById('bsZu')?.value || '';
+  const notizFrei = (document.getElementById('bsNotiz')?.value || '').trim();
+  const wt = c.objektId ? await wohnungText(c.objektId, c.weNr) : c.objektName;
+  const terminId = (c.termin && c.termin.terminId) || ('bs_' + uid());
+  const alt = await idbGet('termine', terminId).catch(() => null);
+  const rec = Object.assign({}, alt || {}, {
+    id:terminId, titel:'Besichtigung: ' + c.name + (c.weNr ? ' – WE ' + c.weNr : ''), typ:'besichtigung', datum, uhrzeit:von, uhrzeitEnd:bis,
+    erinnerung:(alt && alt.erinnerung) || '', objektId:c.objektId || null, mieterId:null, mieterName:'', weNr:c.weNr || '',
+    notiz:[wt, 'Bewerber: ' + c.name + (c.tel ? ', Tel. ' + c.tel : ''), notizFrei].filter(Boolean).join('\n'),
+    zugewiesen:zu, status:'offen', erstellt:(alt && alt.erstellt) || now(), ersteller:(alt && alt.ersteller) || a472CuName(),
+    quelle:k.quelle === 'sa' ? 'selbstauskunft' : 'interessent', quelleId:k.id, geaendert:nowIso()
+  });
+  try{ await idbPut('termine', rec); }
+  catch(e){ console.warn('Besichtigung:', e); toast('Termin konnte nicht gespeichert werden.'); return; }
+  const merk = { datum, uhrzeit:von, uhrzeitEnd:bis, terminId, zugewiesen:zu, notiz:notizFrei };
+  window._bsKontext = null;
+  closeModal();
+  if(k.quelle === 'sa'){
+    await saNotizAendern(k.id, n => { n.besichtigung = n.besichtigung || today(); n.besichtigungTermin = merk; });
+  } else {
+    const ki = await idbGet('interessenten', k.id).catch(() => null);
+    if(ki){
+      ki.besichtigungTermin = merk;
+      if(['neu', 'warteliste', 'vorgemerkt', ''].includes(ki.status || '')) ki.status = 'eingeladen';
+      ki.geaendert = nowIso();
+      await idbPut('interessenten', ki);
+    }
+    await modalInteressentDetail(k.id);
+  }
+  syncSoon();
+  toast('Besichtigung am ' + a472Datum(datum) + ' um ' + von + ' Uhr im Kalender ✓');
+}
+async function saBesichtigungHaken(id, an){
+  if(an) return besichtigungModal('sa', id);
+  const n = _saNotizen[id] || {};
+  const tid = n.besichtigungTermin && n.besichtigungTermin.terminId;
+  if(tid && confirm('Den Besichtigungstermin auch aus dem Kalender löschen?')){
+    try{ await deleteMitTombstone('termine', tid); }catch(e){ console.warn('Termin löschen:', e); }
+  }
+  return saNotizAendern(id, x => { x.besichtigung = ''; x.besichtigungTermin = null; });
+}
+
+/* ── Interessent: Kontakt, Besichtigung, Verlauf ────────────────────────── */
+async function interessentKontaktHTML(k){
+  const tel = String(k.telefon || '').trim(), email = String(k.email || '').trim();
+  const bt = await besichtigungsText({ anrede:k.anrede, vorname:k.vorname, nachname:k.nachname || (k.name || '').split(/\s+/).slice(-1)[0],
+    objektId:k.objektId, weNr:k.weNr, objektName:k.objektName });
+  window._intKontakt = window._intKontakt || {};
+  window._intKontakt[k.id] = { text:bt.text, wohnung:bt.wohnung || k.objektName || '' };
+  const wa = tel ? waLink(tel) : '';
+  const sig = mailSignatur(k.objektId || '', { kontakt:false });
+  const bz = await interessentBezug(k);
+  const verlauf = await kontaktVerlaufSammeln(bz);
+  const t = k.besichtigungTermin;
+  return `<div style="margin-top:12px;display:flex;gap:6px;flex-wrap:wrap">
+      ${email ? `<button class="btn btn-sm btn-primary" data-action-click="interessentMailSchreiben" data-arg="${escAttr(k.id)}" data-arg2="besichtigung"><i class="ti ti-mail"></i> E-Mail</button>` : ''}
+      ${tel ? `<a class="btn btn-sm btn-success" style="text-decoration:none" href="${telHref(tel)}"><i class="ti ti-phone"></i> Anrufen</a>` : ''}
+      ${wa ? `<a class="btn btn-sm" href="${escAttr(wa + '?text=' + encodeURIComponent(bt.text + sig))}" target="_blank" rel="noopener" style="background:#25D366;color:#fff;border-color:#25D366;text-decoration:none"><i class="ti ti-brand-whatsapp"></i> WhatsApp</a>` : ''}
+      <button class="btn btn-sm" data-action-click="besichtigungModal" data-arg="interessent" data-arg2="${escAttr(k.id)}"><i class="ti ti-calendar-plus"></i> Besichtigung${t ? ' ändern' : ''}</button>
+      ${email && k.status !== 'uebernommen' ? `<button class="btn btn-sm" data-action-click="interessentMailSchreiben" data-arg="${escAttr(k.id)}" data-arg2="absage"><i class="ti ti-mail-x"></i> Absage</button>` : ''}
+      <button class="btn btn-sm" data-action-click="interessentDrucken" data-arg="${escAttr(k.id)}"><i class="ti ti-printer"></i> Drucken</button>
+    </div>
+    ${t ? `<div style="font-size:12px;margin-top:6px;color:var(--ink-60)"><i class="ti ti-eye"></i> Besichtigung am ${esc(a472Datum(t.datum))}${t.uhrzeit ? ', ' + esc(t.uhrzeit) + ' Uhr' : ''}</div>` : ''}
+    <div class="f-section-title" style="margin-top:14px"><i class="ti ti-history"></i> Verlauf</div>
+    ${kontaktVerlaufHTML(verlauf, 'i:' + k.id)}`;
+}
+async function interessentMailSchreiben(id, art){
+  const k = await idbGet('interessenten', id).catch(() => null);
+  if(!k || !k.email){ toast('Keine E-Mail-Adresse hinterlegt.'); return; }
+  let text = '', betreff = '';
+  const wt = k.objektId ? await wohnungText(k.objektId, k.weNr) : (k.objektName || '');
+  if(art === 'besichtigung'){
+    const bt = await besichtigungsText({ anrede:k.anrede, vorname:k.vorname, nachname:k.nachname || (k.name || '').split(/\s+/).slice(-1)[0],
+      objektId:k.objektId, weNr:k.weNr, objektName:k.objektName });
+    text = bt.text; betreff = 'Besichtigung' + (wt ? ' – ' + wt : '');
+  } else if(art === 'absage'){
+    const v = (await mailVorlagenLaden()).find(x => x.id === 'absage') || MAIL_VORLAGEN_STANDARD.find(x => x.id === 'absage');
+    text = bewerberAnrede(k.anrede, k.vorname, k.nachname || (k.name || '').split(/\s+/).slice(-1)[0]) + '\n\n' + mailVorlageFuellen(v.text, { name:k.name, wohnung:wt });
+    betreff = mailVorlageFuellen(v.betreff, { name:k.name, wohnung:wt });
+  }
+  closeModal();
+  window._mailVorbelegung = { art:'vorlage', email:k.email, betreff, text, interessentId:k.id, saId:k.quelleId || '', objektId:k.objektId || '' };
+  window._mailTab = 'mieter';
+  nav('mail');
+}
+/* A471-Restpunkt: In der Interessentenliste oeffnet die Adresse die Mieter-Mail statt mailto:. */
+function interessentMailOeffnen(id){ return interessentMailSchreiben(id, ''); }
+
+/* ── Textvorlagen ───────────────────────────────────────────────────────── */
+const MAIL_VORLAGEN_STANDARD = [
+  { id:'besichtigung', name:'Besichtigung bestätigen', betreff:'Besichtigung {wohnung}',
+    text:'vielen Dank für Ihr Interesse an der Wohnung {wohnung}. Gern zeigen wir Ihnen die Wohnung am {termin}.\n\nBitte bestätigen Sie den Termin kurz. Falls er Ihnen nicht passt, nennen Sie uns gern einen anderen.' },
+  { id:'unterlagen', name:'Unterlagen anfordern', betreff:'Ihre Bewerbung für {wohnung}',
+    text:'vielen Dank für Ihre Bewerbung für die Wohnung {wohnung}. Für die weitere Bearbeitung benötigen wir noch:\n\n– Einkommensnachweise der letzten drei Monate\n– eine Mietschuldenfreiheitsbescheinigung Ihres derzeitigen Vermieters\n\nSie können die Unterlagen einfach auf diese E-Mail antworten.' },
+  { id:'absage', name:'Absage an Bewerber', betreff:'Ihre Bewerbung für {wohnung}',
+    text:'vielen Dank für Ihr Interesse an der Wohnung {wohnung} und die Zeit, die Sie sich genommen haben.\n\nWir haben uns inzwischen für eine andere Bewerbung entschieden und können Ihnen die Wohnung deshalb leider nicht anbieten. Ihre Angaben löschen wir nach unseren Datenschutzhinweisen.\n\nFür Ihre weitere Wohnungssuche wünschen wir Ihnen viel Erfolg.' },
+  { id:'uebergabe', name:'Wohnungsübergabe', betreff:'Übergabe der Wohnung {wohnung}',
+    text:'die Übergabe der Wohnung {wohnung} findet am {termin} statt. Wir gehen die Wohnung gemeinsam durch, lesen die Zähler ab und übergeben die Schlüssel.\n\nBitte bringen Sie Ihren Personalausweis mit.' },
+  { id:'handwerker', name:'Handwerkertermin ankündigen', betreff:'Handwerkertermin in Ihrer Wohnung {wohnung}',
+    text:'am {termin} kommt ein Handwerker in Ihre Wohnung {wohnung}.\n\nBitte ermöglichen Sie zu diesem Zeitpunkt den Zugang. Falls der Termin nicht passt, melden Sie sich bitte kurz bei uns.' },
+];
+async function mailVorlagenLaden(){
+  try{ const r = await idbGet('settings', 'mail_vorlagen'); if(r && Array.isArray(r.value)) return r.value; }catch(_){}
+  return MAIL_VORLAGEN_STANDARD.map(v => Object.assign({}, v));
+}
+async function mailVorlagenSpeichern(liste){
+  await idbPut('settings', { id:'mail_vorlagen', value:liste, geaendert:nowIso() });
+  syncSoon();
+}
+function mailVorlageFuellen(t, w){
+  return String(t || '').replace(/\{name\}/g, w.name || '').replace(/\{wohnung\}/g, w.wohnung || '')
+    .replace(/\{objekt\}/g, w.objekt || '').replace(/\{we\}/g, w.we || '')
+    .replace(/\{termin\}/g, w.termin || '__.__.____ um __:__ Uhr').replace(/[ \t]+([.,])/g, '$1');
+}
+async function tmVorlagenOptionen(){
+  const sel = document.getElementById('tmVorlage'); if(!sel) return;
+  const liste = await mailVorlagenLaden();
+  sel.innerHTML = '<option value="">– Textvorlage einsetzen –</option>' + liste.map(v => `<option value="${escAttr(v.id)}">${esc(v.name)}</option>`).join('');
+}
+async function tmVorlageGewaehlt(){
+  const sel = document.getElementById('tmVorlage'); if(!sel || !sel.value) return;
+  const v = (await mailVorlagenLaden()).find(x => x.id === sel.value);
+  sel.value = '';
+  if(!v) return;
+  const mId = document.getElementById('tmMieter')?.value || '';
+  const m = mId && window._tmMieter ? window._tmMieter[mId] : null;
+  let w = { name:'', wohnung:'', objekt:'', we:'' };
+  if(m){ w = { name:hauptmieterNameVoll(m) || m.mieter || '', wohnung:await wohnungText(m.objektId, m.weNr), objekt:(getObj(m.objektId) || {}).name || '', we:m.weNr || '' }; }
+  else if(window._tmBezug && window._tmBezug.objektId){
+    const b = window._tmBezug;
+    w = { name:'', wohnung:await wohnungText(b.objektId, b.weNr || ''), objekt:(getObj(b.objektId) || {}).name || '', we:b.weNr || '' };
+  }
+  const textEl = document.getElementById('tmText'), betrEl = document.getElementById('tmBetreff');
+  const koerper = mailVorlageFuellen(v.text, w);
+  if(textEl){
+    const zeilen = String(textEl.value || '').split('\n');
+    const anrede = zeilen[0] && /^(Sehr geehrte|Guten Tag|Hallo)/.test(zeilen[0].trim()) ? zeilen[0].trim() : '';
+    if(typeof tmNurAnrede === 'function' && !tmNurAnrede(textEl.value) && !confirm('Den bisherigen Text durch die Vorlage ersetzen?')) return;
+    textEl.value = (anrede ? anrede + '\n\n' : '') + koerper;
+    window._tmAutoAnrede = anrede || window._tmAutoAnrede;
+  }
+  if(betrEl && (!betrEl.value.trim() || confirm('Betreff durch „' + mailVorlageFuellen(v.betreff, w) + '“ ersetzen?'))) betrEl.value = mailVorlageFuellen(v.betreff, w);
+  if(/__\.__\.____/.test(koerper)) toast('Bitte Datum und Uhrzeit im Text eintragen.', 4000);
+}
+async function mailVorlagenModal(){
+  const liste = await mailVorlagenLaden();
+  showModal(`
+    <div class="m-title"><i class="ti ti-template"></i> Textvorlagen</div>
+    <div style="font-size:12px;color:var(--ink-60);margin-bottom:10px;line-height:1.5">Platzhalter: {name}, {wohnung}, {objekt}, {we}, {termin}.
+      Die Anrede und die Grußformel setzt die App selbst.</div>
+    ${liste.map((v, i) => `<div style="border:1px solid var(--line);border-radius:10px;padding:8px 10px;margin-bottom:6px;display:flex;gap:8px;align-items:center">
+      <div style="flex:1;min-width:0"><div style="font-weight:600;font-size:13px">${esc(v.name)}</div>
+        <div style="font-size:11px;color:var(--ink-40);overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${esc(v.betreff || '')}</div></div>
+      <button class="btn btn-sm" data-action-click="mailVorlageBearbeiten" data-arg="${i}" data-argnum title="Bearbeiten"><i class="ti ti-pencil"></i></button>
+      <button class="btn btn-sm btn-danger" data-action-click="mailVorlageLoeschen" data-arg="${i}" data-argnum title="Löschen"><i class="ti ti-trash"></i></button></div>`).join('')}
+    <div class="f-row" style="margin-top:10px">
+      <button class="btn btn-copper btn-full" data-action-click="mailVorlageBearbeiten" data-arg="-1" data-argnum><i class="ti ti-plus"></i> Neue Vorlage</button>
+      <button class="btn btn-full" data-action-click="mailVorlagenStandard"><i class="ti ti-restore"></i> Standard</button>
+    </div>
+    <button class="btn btn-full" style="margin-top:8px" data-action-click="mailVorlagenSchliessen">Schließen</button>`);
+}
+async function mailVorlageBearbeiten(i){
+  const liste = await mailVorlagenLaden();
+  const v = i >= 0 ? liste[i] : { id:'', name:'', betreff:'', text:'' };
+  if(!v){ toast('Vorlage nicht gefunden'); return; }
+  showModal(`
+    <div class="m-title"><i class="ti ti-pencil"></i> Vorlage ${i >= 0 ? 'bearbeiten' : 'anlegen'}</div>
+    <div class="f"><label for="mvName">Name</label><input type="text" id="mvName" value="${escAttr(v.name)}" placeholder="z. B. Schlüssel abholen"></div>
+    <div class="f"><label for="mvBetreff">Betreff</label><input type="text" id="mvBetreff" value="${escAttr(v.betreff)}"></div>
+    <div class="f"><label for="mvText">Text (ohne Anrede und Gruß)</label><textarea id="mvText" lang="de" spellcheck="true" style="min-height:160px">${esc(v.text)}</textarea></div>
+    <div style="font-size:11px;color:var(--ink-40);margin-bottom:10px">Platzhalter: {name}, {wohnung}, {objekt}, {we}, {termin}</div>
+    <div class="f-row">
+      <button class="btn btn-copper btn-full" data-action-click="mailVorlageSpeichern" data-arg="${i}" data-argnum><i class="ti ti-check"></i> Speichern</button>
+      <button class="btn btn-full" data-action-click="mailVorlagenModal">Zurück</button>
+    </div>`);
+}
+async function mailVorlageSpeichern(i){
+  const name = (document.getElementById('mvName')?.value || '').trim();
+  const betreff = (document.getElementById('mvBetreff')?.value || '').trim();
+  const text = (document.getElementById('mvText')?.value || '').replace(/\s+$/, '');
+  if(!name || !text){ toast('Bitte Name und Text angeben'); return; }
+  const liste = await mailVorlagenLaden();
+  if(i >= 0 && liste[i]) Object.assign(liste[i], { name, betreff, text });
+  else liste.push({ id:'v_' + uid(), name, betreff, text });
+  await mailVorlagenSpeichern(liste);
+  toast('Vorlage gespeichert ✓');
+  await mailVorlagenModal();
+}
+async function mailVorlageLoeschen(i){
+  const liste = await mailVorlagenLaden();
+  if(!liste[i] || !confirm('Vorlage „' + liste[i].name + '“ löschen?')) return;
+  liste.splice(i, 1);
+  await mailVorlagenSpeichern(liste);
+  await mailVorlagenModal();
+}
+async function mailVorlagenStandard(){
+  if(!confirm('Die fünf Standardvorlagen wiederherstellen? Eigene Vorlagen bleiben erhalten.')) return;
+  const liste = await mailVorlagenLaden();
+  MAIL_VORLAGEN_STANDARD.forEach(s => { const j = liste.findIndex(v => v.id === s.id); if(j >= 0) liste[j] = Object.assign({}, s); else liste.push(Object.assign({}, s)); });
+  await mailVorlagenSpeichern(liste);
+  await mailVorlagenModal();
+}
+function mailVorlagenSchliessen(){ closeModal(); if(window._mailTab === 'mieter' && typeof tmVorlagenOptionen === 'function') tmVorlagenOptionen(); }
+
+/* ── Versand ohne Maske (Absage an mehrere) ─────────────────────────────── */
+async function mailEinfachSenden(p){
+  const key = (await idbGet('settings', 'backendKey').catch(() => null))?.value;
+  if(!key) return { ok:false, grund:'Kein Backend-Schlüssel' };
+  const text = tmSignaturEinfuegen(p.text, mailSignatur(p.objektId || '', {}));
+  const rec = { id:'tm_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), mieterId:p.mieterId || '', objektId:p.objektId || '',
+    empfaengerName:p.empfaengerName || p.email, email:p.email, betreff:p.betreff, text, cc:[], bcc:[], anhaenge:[],
+    interessentId:p.interessentId || '', saId:p.saId || '', gesendet:new Date().toISOString(), status:'offen', geaendert:now() };
+  try{
+    const nutzlast = { to:p.email, subject:p.betreff, text, absenderName:mailAbsenderAnzeige(rec.objektId) };
+    const eigene = mailAbsenderAdresse(); if(eigene) nutzlast.absenderAdresse = eigene;
+    rec.absender = nutzlast.absenderName;
+    const r = await fetchMitTimeout(BACKEND_AZURE + '/api/send-mail', { method:'POST',
+      headers:{ 'Content-Type':'application/json', 'x-functions-key':key }, body:JSON.stringify(nutzlast) }, 30000);
+    rec.status = (r && r.ok) ? 'gesendet' : 'fehler';
+    if(!(r && r.ok)) rec.fehler = 'HTTP ' + (r ? r.status : 'ohne Antwort');
+  }catch(e){ rec.status = 'fehler'; rec.fehler = (e && e.message) || 'Netzwerk'; }
+  try{ await idbPut('tenant_mails', rec); }catch(e){ console.warn('Mailprotokoll:', e); }
+  return { ok:rec.status === 'gesendet', grund:rec.fehler || '', rec };
+}
+async function absageModal(objektId, weNr){
+  const alle = (await idbGetAll('interessenten').catch(() => [])).filter(k => k && k.objektId === objektId && weSchluessel(k.weNr) === weSchluessel(weNr));
+  const offen = alle.filter(k => k.email && !['uebernommen', 'absage', 'zusage'].includes(k.status));
+  const ohneMail = alle.filter(k => !k.email && !['uebernommen', 'absage', 'zusage'].includes(k.status)).length;
+  const wt = await wohnungText(objektId, weNr);
+  const v = (await mailVorlagenLaden()).find(x => x.id === 'absage') || MAIL_VORLAGEN_STANDARD.find(x => x.id === 'absage');
+  window._absage = { objektId, weNr, wt };
+  showModal(`
+    <div class="m-title"><i class="ti ti-mail-x"></i> Absage an übrige Bewerber</div>
+    <div style="font-size:13px;margin-bottom:8px">${esc(wt)}</div>
+    ${offen.length ? `<div style="font-size:12px;color:var(--ink-60);margin-bottom:6px">Jeder bekommt eine eigene E-Mail – niemand sieht die Adressen der anderen.</div>
+      ${offen.map(k => `<label style="display:flex;gap:8px;align-items:center;font-size:13px;padding:4px 0">
+        <input type="checkbox" class="absWahl" value="${escAttr(k.id)}" checked style="width:16px;height:16px">
+        <span style="flex:1;min-width:0;overflow-wrap:anywhere">${esc(k.name || '')} <span style="color:var(--ink-40)">· ${esc(k.email)} · ${esc(interessentStatusInfo(k.status).label)}</span></span></label>`).join('')}
+      ${ohneMail ? `<div style="font-size:11px;color:var(--amber-d,#9a6b00);margin-top:4px">${ohneMail} Bewerber ohne E-Mail-Adresse – bitte anrufen.</div>` : ''}
+      <div class="f" style="margin-top:10px"><label for="absBetreff">Betreff</label><input type="text" id="absBetreff" value="${escAttr(mailVorlageFuellen(v.betreff, { wohnung:wt }))}"></div>
+      <div class="f"><label for="absText">Text (die Anrede setzt die App je Bewerber)</label><textarea id="absText" lang="de" spellcheck="true" style="min-height:150px">${esc(mailVorlageFuellen(v.text, { wohnung:wt }))}</textarea></div>
+      <div class="f-row" style="margin-top:8px">
+        <button class="btn btn-copper btn-full" data-action-click="absageSenden"><i class="ti ti-send"></i> Absagen senden</button>
+        <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button></div>`
+    : `<div class="empty" style="padding:12px 0"><i class="ti ti-users"></i><p>Keine offenen Bewerber mit E-Mail-Adresse für diese Wohnung.</p></div>
+      <button class="btn btn-full" data-action-click="closeModal">Schließen</button>`}`);
+}
+async function absageSenden(){
+  const a = window._absage; if(!a) return;
+  const ids = Array.from(document.querySelectorAll('.absWahl')).filter(x => x.checked).map(x => x.value);
+  const betreff = (document.getElementById('absBetreff')?.value || '').trim();
+  const koerper = (document.getElementById('absText')?.value || '').trim();
+  if(!ids.length){ toast('Niemand ausgewählt'); return; }
+  if(!betreff || !koerper){ toast('Bitte Betreff und Text angeben'); return; }
+  if(!confirm(ids.length + ' Absage' + (ids.length === 1 ? '' : 'n') + ' jetzt senden?')) return;
+  closeModal();
+  let ok = 0; const fehler = [];
+  for(const id of ids){
+    const k = await idbGet('interessenten', id).catch(() => null);
+    if(!k || !k.email) continue;
+    const text = bewerberAnrede(k.anrede, k.vorname, k.nachname || (k.name || '').split(/\s+/).slice(-1)[0]) + '\n\n' + koerper;
+    const r = await mailEinfachSenden({ email:k.email, betreff, text, objektId:a.objektId, empfaengerName:k.name || k.email, interessentId:k.id, saId:k.quelleId || '' });
+    if(r.ok){
+      ok++;
+      k.status = 'absage'; k.absageAm = nowIso(); k.geaendert = nowIso();
+      try{ await idbPut('interessenten', k); }catch(_){}
+    } else fehler.push((k.name || k.email) + (r.grund ? ' (' + r.grund + ')' : ''));
+  }
+  window._absage = null;
+  syncSoon();
+  if(fehler.length) alert(ok + ' Absage(n) gesendet.\n\nNicht gesendet:\n· ' + fehler.join('\n· '));
+  else toast(ok + ' Absage' + (ok === 1 ? '' : 'n') + ' gesendet ✓');
+  if(typeof curPage !== 'undefined' && curPage === 'objekt' && typeof renderObjTab === 'function') try{ await renderObjTab('interessenten'); }catch(_){}
+}
+
+/* ── Versionsnummer unten im Dashboard ─────────────────────────────────── */
+function dashVersionHTML(){
+  return `<div class="dash-version" style="text-align:center;font-size:11px;color:var(--ink-40);margin:22px 0 6px">App-Version ${esc(APP_VERSION)}</div>`;
+}
+
+registerActions({ tmGesendetDrucken, postfachDrucken, webNachrichtDrucken, saDrucken, interessentDrucken, postfachSaLink,
+  peToDoAusNachricht, peTerminAusNachricht, akteZielBestaetigen, postfachAnhangInsArchiv, postfachMailInsArchiv,
+  archivMailOeffnen, tmZurueckGehen, kqArchivOeffnen, besichtigungZustimmungSetzen, saKontaktMail, besichtigungModal,
+  besichtigungAbbrechen, besichtigungSpeichern, interessentMailSchreiben, interessentMailOeffnen, tmVorlageGewaehlt, mailVorlagenModal,
+  mailVorlageBearbeiten, mailVorlageSpeichern, mailVorlageLoeschen, mailVorlagenStandard, mailVorlagenSchliessen,
+  absageModal, absageSenden, modalInteressentDetail, openArchivDok, downloadDok });
 
 
 /* ═══════════════════════════════════════════════════════════
@@ -11432,8 +12342,9 @@ async function tmGesendetOeffnen(id){
     <div style="white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px;line-height:1.55;border:1px solid var(--ink-10);border-radius:10px;padding:10px 12px;max-height:50vh;overflow:auto">${esc(v.text || '')}</div>
     <div class="f-row" style="margin-top:12px">
       <button class="btn btn-copper btn-full" data-action-click="tmGesendetWeiterleiten" data-arg="${escAttr(String(v.id))}"><i class="ti ti-mail-forward"></i> Weiterleiten</button>
-      <button class="btn btn-full" data-action-click="closeModal">Schließen</button>
-    </div>`);
+      <button class="btn btn-full" data-action-click="tmGesendetDrucken" data-arg="${escAttr(String(v.id))}"><i class="ti ti-printer"></i> Drucken</button>
+    </div>
+    <button class="btn btn-full" style="margin-top:8px" data-action-click="tmZurueckGehen" data-arg="${escAttr(String(v.id))}">${(typeof tmZurueckZiel === 'function' && tmZurueckZiel(v.id)) ? '<i class="ti ti-arrow-left"></i> Zurück' : 'Schließen'}</button>`);   // A472
 }
 
 /* Weiterleiten wie im Postfach (A425): Kopfzeilen + Text in die Maske. BCC
@@ -11536,6 +12447,9 @@ function tmAdressenDesMieters(m){
    danach geloescht - sonst taucht sie beim naechsten Oeffnen wieder auf. */
 function mailVorbelegungAnwenden(){
   const v = window._mailVorbelegung;
+  /* A472: Bezug zur Bewerbung - landet im Mailprotokoll, damit der Verlauf beim Bewerber bleibt. */
+  window._tmBezug = v && (v.interessentId || v.saId || v.objektId)
+    ? { interessentId:v.interessentId || '', saId:v.saId || '', objektId:v.objektId || '', weNr:v.weNr || '' } : null;
   if(!v) return;
   window._mailVorbelegung = null;
   const mail = document.getElementById('tmMail');
@@ -11564,6 +12478,7 @@ function mailVorbelegungAnwenden(){
     if(v.art === 'antwort'){ try{ text.setSelectionRange(0, 0); text.scrollTop = 0; }catch(_){} }
   }
   if(v.art === 'entwurf'){ return; }   // A432: die Statuszeile nennt den Fehler; Text steht wieder da
+  if(v.art === 'vorlage'){ toast('Text vorbereitet – bitte prüfen und senden.'); return; }   // A472
   toast(v.art === 'antwort' ? 'Antwort vorbereitet – Text oben ergänzen und senden.'
       : v.text ? 'Weiterleitung vorbereitet – Empfänger eintragen und senden.'
                : 'Empfänger übernommen – Text ergänzen und senden.');
@@ -11572,12 +12487,14 @@ function mailVorbelegungAnwenden(){
 async function mailRenderMieterMail(body){
   // Mieterliste mit E-Mail
   let mieter=[]; try{ mieter=await idbGetAll('mieter'); }catch(e){ mieter=[]; }
-  const mitMail=(mieter||[]).filter(m=>m && m.email && !istWohnungFaktischLeer(m)).sort((a,b)=>String(hauptmieterNameVoll(a)||'').localeCompare(String(hauptmieterNameVoll(b)||'')));
+  /* A471: auch Mieter, bei denen nur ein Bewohner eine Adresse hat - sonst kann der E-Mail-Knopf sie nicht vorwaehlen. */
+  const _ersteMail = m => m.email || ((personenVon(m).find(p => p && p.email) || {}).email) || '';
+  const mitMail=(mieter||[]).filter(m=>m && _ersteMail(m) && !istWohnungFaktischLeer(m)).sort((a,b)=>String(hauptmieterNameVoll(a)||'').localeCompare(String(hauptmieterNameVoll(b)||'')));
   window._tmMieter = {}; mitMail.forEach(m => { window._tmMieter[m.id] = m; });   // A438: Anrede
   const opts=mitMail.map(m=>{
     const obj=getObj(m.objektId);
     const lbl=`${hauptmieterNameVoll(m)} · ${obj?.name||''} WE ${esc(String(m.weNr||''))}`;
-    return `<option value="${esc(m.id)}" data-mail="${esc(m.email)}" data-objekt="${esc(m.objektId||'')}">${esc(lbl)}</option>`;
+    return `<option value="${esc(m.id)}" data-mail="${esc(_ersteMail(m))}" data-objekt="${esc(m.objektId||'')}">${esc(lbl)}</option>`;
   }).join('');
   // letzte gesendete Mails
   let verlauf=[]; try{ verlauf=await idbGetAll('tenant_mails'); }catch(e){ verlauf=[]; }
@@ -11607,6 +12524,10 @@ async function mailRenderMieterMail(body){
         <div style="font-size:11px;color:var(--ink-40);line-height:1.45">Mehrere Adressen mit Komma trennen.
           CC-Empfänger sehen einander und den Hauptempfänger. Mehrere Mieter gemeinsam anschreiben: BCC.</div>
       </details>
+      <div style="display:flex;gap:6px;margin-bottom:10px">
+        <select id="tmVorlage" data-action-change="tmVorlageGewaehlt" style="flex:1;min-width:0" aria-label="Textvorlage einsetzen"><option value="">– Textvorlage einsetzen –</option></select>
+        <button class="btn btn-sm" data-action-click="mailVorlagenModal" title="Vorlagen bearbeiten"><i class="ti ti-template"></i> Vorlagen</button>
+      </div>
       <div class="f"><label for="tmBetreff">Betreff</label>
         <input type="text" id="tmBetreff" placeholder="z. B. Ankündigung Heizungswartung"></div>
       <div class="f"><label for="tmText">Nachricht</label>
@@ -11658,6 +12579,7 @@ async function mailRenderMieterMail(body){
     </div>`:''}`;
   tmAnhaengeWiederherstellen();
   tmSigVorschauZeichnen();   // A437
+  if(typeof tmVorlagenOptionen === 'function') tmVorlagenOptionen().catch(() => {});   // A472
 }
 
 /* Die Maske wird bei jedem renderMail() neu gebaut. Ohne diesen Aufruf waeren
@@ -11704,6 +12626,7 @@ function tenantMailMieterGewaehlt(){
   const opt=sel?.options[sel.selectedIndex];
   const mailEl=document.getElementById('tmMail');
   if(mailEl && opt) mailEl.value=opt.getAttribute('data-mail')||'';
+  if(sel && sel.value) window._tmBezug = null;   // A472
   tmSigVorschauZeichnen();   // A437: Briefkopf haengt am Objekt
   tmAnredeAktualisieren();   // A438
 }
@@ -11807,6 +12730,7 @@ async function tenantMailSenden(){
     id:'tm_'+Date.now().toString(36),
     mieterId, objektId:(opt?.getAttribute('data-objekt'))||'',
     empfaengerName, email:mail, betreff, text,
+    interessentId:(window._tmBezug && window._tmBezug.interessentId) || '', saId:(window._tmBezug && window._tmBezug.saId) || '',   // A472
     cc, bcc,                                    // A432
     /* Nur Name, Typ und Groesse ins Protokoll - NIE die Nutzlast. Ein Anhang
        im Store liefe ueber den Sync in die OneDrive-Datei und waere derselbe
@@ -18324,6 +19248,26 @@ async function personKontaktTeilen(mieterId, idx){
   await vcardTeilen(personVCard(p,m), 'Kontakt_'+fn+'.vcf');
 }
 
+/* A471: E-Mail an Mieter, Bewohner oder Zusatzkontakt aus der App. Bis A470 war das ein mailto:-Link; in der
+   installierten App oeffnet der nichts, wenn kein Mailprogramm registriert ist (wie v362 beim Antworten). Jetzt
+   Reiter "Mieter-Mail" mit vorgewaehltem Mieter und der Adresse der angetippten Person. quelle: Index des Bewohners,
+   'haupt' (E-Mail-Feld der Akte) oder 'zusatz'. Die Adresse wird aus der Akte gelesen, nicht aus dem Knopf. */
+async function mieterMailSchreiben(mieterId, quelle){
+  if(!istVerwalter()){ toast('Der Posteingang ist nur für Verwalter verfügbar.'); return; }
+  const m = await idbGet('mieter', mieterId).catch(() => null);
+  if(!m){ toast('Mieter nicht gefunden'); return; }
+  let mail = '';
+  if(quelle === 'zusatz') mail = (m.zusatzkontakt && m.zusatzkontakt.email) || '';
+  else if(quelle === 'haupt') mail = m.email || '';
+  else { const p = personenVon(m)[Number(quelle)]; mail = (p && p.email) || ''; }
+  mail = String(mail).trim();
+  if(!mail){ toast('Keine E-Mail-Adresse hinterlegt.'); return; }
+  /* Beim Zusatzkontakt keinen Mieter vorwaehlen - sonst stuende die Vertragsanrede des Mieters ueber der Mail. */
+  window._mailVorbelegung = { email: mail, mieterId: quelle === 'zusatz' ? '' : m.id };
+  window._mailTab = 'mieter';
+  nav('mail');
+}
+
 // ── v151: Aktionsbuttons (Anrufen/WhatsApp/Mail/Teilen) je Bewohner ──
 // Nur Buttons, für die Daten vorhanden sind. "Teilen" immer, wenn Tel ODER Mail.
 function personAktionsButtons(p, mieterId, idx){
@@ -18334,7 +19278,9 @@ function personAktionsButtons(p, mieterId, idx){
     if(wa) btns.push(`<a href="${wa}" target="_blank" rel="noopener" class="btn btn-sm" style="background:#25D366;color:#fff;border-color:#25D366" title="WhatsApp"><i class="ti ti-brand-whatsapp"></i></a>`);
   }
   if(p.email)
-    btns.push(`<a href="${mailHref(p.email)}" class="btn btn-sm btn-copper" title="E-Mail"><i class="ti ti-mail"></i></a>`);
+    btns.push(istVerwalter()
+      ? `<button class="btn btn-sm btn-copper" title="E-Mail schreiben" aria-label="E-Mail schreiben" onclick="mieterMailSchreiben('${escJs(mieterId)}','${Number(idx)}')"><i class="ti ti-mail"></i></button>`   // A471
+      : `<a href="${mailHref(p.email)}" class="btn btn-sm btn-copper" title="E-Mail"><i class="ti ti-mail"></i></a>`);
   if(p.telefon||p.email)
     btns.push(`<button class="btn btn-sm" onclick="personKontaktTeilen('${mieterId}',${idx})" title="Kontakt teilen"><i class="ti ti-user-share"></i></button>`);
   return btns.length ? `<div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:5px">${btns.join('')}</div>` : '';
@@ -18475,7 +19421,9 @@ ${nurTg?'':`
       ${istVerwalter()&&m.vertragsmodell?`<div class="det-field"><label>Vertragsmodell</label><span>${esc(m.vertragsmodell)}</span></div>`:''}
       ${istVerwalter()&&(m.krKlausel==='Ja'||(!m.krKlausel&&(m.krHoehe||m.krProzent||m.krMaxEuro)))?`<div class="det-field"><label>KR-Klausel${!m.krKlausel?' · <span style="color:var(--amber)">ungeprüft</span>':''}</label><span>${fmtEur(m.krHoehe)} je Fall · ${m.krProzent?m.krProzent+'%':'–'}${m.krMaxEuro?' (max. '+fmtEur(m.krMaxEuro)+'/Jahr)':' p.a.'}</span></div>`:''}
       ${m.telefon?`<div class="det-field"><label>Telefon</label><span><a href="${telHref(m.telefon)}">${esc(m.telefon)}</a></span></div>`:''}
-      ${m.email?`<div class="det-field"><label>E-Mail</label><span><a href="${mailHref(m.email)}">${esc(m.email)}</a></span></div>`:''}
+      ${m.email?`<div class="det-field"><label>E-Mail</label><span>${istVerwalter()
+        ? `<a href="#" onclick="mieterMailSchreiben('${escJs(m.id)}','haupt');return false">${esc(m.email)}</a>`   // A471
+        : `<a href="${mailHref(m.email)}">${esc(m.email)}</a>`}</span></div>`:''}
       ${m.kontaktweg?`<div class="det-field"><label>Bevorzugter Kontakt</label><span>${({email:'E-Mail',telefon:'Telefon',post:'Post'})[m.kontaktweg]||esc(m.kontaktweg)}</span></div>`:''}
       ${m.hkvVersand?`<div class="det-field"><label>Heizkostenübersicht</label><span>${m.hkvVersand==='post'?'per Post':'per E-Mail'}</span></div>`:''}
     </div>
@@ -18493,6 +19441,7 @@ ${nurTg?'':`
     </details>`:''}
     <div style="display:none"><!-- Platzhalter (v267: fehlendes > repariert) --></div>
   </div>
+  ${typeof whNvMieterKarteHTML === 'function' ? await whNvMieterKarteHTML(m) : ''}
   ${personenBlockHTML(m)}
   ${altListe.length?`<div class="card" style="margin-bottom:12px">
     <div class="card-hdr"><i class="ti ti-history"></i> Ehemalige Mieter dieser Wohnung (${altListe.length})</div>
@@ -18507,7 +19456,9 @@ ${nurTg?'':`
     <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
       <div><div style="font-weight:600;font-size:14px">${esc(m.zusatzkontakt.name)}</div>
         ${m.zusatzkontakt.telefon?`<div style="font-size:12px;color:var(--ink-60);margin-top:2px"><i class="ti ti-phone" style="font-size:12px"></i> <a href="${telHref(m.zusatzkontakt.telefon)}">${esc(m.zusatzkontakt.telefon)}</a></div>`:''}
-        ${m.zusatzkontakt.email?`<div style="font-size:12px;color:var(--ink-60)"><i class="ti ti-mail" style="font-size:12px"></i> <a href="${mailHref(m.zusatzkontakt.email)}">${esc(m.zusatzkontakt.email)}</a></div>`:''}
+        ${m.zusatzkontakt.email?`<div style="font-size:12px;color:var(--ink-60)"><i class="ti ti-mail" style="font-size:12px"></i> ${istVerwalter()
+          ? `<a href="#" onclick="mieterMailSchreiben('${escJs(m.id)}','zusatz');return false">${esc(m.zusatzkontakt.email)}</a>`   // A471
+          : `<a href="${mailHref(m.zusatzkontakt.email)}">${esc(m.zusatzkontakt.email)}</a>`}</div>`:''}
       </div>
       <div style="display:flex;gap:7px;flex-shrink:0">
         ${m.zusatzkontakt.telefon?`<a href="${telHref(m.zusatzkontakt.telefon)}" class="btn btn-sm btn-success"><i class="ti ti-phone"></i></a>`:''}
@@ -20961,6 +21912,10 @@ const DOK_TYPEN = [
   {val:'msf',     label:'Mietschuldenfreiheitsbescheinigung',icon:'ti-file-check'},
   {val:'protokoll',label:'Übergabeprotokoll',   icon:'ti-clipboard-check'},
   {val:'aushang', label:'Aushang „Wohnung frei“', icon:'ti-printer'},
+  /* A472: erzeugte Mietbescheinigungen tragen seit A401 den Typ 'Mietbescheinigung' - ohne Eintrag hier
+     standen sie unter "Sonstiges". */
+  {val:'Mietbescheinigung', label:'Mietbescheinigung', icon:'ti-receipt-2'},
+  {val:'mail',    label:'E-Mail (eingegangen)', icon:'ti-mail'},
   {val:'sonstiges',label:'Sonstiges',           icon:'ti-paperclip'},
 ];
 
@@ -21343,7 +22298,7 @@ async function renderDokumente(el, objektId, mieterId) {
   const portalTypDefaults = await getPortalTypDefaults();
   let docs = mieterId
     ? alle.filter(d=>d.mieterId===mieterId)
-    : alle.filter(d=>d.objektId===objektId && !d.mieterId);
+    : alle.filter(d=>d.objektId===objektId && !d.mieterId && !d.interessentId);   // A472: Interessentenakte
   // Sensible Dokumente sind nur für Admins sichtbar:
   // NKA (Finanzdaten), Ausweise (§20 PAuswG / Art.9 DSGVO), SEPA-Mandate (Bankdaten)
   /* v350: 'nka_gesamt' ergaenzt. Die Gesamtaufstellung enthaelt die Ergebnisse
@@ -21371,7 +22326,7 @@ async function renderDokumente(el, objektId, mieterId) {
 
   if (!docs.length) {
     h += `<div class="empty"><i class="ti ti-files"></i><p>Noch keine Dokumente vorhanden.</p></div>`;
-    el.innerHTML = h; return;
+    el.innerHTML = h + (typeof mieterArchivExtrasHTML === 'function' ? await mieterArchivExtrasHTML(objektId, mieterId) : ''); return;   // A472
   }
 
   DOK_TYPEN.forEach(typ => {
@@ -21406,7 +22361,7 @@ async function renderDokumente(el, objektId, mieterId) {
       </div>`;
     });
   });
-  el.innerHTML = h;
+  el.innerHTML = h + (typeof mieterArchivExtrasHTML === 'function' ? await mieterArchivExtrasHTML(objektId, mieterId) : '');   // A472
 }
 
 // Portal-Freigabe eines Einzeldokuments umschalten.
@@ -36412,7 +37367,12 @@ async function saveNewMieter(objektId) {
   if(window._uebernahmeInteressentId){
     try{
       const k=await idbGet('interessenten', window._uebernahmeInteressentId).catch(()=>null);
-      if(k){ k.status='uebernommen'; k.mieterId=neuerMieter.id; k.geaendert=nowIso(); await idbPut('interessenten',k); }
+      if(k){ k.status='uebernommen'; k.mieterId=neuerMieter.id; k.geaendert=nowIso(); await idbPut('interessenten',k);
+        /* A472: Unterlagen aus der Bewerbung gehoeren jetzt zur Mieterakte. */
+        for(const d of (await idbGetAll('dokumente').catch(()=>[])).filter(d => d && d.interessentId === k.id && !d.mieterId)){
+          d.mieterId = neuerMieter.id; d.objektId = neuerMieter.objektId || d.objektId; d.geaendert = nowIso();
+          await idbPut('dokumente', d);
+        } }
     }catch(err){ console.warn('Interessent mit neuem Mieter verknüpfen:', err); }   // v244 (R26)
     window._uebernahmeInteressentId=null;
   }
@@ -42908,6 +43868,9 @@ async function modalEditUser(id){
         ${Object.keys(GRUPPE_LABEL).map(g=>`<option value="${g}" ${u.objekte?.includes(g)?'selected':''}>${GRUPPE_LABEL[g]||g}</option>`).join('')}
       </select>
     </div>
+    <div class="f"><label for="euTelBes">Telefon für Besichtigungen (optional)</label>
+      <input type="tel" id="euTelBes" value="${escAttr(u.telBesichtigung||'')}" placeholder="Diensthandy">
+      <div style="font-size:11px;color:var(--ink-40);margin-top:4px">Steht im Besichtigungstext an Bewerber für die Objekte dieses Benutzers. Leer = wird nicht genannt.</div></div>
     <div class="f"><label for="euWochenSoll">Wochensoll (Stunden) – für Stundenkonto</label>
       <input type="number" id="euWochenSoll" value="${u.wochenSoll!=null?u.wochenSoll:40}" min="0" max="60" step="0.5" inputmode="decimal"></div>
     <div class="f"><label for="euEintritt">Eintrittsdatum – Soll zählt erst ab hier</label>
@@ -42948,6 +43911,8 @@ async function saveEditUser(id){
   u.eintritt = eintr || u.eintritt || null;
   const ul=parseInt(document.getElementById('euUrlaub')?.value);
   if(!isNaN(ul)) u.urlaubProJahr=ul;
+  const _tb=document.getElementById('euTelBes');   // A472
+  if(_tb) u.telBesichtigung=_tb.value.trim();
   const _fb=document.getElementById('euFarbe');   // A465
   if(_fb) u.farbe=_bearbHex(_fb.value) || '';
   /* A469 (ZP-07): Ein ganz geleertes Feld (alle Objektrechte entzogen) holte mergeRecord beim Abgleich von der
@@ -56748,7 +57713,7 @@ function einmalig(name){
    Import/Export). Reine Anzeigefunktionen bleiben aussen vor - dort ist ein
    zweiter Klick folgenlos. */
 const EINMALIG_AKTIONEN = [
-  'mailTokenSenden','saTokenSenden','tenantMailSenden','postfachAbrufen',
+  'mailTokenSenden','saTokenSenden','tenantMailSenden','postfachAbrufen','absageSenden','besichtigungSpeichern',   // A472
   'erstelleNKA','erstelleNKALiegenschaft','erstelleKautionsquittung',
   'erstelleKautionsEndabrechnung','erstelleMietbescheinigung','erzeugeEinzugsprotokoll',
   'aushangErzeugen','mvErzeugen','wgbErzeugeUndDrucke','mbPdfErzeugen',
