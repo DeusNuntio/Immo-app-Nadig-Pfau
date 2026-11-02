@@ -1350,7 +1350,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=39;   // A398: +kr_abrechnungen · A466: +excel_cache
-const APP_VERSION = '2026-10-29-A472';
+const APP_VERSION = '2026-11-01-A474';
 /* v364 (12.08.2026) – offene Punkte abgearbeitet.
    1) D1/XLSX_SRI: Der im Code hinterlegte PowerShell-Befehl war FALSCH und
       konnte nie funktionieren - Invoke-WebRequest liefert unter .Content einen
@@ -5628,7 +5628,25 @@ const INTERESSENT_STATUS = [
   {val:'uebernommen',label:'Als Mieter übernommen',farbe:'var(--green)'},
   {val:'absage',     label:'Abgesagt / kein Interesse',farbe:'var(--ink-40)'},
 ];
-function interessentStatusInfo(v){ return INTERESSENT_STATUS.find(x=>x.val===v) || INTERESSENT_STATUS[0]; }
+function interessentStatusInfo(v, k){
+  if(v === 'absage' && k && k.absageDurch === 'bewerber') return { val:'absage', label:'Bewerber hat abgesagt', farbe:'var(--ink-40)' };   // A474
+  return INTERESSENT_STATUS.find(x=>x.val===v) || INTERESSENT_STATUS[0];
+}
+/* A474: Bewerber hat abgesagt (zieht zurueck). Status 'absage' wie bei unserer Absage - damit greifen alle Filter
+   (offen/erledigt, „Absage an übrige“) unveraendert -, dazu absageDurch:'bewerber' fuer die Anzeige. */
+async function interessentHatAbgesagt(id){
+  const k = await idbGet('interessenten', id).catch(() => null);
+  if(!k){ toast('Nicht gefunden'); return; }
+  if(!confirm('„' + (k.name || 'Bewerber') + '“ hat abgesagt?\n\nDer Interessent wird als „Bewerber hat abgesagt“ abgelegt und bekommt keine Absage-Mail mehr.')) return;
+  k.status = 'absage'; k.absageDurch = 'bewerber'; k.absageAm = nowIso(); k.geaendert = nowIso();
+  await idbPut('interessenten', k);
+  syncSoon();
+  try{ closeModal(); }catch(_){}
+  if(typeof curPage !== 'undefined' && curPage === 'objekt') await renderObjTab('interessenten');
+  toast('Als „Bewerber hat abgesagt“ abgelegt ✓');
+}
+registerActions({ interessentHatAbgesagt });
+
 
 async function renderInteressenten(el, objektId){
   if(!istVerwalter()){ el.innerHTML='<div class="empty"><i class="ti ti-lock"></i><p>Nur für Admins.</p></div>'; return; }
@@ -5652,7 +5670,7 @@ async function renderInteressenten(el, objektId){
   }
 
   liste.forEach(k=>{
-    const si = interessentStatusInfo(k.status);
+    const si = interessentStatusInfo(k.status, k);
     const wohnung = k.weNr ? `WE ${esc(String(k.weNr))}` : 'Warteliste';
     const erledigt = (k.status==='uebernommen'||k.status==='absage');
     h += `<div style="background:var(--white);border:1px solid var(--ink-10);border-radius:var(--radius);padding:12px;margin-bottom:8px;${erledigt?'opacity:.6':''}">
@@ -5674,6 +5692,7 @@ async function renderInteressenten(el, objektId){
       <div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:8px">
         <button class="btn btn-sm" onclick="modalInteressentDetail('${k.id}')"><i class="ti ti-eye"></i> Details</button>
         <button class="btn btn-sm" onclick="modalInteressentNeu('${k.objektId||''}','${k.id}')"><i class="ti ti-pencil"></i> Bearbeiten</button>
+        ${!erledigt?`<button class="btn btn-sm" data-action-click="interessentHatAbgesagt" data-arg="${escAttr(k.id)}"><i class="ti ti-user-x"></i> Hat abgesagt</button>`:''}
         ${k.status!=='uebernommen'?`<button class="btn btn-sm btn-copper" onclick="interessentZuMieter('${k.id}')"><i class="ti ti-user-check"></i> Als Mieter übernehmen</button>`:''}
       ${k.status!=='uebernommen'?`<button class="btn btn-sm btn-copper" onclick="mvStartAusInteressent('${k.id}')"><i class="ti ti-file-text"></i> Mietvertrag erstellen</button>`:''}
         ${(k.objektId && k.weNr && (k.status==='zusage'||k.status==='uebernommen'))?`<button class="btn btn-sm" data-action-click="absageModal" data-arg="${escAttr(k.objektId)}" data-arg2="${escAttr(String(k.weNr))}"><i class="ti ti-mail-x"></i> Absage an übrige</button>`:''}
@@ -5857,7 +5876,7 @@ async function modalInteressentDetail(id){
   const k = await idbGet('interessenten', id).catch(()=>null);
   if(!k){ toast('Nicht gefunden'); return; }
   const _sa = await saAuskunftZuInteressent(k);
-  const si = interessentStatusInfo(k.status);
+  const si = interessentStatusInfo(k.status, k);
   const z = (label, val) => val ? `<div class="det-field"><label>${label}</label><span>${esc(String(val))}</span></div>` : '';
   showModal(`
     <div class="m-title"><i class="ti ti-user"></i> ${esc(k.name||'')}</div>
@@ -7224,6 +7243,332 @@ function versorgerArtGewaehlt(){
 }
 registerActions({ modalVersorgerUebersicht, zeigeVersorgerDetail, versorgerArtGewaehlt });
 
+/* ═══ A473: Versorger – Lieferstelle und Preis-/Verbrauchsverlauf ═══════════════════════════
+   Wunsch 30.10.2026: Arbeitspreis, Grundpreis, Abschlag und letzter Jahresverbrauch je Vertrag mit Verlauf;
+   Marktlokation zur eindeutigen Zuordnung; Eintragen auch ueber Claude aus Rechnungen/Screenshots (B18).
+   Felder im Datensatz 'versorger' (synchronisiert wie bisher, DB_VER unveraendert):
+     weNr                  Lieferstelle: Wohnung, leer = ganzes Haus/Allgemein
+     zaehlernummerVertrag  Zaehlernummer laut Vertrag/Rechnung (falls kein Zaehler verknuepft ist)
+     marktlokation         MaLo-ID, 11 Ziffern mit Pruefziffer
+     messlokation          MeLo-ID, 33 Zeichen, beginnt mit DE
+     preisverlauf          [{ id, ab, anbieter, einheit, arbeitspreis (ct/Einheit), grundpreis (EUR/Monat), abschlag (EUR/Monat),
+                              verbrauch, verbrauchVon, verbrauchBis, quelle, notiz, erfasst, erfasstVon }]
+   arbeitspreis/grundpreis/abschlag/jahresverbrauch bleiben der aktuelle Stand (Karte, Archiv, aeltere Geraete, Spiegel)
+   und werden aus dem Verlauf nachgezogen: je Feld der juengste Eintrag mit "ab" bis heute. Ein Eintrag mit "ab" in der
+   Zukunft ist eine angekuendigte Aenderung und gilt erst ab dem Tag. Der Verlauf gehoert zur Lieferstelle und bleibt
+   bei einem Anbieterwechsel stehen (jeder Eintrag nennt seinen Anbieter); das Archiv sichert ihn zusaetzlich. */
+const VERSORGER_VERLAUF_MAX = 120;
+const VERSORGER_PREISFELDER = ['arbeitspreis', 'grundpreis', 'abschlag'];
+/* Zahl aus Eingabe/Rechnung: "9,875" und "1.234,5" (deutsch) wie "9.875" - nie negativ. mitTausendern (Verbrauch):
+   "18.000" ist 18000 (Rechnungsschreibweise); bei Preisen bleibt "9.875" ein Dezimalbruch. */
+function versorgerZahl(x, mitTausendern){
+  if(x === null || x === undefined) return null;
+  if(typeof x === 'number') return (isFinite(x) && x >= 0) ? Math.round(x * 1000) / 1000 : null;
+  let s = String(x).trim().replace(/[€\s]/g, '');
+  if(!s) return null;
+  if(s.includes(',')) s = s.replace(/\./g, '').replace(',', '.');
+  else if(mitTausendern && /^\d{1,3}(\.\d{3})+$/.test(s)) s = s.replace(/\./g, '');
+  const n = Number(s);
+  return (isFinite(n) && n >= 0) ? Math.round(n * 1000) / 1000 : null;
+}
+/* MaLo-ID: 11 Ziffern, die letzte ist die Pruefziffer (BDEW): Summe der Ziffern an ungeraden Stellen plus
+   zweimal die Summe an geraden Stellen (Stellen 1-10), Pruefziffer = Ergaenzung auf die naechste Zehn. */
+function maloPruefen(roh){
+  const s = String(roh || '').replace(/\s/g, '');
+  if(!s) return { ok:true, wert:'' };
+  if(!/^\d{11}$/.test(s)) return { ok:false, text:'Die Marktlokations-ID hat genau 11 Ziffern.' };
+  const z = s.split('').map(Number);
+  let a = 0, b = 0;
+  for(let i = 0; i < 10; i++){ if(i % 2 === 0) a += z[i]; else b += z[i]; }
+  return ((10 - ((a + 2 * b) % 10)) % 10) === z[10] ? { ok:true, wert:s }
+    : { ok:false, text:'Die Prüfziffer der Marktlokations-ID passt nicht – bitte die 11 Ziffern auf der Rechnung prüfen.' };
+}
+function meloPruefen(roh){
+  const s = String(roh || '').replace(/\s/g, '').toUpperCase();
+  if(!s) return { ok:true, wert:'' };
+  return /^DE[0-9A-Z]{31}$/.test(s) ? { ok:true, wert:s } : { ok:false, text:'Die Messlokations-ID hat 33 Zeichen und beginnt mit DE.' };
+}
+/* Verlauf, neueste zuerst (ohne Datum = aeltester Stand). */
+function versorgerVerlauf(v){
+  return (Array.isArray(v && v.preisverlauf) ? v.preisverlauf : []).filter(x => x && x.id).slice()
+    .sort((x, y) => String(y.ab || '').localeCompare(String(x.ab || '')) || String(y.erfasst || '').localeCompare(String(x.erfasst || '')));
+}
+function versorgerStand(v, heuteIso){
+  const h = heuteIso || today();
+  const liste = versorgerVerlauf(v);
+  const gilt = liste.filter(x => !x.ab || x.ab <= h);
+  const feld = f => { const x = gilt.find(e => versorgerZahl(e[f]) !== null); return x ? { wert:versorgerZahl(x[f]), ab:x.ab || '' } : null; };
+  const verbrauch = liste.filter(x => versorgerZahl(x.verbrauch) !== null)
+    .sort((x, y) => String(y.verbrauchBis || y.ab || '').localeCompare(String(x.verbrauchBis || x.ab || '')))[0] || null;
+  const kuenftig = liste.filter(x => x.ab && x.ab > h && VERSORGER_PREISFELDER.some(f => versorgerZahl(x[f]) !== null))
+    .sort((x, y) => x.ab.localeCompare(y.ab))[0] || null;
+  return { arbeitspreis:feld('arbeitspreis'), grundpreis:feld('grundpreis'), abschlag:feld('abschlag'), verbrauch, kuenftig };
+}
+/* Aktuellen Stand in die bisherigen Felder uebernehmen. */
+function versorgerStandUebernehmen(v){
+  const st = versorgerStand(v);
+  for(const f of VERSORGER_PREISFELDER) if(st[f]) v[f] = st[f].wert;
+  if(st.verbrauch){
+    v.jahresverbrauch = versorgerZahl(st.verbrauch.verbrauch);
+    v.jahresverbrauchVon = st.verbrauch.verbrauchVon || ''; v.jahresverbrauchBis = st.verbrauch.verbrauchBis || '';
+  }
+  return v;
+}
+function versorgerAktuell(v){
+  const st = versorgerStand(v);
+  const w = f => st[f] ? st[f].wert : versorgerZahl(v[f]);
+  return { st, ap:w('arbeitspreis'), gp:w('grundpreis'), abschlag:w('abschlag'),
+           verbrauch: st.verbrauch ? versorgerZahl(st.verbrauch.verbrauch) : versorgerZahl(v.jahresverbrauch) };
+}
+/* Grob: Grundpreis x 12 + Arbeitspreis x Verbrauch (Preise wie auf der Rechnung, i. d. R. brutto). */
+function versorgerJahreskosten(ap, gp, verbrauch){
+  ap = versorgerZahl(ap); gp = versorgerZahl(gp); verbrauch = versorgerZahl(verbrauch);
+  if(ap === null || verbrauch === null) return null;
+  return Math.round(((gp || 0) * 12 + ap / 100 * verbrauch) * 100) / 100;
+}
+function versorgerZahlText(n, stellen){ return n === null || n === undefined || n === '' ? '' : Number(n).toLocaleString('de-DE', { maximumFractionDigits: stellen === undefined ? 3 : stellen }); }
+function versorgerDatumText(iso){ return /^\d{4}-\d{2}-\d{2}$/.test(String(iso || '')) ? fmtDate(iso) : ''; }
+function versorgerLieferstelleText(v, zaehler){
+  const nr = (zaehler && zaehler.zaehlernummer) || v.zaehlernummerVertrag || '';
+  return [v.weNr ? 'WE ' + v.weNr : '', nr ? 'Zähler ' + nr : '', v.marktlokation ? 'MaLo ' + v.marktlokation : ''].filter(Boolean).join(' · ');
+}
+/* Prueft einen Verlaufseintrag. Rueckgabe { ok:true, eintrag } oder { ok:false, text }. */
+function versorgerVerlaufEintragBauen(v, roh, von){
+  const s = (x, n) => String(x == null ? '' : x).trim().slice(0, n);
+  const datum = x => /^\d{4}-\d{2}-\d{2}$/.test(x);
+  const e = { id: roh.id || ('pv_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6)),
+    ab: s(roh.ab, 10), anbieter: s(roh.anbieter, 120) || v.anbieter || '', einheit: s(roh.einheit, 20) || v.einheit || '',
+    verbrauchVon: s(roh.verbrauchVon, 10), verbrauchBis: s(roh.verbrauchBis, 10),
+    quelle: s(roh.quelle, 200), notiz: s(roh.notiz, 500), erfasst: roh.erfasst || nowIso(), erfasstVon: roh.erfasstVon || von || (CU?.name || '') };
+  for(const [f, name] of [['ab', '„Gültig ab“'], ['verbrauchVon', '„Verbrauch von“'], ['verbrauchBis', '„Verbrauch bis“']]){
+    if(e[f] && !datum(e[f])) return { ok:false, text:name + ' bitte als Datum angeben.' };
+  }
+  if(e.verbrauchVon && e.verbrauchBis && e.verbrauchBis < e.verbrauchVon) return { ok:false, text:'Der Verbrauchszeitraum endet vor seinem Beginn.' };
+  for(const [f, max, name] of [['arbeitspreis', 1000, 'Arbeitspreis (ct)'], ['grundpreis', 10000, 'Grundpreis (€/Monat)'],
+                               ['abschlag', 100000, 'Abschlag (€/Monat)'], ['verbrauch', 100000000, 'Verbrauch']]){
+    const leer = roh[f] === null || roh[f] === undefined || String(roh[f]).trim() === '';
+    if(leer) continue;
+    const n = versorgerZahl(roh[f], f === 'verbrauch');
+    if(n === null || n > max) return { ok:false, text:name + ': bitte eine Zahl von 0 bis ' + max.toLocaleString('de-DE') + ' eingeben.' };
+    e[f] = n;
+  }
+  const preis = VERSORGER_PREISFELDER.some(f => e[f] !== undefined);
+  if(!preis && e.verbrauch === undefined) return { ok:false, text:'Bitte mindestens einen Preis oder den Verbrauch eintragen.' };
+  if(preis && !e.ab) return { ok:false, text:'Für Preise bitte „Gültig ab“ angeben.' };
+  if(!preis && !e.ab && !e.verbrauchBis) return { ok:false, text:'Für den Verbrauch bitte „Verbrauch bis“ (Ende des Abrechnungszeitraums) angeben.' };
+  return { ok:true, eintrag:e };
+}
+function versorgerVerlaufDoppelt(v, e){
+  return versorgerVerlauf(v).find(x => x.id !== e.id && (x.ab || '') === (e.ab || '') && (x.verbrauchBis || '') === (e.verbrauchBis || '')
+    && ['arbeitspreis', 'grundpreis', 'abschlag', 'verbrauch'].every(f => versorgerZahl(x[f]) === versorgerZahl(e[f]))) || null;
+}
+/* Bisherige Preise ohne Verlauf als ersten (undatierten) Eintrag sichern, bevor etwas Neues dazukommt. */
+function versorgerAltstandSichern(v, alt){
+  if(Array.isArray(v.preisverlauf) && v.preisverlauf.length) return;
+  const q = alt || v;
+  const e = { id:'pv_alt_' + Date.now().toString(36), ab:'', anbieter:q.anbieter || '', einheit:q.einheit || '',
+              quelle:'Stand vor dem Verlauf (ohne Datum)', erfasst:nowIso(), erfasstVon:'' };
+  let da = false;
+  for(const f of VERSORGER_PREISFELDER){ const n = versorgerZahl(q[f]); if(n !== null){ e[f] = n; da = true; } }
+  v.preisverlauf = da ? [e] : [];
+}
+function versorgerVerlaufSetzen(v, e){
+  const liste = (Array.isArray(v.preisverlauf) ? v.preisverlauf : []).filter(x => x && x.id && x.id !== e.id);
+  liste.push(e);
+  liste.sort((x, y) => String(x.ab || '').localeCompare(String(y.ab || '')) || String(x.erfasst || '').localeCompare(String(y.erfasst || '')));
+  v.preisverlauf = liste.slice(-VERSORGER_VERLAUF_MAX);
+  versorgerStandUebernehmen(v);
+}
+/* Im Versorger-Dialog geaenderte Preise kommen als Verlaufseintrag hinein (Gueltig ab = Eingabe, sonst heute). */
+function versorgerPreiseInVerlauf(v, alt, ab){
+  const aktuellAlt = alt ? versorgerAktuell(alt) : null;
+  const vorher = { arbeitspreis: aktuellAlt ? aktuellAlt.ap : null, grundpreis: aktuellAlt ? aktuellAlt.gp : null, abschlag: aktuellAlt ? aktuellAlt.abschlag : null };
+  const geaendert = VERSORGER_PREISFELDER.filter(f => versorgerZahl(v[f]) !== null && versorgerZahl(v[f]) !== vorher[f]);
+  if(!geaendert.length) return false;
+  if(alt) versorgerAltstandSichern(v, alt);
+  const e = { id:'pv_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), ab: /^\d{4}-\d{2}-\d{2}$/.test(ab || '') ? ab : today(),
+              anbieter:v.anbieter || '', einheit:v.einheit || '', quelle:'Eingabe im Versorger-Dialog', erfasst:nowIso(), erfasstVon:CU?.name || '' };
+  for(const f of geaendert) e[f] = versorgerZahl(v[f]);
+  versorgerVerlaufSetzen(v, e);
+  return true;
+}
+/* Gemeinsame Pruefung und Uebernahme fuer Aenderungen ueber Claude (B18) - ganz oder gar nicht.
+   a: { vertragsnummer, vertragsbeginn, vertragsende, kuendigungsfrist_wert, kuendigungsfrist_einheit, vertragsart,
+        verlaengerung_monate, preisgarantie_bis, einheit, marktlokation, messlokation, zaehlernummer, wohnung,
+        notiz_ergaenzen, verlauf:{ ab, arbeitspreis, grundpreis, abschlag, verbrauch, verbrauch_von, verbrauch_bis, quelle, notiz } } */
+async function versorgerDatenAnwenden(v, a, von){
+  const s = x => String(x == null ? '' : x).trim();
+  const datum = x => /^\d{4}-\d{2}-\d{2}$/.test(x);
+  const neu = [], hinweise = [], plan = {};
+  let frist = false;
+  for(const [k, f, name] of [['vertragsbeginn', 'vertragsbeginn', 'Vertragsbeginn'], ['vertragsende', 'vertragsende', 'Vertragsende'], ['preisgarantie_bis', 'preisgarantieBis', 'Preisgarantie']]){
+    if(!s(a[k])) continue;
+    if(!datum(s(a[k]))) return { ok:false, text:'nicht ausgeführt: ' + name + ' ist kein Datum' };
+    plan[f] = s(a[k]); neu.push(name + ' ' + fmtDate(plan[f])); if(f !== 'preisgarantieBis') frist = true;
+  }
+  if(s(a.kuendigungsfrist_wert)){
+    const w = parseInt(s(a.kuendigungsfrist_wert), 10), e = s(a.kuendigungsfrist_einheit) || 'monate';
+    if(!(w >= 0 && w <= 60) || !VERSORGER_FRIST_EINHEIT.some(x => x.val === e)) return { ok:false, text:'nicht ausgeführt: Kündigungsfrist ungültig' };
+    plan.kuendigungsfristWert = w; plan.kuendigungsfristEinheit = e; plan.kuendigungsfristMonate = e === 'monate' ? w : '';
+    neu.push('Kündigungsfrist ' + versorgerFristText({ wert:w, einheit:e })); frist = true;
+  }
+  if(s(a.vertragsart)){
+    if(!VERSORGER_VERTRAGSART.some(x => x.val === s(a.vertragsart))) return { ok:false, text:'nicht ausgeführt: Vertragsart unbekannt' };
+    plan.vertragsart = s(a.vertragsart); neu.push('Vertragsart'); frist = true;
+  }
+  if(s(a.verlaengerung_monate)){
+    const m = parseInt(s(a.verlaengerung_monate), 10);
+    if(![0, 1, 3, 6, 12, 24].includes(m)) return { ok:false, text:'nicht ausgeführt: Verlängerung nur 0, 1, 3, 6, 12 oder 24 Monate' };
+    plan.verlaengerungMonate = m; neu.push(m ? 'Verlängerung ' + m + ' Monate' : 'keine Verlängerung'); frist = true;
+  }
+  if(s(a.marktlokation)){ const r = maloPruefen(a.marktlokation); if(!r.ok) return { ok:false, text:'nicht ausgeführt: ' + r.text }; plan.marktlokation = r.wert; neu.push('MaLo'); }
+  if(s(a.messlokation)){ const r = meloPruefen(a.messlokation); if(!r.ok) return { ok:false, text:'nicht ausgeführt: ' + r.text }; plan.messlokation = r.wert; neu.push('MeLo'); }
+  if(plan.marktlokation){
+    const andere = (await idbGetAll('versorger').catch(() => [])).find(x => x.id !== v.id && x.marktlokation === plan.marktlokation && x.sparte === v.sparte);
+    if(andere) return { ok:false, text:'nicht ausgeführt: MaLo ' + plan.marktlokation + ' gehört schon zu ' + (andere.anbieter || '') + ' (' + (getObj(andere.objektId)?.name || '') + ')' };
+  }
+  for(const [k, f, name, max] of [['vertragsnummer', 'vertragsnummer', 'Vertragsnummer', 60], ['einheit', 'einheit', 'Einheit', 20], ['zaehlernummer', 'zaehlernummerVertrag', 'Zählernummer', 40]]){
+    if(s(a[k])){ plan[f] = s(a[k]).slice(0, max); neu.push(name); }
+  }
+  if(s(a.wohnung)){ plan.weNr = s(a.wohnung).toLowerCase() === 'keine' ? '' : s(a.wohnung).slice(0, 20); neu.push(plan.weNr ? 'WE ' + plan.weNr : 'WE entfernt'); }
+  let eintrag = null;
+  const vl = a.verlauf && typeof a.verlauf === 'object' ? a.verlauf : null;
+  if(vl){
+    const r = versorgerVerlaufEintragBauen(Object.assign({}, v, plan), { ab:vl.ab, arbeitspreis:vl.arbeitspreis, grundpreis:vl.grundpreis, abschlag:vl.abschlag,
+      verbrauch:vl.verbrauch, verbrauchVon:vl.verbrauch_von, verbrauchBis:vl.verbrauch_bis, quelle:vl.quelle, notiz:vl.notiz }, von);
+    if(!r.ok) return { ok:false, text:'nicht ausgeführt: ' + r.text };
+    if(versorgerVerlaufDoppelt(v, r.eintrag)) hinweise.push('Preis-/Verbrauchseintrag gab es schon');
+    else { eintrag = r.eintrag; neu.push(versorgerEintragKurz(eintrag, plan.einheit || v.einheit)); }
+  }
+  if(s(a.notiz_ergaenzen)) neu.push('Notiz ergänzt');
+  if(!neu.length) return { ok:false, text:'nicht ausgeführt: ' + (hinweise.join('; ') || 'keine Änderung') };
+  Object.assign(v, plan);
+  if(s(a.notiz_ergaenzen)) v.notiz = [v.notiz || '', s(a.notiz_ergaenzen)].filter(Boolean).join('\n').slice(0, 4000);
+  if(eintrag){ versorgerAltstandSichern(v); versorgerVerlaufSetzen(v, eintrag); }
+  return { ok:true, neu, hinweise, frist };
+}
+function versorgerEintragKurz(e, einheit){
+  const einh = einheit || e.einheit || 'Einheit';
+  return [e.ab ? 'ab ' + fmtDate(e.ab) : '', e.arbeitspreis !== undefined && e.arbeitspreis !== null ? 'AP ' + versorgerZahlText(e.arbeitspreis) + ' ct/' + einh : '',
+    e.grundpreis !== undefined && e.grundpreis !== null ? 'GP ' + fmtEur(e.grundpreis) + '/Monat' : '',
+    e.abschlag !== undefined && e.abschlag !== null ? 'Abschlag ' + fmtEur(e.abschlag) : '',
+    e.verbrauch !== undefined && e.verbrauch !== null ? 'Verbrauch ' + versorgerZahlText(e.verbrauch, 0) + ' ' + einh + (e.verbrauchBis ? ' bis ' + fmtDate(e.verbrauchBis) : '') : '']
+    .filter(Boolean).join(', ');
+}
+/* Karte und Detail: aktueller Stand, angekuendigte Aenderung, Jahreskosten. */
+function versorgerPreiseHTML(v){
+  const a = versorgerAktuell(v), einh = v.einheit || 'Einheit';
+  const jk = versorgerJahreskosten(a.ap, a.gp, a.verbrauch);
+  const grau = t => ' <span style="color:var(--ink-40)">' + t + '</span>';
+  const teile = [];
+  if(a.gp !== null) teile.push('<span>Grundpreis: <strong>' + fmtEur(a.gp) + '/Monat</strong></span>');
+  if(a.ap !== null) teile.push('<span>Arbeitspreis: <strong>' + esc(versorgerZahlText(a.ap)) + ' ct/' + esc(einh) + '</strong>'
+    + (a.st.arbeitspreis && a.st.arbeitspreis.ab ? grau('seit ' + versorgerDatumText(a.st.arbeitspreis.ab)) : '') + '</span>');
+  if(a.abschlag !== null) teile.push('<span>Abschlag: <strong>' + fmtEur(a.abschlag) + '/Monat</strong></span>');
+  if(a.verbrauch !== null) teile.push('<span>Verbrauch: <strong>' + esc(versorgerZahlText(a.verbrauch, 0)) + ' ' + esc(einh) + '</strong>'
+    + (a.st.verbrauch && a.st.verbrauch.verbrauchBis ? grau('bis ' + versorgerDatumText(a.st.verbrauch.verbrauchBis)) : '') + '</span>');
+  if(jk !== null) teile.push('<span>≈ Jahreskosten: <strong>' + fmtEur(jk) + '</strong></span>');
+  const k = a.st.kuenftig;
+  return (teile.length ? '<div class="vsPreise" style="font-size:12px;color:var(--ink-60);margin-top:6px;display:flex;flex-wrap:wrap;gap:10px">' + teile.join('') + '</div>' : '')
+    + (k ? '<div style="font-size:12px;color:var(--amber);margin-top:4px"><i class="ti ti-calendar-event"></i> Ab ' + versorgerDatumText(k.ab) + ': '
+      + esc(versorgerEintragKurz(Object.assign({}, k, { ab:'', verbrauch:undefined }), einh)) + '</div>' : '');
+}
+function versorgerTabNeuZeichnen(){
+  const el = document.getElementById('objTabContent');
+  if(el && /Versorger &(amp;)? Verträge/.test(el.querySelector('.s-title')?.innerHTML || '')) return renderObjVersorger(el);
+}
+async function modalVersorgerVerlauf(versorgerId){
+  const v = await idbGet('versorger', versorgerId).catch(() => null);
+  if(!v) return;
+  const sp = getSparte(v.sparte), einh = v.einheit || 'Einheit';
+  const zaehler = v.zaehlerId ? await idbGet('zaehler', v.zaehlerId).catch(() => null) : null;
+  const liste = versorgerVerlauf(v);
+  const zeilen = liste.map((x, i) => {
+    const ap = versorgerZahl(x.arbeitspreis);
+    const vorher = liste.slice(i + 1).find(y => versorgerZahl(y.arbeitspreis) !== null);
+    let delta = '';
+    if(ap !== null && vorher){
+      const d = (ap - versorgerZahl(vorher.arbeitspreis)) / versorgerZahl(vorher.arbeitspreis) * 100;
+      if(isFinite(d) && Math.abs(d) >= 0.05) delta = ' <span style="color:' + (d > 0 ? 'var(--red)' : 'var(--green)') + '">' + (d > 0 ? '+' : '') + d.toLocaleString('de-DE', { maximumFractionDigits:1 }) + ' %</span>';
+    }
+    return '<div class="card vsVerlaufZeile" style="margin-bottom:6px;padding:8px 10px">'
+      + '<div style="display:flex;align-items:center;gap:8px"><b style="font-size:13px;flex:1;min-width:0">' + (x.ab ? 'ab ' + versorgerDatumText(x.ab) : (x.verbrauchBis ? 'Abrechnung bis ' + versorgerDatumText(x.verbrauchBis) : 'ohne Datum'))
+      + (x.anbieter && x.anbieter !== v.anbieter ? ' · ' + esc(x.anbieter) : '') + '</b>'
+      + '<button class="btn btn-sm" data-action-click="modalVersorgerVerlaufEintrag" data-arg="' + escAttr(v.id) + '" data-arg2="' + escAttr(x.id) + '" title="Bearbeiten"><i class="ti ti-pencil"></i></button>'
+      + '<button class="btn btn-sm" data-action-click="versorgerVerlaufLoeschen" data-arg="' + escAttr(v.id) + '" data-arg2="' + escAttr(x.id) + '" title="Löschen"><i class="ti ti-trash"></i></button></div>'
+      + '<div style="font-size:12px;color:var(--ink-60);margin-top:3px">' + esc(versorgerEintragKurz(Object.assign({}, x, { ab:'' }), einh)).replace(/^AP [^,]*/, m => m + delta) + '</div>'
+      + (x.verbrauchVon || x.verbrauchBis ? '<div style="font-size:11px;color:var(--ink-40)">Verbrauchszeitraum ' + (versorgerDatumText(x.verbrauchVon) || '…') + ' – ' + (versorgerDatumText(x.verbrauchBis) || '…') + '</div>' : '')
+      + (x.quelle || x.notiz ? '<div style="font-size:11px;color:var(--ink-40)">' + esc([x.quelle, x.notiz].filter(Boolean).join(' · ')) + (x.erfasstVon ? ' · ' + esc(x.erfasstVon) : '') + '</div>' : '')
+      + '</div>';
+  }).join('');
+  const ort = versorgerLieferstelleText(v, zaehler);
+  showModal('<div class="m-title"><i class="ti ti-chart-line"></i> Preis- & Verbrauchsverlauf</div>'
+    + '<div style="font-size:12px;color:var(--ink-40);margin-bottom:6px">' + esc(v.anbieter || sp.label) + ' · ' + sp.label + ' · ' + esc(getObj(v.objektId)?.name || '') + (ort ? ' · ' + esc(ort) : '') + '</div>'
+    + versorgerPreiseHTML(v)
+    + '<button class="btn btn-copper btn-full" style="margin-top:10px" data-action-click="modalVersorgerVerlaufEintrag" data-arg="' + escAttr(v.id) + '"><i class="ti ti-plus"></i> Preis oder Verbrauch eintragen</button>'
+    + '<div id="vsVerlaufListe" style="margin-top:10px">' + (zeilen || '<div class="empty"><i class="ti ti-chart-line"></i><p>Noch kein Verlauf. Werte stehen auf der Jahresabrechnung, dem Preisblatt oder im Kundenportal.</p></div>') + '</div>'
+    + '<div style="font-size:11px;color:var(--ink-40);margin-top:8px"><i class="ti ti-info-circle"></i> Arbeitspreis in ct je ' + esc(einh) + ', Grundpreis und Abschlag in € je Monat, wie auf der Rechnung (meist brutto). '
+    + 'Über Claude: Foto der Rechnung oder Screenshot schicken – Claude trägt nach Ihrer Bestätigung ein.</div>'
+    + '<button class="btn btn-full" style="margin-top:10px" data-action-click="closeModal">Schließen</button>');
+}
+async function modalVersorgerVerlaufEintrag(versorgerId, eintragId){
+  const v = await idbGet('versorger', versorgerId).catch(() => null);
+  if(!v) return;
+  const x = eintragId ? (versorgerVerlauf(v).find(e => e.id === eintragId) || {}) : {};
+  const einh = v.einheit || 'Einheit';
+  const wert = f => x[f] === undefined || x[f] === null ? '' : escAttr(String(x[f]).replace('.', ','));
+  showModal('<div class="m-title"><i class="ti ti-chart-line"></i> ' + (eintragId ? 'Eintrag bearbeiten' : 'Preis oder Verbrauch eintragen') + '</div>'
+    + '<div style="font-size:12px;color:var(--ink-40);margin-bottom:8px">' + esc(v.anbieter || '') + ' · ' + getSparte(v.sparte).label + '</div>'
+    + '<div class="f-row"><div class="f"><label for="pvAb">Preise gültig ab</label><input type="date" id="pvAb" value="' + escAttr(x.ab || (eintragId ? '' : today())) + '"></div>'
+    + '<div class="f"><label for="pvAnbieter">Anbieter</label><input type="text" id="pvAnbieter" value="' + escAttr(x.anbieter || v.anbieter || '') + '"></div></div>'
+    + '<div class="f-row"><div class="f"><label for="pvAp">Arbeitspreis (ct/' + esc(einh) + ')</label><input type="text" inputmode="decimal" id="pvAp" value="' + wert('arbeitspreis') + '" placeholder="z. B. 9,875"></div>'
+    + '<div class="f"><label for="pvGp">Grundpreis (€/Monat)</label><input type="text" inputmode="decimal" id="pvGp" value="' + wert('grundpreis') + '"></div></div>'
+    + '<div class="f"><label for="pvAbschlag">Abschlag (€/Monat)</label><input type="text" inputmode="decimal" id="pvAbschlag" value="' + wert('abschlag') + '"></div>'
+    + '<div class="f-section-title"><i class="ti ti-gauge"></i> Verbrauch laut Abrechnung</div>'
+    + '<div class="f"><label for="pvVerbrauch">Verbrauch (' + esc(einh) + ')</label><input type="text" inputmode="decimal" id="pvVerbrauch" value="' + wert('verbrauch') + '"></div>'
+    + '<div class="f-row"><div class="f"><label for="pvVon">Zeitraum von</label><input type="date" id="pvVon" value="' + escAttr(x.verbrauchVon || '') + '"></div>'
+    + '<div class="f"><label for="pvBis">bis</label><input type="date" id="pvBis" value="' + escAttr(x.verbrauchBis || '') + '"></div></div>'
+    + '<div class="f"><label for="pvQuelle">Quelle</label><input type="text" id="pvQuelle" value="' + escAttr(x.quelle || '') + '" placeholder="z. B. Jahresabrechnung 2025, Preisblatt, Kundenportal"></div>'
+    + '<div class="f"><label for="pvNotiz">Notiz</label><input type="text" id="pvNotiz" value="' + escAttr(x.notiz || '') + '"></div>'
+    + '<div class="f-row" style="margin-top:12px"><button class="btn btn-copper btn-full" data-action-click="versorgerVerlaufSpeichern" data-arg="' + escAttr(v.id) + '" data-arg2="' + escAttr(eintragId || '') + '"><i class="ti ti-check"></i> Speichern</button>'
+    + '<button class="btn btn-full" data-action-click="modalVersorgerVerlauf" data-arg="' + escAttr(v.id) + '">Zurück</button></div>');
+}
+async function versorgerVerlaufSpeichern(versorgerId, eintragId){
+  const v = await idbGet('versorger', versorgerId).catch(() => null);
+  if(!v){ toast('Versorger nicht gefunden'); return; }
+  const alt = eintragId ? versorgerVerlauf(v).find(e => e.id === eintragId) : null;
+  const w = id => document.getElementById(id)?.value ?? '';
+  const r = versorgerVerlaufEintragBauen(v, { id:eintragId || undefined, ab:w('pvAb'), anbieter:w('pvAnbieter'), arbeitspreis:w('pvAp'), grundpreis:w('pvGp'),
+    abschlag:w('pvAbschlag'), verbrauch:w('pvVerbrauch'), verbrauchVon:w('pvVon'), verbrauchBis:w('pvBis'), quelle:w('pvQuelle'), notiz:w('pvNotiz'),
+    erfasst:alt ? alt.erfasst : undefined, erfasstVon:alt ? alt.erfasstVon : undefined });
+  if(!r.ok){ toast(r.text, 5000); return; }
+  if(versorgerVerlaufDoppelt(v, r.eintrag)){ toast('Diesen Eintrag gibt es schon.'); return; }
+  versorgerAltstandSichern(v);
+  versorgerVerlaufSetzen(v, r.eintrag);
+  v.updatedAt = nowIso();
+  await idbPut('versorger', v);
+  syncSoon();
+  await modalVersorgerVerlauf(versorgerId);
+  await versorgerTabNeuZeichnen();
+  toast('Gespeichert ✓');
+}
+async function versorgerVerlaufLoeschen(versorgerId, eintragId){
+  const v = await idbGet('versorger', versorgerId).catch(() => null);
+  const x = v ? versorgerVerlauf(v).find(e => e.id === eintragId) : null;
+  if(!x) return;
+  if(!confirm('Eintrag ' + (x.ab ? 'ab ' + versorgerDatumText(x.ab) : '') + ' löschen?')) return;
+  v.preisverlauf = (v.preisverlauf || []).filter(e => e.id !== eintragId);
+  // Stand neu bestimmen; ist der Verlauf leer, bleiben die zuletzt gueltigen Werte stehen.
+  versorgerStandUebernehmen(v);
+  v.updatedAt = nowIso();
+  await idbPut('versorger', v);
+  syncSoon();
+  await modalVersorgerVerlauf(versorgerId);
+  await versorgerTabNeuZeichnen();
+  toast('Eintrag gelöscht');
+}
+registerActions({ modalVersorgerVerlauf, modalVersorgerVerlaufEintrag, versorgerVerlaufSpeichern, versorgerVerlaufLoeschen });
+
 async function renderObjVersorger(el){
   if(!istVerwalter()){ el.innerHTML='<div class="empty"><i class="ti ti-lock"></i><p>Nur für Admins sichtbar.</p></div>'; return; }
   const liste=(await idbGetAll('versorger','objektId',currentObjId))
@@ -7256,12 +7601,13 @@ async function renderObjVersorger(el){
         <button class="btn btn-sm" onclick="modalVersorger('${currentObjId}','${v.id}')"><i class="ti ti-pencil"></i></button>
       </div>
       ${fristInfo}
-      <div style="font-size:12px;color:var(--ink-60);margin-top:6px;display:flex;flex-wrap:wrap;gap:10px">
-        ${v.grundpreis?`<span>Grundpreis: <strong>${fmtEur(v.grundpreis)}/Monat</strong></span>`:''}
-        ${v.arbeitspreis?`<span>Arbeitspreis: <strong>${v.arbeitspreis} ct/${esc(v.einheit||'Einheit')}</strong></span>`:''}
-      </div>
+      ${(()=>{ const t = versorgerLieferstelleText(v, v.zaehlerId ? zMap[v.zaehlerId] : null); return t ? `<div style="font-size:12px;color:var(--ink-60);margin-top:4px"><i class="ti ti-map-pin"></i> ${esc(t)}</div>` : ''; })()}
+      ${versorgerPreiseHTML(v)}   <!-- A473 -->
       ${v.zaehlerId&&zMap[v.zaehlerId]?`<div style="font-size:12px;color:var(--copper);margin-top:4px"><i class="ti ti-link"></i> Zähler: <strong>${zMap[v.zaehlerId].name}</strong>${zMap[v.zaehlerId].zaehlernummer?' · Nr. '+zMap[v.zaehlerId].zaehlernummer:''}</div>`:''}
-      <button class="btn btn-sm" style="width:100%;margin-top:8px" onclick="zeigeVersorgerDetail('${v.id}')"><i class="ti ti-eye"></i> Details & Zugangsdaten</button>
+      <div style="display:flex;gap:6px;margin-top:8px">
+        <button class="btn btn-sm" style="flex:1" data-action-click="modalVersorgerVerlauf" data-arg="${escAttr(v.id)}"><i class="ti ti-chart-line"></i> Verlauf (${versorgerVerlauf(v).length})</button>
+        <button class="btn btn-sm" style="flex:1" onclick="zeigeVersorgerDetail('${v.id}')"><i class="ti ti-eye"></i> Details & Zugangsdaten</button>
+      </div>
     </div>`;
   }
   el.innerHTML=h;
@@ -7271,6 +7617,7 @@ async function modalVersorger(objektId, versorgerId){
   const v = versorgerId ? await idbGet('versorger', versorgerId) : {};
   const isEdit = !!versorgerId;
   const _vf = versorgerFrist(v);   // A449: Frist mit Einheit (Altbestand: Monate)
+  const _weOpts = await interessentWohnungsOptionen(objektId, v.weNr || '');   // A473: Lieferstelle
   // Zähler desselben Objekts für die Zuordnung laden
   const objZaehler=(await idbGetAll('zaehler','objektId',objektId)).sort((a,b)=>(a.name||'').localeCompare(b.name||''));
   const zOpts=['<option value="">— kein Zähler —</option>']
@@ -7289,6 +7636,15 @@ async function modalVersorger(objektId, versorgerId){
       <div class="f"><label for="vAnbieter">Anbieter *</label><input type="text" id="vAnbieter" value="${escAttr(v.anbieter||'')}" placeholder="z. B. Stadtwerke"></div>
     </div>
     <div class="f"><label for="vVertragsnr">Vertragsnummer</label><input type="text" id="vVertragsnr" value="${escAttr(v.vertragsnummer||'')}"></div>
+    <div class="f-section-title"><i class="ti ti-map-pin"></i> Lieferstelle</div>
+    <div class="f-row">
+      <div class="f"><label for="vWeNr">Wohnung</label><select id="vWeNr"><option value="">— ganzes Haus / Allgemein —</option>${_weOpts}</select></div>
+      <div class="f"><label for="vZaehlerNrV">Zählernummer laut Vertrag</label><input type="text" id="vZaehlerNrV" value="${escAttr(v.zaehlernummerVertrag||'')}" placeholder="wie auf der Rechnung"></div>
+    </div>
+    <div class="f-row">
+      <div class="f"><label for="vMalo">Marktlokations-ID (MaLo)</label><input type="text" inputmode="numeric" id="vMalo" value="${escAttr(v.marktlokation||'')}" placeholder="11 Ziffern"></div>
+      <div class="f"><label for="vMelo">Messlokations-ID (MeLo)</label><input type="text" id="vMelo" value="${escAttr(v.messlokation||'')}" placeholder="DE…"></div>
+    </div>
     <div class="f-row">
       <div class="f"><label for="vBeginn">Vertragsbeginn</label><input type="date" id="vBeginn" value="${v.vertragsbeginn||''}"></div>
       <div class="f"><label for="vEnde">Vertragsende</label><input type="date" id="vEnde" value="${v.vertragsende||''}"></div>
@@ -7314,7 +7670,11 @@ async function modalVersorger(objektId, versorgerId){
       <div class="f"><label for="vGrundpreis">Grundpreis (€/Monat)</label><input type="number" inputmode="decimal" id="vGrundpreis" step="0.01" value="${v.grundpreis||''}"></div>
       <div class="f"><label for="vArbeitspreis">Arbeitspreis (ct/Einheit)</label><input type="number" inputmode="decimal" id="vArbeitspreis" step="0.001" value="${v.arbeitspreis||''}"></div>
     </div>
-    <div class="f"><label for="vAbschlag">Abschlag (€/Monat)</label><input type="number" inputmode="decimal" id="vAbschlag" step="0.01" value="${escAttr(String(v.abschlag||''))}"></div>
+    <div class="f-row">
+      <div class="f"><label for="vAbschlag">Abschlag (€/Monat)</label><input type="number" inputmode="decimal" id="vAbschlag" step="0.01" value="${escAttr(String(v.abschlag||''))}"></div>
+      <div class="f"><label for="vPreisAb">Geänderte Preise gültig ab</label><input type="date" id="vPreisAb" value="${today()}"></div>
+    </div>
+    <div style="font-size:11px;color:var(--ink-40);margin:-4px 0 8px"><i class="ti ti-chart-line"></i> Geänderte Preise kommen mit diesem Datum in den Verlauf. Jahresverbrauch und ältere Preise: Knopf „Verlauf“ an der Karte.</div>
     <div class="f-section-title"><i class="ti ti-lock"></i> Zugangsdaten (nur Admin, verschlüsselt)</div>
     <div class="f"><label for="vWebsite">Website / Kundenportal</label><input type="url" id="vWebsite" value="${v.website||''}" placeholder="https://..."></div>
     <div class="f-row">
@@ -7355,12 +7715,20 @@ async function saveVersorger(objektId, versorgerId){
     einheit: document.getElementById('vEinheit')?.value?.trim()||'',
     zaehlerId: document.getElementById('vZaehler')?.value||'',
     grundpreis: parseFloat(document.getElementById('vGrundpreis')?.value)||'',
+    weNr: document.getElementById('vWeNr')?.value||'',                                   // A473
+    zaehlernummerVertrag: (document.getElementById('vZaehlerNrV')?.value||'').trim().slice(0,40),
+    marktlokation: document.getElementById('vMalo')?.value||'',
+    messlokation: document.getElementById('vMelo')?.value||'',
+    preisAb: document.getElementById('vPreisAb')?.value||'',
     arbeitspreis: parseFloat(document.getElementById('vArbeitspreis')?.value)||'',
     website: document.getElementById('vWebsite')?.value?.trim()||'',
     login: document.getElementById('vLogin')?.value?.trim()||'',
     notiz: document.getElementById('vNotiz')?.value?.trim()||'',
     pwKlartext,
   };
+  // A473: Marktlokation (Pruefziffer) und Messlokation pruefen - Tippfehler fallen hier auf, nicht erst beim Versorger.
+  { const m = maloPruefen(formData.marktlokation); if(!m.ok){ toast(m.text, 6000); return; } formData.marktlokation = m.wert;
+    const l = meloPruefen(formData.messlokation); if(!l.ok){ toast(l.text, 6000); return; } formData.messlokation = l.wert; }
   // A449: kuendigungsfristMonate bleibt fuer aeltere Leser (Archiv, A448 auf anderen Geraeten) gefuellt
   formData.kuendigungsfristMonate = formData.kuendigungsfristEinheit==='monate' ? formData.kuendigungsfristWert : '';
   // Passwort eingegeben, aber Verschlüsselung nicht bereit? Erst einrichten/entsperren.
@@ -7410,6 +7778,8 @@ async function saveVersorgerFortsetzen(formData){
         kuendigungsfristWert: alt.kuendigungsfristWert, kuendigungsfristEinheit: alt.kuendigungsfristEinheit,   // A449
         vertragsart: alt.vertragsart, verlaengerungMonate: alt.verlaengerungMonate,
         website: alt.website, login: alt.login, passwortEnc: alt.passwortEnc||null, notiz: alt.notiz,
+        weNr: alt.weNr||'', zaehlernummerVertrag: alt.zaehlernummerVertrag||'', marktlokation: alt.marktlokation||'', messlokation: alt.messlokation||'',   // A473
+        abschlag: alt.abschlag, jahresverbrauch: alt.jahresverbrauch??'', preisverlauf: Array.isArray(alt.preisverlauf) ? alt.preisverlauf.slice() : [],
         grund: anbieterGeaendert && pwGeaendert ? 'Anbieter- und Passwortwechsel'
              : anbieterGeaendert ? 'Anbieterwechsel' : 'Passwortwechsel',
         archiviert: now(), archiviertVon: CU?.name||'',
@@ -7428,7 +7798,15 @@ async function saveVersorgerFortsetzen(formData){
     preisgarantieBis: fd.preisgarantieBis, abschlag: fd.abschlag,
     website: fd.website, login: fd.login, passwortEnc, notiz: fd.notiz,
     erstellt: alt?.erstellt||now(), terminId: alt?.terminId||null, updatedAt: nowIso(),
+    /* A473: Lieferstelle und Verlauf. Der Datensatz wird hier neu aufgebaut - was nicht im Formular steht, muss
+       ausdruecklich aus dem alten Stand mit (sonst waeren Verlauf und Claude-Felder beim naechsten Speichern weg). */
+    weNr: fd.weNr||'', zaehlernummerVertrag: fd.zaehlernummerVertrag||'', marktlokation: fd.marktlokation||'', messlokation: fd.messlokation||'',
+    preisverlauf: Array.isArray(alt?.preisverlauf) ? alt.preisverlauf.slice() : [],
+    jahresverbrauch: alt?.jahresverbrauch??'', jahresverbrauchVon: alt?.jahresverbrauchVon||'', jahresverbrauchBis: alt?.jahresverbrauchBis||'',
+    quelle: alt?.quelle, claudeEingang: alt?.claudeEingang, ersteller: alt?.ersteller, bearbeitetAm: alt?.bearbeitetAm, bearbeitetVon: alt?.bearbeitetVon,
   };
+  for(const k of ['quelle','claudeEingang','ersteller','bearbeitetAm','bearbeitetVon']) if(v[k] === undefined) delete v[k];
+  versorgerPreiseInVerlauf(v, alt, fd.preisAb);   // A473
   await idbPut('versorger', v);
   // Beidseitige Verknüpfung spiegeln (Versorger-Seite gesetzt -> Zähler-Seite nachziehen)
   await spiegelVersorgerZaehler(v.id, alt?.zaehlerId||'', v.zaehlerId||'');
@@ -7523,7 +7901,15 @@ async function zeigeVersorgerDetail(versorgerId){
     ${zeile('Preisgarantie bis', v.preisgarantieBis?new Date(v.preisgarantieBis+'T00:00:00').toLocaleDateString('de-DE'):'')}
     ${zeile('Abschlag', v.abschlag?fmtEur(v.abschlag)+' / Monat':'')}
     ${zeile('Grundpreis', v.grundpreis?fmtEur(v.grundpreis)+' / Monat':'')}
-    ${zeile('Arbeitspreis', v.arbeitspreis?v.arbeitspreis+' ct/'+(v.einheit||'Einheit'):'')}
+    ${zeile('Arbeitspreis', v.arbeitspreis?esc(versorgerZahlText(versorgerZahl(v.arbeitspreis)))+' ct/'+esc(v.einheit||'Einheit'):'')}   <!-- A473: 11,5 statt 11.5 -->
+    ${(()=>{ const a = versorgerAktuell(v), jk = versorgerJahreskosten(a.ap, a.gp, a.verbrauch);   /* A473 */
+        return zeile('Verbrauch', a.verbrauch!==null ? esc(versorgerZahlText(a.verbrauch,0))+' '+esc(v.einheit||'')+(a.st.verbrauch&&a.st.verbrauch.verbrauchBis?' (bis '+versorgerDatumText(a.st.verbrauch.verbrauchBis)+')':'') : '')
+          + zeile('≈ Jahreskosten', jk!==null ? fmtEur(jk) : '')
+          + zeile('Lieferstelle', v.weNr ? 'WE '+esc(v.weNr) : '')
+          + zeile('Zählernummer (Vertrag)', esc(v.zaehlernummerVertrag||''), {mono:true})
+          + zeile('Marktlokation', esc(v.marktlokation||''), {mono:true})
+          + zeile('Messlokation', esc(v.messlokation||''), {mono:true}); })()}
+    <button class="btn btn-sm" style="width:100%;margin-top:8px" data-action-click="modalVersorgerVerlauf" data-arg="${escAttr(v.id)}"><i class="ti ti-chart-line"></i> Preis- & Verbrauchsverlauf (${versorgerVerlauf(v).length})</button>
     <div class="f-section-title" style="margin-top:14px"><i class="ti ti-lock"></i> Zugangsdaten</div>
     ${zeile('Website', v.website, {link:true})}
     ${zeile('Benutzer / Kundennr.', v.login, {mono:true})}
@@ -9467,6 +9853,9 @@ async function saDetailZeigen(id){
   const e=window._saInbox && window._saInbox[id];
   const ziel=document.getElementById('saDetail_'+id);
   if(!e||!ziel) return;
+  const _knopf = ziel.closest ? (ziel.closest('.sa-karte') || {}).querySelector?.('button[onclick^="saDetailZeigen"]') : null;   // A474
+  if(ziel.dataset.offen === '1'){ ziel.innerHTML = ''; ziel.dataset.offen = ''; aufklappKnopf(_knopf, false); return; }
+  ziel.dataset.offen = '1'; aufklappKnopf(_knopf, true);
   ziel.innerHTML='<span style="font-size:12px;color:var(--ink-40)">Entschlüssele …</span>';
   let obj;
   try{
@@ -9624,10 +10013,11 @@ async function bwAblageAufraeumen(){
   }
   return n;
 }
-async function saAblehnen(id){
+async function saAblehnen(id, durch){
   const e = (window._saInbox || {})[id];
   if(!e){ toast('Selbstauskunft nicht gefunden – bitte neu laden.'); return; }
-  if(!confirm('„' + (e.anzeigeName || 'Bewerbung') + '“ als abgelehnt ablegen?\n\n'
+  const _bewerber = durch === 'bewerber';   // A474: Bewerber hat selbst abgesagt
+  if(!confirm('„' + (e.anzeigeName || 'Bewerbung') + (_bewerber ? '“ hat abgesagt – so ablegen?\n\n' : '“ als abgelehnt ablegen?\n\n')
       + 'Die Selbstauskunft kommt in den Papierkorb (' + SA_PAPIERKORB_TAGE + ' Tage wiederherstellbar). '
       + 'Name, E-Mail, Objekt und Ihre interne Bewertung bleiben ' + BW_AUFBEWAHREN_MONATE
       + ' Monate unter „Abgelehnte Bewerbungen“ und werden dann automatisch gelöscht.')) return;
@@ -9638,7 +10028,7 @@ async function saAblehnen(id){
   n = n || {};
   const wert = {
     id, name:e.anzeigeName || '', email, objektName:e.objektName || '',
-    beworbenAm:e.zeitstempel || '', abgelehntAm:nowIso(),
+    beworbenAm:e.zeitstempel || '', abgelehntAm:nowIso(), grund:_bewerber ? 'bewerber' : '',   // A474
     von:(typeof CU !== 'undefined' && CU && CU.name) ? CU.name : '',
     ampel:n.ampel || '', notiz:n.notiz || '',
     telefoniert:n.telefoniert || '', besichtigung:n.besichtigung || '', emailGeschrieben:n.email || ''
@@ -9649,7 +10039,13 @@ async function saAblehnen(id){
     if(!imPapierkorb) await saPapierkorbLegen(e);
   }catch(err){ console.warn('Ablehnen:', err); toast('Ablehnen fehlgeschlagen.'); return; }
   syncSoon();
-  toast('Als abgelehnt abgelegt ✓');
+  if(_bewerber){   // A474: schon als Interessent uebernommen? Dann dort ebenfalls „Bewerber hat abgesagt“.
+    for(const k of (await idbGetAll('interessenten').catch(() => [])).filter(x => x && x.quelleId === id && x.status !== 'uebernommen')){
+      k.status = 'absage'; k.absageDurch = 'bewerber'; k.absageAm = nowIso(); k.geaendert = nowIso();
+      await idbPut('interessenten', k).catch(() => {});
+    }
+  }
+  toast(_bewerber ? 'Als „Bewerber hat abgesagt“ abgelegt ✓' : 'Als abgelehnt abgelegt ✓');
   if(window._mailTab === 'sa' && document.getElementById('mailBody')) await mailRenderSA(document.getElementById('mailBody'));
 }
 async function bwLoeschen(id, name){
@@ -9685,7 +10081,7 @@ function bwEintragHTML(e){
       <b style="flex:1;min-width:0;overflow-wrap:anywhere">${esc(e.name || '(ohne Namen)')}</b>
       ${a ? `<span style="font-size:11px;font-weight:700;color:${a.rand}">● ${a.label}</span>` : ''}</div>
     <div style="font-size:12px;color:var(--ink-60);overflow-wrap:anywhere">${esc(e.email || '')}${e.email && e.objektName ? ' · ' : ''}${esc(e.objektName || '')}</div>
-    <div style="font-size:12px;color:var(--ink-40)">beworben ${esc(d(e.beworbenAm))} · abgelehnt ${esc(d(e.abgelehntAm))}${e.von ? ' von ' + esc(e.von) : ''} · gelöscht ab ${esc(d(bwLoeschAm(e)))}</div>
+    <div style="font-size:12px;color:var(--ink-40)">beworben ${esc(d(e.beworbenAm))} · ${e.grund === 'bewerber' ? 'Bewerber hat abgesagt' : 'abgelehnt'} ${esc(d(e.abgelehntAm))}${e.von ? ' von ' + esc(e.von) : ''} · gelöscht ab ${esc(d(bwLoeschAm(e)))}</div>
     ${haken ? `<div style="font-size:12px;color:var(--ink-60);margin-top:2px">${esc(haken)}</div>` : ''}
     ${e.notiz ? `<div style="font-size:13px;margin-top:6px;white-space:pre-wrap;overflow-wrap:anywhere">${esc(e.notiz)}</div>` : ''}
     <div style="margin-top:6px"><button class="btn btn-sm" data-action-click="bwLoeschen" data-arg="${escAttr(e.id)}" data-arg2="${escAttr(e.name || '')}"><i class="ti ti-trash"></i> Jetzt löschen</button></div>
@@ -10008,7 +10404,7 @@ function peNachrichtDaten(art, id){
   if(art === 'mail'){
     const m = (window._postfachMails || {})[id]; if(!m) return null;
     return { betreff:m.betreff || '(ohne Betreff)', von:m.vonName ? m.vonName + ' <' + (m.vonAdresse || '') + '>' : (m.vonAdresse || ''),
-             email:m.vonAdresse || '', datum:m.datum || '', text:mailTextLesbar(m.text || ''), objektName:'' };
+             email:postfachEchterAbsender(m).email, datum:m.datum || '', text:mailTextLesbar(m.text || ''), objektName:'' };   // A474
   }
   if(art === 'web'){
     const n = (window._webNachrichten || {})[id]; if(!n) return null;
@@ -10251,7 +10647,8 @@ async function mailRenderSA(body){
        :`<div style="margin-top:6px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-sm"
           onclick="saLoeschen('${escJs(e.id)}','${escJs(e.anzeigeName||'')}',${_tage==null?'null':_tage})">
           <i class="ti ti-trash"></i> Löschen</button>
-          <button class="btn btn-sm" data-action-click="saAblehnen" data-arg="${escAttr(e.id)}"><i class="ti ti-user-minus"></i> Ablehnen</button></div>`}
+          <button class="btn btn-sm" data-action-click="saAblehnen" data-arg="${escAttr(e.id)}"><i class="ti ti-user-minus"></i> Ablehnen</button>
+          <button class="btn btn-sm" data-action-click="saAblehnen" data-arg="${escAttr(e.id)}" data-arg2="bewerber"><i class="ti ti-user-x"></i> Hat abgesagt</button></div>`}
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
         <button class="btn btn-sm" onclick="saDetailZeigen('${escJs(e.id)}')"><i class="ti ti-eye"></i> Anzeigen</button>
         <button class="btn btn-sm btn-primary" onclick="saAlsInteressentImportieren('${escJs(e.id)}')"><i class="ti ti-user-plus"></i> Als Interessent</button>
@@ -10494,10 +10891,11 @@ async function postfachAntworten(id){
   const m = (window._postfachMails||{})[id];
   if(!m){ toast('Nachricht nicht gefunden'); return; }
   if(!m.vonAdresse){ toast('Zu dieser Nachricht ist keine Absenderadresse bekannt.'); return; }
-  const mieter = await postfachMieterZuAdresse(m.vonAdresse);
+  const ab = postfachEchterAbsender(m);   // A474: Formular-Mail -> an den Bewerber, nicht an uns selbst
+  const mieter = await postfachMieterZuAdresse(ab.email);
   window._mailVorbelegung = {
     art: 'antwort',
-    email: String(m.vonAdresse),
+    email: String(ab.email),
     mieterId: mieter ? mieter.id : '',
     betreff: postfachAntwortBetreff(m.betreff),
     text: '\n\n' + postfachZitat(m),
@@ -10644,7 +11042,9 @@ function postfachDetailZeigen(id){
   const ziel=document.getElementById('mailDetail_'+id);
   const m=window._postfachMails[id];
   if(!ziel || !m) return;
-  if(ziel.innerHTML){ ziel.innerHTML=''; return; }
+  const _knopf = ziel.closest ? (ziel.closest('.pe-karte') || ziel.parentElement || {}).querySelector?.('button[onclick^="postfachDetailZeigen"]') : null;   // A474
+  if(ziel.innerHTML){ ziel.innerHTML=''; aufklappKnopf(_knopf, false); return; }
+  aufklappKnopf(_knopf, true);
   /* A425: Je Anhang zwei Wege - ansehen und speichern.
      A426: Eine ZEILE je Anhang statt zweier Knoepfe nebeneinander. Der Name
      steht nicht mehr IM Knopf, sondern zwischen Klammer und Knoepfen; mit
@@ -11283,18 +11683,38 @@ async function interessentDrucken(id){
   const verlauf = await kontaktVerlaufSammeln(await interessentBezug(k));
   const vz = verlauf.length ? '<b>Verlauf</b>' + verlauf.map(x => '<div>' + esc(a472DatumZeit(x.zeit) + ' · ' + x.titel + (x.zeile ? ' · ' + x.zeile : '')) + '</div>').join('') : '';
   nachrichtDrucken('Interessent – ' + (k.name || ''), [
-    ['Wohnung', wt], ['Status', interessentStatusInfo(k.status).label], ['Telefon', k.telefon], ['E-Mail', k.email],
+    ['Wohnung', wt], ['Status', interessentStatusInfo(k.status, k).label], ['Telefon', k.telefon], ['E-Mail', k.email],
     ['Anschrift', k.adresse], ['Personen', k.personen], ['Beruf', k.beruf], ['Mietbeginn', k.mietbeginn],
     ['Besichtigung', k.besichtigungTermin ? a472Datum(k.besichtigungTermin.datum) + ' ' + (k.besichtigungTermin.uhrzeit || '') : '']],
     k.notiz || '', (sa ? saAuskunftHTML(sa) : '') + vz);
 }
 
 /* ── Selbstauskunft-Link und Aufgaben aus einer Nachricht ───────────────── */
+/* A474: Weitergeleitete Formular-Mails (Vormerkung, Website) kommen von der eigenen Adresse; der Bewerber steht im Text.
+   Dann gelten Name, E-Mail und Objekt aus dem Text - sonst der Absender wie bisher. */
+function postfachEigeneAdresse(a){ return /@nadigpfau\.de$/i.test(String(a || '').trim()); }
+function postfachEchterAbsender(m){
+  const von = { email:String(m && m.vonAdresse || ''), name:String(m && m.vonName || ''), objekt:'', ausText:false };
+  if(!m || !postfachEigeneAdresse(m.vonAdresse)) return von;
+  const t = String(mailTextLesbar(m.text) || m.text || '');
+  const zeile = re => { const x = re.exec(t); return x ? x[1].trim() : ''; };
+  const email = zeile(/^[ \t]*E-?Mail[ \t]*:[ \t]*<?([^\s<>@]+@[^\s<>]+?)>?[.,;]?[ \t]*$/mi);
+  if(!email || postfachEigeneAdresse(email)) return von;
+  return { email, name:zeile(/^[ \t]*Name[ \t]*:[ \t]*(.+)$/mi), objekt:zeile(/^[ \t]*Objekt[ \t]*:[ \t]*(.+)$/mi), ausText:true };
+}
+/* A474: Knopf „Anzeigen“/„Zuklappen“ einer aufgeklappten Karte. */
+function aufklappKnopf(btn, offen){
+  if(!btn) return;
+  btn.innerHTML = offen ? '<i class="ti ti-eye-off"></i> Zuklappen' : '<i class="ti ti-eye"></i> Anzeigen';
+  btn.setAttribute('aria-expanded', offen ? 'true' : 'false');
+}
 function postfachSaLink(id){
   const m = (window._postfachMails || {})[id];
   if(!m || !m.vonAdresse){ toast('Zu dieser Nachricht ist keine Absenderadresse bekannt.'); return; }
-  const teile = String(m.vonName || '').replace(/["']/g, '').trim().split(/\s+/).filter(Boolean);
-  window._tokVorbelegung = { email:m.vonAdresse, objekt:'',
+  const ab = postfachEchterAbsender(m);   // A474
+  if(postfachEigeneAdresse(ab.email)){ toast('Die Nachricht kommt von der eigenen Adresse; im Text steht keine E-Mail des Bewerbers.', 6000); return; }
+  const teile = String(ab.name || '').replace(/["']/g, '').trim().split(/\s+/).filter(Boolean);
+  window._tokVorbelegung = { email:ab.email, objekt:'',
     vorname: teile.length > 1 ? teile.slice(0, -1).join(' ') : '', nachname: teile.length ? teile[teile.length - 1] : '' };
   setMailTab('token');
 }
@@ -20415,6 +20835,7 @@ function eingangAenderung(e){
 function claudeVon(absender){ return absender ? absender.name + ' über Claude' : 'Claude (Sprachbefehl)'; }
 async function eingangAuftragAendern(e, tomb, absender){
   if(e && e.ziel === 'lager') return eingangLagerAendern(e, tomb, absender);   // A470 (B14)
+  if(e && e.ziel === 'versorger') return eingangVersorgerAendern(e, tomb, absender);   // A473 (B18)
   const store = EINGANG_ZIELE[e.ziel], id = String(e.zielId || '');
   if(!store || !id) return { ok:false, text:'nicht ausgeführt: Ziel unbekannt' };
   if(tomb && tomb[store] && tomb[store][id]) return { ok:false, text:'nicht ausgeführt: in der App gelöscht' };
@@ -20604,12 +21025,57 @@ async function eingangLagerAendern(e, tomb, absender){
   await idbPut('lager', x);
   return { ok:true, text:'geändert: „' + (x.bezeichnung || '') + '“ (' + neu.join(', ') + ')' + (hinweise.length ? ' – ' + hinweise.join('; ') : '') };
 }
+/* A473: Versorgervertraege aus dem Claude-Eingang (B18). Aendern: ziel 'versorger', aenderung = JSON wie
+   versorgerDatenAnwenden. Anlegen: art 'versorger', aenderung = JSON mit objekt/sparte/anbieter und denselben Feldern.
+   Datensatz 'cl_' + Eingangs-ID: holen zwei Geraete gleichzeitig ab, entsteht EIN Vertrag. */
+async function eingangVersorgerAendern(e, tomb, absender){
+  const id = String(e.zielId || '');
+  if(!id) return { ok:false, text:'nicht ausgeführt: keine Vertrags-ID' };
+  if(tomb && tomb.versorger && tomb.versorger[id]) return { ok:false, text:'nicht ausgeführt: in der App gelöscht' };
+  const v = await idbGet('versorger', id).catch(() => null);
+  if(!v) return { ok:false, text:'nicht ausgeführt: Vertrag nicht gefunden' };
+  const r = await versorgerDatenAnwenden(v, eingangAenderung(e), claudeVon(absender));
+  if(!r.ok) return r;
+  v.bearbeitetAm = now(); v.bearbeitetVon = claudeVon(absender); v.updatedAt = nowIso();
+  await idbPut('versorger', v);
+  if(r.frist) await syncVersorgerErinnerung(v);
+  return { ok:true, text:'geändert: ' + (v.anbieter || '') + ' (' + getSparte(v.sparte).label + ', ' + (getObj(v.objektId)?.name || '') + '): '
+    + r.neu.join(', ') + (r.hinweise.length ? ' – ' + r.hinweise.join('; ') : '') };
+}
+async function eingangVersorgerNeu(e, tomb, absender){
+  if(!e || !e.id) return { ok:false, text:'nicht übernommen: Eintrag unvollständig' };
+  const id = 'cl_' + e.id;
+  if(tomb && tomb.versorger && tomb.versorger[id]) return { ok:false, text:'nicht übernommen: in der App bereits gelöscht' };
+  if(await idbGet('versorger', id).catch(() => null)) return { ok:false, still:true, text:'bereits angelegt' };
+  const a = eingangAenderung(e);
+  const obj = eingangObjektFinden(a.objekt || e.objekt || '');
+  if(!obj || istAllgemein(obj.id)) return { ok:false, text:'nicht übernommen: Objekt „' + (a.objekt || e.objekt || '') + '“ nicht erkannt' };
+  const sparte = VERSORGER_SPARTE.some(x => x.val === a.sparte) ? a.sparte : 'sonstige';
+  const anbieter = String(a.anbieter || '').trim().slice(0, 120);
+  if(!anbieter) return { ok:false, text:'nicht übernommen: Anbieter fehlt' };
+  const we = String(a.wohnung || '').trim();
+  const gleich = (await idbGetAll('versorger', 'objektId', obj.id).catch(() => []))
+    .find(x => x.sparte === sparte && eingangNorm(x.anbieter) === eingangNorm(anbieter) && String(x.weNr || '') === we);
+  if(gleich) return { ok:false, text:'nicht übernommen: ' + anbieter + ' (' + getSparte(sparte).label + ') gibt es in ' + obj.name + ' schon (ID ' + gleich.id + ') – bitte ändern statt neu anlegen' };
+  const v = { id, objektId:obj.id, sparte, anbieter, vertragsnummer:'', vertragsbeginn:'', vertragsende:'', kuendigungsfristMonate:'',
+    einheit:'', zaehlerId:'', grundpreis:'', arbeitspreis:'', kuendigungsfristWert:'', kuendigungsfristEinheit:'monate', vertragsart:'sonder',
+    verlaengerungMonate:0, erinnerungTage:'', preisgarantieBis:'', abschlag:'', website:'', login:'', passwortEnc:null, notiz:'',
+    weNr:'', zaehlernummerVertrag:'', marktlokation:'', messlokation:'', preisverlauf:[],
+    erstellt:claudeErstellt(e), terminId:null, quelle:'claude', claudeEingang:e.id, ersteller:claudeErsteller(absender) };
+  const r = await versorgerDatenAnwenden(v, Object.assign({}, a, { notiz_ergaenzen:a.notiz_ergaenzen || a.notiz || '' }), claudeVon(absender));
+  if(!r.ok && !/keine Änderung/.test(r.text)) return { ok:false, text:r.text.replace(/^nicht ausgeführt/, 'nicht übernommen') };
+  v.updatedAt = nowIso();
+  await idbPut('versorger', v);
+  await syncVersorgerErinnerung(v);
+  return { ok:true, text:'angelegt: ' + anbieter + ' (' + getSparte(sparte).label + ', ' + obj.name + (v.weNr ? ' WE ' + v.weNr : '') + ')'
+    + (r.ok && r.neu.length ? ': ' + r.neu.join(', ') : '') + (r.ok && r.hinweise.length ? ' – ' + r.hinweise.join('; ') : '') };
+}
 let _eingangLaeuft = false;
 let _eingangWartenGemeldet = false;   // A449: Hinweis "Sprachbenutzer fehlt" nur einmal je Sitzung
 async function eingangAbholen(key){
   if(_eingangLaeuft || !key || !istVerwalter()) return { auf:0, ter:0, auftr:0, mng:0, lag:0 };
   _eingangLaeuft = true;
-  const erg = { auf:0, ter:0, auftr:0, mng:0, lag:0 };   // A456: mng, A470: lag
+  const erg = { auf:0, ter:0, auftr:0, mng:0, lag:0, vers:0 };   // A456: mng, A470: lag, A473: vers
   const hinweise = [];
   try{
     /* A449: ?arten=alle holt auch Auftraege (erledigt, stempel). Ohne den Zusatz
@@ -20618,7 +21084,8 @@ async function eingangAbholen(key){
     /* A456: &mangel=1 - B12 liefert Maengel nur an eine App, die sie anlegen kann. */
     /* A459: &aendern=1 - B13 liefert Aenderungs-/Loeschauftraege nur an eine App, die sie ausfuehren kann. */
     /* A470: &lager=1 - B14 liefert Lagerartikel und Lager-Aenderungen nur an eine App, die sie anlegen kann. */
-    const r = await fetchMitTimeout(BACKEND_AZURE + '/api/eingang?arten=alle&mangel=1&aendern=1&lager=1', { headers:{ 'x-functions-key':key } });
+    /* A473: &versorger=1 - B18 liefert Versorger-Anlagen und -Aenderungen nur an eine App, die sie ausfuehren kann. */
+    const r = await fetchMitTimeout(BACKEND_AZURE + '/api/eingang?arten=alle&mangel=1&aendern=1&lager=1&versorger=1', { headers:{ 'x-functions-key':key } });
     if(!r || !r.ok) return erg;
     const liste = await r.json().catch(() => []);
     if(!Array.isArray(liste) || !liste.length) return erg;
@@ -20645,6 +21112,14 @@ async function eingangAbholen(key){
         }catch(err){ console.warn('Claude-Auftrag:', err); continue; }   // nicht abhaken - naechster Versuch
         erledigt.push(e.id); ergebnisse[e.id] = a.text;
         if(a.ok) erg.auftr++; else hinweise.push('Claude-Auftrag ' + a.text);
+        continue;
+      }
+      if(e && e.art === 'versorger'){   // A473
+        let a;
+        try{ a = await eingangVersorgerNeu(e, tomb, absender); }
+        catch(err){ console.warn('Claude-Versorger:', err && err.name); continue; }   // nicht abhaken - naechster Versuch
+        erledigt.push(e.id); ergebnisse[e.id] = a.text;
+        if(a.ok) erg.vers++; else if(!a.still) hinweise.push('Claude-Versorger ' + a.text);
         continue;
       }
       if(e && e.art === 'lager_artikel'){   // A470
@@ -20682,13 +21157,14 @@ async function eingangAbholen(key){
         if(!q || !q.ok) console.warn('Claude-Eingang: Abhaken fehlgeschlagen (' + (q ? q.status : '-') + ')');
       }catch(err){ console.warn('Claude-Eingang abhaken:', err); }
     }
-    if(erg.auf || erg.ter || erg.auftr || erg.mng || erg.lag){
+    if(erg.auf || erg.ter || erg.auftr || erg.mng || erg.lag || erg.vers){
       syncSoon();
       const t = [];
       if(erg.auf) t.push(erg.auf + (erg.auf === 1 ? ' To Do' : ' To Dos'));
       if(erg.ter) t.push(erg.ter + (erg.ter === 1 ? ' Termin' : ' Termine'));
       if(erg.mng) t.push(erg.mng + (erg.mng === 1 ? ' Mangel' : ' Mängel'));   // A456
       if(erg.lag) t.push(erg.lag + ' Lagerartikel');   // A470
+      if(erg.vers) t.push(erg.vers + (erg.vers === 1 ? ' Versorgervertrag' : ' Versorgerverträge'));   // A473
       if(erg.auftr) t.push(erg.auftr + (erg.auftr === 1 ? ' Auftrag' : ' Aufträge'));
       toast('Von Claude übernommen: ' + t.join(' und ') + ' ✓', 5000);
       try{
@@ -20852,6 +21328,19 @@ function spiegelZahl(x){
   const n = Number(s);
   return isFinite(n) ? n : null;
 }
+/* A473: Lieferstelle, aktueller Preisstand und Verlauf eines Versorgervertrags fuer Claude (B18). Ohne Vertragsnummer,
+   Zugangsdaten und Notizen. Preise von Versorgern sind keine Mieterdaten und gehen unabhaengig vom Modus mit. */
+function versorgerSpiegel(v, zaehler, kurz){
+  const a = versorgerAktuell(v), d = x => /^\d{4}-\d{2}-\d{2}$/.test(String(x || '')) ? x : '';
+  const k = a.st.kuenftig;
+  return { id:String(v.id || ''), we:kurz(v.weNr, 20), zaehlernummer:kurz((zaehler && zaehler.zaehlernummer) || v.zaehlernummerVertrag, 40),
+    malo:kurz(v.marktlokation, 11), melo:kurz(v.messlokation, 33), einheit:kurz(v.einheit, 20), beginn:d(v.vertragsbeginn), preisgarantieBis:d(v.preisgarantieBis),
+    ap:a.ap, apAb:a.st.arbeitspreis ? d(a.st.arbeitspreis.ab) : '', gp:a.gp, abschlag:a.abschlag, verbrauch:a.verbrauch,
+    verbrauchVon:a.st.verbrauch ? d(a.st.verbrauch.verbrauchVon) : d(v.jahresverbrauchVon), verbrauchBis:a.st.verbrauch ? d(a.st.verbrauch.verbrauchBis) : d(v.jahresverbrauchBis),
+    kuenftig:k ? { ab:k.ab, ap:versorgerZahl(k.arbeitspreis), gp:versorgerZahl(k.grundpreis), abschlag:versorgerZahl(k.abschlag) } : null,
+    verlauf:versorgerVerlauf(v).slice(0, 24).map(x => ({ ab:d(x.ab), anbieter:kurz(x.anbieter, 120), ap:versorgerZahl(x.arbeitspreis), gp:versorgerZahl(x.grundpreis),
+      abschlag:versorgerZahl(x.abschlag), verbrauch:versorgerZahl(x.verbrauch), von:d(x.verbrauchVon), bis:d(x.verbrauchBis), quelle:kurz(x.quelle, 200) })) };
+}
 function spiegelPruefsumme(s){
   let h = 0x811c9dc5;
   for(let i = 0; i < s.length; i++){ h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
@@ -20901,6 +21390,7 @@ async function spiegelBauen(modus){
   }
 
   const heute = new Date(); heute.setHours(0,0,0,0);
+  const _zaehlerMap = new Map((await idbGetAll('zaehler').catch(() => [])).map(z => [z.id, z]));   // A473
   const vertraege = (await idbGetAll('versorger').catch(() => []))
     .filter(v => !privat.has(v.objektId))
     .map(v => {
@@ -20908,7 +21398,8 @@ async function spiegelBauen(modus){
       return { anbieter:v.anbieter || getSparte(v.sparte).label, sparte:getSparte(v.sparte).label, objekt:name(v.objektId),
                art:(VERSORGER_VERTRAGSART.find(a => a.val === (v.vertragsart || 'sonder')) || {}).label || '',
                ende:r.ende ? ymd(r.ende) : '', kuendigenBis:r.stichtag ? ymd(r.stichtag) : '', frist:r.fristText,
-               hinweis:r.jederzeit ? 'jederzeit kündbar' : (r.verlaengert ? 'stillschweigend verlängert' : '') };
+               hinweis:r.jederzeit ? 'jederzeit kündbar' : (r.verlaengert ? 'stillschweigend verlängert' : ''),
+               ...versorgerSpiegel(v, _zaehlerMap.get(v.zaehlerId), kurz) };   // A473
     });
 
   /* A459: offene Maengel fuer maengel_anzeigen / mangel_aendern / mangel_erledigen (B13). */
