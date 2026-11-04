@@ -1350,7 +1350,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=39;   // A398: +kr_abrechnungen · A466: +excel_cache
-const APP_VERSION = '2026-11-01-A474';
+const APP_VERSION = '2026-11-04-A478';
 /* v364 (12.08.2026) – offene Punkte abgearbeitet.
    1) D1/XLSX_SRI: Der im Code hinterlegte PowerShell-Befehl war FALSCH und
       konnte nie funktionieren - Invoke-WebRequest liefert unter .Content einen
@@ -7464,6 +7464,8 @@ function versorgerPreiseHTML(v){
   if(a.gp !== null) teile.push('<span>Grundpreis: <strong>' + fmtEur(a.gp) + '/Monat</strong></span>');
   if(a.ap !== null) teile.push('<span>Arbeitspreis: <strong>' + esc(versorgerZahlText(a.ap)) + ' ct/' + esc(einh) + '</strong>'
     + (a.st.arbeitspreis && a.st.arbeitspreis.ab ? grau('seit ' + versorgerDatumText(a.st.arbeitspreis.ab)) : '') + '</span>');
+  if(a.ap !== null && versorgerApWarnung(v.sparte, a.ap)) teile.push('<span style="color:var(--red)" title="' + escAttr(versorgerApWarnung(v.sparte, a.ap)) + '">'
+    + '<i class="ti ti-alert-triangle"></i> ungewöhnlich niedrig – € statt ct?</span>');   // A475
   if(a.abschlag !== null) teile.push('<span>Abschlag: <strong>' + fmtEur(a.abschlag) + '/Monat</strong></span>');
   if(a.verbrauch !== null) teile.push('<span>Verbrauch: <strong>' + esc(versorgerZahlText(a.verbrauch, 0)) + ' ' + esc(einh) + '</strong>'
     + (a.st.verbrauch && a.st.verbrauch.verbrauchBis ? grau('bis ' + versorgerDatumText(a.st.verbrauch.verbrauchBis)) : '') + '</span>');
@@ -7542,6 +7544,8 @@ async function versorgerVerlaufSpeichern(versorgerId, eintragId){
     abschlag:w('pvAbschlag'), verbrauch:w('pvVerbrauch'), verbrauchVon:w('pvVon'), verbrauchBis:w('pvBis'), quelle:w('pvQuelle'), notiz:w('pvNotiz'),
     erfasst:alt ? alt.erfasst : undefined, erfasstVon:alt ? alt.erfasstVon : undefined });
   if(!r.ok){ toast(r.text, 5000); return; }
+  { const w = r.eintrag.arbeitspreis !== undefined ? versorgerApWarnung(v.sparte, r.eintrag.arbeitspreis) : '';   // A475
+    if(w && !confirm(w + '\n\nTrotzdem speichern?')) return; }
   if(versorgerVerlaufDoppelt(v, r.eintrag)){ toast('Diesen Eintrag gibt es schon.'); return; }
   versorgerAltstandSichern(v);
   versorgerVerlaufSetzen(v, r.eintrag);
@@ -7729,6 +7733,9 @@ async function saveVersorger(objektId, versorgerId){
   // A473: Marktlokation (Pruefziffer) und Messlokation pruefen - Tippfehler fallen hier auf, nicht erst beim Versorger.
   { const m = maloPruefen(formData.marktlokation); if(!m.ok){ toast(m.text, 6000); return; } formData.marktlokation = m.wert;
     const l = meloPruefen(formData.messlokation); if(!l.ok){ toast(l.text, 6000); return; } formData.messlokation = l.wert; }
+  { const w = versorgerApWarnung(formData.sparte, formData.arbeitspreis);   // A475: nur fragen, wenn der Preis neu oder geaendert ist
+    const altV = (w && versorgerId) ? await idbGet('versorger', versorgerId).catch(() => null) : null;
+    if(w && (!altV || versorgerZahl(altV.arbeitspreis) !== versorgerZahl(formData.arbeitspreis)) && !confirm(w + '\n\nTrotzdem speichern?')) return; }
   // A449: kuendigungsfristMonate bleibt fuer aeltere Leser (Archiv, A448 auf anderen Geraeten) gefuellt
   formData.kuendigungsfristMonate = formData.kuendigungsfristEinheit==='monate' ? formData.kuendigungsfristWert : '';
   // Passwort eingegeben, aber Verschlüsselung nicht bereit? Erst einrichten/entsperren.
@@ -10013,11 +10020,11 @@ async function bwAblageAufraeumen(){
   }
   return n;
 }
-async function saAblehnen(id, durch){
+async function saAblehnen(id, durch, opt){   // A478: opt = { still, absageMail }
   const e = (window._saInbox || {})[id];
   if(!e){ toast('Selbstauskunft nicht gefunden – bitte neu laden.'); return; }
   const _bewerber = durch === 'bewerber';   // A474: Bewerber hat selbst abgesagt
-  if(!confirm('„' + (e.anzeigeName || 'Bewerbung') + (_bewerber ? '“ hat abgesagt – so ablegen?\n\n' : '“ als abgelehnt ablegen?\n\n')
+  if(!(opt && opt.still) && !confirm('„' + (e.anzeigeName || 'Bewerbung') + (_bewerber ? '“ hat abgesagt – so ablegen?\n\n' : '“ als abgelehnt ablegen?\n\n')
       + 'Die Selbstauskunft kommt in den Papierkorb (' + SA_PAPIERKORB_TAGE + ' Tage wiederherstellbar). '
       + 'Name, E-Mail, Objekt und Ihre interne Bewertung bleiben ' + BW_AUFBEWAHREN_MONATE
       + ' Monate unter „Abgelehnte Bewerbungen“ und werden dann automatisch gelöscht.')) return;
@@ -10029,6 +10036,7 @@ async function saAblehnen(id, durch){
   const wert = {
     id, name:e.anzeigeName || '', email, objektName:e.objektName || '',
     beworbenAm:e.zeitstempel || '', abgelehntAm:nowIso(), grund:_bewerber ? 'bewerber' : '',   // A474
+    absageMail:(opt && opt.absageMail) ? nowIso() : '',   // A478
     von:(typeof CU !== 'undefined' && CU && CU.name) ? CU.name : '',
     ampel:n.ampel || '', notiz:n.notiz || '',
     telefoniert:n.telefoniert || '', besichtigung:n.besichtigung || '', emailGeschrieben:n.email || ''
@@ -10045,7 +10053,7 @@ async function saAblehnen(id, durch){
       await idbPut('interessenten', k).catch(() => {});
     }
   }
-  toast(_bewerber ? 'Als „Bewerber hat abgesagt“ abgelegt ✓' : 'Als abgelehnt abgelegt ✓');
+  toast(_bewerber ? 'Als „Bewerber hat abgesagt“ abgelegt ✓' : (opt && opt.absageMail) ? 'Absage gesendet und abgelegt ✓' : 'Als abgelehnt abgelegt ✓');
   if(window._mailTab === 'sa' && document.getElementById('mailBody')) await mailRenderSA(document.getElementById('mailBody'));
 }
 async function bwLoeschen(id, name){
@@ -10081,7 +10089,7 @@ function bwEintragHTML(e){
       <b style="flex:1;min-width:0;overflow-wrap:anywhere">${esc(e.name || '(ohne Namen)')}</b>
       ${a ? `<span style="font-size:11px;font-weight:700;color:${a.rand}">● ${a.label}</span>` : ''}</div>
     <div style="font-size:12px;color:var(--ink-60);overflow-wrap:anywhere">${esc(e.email || '')}${e.email && e.objektName ? ' · ' : ''}${esc(e.objektName || '')}</div>
-    <div style="font-size:12px;color:var(--ink-40)">beworben ${esc(d(e.beworbenAm))} · ${e.grund === 'bewerber' ? 'Bewerber hat abgesagt' : 'abgelehnt'} ${esc(d(e.abgelehntAm))}${e.von ? ' von ' + esc(e.von) : ''} · gelöscht ab ${esc(d(bwLoeschAm(e)))}</div>
+    <div style="font-size:12px;color:var(--ink-40)">beworben ${esc(d(e.beworbenAm))} · ${e.grund === 'bewerber' ? 'Bewerber hat abgesagt' : 'abgelehnt'} ${esc(d(e.abgelehntAm))}${e.absageMail ? ' (Absage per E-Mail)' : ''}${e.von ? ' von ' + esc(e.von) : ''} · gelöscht ab ${esc(d(bwLoeschAm(e)))}</div>
     ${haken ? `<div style="font-size:12px;color:var(--ink-60);margin-top:2px">${esc(haken)}</div>` : ''}
     ${e.notiz ? `<div style="font-size:13px;margin-top:6px;white-space:pre-wrap;overflow-wrap:anywhere">${esc(e.notiz)}</div>` : ''}
     <div style="margin-top:6px"><button class="btn btn-sm" data-action-click="bwLoeschen" data-arg="${escAttr(e.id)}" data-arg2="${escAttr(e.name || '')}"><i class="ti ti-trash"></i> Jetzt löschen</button></div>
@@ -11185,7 +11193,7 @@ function websiteNachrichtAntworten(email, name){
   window._mailVorbelegung = {
     email: String(email),
     betreff: 'Ihre Anfrage über nadigpfau.de',
-    anrede: name ? ('Guten Tag ' + name + ',') : 'Guten Tag,'
+    anrede: name ? bewerberAnrede('', vornameAus(name), nachnameAus(name)) : 'Guten Tag,'   // A476
   };
   setMailTab('mieter');
 }
@@ -11804,7 +11812,8 @@ async function akteZielBestaetigen(){
   await weiter(ziel);
 }
 async function dokInAkteSpeichern(ziel, d){
-  const dok = { id:uid(), name:d.name, typ:d.typ || 'sonstiges', notiz:ziel.notiz || d.notiz || '',
+  const dok = { id:d.id || uid(), name:d.name,   // A475: feste ID fuer Claude-Ablagen
+                typ:d.typ || 'sonstiges', notiz:ziel.notiz || d.notiz || '',
     objektId:ziel.objektId || '', mieterId:ziel.mieterId || null, data:d.dataUrl, mimeType:d.mimeType || '',
     size:d.size || 0, erstellt:now(), ersteller:a472CuName(), herkunft:d.herkunft || 'posteingang' };
   if(ziel.interessentId) dok.interessentId = ziel.interessentId;
@@ -11812,6 +11821,7 @@ async function dokInAkteSpeichern(ziel, d){
   else{
     const ref = await dokAuslagernRef(dok, d.dataUrl, ziel.weNr).catch(() => null);
     if(ref){ dok.ref = ref; feldGeleert(dok, 'data'); }
+    else if(d.nurMitRef) throw new Error('OneDrive-Ablage nicht möglich');   // A475: grosse Datei nicht in die Sync-Datei
   }
   await idbPut('dokumente', dok);
   syncSoon();
@@ -11917,10 +11927,65 @@ async function besichtigungKontakte(objektId, weNr){
   }
   return r;
 }
+/* ═══════════════════════════════════════════════════════════════════════
+   A476 (04.11.2026) – Anrede aus dem Vornamen
+   Die Website-Selbstauskunft fragt keine Anrede ab. Bis A475 begann der Text dann mit „Guten Tag Vorname Nachname,“.
+   Jetzt: Steht der Vorname eindeutig in der Liste, heisst es „Sehr geehrte Frau Nachname,“ bzw. „Sehr geehrter Herr Nachname,“ (A477).
+   Nur Namen, die praktisch immer einem Geschlecht zugeordnet werden; mehrdeutige (Kim, Alex, Luca, Andrea, Robin …)
+   stehen bewusst nicht darin – dann bleibt es beim vollen Namen. Eine angegebene Anrede hat immer Vorrang.
+   Die Listen sind allgemeine Vornamen (keine Personendaten).
+   ═══════════════════════════════════════════════════════════════════════ */
+const VORNAMEN_FRAU = new Set(('anna anne anja angelika anke annette antje astrid barbara beate bettina bianca birgit brigitte britta carina carmen '
+  + 'carola caroline charlotte christa christel christiane christina christine claudia cornelia dagmar daniela diana doris dorothea edith elena elfriede elisabeth '
+  + 'elke ella ellen emilia emily emma erika eva evelyn franziska frieda friederike gabriele gerda gertrud gisela gudrun hanna hannah heide heidi heike helene '
+  + 'helga hildegard ilse ina ines inge ingeborg ingrid irene iris isabel isabell isabella ivonne jacqueline jana janina janine jasmin jennifer jessica johanna '
+  + 'josephine judith julia juliane jutta karin karla katharina kathrin katja katrin kerstin kirsten klara lara laura lea lena leonie lilli lina lisa luisa '
+  + 'magdalena maike manuela margarete margit maria marianne marie marina marion marlene martina mathilda melanie melina michaela mia miriam monika nadine natalie '
+  + 'nicole nina nora olga patricia paula petra pia ramona rebecca regina renate rita rosemarie ruth sabine sabrina sandra sara sarah silke silvia simone sofia '
+  + 'sonja sophia sophie stefanie stephanie susanne svenja swenja tanja theresa ulrike ursula ute vanessa vera verena viktoria waltraud yvonne '
+  // tuerkisch, arabisch, osteuropaeisch, weitere haeufige
+  + 'aylin ayse ayşe elif emine esra fatma fatima hatice leyla meryem merve özlem ozlem sevgi songül songul tuba zeynep yasemin büşra busra derya ebru gül gul hülya '
+  + 'hulya aisha aischa amina amira layla mariam maryam nour noura rania yasmin zahra samira '
+  + 'agnieszka anastasia irina jelena katarzyna ludmila magdalena malgorzata małgorzata natalia natascha oksana svetlana swetlana tatjana valentina weronika '
+  + 'alessandra chiara francesca giulia martina rosa lucia ana beatriz').split(/\s+/).filter(Boolean));
+const VORNAMEN_HERR = new Set(('achim adrian albert alexander alfred andreas anton armin arne arnold axel benedikt benjamin bernd bernhard björn bjorn boris '
+  + 'bruno burkhard carl carsten christian christoph christopher claus dennis detlef dieter dirk dominik egon elias emil erich erik ernst erwin fabian felix '
+  + 'ferdinand florian frank franz friedrich fritz georg gerd gerhard gernot günter gunter günther gustav hans harald hartmut heiko heinrich heinz helmut '
+  + 'henrik herbert hermann holger horst hubert ingo jan jens joachim jochen johann johannes jonas jonathan josef joseph jörg jorg julian jürgen jurgen kai '
+  + 'karl karsten klaus konrad konstantin kurt lars leon leonard lothar louis ludwig lukas lutz manfred marc marcel marco marcus mario markus martin mathias '
+  + 'matthias max maximilian michael moritz niklas nils norbert olaf oliver oskar otto patrick paul peter philipp rainer ralf ralph reinhard reiner rene '
+  + 'richard robert roland rolf rudolf rüdiger rudiger sebastian siegfried simon stefan stephan steffen sven thomas thorsten tim tobias torsten udo ulrich uwe '
+  + 'volker walter werner wilhelm willi wolfgang '
+  + 'ahmet ahmed ali burak can cem emre emir hakan hasan hüseyin huseyin ibrahim ismail kemal mehmet murat mustafa ömer omer orhan osman serkan yusuf '
+  + 'abdullah hamza karim khaled mahmoud mohamed mohammed muhammad omar samir tarek yassin '
+  + 'aleksander dariusz dmitri igor ivan jakub krzysztof marek piotr sergej sergei tomasz vladimir wladimir witold '
+  + 'giovanni giuseppe francesco antonio salvatore pedro jose josé').split(/\s+/).filter(Boolean));
+/* 'Frau' | 'Herr' | '' – nur der erste Teil eines Doppelnamens zaehlt (Anna-Lena, Hans Peter). */
+function anredeAusVorname(vorname){
+  const v = String(vorname || '').trim().toLowerCase().split(/[\s-]+/)[0] || '';
+  if(VORNAMEN_FRAU.has(v)) return 'Frau';
+  if(VORNAMEN_HERR.has(v)) return 'Herr';
+  return '';
+}
+/* Ganz klein geschriebene Namen aus Formularen („müller“) mit grossem Anfangsbuchstaben; Zusaetze wie von/van/de bleiben klein. */
+function nameSchreibung(s){
+  const t = String(s || '').trim();
+  if(!t || t !== t.toLowerCase()) return t;
+  return t.split(/(\s+|-)/).map(w => /^(von|van|de|der|den|du|zu|la|le|di|da|el|al)$/.test(w) || /^(\s+|-)$/.test(w) ? w : w.charAt(0).toUpperCase() + w.slice(1)).join('');
+}
+/* Vorname aus einem vollen Namen („Erika Muster“ bzw. „Muster, Erika“); ein einzelnes Wort gilt als Nachname. */
+function vornameAus(name){
+  const n = String(name || '').trim();
+  if(n.includes(',')) return n.split(',').slice(1).join(' ').trim().split(/\s+/)[0] || '';
+  const t = n.split(/\s+/);
+  return t.length > 1 ? t[0] : '';
+}
 function bewerberAnrede(anrede, vorname, nachname){
-  const nn = String(nachname || '').trim(), vn = String(vorname || '').trim();
+  const nn = nameSchreibung(nachname), vn = nameSchreibung(vorname);   // A476: müller -> Müller
   if(anrede === 'Frau' && nn) return 'Sehr geehrte Frau ' + nn + ',';
   if((anrede === 'Herr' || anrede === 'Herrn') && nn) return 'Sehr geehrter Herr ' + nn + ',';
+  const ausVorname = (nn && anrede !== 'Divers') ? anredeAusVorname(vn) : '';   // A476: keine Anrede angegeben -> aus dem Vornamen
+  if(ausVorname) return (ausVorname === 'Frau' ? 'Sehr geehrte Frau ' : 'Sehr geehrter Herr ') + nn + ',';   // A477: wie angegebene Anrede
   const voll = (vn + ' ' + nn).trim();
   return voll ? 'Guten Tag ' + voll + ',' : 'Guten Tag,';
 }
@@ -12115,6 +12180,7 @@ async function saKartenErgaenzen(liste){
       objektId:w && w.objektId, weNr:w && w.weNr, objektName:b.objektName || e.objektName });
     const sig = mailSignatur(w ? w.objektId : '', { kontakt:false });
     window._saKontakt[e.id] = { email, tel, w, wohnung:bt.wohnung || b.objektName || e.objektName || '', text:bt.text,
+      anrede:p1.anrede || b.anrede || '', vorname:b.vorname || '', nachname:b.nachname || '',   // A478: fuer die Absage
       name:((b.vorname || '') + ' ' + (b.nachname || '')).trim() || e.anzeigeName || '' };
     const wa = tel ? waLink(tel) : '';
     const gesendet = email ? mails.filter(v => v && !v._papierkorb && (a472Mail(v.email) === a472Mail(email) || v.saId === e.id)) : [];
@@ -12127,11 +12193,57 @@ async function saKartenErgaenzen(liste){
       ${gesendet.length ? `<div style="color:var(--ink-60)"><i class="ti ti-history"></i> ${gesendet.length} E-Mail${gesendet.length === 1 ? '' : 's'} gesendet, zuletzt ${esc(a472Datum(gesendet.map(v => v.gesendet).sort().pop()))}</div>` : ''}
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">
         ${email ? `<button class="btn btn-sm btn-primary" data-action-click="saKontaktMail" data-arg="${escAttr(e.id)}"><i class="ti ti-mail"></i> E-Mail</button>` : ''}
+        ${email ? `<button class="btn btn-sm" data-action-click="saAbsageModal" data-arg="${escAttr(e.id)}"><i class="ti ti-mail-x"></i> Absage</button>` : ''}
         ${tel ? `<a class="btn btn-sm btn-success" style="text-decoration:none" href="${telHref(tel)}"><i class="ti ti-phone"></i> Anrufen</a>` : ''}
         ${wa ? `<a class="btn btn-sm" href="${escAttr(wa + '?text=' + encodeURIComponent(bt.text + sig))}" target="_blank" rel="noopener" style="background:#25D366;color:#fff;border-color:#25D366;text-decoration:none"><i class="ti ti-brand-whatsapp"></i> WhatsApp</a>` : ''}
         <button class="btn btn-sm" data-action-click="saDrucken" data-arg="${escAttr(e.id)}"><i class="ti ti-printer"></i> Drucken</button>
       </div></div>`;
   }
+}
+/* ── A478: Absage an eine Selbstauskunft per E-Mail (Nutzerwunsch 04.11.2026) ───────────────────
+   Knopf „Absage“ an jeder Selbstauskunft mit E-Mail-Adresse. Text aus der Vorlage „Absage an Bewerber“ (änderbar unter
+   Vorlagen), Anrede wie bei den Besichtigungstexten. Der Text wird vor dem Senden gezeigt und kann geändert werden.
+   Nach dem Senden wird die Selbstauskunft auf Wunsch (Haken, Standard an) als abgelehnt abgelegt - wie „Ablehnen“,
+   nur ohne zweite Rückfrage; ein schon übernommener Interessent bekommt den Status „Abgesagt“. Gründe nennt die
+   Vorlage bewusst nicht (AGG). */
+async function saAbsageModal(id){
+  const k = (window._saKontakt || {})[id];
+  if(!k || !k.email){ toast('Keine E-Mail-Adresse in der Selbstauskunft – bitte anrufen.'); return; }
+  const v = (await mailVorlagenLaden()).find(x => x.id === 'absage') || MAIL_VORLAGEN_STANDARD.find(x => x.id === 'absage');
+  const anrede = bewerberAnrede(k.anrede, k.vorname, k.nachname);
+  window._saAbsage = { id, laeuft:false };
+  showModal(`
+    <div class="m-title"><i class="ti ti-mail-x"></i> Absage senden</div>
+    <div style="font-size:13px;margin-bottom:8px;overflow-wrap:anywhere">An: <b>${esc(k.name || '')}</b> &lt;${esc(k.email)}&gt;</div>
+    <div class="f"><label for="saAbsBetreff">Betreff</label><input type="text" id="saAbsBetreff" value="${escAttr(mailVorlageFuellen(v.betreff, { wohnung:k.wohnung || 'unsere Wohnung' }))}"></div>
+    <div class="f"><label for="saAbsText">Text (Signatur kommt automatisch dazu)</label><textarea id="saAbsText" lang="de" spellcheck="true" style="min-height:190px">${esc(anrede + '\n\n' + mailVorlageFuellen(v.text, { wohnung:k.wohnung || 'unsere Wohnung' }))}</textarea></div>
+    <label style="display:flex;gap:8px;align-items:center;font-size:13px;margin:4px 0 10px">
+      <input type="checkbox" id="saAbsAblegen" checked style="width:16px;height:16px"> Danach als abgelehnt ablegen</label>
+    <div class="f-row">
+      <button class="btn btn-copper btn-full" data-action-click="saAbsageSenden"><i class="ti ti-send"></i> Absage senden</button>
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button></div>`);
+}
+async function saAbsageSenden(){
+  const a = window._saAbsage;
+  if(!a || a.laeuft) return;
+  const k = (window._saKontakt || {})[a.id];
+  if(!k || !k.email){ toast('Selbstauskunft nicht mehr geladen – bitte neu öffnen.'); return; }
+  const betreff = (document.getElementById('saAbsBetreff')?.value || '').trim();
+  const text = (document.getElementById('saAbsText')?.value || '').trim();
+  const ablegen = !!document.getElementById('saAbsAblegen')?.checked;
+  if(!betreff || !text){ toast('Bitte Betreff und Text angeben'); return; }
+  a.laeuft = true;   // Doppelklick: nur eine Mail
+  const r = await mailEinfachSenden({ email:k.email, betreff, text, objektId:k.w ? k.w.objektId : '', empfaengerName:k.name || k.email, saId:a.id });
+  if(!r.ok){ a.laeuft = false; toast('Absage nicht gesendet' + (r.grund ? ': ' + r.grund : '') + '. Bitte später erneut versuchen.', 7000); return; }
+  window._saAbsage = null;
+  closeModal();
+  syncSoon();
+  for(const ki of (await idbGetAll('interessenten').catch(() => [])).filter(x => x && x.quelleId === a.id && !['uebernommen', 'absage'].includes(x.status))){
+    ki.status = 'absage'; ki.absageAm = nowIso(); ki.geaendert = nowIso();
+    await idbPut('interessenten', ki).catch(() => {});
+  }
+  if(ablegen) await saAblehnen(a.id, '', { still:true, absageMail:true });
+  else toast('Absage gesendet ✓');
 }
 function saKontaktMail(id){
   const k = (window._saKontakt || {})[id];
@@ -12243,7 +12355,7 @@ async function saBesichtigungHaken(id, an){
 /* ── Interessent: Kontakt, Besichtigung, Verlauf ────────────────────────── */
 async function interessentKontaktHTML(k){
   const tel = String(k.telefon || '').trim(), email = String(k.email || '').trim();
-  const bt = await besichtigungsText({ anrede:k.anrede, vorname:k.vorname, nachname:k.nachname || (k.name || '').split(/\s+/).slice(-1)[0],
+  const bt = await besichtigungsText({ anrede:k.anrede, vorname:k.vorname || vornameAus(k.name), nachname:k.nachname || nachnameAus(k.name),
     objektId:k.objektId, weNr:k.weNr, objektName:k.objektName });
   window._intKontakt = window._intKontakt || {};
   window._intKontakt[k.id] = { text:bt.text, wohnung:bt.wohnung || k.objektName || '' };
@@ -12270,12 +12382,12 @@ async function interessentMailSchreiben(id, art){
   let text = '', betreff = '';
   const wt = k.objektId ? await wohnungText(k.objektId, k.weNr) : (k.objektName || '');
   if(art === 'besichtigung'){
-    const bt = await besichtigungsText({ anrede:k.anrede, vorname:k.vorname, nachname:k.nachname || (k.name || '').split(/\s+/).slice(-1)[0],
+    const bt = await besichtigungsText({ anrede:k.anrede, vorname:k.vorname || vornameAus(k.name), nachname:k.nachname || nachnameAus(k.name),
       objektId:k.objektId, weNr:k.weNr, objektName:k.objektName });
     text = bt.text; betreff = 'Besichtigung' + (wt ? ' – ' + wt : '');
   } else if(art === 'absage'){
     const v = (await mailVorlagenLaden()).find(x => x.id === 'absage') || MAIL_VORLAGEN_STANDARD.find(x => x.id === 'absage');
-    text = bewerberAnrede(k.anrede, k.vorname, k.nachname || (k.name || '').split(/\s+/).slice(-1)[0]) + '\n\n' + mailVorlageFuellen(v.text, { name:k.name, wohnung:wt });
+    text = bewerberAnrede(k.anrede, k.vorname || vornameAus(k.name), k.nachname || nachnameAus(k.name)) + '\n\n' + mailVorlageFuellen(v.text, { name:k.name, wohnung:wt });
     betreff = mailVorlageFuellen(v.betreff, { name:k.name, wohnung:wt });
   }
   closeModal();
@@ -12458,7 +12570,7 @@ async function absageSenden(){
   for(const id of ids){
     const k = await idbGet('interessenten', id).catch(() => null);
     if(!k || !k.email) continue;
-    const text = bewerberAnrede(k.anrede, k.vorname, k.nachname || (k.name || '').split(/\s+/).slice(-1)[0]) + '\n\n' + koerper;
+    const text = bewerberAnrede(k.anrede, k.vorname || vornameAus(k.name), k.nachname || nachnameAus(k.name)) + '\n\n' + koerper;
     const r = await mailEinfachSenden({ email:k.email, betreff, text, objektId:a.objektId, empfaengerName:k.name || k.email, interessentId:k.id, saId:k.quelleId || '' });
     if(r.ok){
       ok++;
@@ -12483,7 +12595,7 @@ registerActions({ tmGesendetDrucken, postfachDrucken, webNachrichtDrucken, saDru
   archivMailOeffnen, tmZurueckGehen, kqArchivOeffnen, besichtigungZustimmungSetzen, saKontaktMail, besichtigungModal,
   besichtigungAbbrechen, besichtigungSpeichern, interessentMailSchreiben, interessentMailOeffnen, tmVorlageGewaehlt, mailVorlagenModal,
   mailVorlageBearbeiten, mailVorlageSpeichern, mailVorlageLoeschen, mailVorlagenStandard, mailVorlagenSchliessen,
-  absageModal, absageSenden, modalInteressentDetail, openArchivDok, downloadDok });
+  absageModal, absageSenden, saAbsageModal, saAbsageSenden, modalInteressentDetail, openArchivDok, downloadDok });
 
 
 /* ═══════════════════════════════════════════════════════════
@@ -20744,6 +20856,111 @@ async function updateBadge(){
   updateMailBadge();
 }
 
+/* ═══════════════════════════════════════════════════════════════════════
+   A475 (03.11.2026) – Dateien aus dem Claude-Connector (Backend B19)
+   Claude legt Mail-PDFs, Anhaenge und Mangel-Fotos aus GMX verschluesselt im Backend ab (Eintrag 'ablage' bzw.
+   Mangel mit Dateiliste). Die App holt sie hier mit dem Host-Schluessel ueber /api/eingang-datei, legt sie nach
+   OneDrive (dokAuslagernRef / fotoAuslagern) und meldet sie als abgeholt – dann loescht das Backend seine Kopie.
+   Zuordnung einer Ablage: Mieter mit der Absenderadresse im genannten Objekt, sonst der jetzige Mieter der
+   genannten WE, sonst ein Interessent mit der Adresse, sonst die Objektdokumente.
+   Dokument-ID 'cl_' + Eingangs-ID + '_' + Nummer: holen zwei Geraete gleichzeitig ab oder bricht der Lauf ab,
+   entsteht kein Doppel; schon Abgelegtes wird beim naechsten Versuch uebersprungen.
+   ═══════════════════════════════════════════════════════════════════════ */
+const CLAUDE_DATEI_MAX_INLINE = 2 * 1024 * 1024;   // groesser nur mit OneDrive-Ablage (sonst blaeht die Sync-Datei)
+async function claudeDateiHolen(key, e, n){
+  const r = await fetchMitTimeout(BACKEND_AZURE + '/api/eingang-datei?id=' + encodeURIComponent(e.id) + '&n=' + Number(n),
+    { headers:{ 'x-functions-key':key } }, 60000);
+  if(r && (r.status === 404 || r.status === 410)) return null;   // nicht mehr vorhanden
+  if(!r || !r.ok) throw new Error('Datei ' + n + ': HTTP ' + (r ? r.status : 'ohne Antwort'));
+  return await r.arrayBuffer();
+}
+function claudeDateiListe(e){
+  try{ const l = JSON.parse(e && e.dateien || '[]'); return Array.isArray(l) ? l.filter(d => d && Number.isInteger(d.n) && d.n >= 0).slice(0, 30) : []; }
+  catch(_){ return []; }
+}
+/* Foto verkleinern (lange Kante, JPEG) - createImageBitmap beachtet die EXIF-Drehung. */
+async function claudeBildDataUrl(blob, kante, q){
+  let bild = null;
+  try{ bild = await createImageBitmap(blob, { imageOrientation:'from-image' }); }catch(_){ bild = null; }
+  if(!bild){
+    const url = await blobZuDataUrl(blob);
+    bild = await new Promise((ok, f) => { const i = new Image(); i.onload = () => ok(i); i.onerror = () => f(new Error('Bild nicht lesbar')); i.src = url; });
+  }
+  const s = Math.min(1, kante / Math.max(bild.width || 1, bild.height || 1));
+  const c = document.createElement('canvas');
+  c.width = Math.max(1, Math.round(bild.width * s)); c.height = Math.max(1, Math.round(bild.height * s));
+  c.getContext('2d').drawImage(bild, 0, 0, c.width, c.height);
+  try{ if(bild.close) bild.close(); }catch(_){}
+  return c.toDataURL('image/jpeg', q);
+}
+/* Fotos eines Mangels aus dem Eingang: nach OneDrive (Referenz), sonst verkleinert inline. Wirft bei Netzfehlern -
+   dann bleibt der Eintrag im Eingangsfach und wird beim naechsten Mal erneut versucht. */
+async function claudeMangelFotos(e, key, objektId, weNr){
+  const fotos = [];
+  for(const d of claudeDateiListe(e).slice(0, 10)){
+    const roh = await claudeDateiHolen(key, e, d.n);
+    if(!roh) continue;
+    const blob = new Blob([roh], { type:String(d.mime || 'image/jpeg') });
+    let gross;
+    try{ gross = await claudeBildDataUrl(blob, 2000, 0.85); }catch(err){ console.warn('Claude-Foto nicht lesbar'); continue; }
+    const ziel = objektId ? fotoZielFuer(objektId, weNr, 'maengel') : null;
+    const ref = ziel ? await fotoAuslagern(gross, Object.assign(ziel, { name:'mangel_claude_' + uid() + '.jpg' })) : null;
+    fotos.push(ref || await claudeBildDataUrl(blob, 1280, 0.72));
+  }
+  return fotos;
+}
+async function eingangAblage(e, tomb, absender, key){
+  const liste = claudeDateiListe(e);
+  if(!liste.length) return { ok:false, text:'nicht übernommen: keine Dateien' };
+  const obj = e.objekt ? eingangObjektFinden(e.objekt) : null;
+  if(!obj) return { ok:false, text:'nicht übernommen: Objekt „' + String(e.objekt || '') + '“ nicht erkannt' };
+  const we = String(e.wohnung || '').trim().slice(0, 20);
+  let weMieter = null;
+  if(we){ try{ weMieter = await wohnungAktuellerMieter(obj.id, we); }catch(_){ weMieter = null; } }
+  const ziele = { mieter:0, interessent:0, objekt:0 };
+  let anzahl = 0, fehlend = 0;
+  for(const d of liste){
+    const id = 'cl_' + e.id + '_' + d.n;
+    if(tomb && tomb.dokumente && tomb.dokumente[id]) continue;          // in der App bewusst geloescht
+    if(await idbGet('dokumente', id).catch(() => null)){ anzahl++; continue; }   // schon abgelegt (frueherer Versuch)
+    const adr = String(d.absender || '').trim().toLowerCase();
+    const m = adr ? await postfachMieterZuAdresse(adr).catch(() => null) : null;
+    let ziel;
+    if(m && m.objektId === obj.id) ziel = { mieterId:m.id, objektId:m.objektId, weNr:m.weNr, art:'mieter' };
+    else if(weMieter) ziel = { mieterId:weMieter.id, objektId:weMieter.objektId, weNr:weMieter.weNr, art:'mieter' };
+    else {
+      const k = adr ? await interessentZuAdresse(adr).catch(() => null) : null;
+      ziel = (k && (!k.objektId || k.objektId === obj.id))
+        ? { interessentId:k.id, objektId:k.objektId || obj.id, weNr:k.weNr || we, art:'interessent' }
+        : { objektId:obj.id, weNr:we, art:'objekt' };
+    }
+    const roh = await claudeDateiHolen(key, e, d.n);
+    if(!roh){ fehlend++; continue; }
+    const blob = new Blob([roh], { type:String(d.mime || 'application/octet-stream') });
+    ziel.notiz = [String(e.notiz || '').trim(), d.mailDatum ? 'aus GMX-Mail vom ' + fmtDate(d.mailDatum) : ''].filter(Boolean).join(' · ').slice(0, 300);
+    await dokInAkteSpeichern(ziel, { id, name:String(d.name || 'Datei').slice(0, 120),
+      typ: d.art === 'mail' ? 'mail' : (/^image\//.test(blob.type) ? 'foto' : 'sonstiges'),
+      dataUrl: await blobZuDataUrl(blob), mimeType:blob.type, size:blob.size, herkunft:'claude', nurMitRef: blob.size > CLAUDE_DATEI_MAX_INLINE });
+    ziele[ziel.art]++; anzahl++;
+  }
+  if(!anzahl) return { ok:false, text:'nicht übernommen: Dateien nicht mehr vorhanden' };
+  const wo = [ziele.mieter ? ziele.mieter + ' in der Mieterakte' : '', ziele.interessent ? ziele.interessent + ' beim Interessenten' : '',
+              ziele.objekt ? ziele.objekt + ' in den Objektdokumenten' : ''].filter(Boolean).join(', ');
+  try{ bc && bc.postMessage({ type:'dok_changed', data:{}, ts:Date.now() }); }catch(_){}
+  return { ok:true, anzahl, text:'abgelegt: ' + anzahl + (anzahl === 1 ? ' Datei' : ' Dateien') + (wo ? ' – ' + wo : '') + ' (' + obj.name + (we ? ' WE ' + we : '') + ')'
+    + (fehlend ? '; ' + fehlend + ' nicht mehr vorhanden' : '') };
+}
+
+/* A475: Plausibilitaet Arbeitspreis (ct brutto) - darunter ist er fast sicher in Euro statt Cent eingegeben.
+   Anlass: Strom 0,261 ct/kWh im Bestand. Gleiche Grenzen wie das Backend B19. */
+const VERSORGER_AP_UNTERGRENZE = { strom:10, gas:3, heizung:3, wasser:50 };
+function versorgerApWarnung(sparte, ap){
+  const n = versorgerZahl(ap), min = VERSORGER_AP_UNTERGRENZE[sparte];
+  if(n === null || min === undefined || n >= min) return '';
+  return 'Arbeitspreis ' + versorgerZahlText(n) + ' ct ist für ' + getSparte(sparte).label + ' ungewöhnlich niedrig (unter ' + min + ' ct). '
+    + 'Vermutlich in Euro statt Cent eingegeben – gemeint wären ' + versorgerZahlText(Math.round(n * 100000) / 1000) + ' ct.';
+}
+
 /* A439: Claude-Eingang (Backend B8, app-eingang.js). Was der Nutzer Claude
    diktiert ("To Do …", "Termin …"), liegt im Eingangsfach /api/eingang. Die
    App holt es mit dem Mail-Zaehler ab (alle ~2 Minuten bei offener App, nur
@@ -20795,7 +21012,7 @@ function eingangZuDatensatz(e, absender){   // A457: absender = claudeAbsender()
 /* A456: Mangel aus dem Claude-Eingang (B12, mangel_anlegen). Datensatz 'cl_' + Eingangs-ID wie bei
    Aufgaben: holen zwei Geraete gleichzeitig ab, entsteht EIN Mangel. Erkennt die App das Objekt
    nicht, wird ein To Do angelegt statt den Eintrag zu verwerfen; das Ergebnis geht an Claude zurueck. */
-async function eingangMangel(e, tomb, absender){
+async function eingangMangel(e, tomb, absender, key){   // A475: key fuer Fotos (B19)
   const titel = String(e.titel || '').trim();
   if(!e.id || !titel) return { text:'nicht übernommen: Titel fehlt' };
   const id = 'cl_' + e.id;
@@ -20806,24 +21023,27 @@ async function eingangMangel(e, tomb, absender){
     if(!z) return { text:'nicht übernommen: Titel fehlt' };
     if(tomb.aufgaben && tomb.aufgaben[z.rec.id]) return { text:'nicht übernommen: in der App bereits gelöscht' };
     if(await idbGet('aufgaben', z.rec.id).catch(() => null)) return { text:'bereits als To Do angelegt' };
+    if(e.dateien && key) z.rec.fotos = await claudeMangelFotos(e, key, null, '');   // A475
     await idbPut('aufgaben', z.rec);
     return { aufgabe:true, text:'als To Do angelegt – Objekt „' + (e.objekt || '') + '“ nicht erkannt' };
   }
   if(tomb.maengel && tomb.maengel[id]) return { text:'nicht übernommen: in der App bereits gelöscht' };
   const da = await idbGet('maengel', id).catch(() => null);
   if(da) return { text:'bereits angelegt' + (da.nummer ? ': ' + da.nummer : '') };
+  const fotos = (e.dateien && key) ? await claudeMangelFotos(e, key, obj.id, String(e.wohnung || '')) : [];   // A475: vor der Nummer - Netzfehler = naechster Versuch
   const nummer = await naechsteMangelNr(obj.id);
   const m = {
     id, type:'mangel', istReparatur:false, nummer, objektId:obj.id, mieterId:null, weNr:String(e.wohnung || ''),
     titel, schwere: ['gering','mittel','schwerwiegend'].includes(e.schwere) ? e.schwere : 'mittel',
     datum: /^\d{4}-\d{2}-\d{2}$/.test(String(e.datum || '')) ? e.datum : today(),
     beschreibung:String(e.beschreibung || ''), kostenTeile:null, stunden:null, stundensatz:null, kostenArbeit:null, kosten:null,
-    status:'offen', fotos:[], portalMeldungId:null,
+    status:'offen', fotos, portalMeldungId:null,
     erstellt:claudeErstellt(e), ersteller:claudeErsteller(absender), quelle:'claude', claudeEingang:e.id
   };
   await idbPut('maengel', m);
   try{ bc && bc.postMessage({ type:'mangel_changed', data:{}, ts:Date.now() }); }catch(_){}
-  return { mangel:true, text:'angelegt: ' + nummer + ' (' + obj.name + (m.weNr ? ' WE ' + m.weNr : '') + ')' };
+  return { mangel:true, text:'angelegt: ' + nummer + ' (' + obj.name + (m.weNr ? ' WE ' + m.weNr : '') + ')'
+    + (fotos.length ? ' mit ' + fotos.length + (fotos.length === 1 ? ' Foto' : ' Fotos') : '') };
 }
 /* A459: Auftraege aus B13 (aendern | loeschen | mangel_erledigt). Grundlage war Claudes Spiegel; hier
    wird gegen den aktuellen Datensatz geprueft: geloescht oder nicht vorhanden -> nicht ausgefuehrt. */
@@ -21075,7 +21295,7 @@ let _eingangWartenGemeldet = false;   // A449: Hinweis "Sprachbenutzer fehlt" nu
 async function eingangAbholen(key){
   if(_eingangLaeuft || !key || !istVerwalter()) return { auf:0, ter:0, auftr:0, mng:0, lag:0 };
   _eingangLaeuft = true;
-  const erg = { auf:0, ter:0, auftr:0, mng:0, lag:0, vers:0 };   // A456: mng, A470: lag, A473: vers
+  const erg = { auf:0, ter:0, auftr:0, mng:0, lag:0, vers:0, dok:0 };   // A456: mng, A470: lag, A473: vers, A475: dok
   const hinweise = [];
   try{
     /* A449: ?arten=alle holt auch Auftraege (erledigt, stempel). Ohne den Zusatz
@@ -21085,7 +21305,8 @@ async function eingangAbholen(key){
     /* A459: &aendern=1 - B13 liefert Aenderungs-/Loeschauftraege nur an eine App, die sie ausfuehren kann. */
     /* A470: &lager=1 - B14 liefert Lagerartikel und Lager-Aenderungen nur an eine App, die sie anlegen kann. */
     /* A473: &versorger=1 - B18 liefert Versorger-Anlagen und -Aenderungen nur an eine App, die sie ausfuehren kann. */
-    const r = await fetchMitTimeout(BACKEND_AZURE + '/api/eingang?arten=alle&mangel=1&aendern=1&lager=1&versorger=1', { headers:{ 'x-functions-key':key } });
+    /* A475: &dateien=1 - B19 liefert Ablagen (Mail-PDF, Anhaenge) und Maengel mit Fotos nur an eine App, die sie holt. */
+    const r = await fetchMitTimeout(BACKEND_AZURE + '/api/eingang?arten=alle&mangel=1&aendern=1&lager=1&versorger=1&dateien=1', { headers:{ 'x-functions-key':key } });
     if(!r || !r.ok) return erg;
     const liste = await r.json().catch(() => []);
     if(!Array.isArray(liste) || !liste.length) return erg;
@@ -21130,9 +21351,17 @@ async function eingangAbholen(key){
         if(a.ok) erg.lag++; else if(!a.still) hinweise.push('Claude-Lager ' + a.text);
         continue;
       }
+      if(e && e.art === 'ablage'){   // A475 (B19)
+        let a;
+        try{ a = await eingangAblage(e, tomb, absender, key); }
+        catch(err){ console.warn('Claude-Ablage:', err && err.message); continue; }   // nicht abhaken - naechster Versuch
+        erledigt.push(e.id); ergebnisse[e.id] = a.text;
+        if(a.ok) erg.dok += a.anzahl; else hinweise.push('Claude-Ablage ' + a.text);
+        continue;
+      }
       if(e && e.art === 'mangel'){   // A456
         let a;
-        try{ a = await eingangMangel(e, tomb, absender); }
+        try{ a = await eingangMangel(e, tomb, absender, key); }   // A475: key fuer Fotos
         catch(err){ console.warn('Claude-Mangel:', err); continue; }   // nicht abhaken - naechster Versuch
         erledigt.push(e.id); ergebnisse[e.id] = a.text;
         if(a.mangel) erg.mng++; else if(a.aufgabe){ erg.auf++; hinweise.push('Claude-Mangel ' + a.text); }
@@ -21157,7 +21386,7 @@ async function eingangAbholen(key){
         if(!q || !q.ok) console.warn('Claude-Eingang: Abhaken fehlgeschlagen (' + (q ? q.status : '-') + ')');
       }catch(err){ console.warn('Claude-Eingang abhaken:', err); }
     }
-    if(erg.auf || erg.ter || erg.auftr || erg.mng || erg.lag || erg.vers){
+    if(erg.auf || erg.ter || erg.auftr || erg.mng || erg.lag || erg.vers || erg.dok){
       syncSoon();
       const t = [];
       if(erg.auf) t.push(erg.auf + (erg.auf === 1 ? ' To Do' : ' To Dos'));
@@ -21165,6 +21394,7 @@ async function eingangAbholen(key){
       if(erg.mng) t.push(erg.mng + (erg.mng === 1 ? ' Mangel' : ' Mängel'));   // A456
       if(erg.lag) t.push(erg.lag + ' Lagerartikel');   // A470
       if(erg.vers) t.push(erg.vers + (erg.vers === 1 ? ' Versorgervertrag' : ' Versorgerverträge'));   // A473
+      if(erg.dok) t.push(erg.dok + (erg.dok === 1 ? ' Dokument' : ' Dokumente'));   // A475
       if(erg.auftr) t.push(erg.auftr + (erg.auftr === 1 ? ' Auftrag' : ' Aufträge'));
       toast('Von Claude übernommen: ' + t.join(' und ') + ' ✓', 5000);
       try{
