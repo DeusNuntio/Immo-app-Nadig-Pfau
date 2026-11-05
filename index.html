@@ -1350,7 +1350,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=39;   // A398: +kr_abrechnungen · A466: +excel_cache
-const APP_VERSION = '2026-11-04-A478';
+const APP_VERSION = '2026-11-05-A479';
 /* v364 (12.08.2026) – offene Punkte abgearbeitet.
    1) D1/XLSX_SRI: Der im Code hinterlegte PowerShell-Befehl war FALSCH und
       konnte nie funktionieren - Invoke-WebRequest liefert unter .Content einen
@@ -20951,6 +20951,94 @@ async function eingangAblage(e, tomb, absender, key){
     + (fehlend ? '; ' + fehlend + ' nicht mehr vorhanden' : '') };
 }
 
+/* ═══════════════════════════════════════════════════════════════════════
+   A479 (05.11.2026) – Rechnungen aus GMX über Claude (Backend B21, gmx_rechnung_erfassen)
+   Claude liest den Beleg, zeigt die Angaben als Tabelle und merkt sie erst nach „ja“ vor. Die App legt hier
+   den Datensatz an wie rechnungSpeichern: offen (nicht bezahlt), Beleg direkt am Datensatz wie beim Datei-Upload
+   der Rechnungserfassung (bis 10 MB). Doppel = gleiche Rechnungsnummer und gleicher Lieferant (einer im anderen
+   enthalten, z. B. „Muster“ / „Muster Haustechnik GmbH“) -> nicht übernommen, Ergebnis an Claude.
+   Objekt genannt, aber nicht erkannt -> nicht übernommen (die Zuordnung wäre sonst falsch).
+   Kostenart/Mieter, die sich nicht eindeutig finden, bleiben leer und stehen als Hinweis in der Notiz.
+   Datensatz-ID 'cl_' + Eingangs-ID: holen zwei Geräte gleichzeitig ab, entsteht kein Doppel.
+   ═══════════════════════════════════════════════════════════════════════ */
+const CLAUDE_RECHNUNG_MAX = 10 * 1024 * 1024;   // wie rechnBelegDatei (Datei-Upload)
+function rechnungNorm(s){
+  return String(s || '').toLowerCase().replace(/ä/g,'ae').replace(/ö/g,'oe').replace(/ü/g,'ue').replace(/ß/g,'ss').replace(/[^a-z0-9]/g,'');
+}
+function rechnungLieferantGleich(a, b){
+  const x = rechnungNorm(a), y = rechnungNorm(b);
+  return !!x && !!y && (x === y || x.includes(y) || y.includes(x));
+}
+function rechnungKostenartFinden(objektId, name){
+  const kosten = ((objektId && getNKAVorlage(objektId)) || {}).kosten || [];
+  const n = rechnungNorm(name);
+  if(!n) return { treffer:null, mehrdeutig:false };
+  let t = kosten.filter(k => k && rechnungNorm(k.name) === n);
+  if(!t.length) t = kosten.filter(k => { const m = rechnungNorm(k && k.name); return m && (m.includes(n) || n.includes(m)); });
+  return { treffer: t.length === 1 ? t[0] : null, mehrdeutig: t.length > 1 };
+}
+async function eingangRechnung(e, tomb, absender, key){
+  const lieferant = String(e.lieferant || '').trim().slice(0, 120);
+  const nr = String(e.rechnungsnr || '').trim().slice(0, 60);
+  const betrag = Math.round(Number(e.betrag) * 100) / 100;
+  const datum = /^\d{4}-\d{2}-\d{2}$/.test(String(e.datum || '')) ? e.datum : '';
+  if(!e.id || !lieferant || !nr || !datum || !(betrag > 0)) return { ok:false, text:'nicht übernommen: Angaben unvollständig' };
+  const id = 'cl_' + e.id;
+  if(tomb && tomb.rechnungen && tomb.rechnungen[id]) return { ok:false, text:'nicht übernommen: in der App bereits gelöscht' };
+  if(await idbGet('rechnungen', id).catch(() => null)) return { ok:true, schon:true, text:'bereits angelegt' };
+  const alle = await idbGetAll('rechnungen').catch(() => []);
+  const doppel = (alle || []).find(r => r && !r._deleted && rechnungNorm(r.rechnungsnr) === rechnungNorm(nr) && rechnungLieferantGleich(r.lieferant, lieferant));
+  if(doppel) return { ok:false, text:'nicht übernommen: Rechnung ' + nr + ' von ' + (doppel.lieferant || lieferant) + ' ist schon erfasst'
+    + (doppel.datum ? ' (' + fmtDate(doppel.datum) + ', ' + fmtEur(doppel.betrag) + ')' : '') };
+  const zuordnung = RECHN_ZUORDNUNG.some(z => z.id === e.zuordnung) ? e.zuordnung : 'allgemein';
+  let obj = null;
+  if(e.objekt){
+    obj = eingangObjektFinden(e.objekt);
+    if(!obj) return { ok:false, text:'nicht übernommen: Objekt „' + String(e.objekt).slice(0, 100) + '“ nicht erkannt' };
+  }
+  if(zuordnung !== 'allgemein' && !obj) return { ok:false, text:'nicht übernommen: Objekt fehlt' };
+  const hinweise = [];
+  let kostenartId = null, kostenartName = null, mieterId = null, mieterName = null;
+  if(zuordnung === 'nk' && e.kostenart){
+    const k = rechnungKostenartFinden(obj.id, e.kostenart);
+    if(k.treffer){ kostenartId = k.treffer.id; kostenartName = k.treffer.name; }
+    else hinweise.push('Kostenart „' + String(e.kostenart).slice(0, 80) + '“ ' + (k.mehrdeutig ? 'nicht eindeutig' : 'nicht gefunden') + ' – bitte wählen');
+  } else if(zuordnung === 'nk') hinweise.push('Kostenart bitte wählen');
+  if(zuordnung === 'mieter'){
+    const m = e.wohnung ? await wohnungAktuellerMieter(obj.id, e.wohnung).catch(() => null) : null;
+    if(m){ mieterId = m.id; mieterName = `WE ${m.weNr || ''} · ${hauptmieterNameVoll(m) || m.mieter || ''}`; }
+    else hinweise.push('kein jetziger Mieter in WE ' + String(e.wohnung || '?').slice(0, 20) + ' – bitte wählen');
+  }
+  if(zuordnung === 'reparatur') hinweise.push('Reparatur/Mangel bitte wählen');
+  /* Beleg: Netzfehler wirft -> Eintrag bleibt im Eingangsfach, nächster Versuch. Nicht mehr vorhanden -> ohne Beleg mit Hinweis. */
+  const d = claudeDateiListe(e)[0];
+  let beleg = null, belegMime = null, belegName = null;
+  if(d && key){
+    const roh = await claudeDateiHolen(key, e, d.n);
+    if(!roh) hinweise.push('Beleg nicht mehr im Eingang – bitte aus GMX nachreichen');
+    else if(roh.byteLength > CLAUDE_RECHNUNG_MAX) hinweise.push('Beleg über 10 MB – bitte über die Akte ablegen');
+    else {
+      const name = String(d.name || 'Rechnung').slice(0, 120);
+      const mime = /xml/i.test(String(d.mime || '')) || /\.xml$/i.test(name) ? 'text/xml' : String(d.mime || 'application/pdf');
+      beleg = await blobZuDataUrl(new Blob([roh], { type:mime })); belegMime = mime; belegName = name;
+    }
+  } else hinweise.push('ohne Beleg');
+  const zeit = e.erstellt && !isNaN(new Date(e.erstellt)) ? new Date(e.erstellt).toISOString() : nowIso();
+  const notiz = [String(e.notiz || '').trim(), 'aus GMX über Claude' + (d && d.mailDatum ? ' (Mail vom ' + fmtDate(d.mailDatum) + ')' : ''),
+                 hinweise.length ? 'Bitte prüfen: ' + hinweise.join('; ') : ''].filter(Boolean).join(' · ').slice(0, 1000);
+  const rec = {
+    id, lieferant, rechnungsnr:nr, belegNrHand:'', positionen:null, datum,
+    faellig: /^\d{4}-\d{2}-\d{2}$/.test(String(e.faellig || '')) ? e.faellig : null,
+    betrag, zuordnung, objektId: obj ? obj.id : null,
+    kostenartId, kostenartName, mieterId, mieterName, reparaturId:null, reparaturTitel:null,
+    bezahlt:false, notiz, beleg, belegMime, belegName,
+    erstelltIso:zeit, ersteller:claudeErsteller(absender), geaendert:nowIso(), quelle:'claude', claudeEingang:e.id
+  };
+  await idbPut('rechnungen', rec);
+  return { ok:true, text:'angelegt: Rechnung ' + nr + ' (' + lieferant + ', ' + fmtEur(betrag) + (obj ? ', ' + obj.name : '') + ')'
+    + (hinweise.length ? ' – bitte prüfen: ' + hinweise.join('; ') : '') };
+}
+
 /* A475: Plausibilitaet Arbeitspreis (ct brutto) - darunter ist er fast sicher in Euro statt Cent eingegeben.
    Anlass: Strom 0,261 ct/kWh im Bestand. Gleiche Grenzen wie das Backend B19. */
 const VERSORGER_AP_UNTERGRENZE = { strom:10, gas:3, heizung:3, wasser:50 };
@@ -21295,7 +21383,7 @@ let _eingangWartenGemeldet = false;   // A449: Hinweis "Sprachbenutzer fehlt" nu
 async function eingangAbholen(key){
   if(_eingangLaeuft || !key || !istVerwalter()) return { auf:0, ter:0, auftr:0, mng:0, lag:0 };
   _eingangLaeuft = true;
-  const erg = { auf:0, ter:0, auftr:0, mng:0, lag:0, vers:0, dok:0 };   // A456: mng, A470: lag, A473: vers, A475: dok
+  const erg = { auf:0, ter:0, auftr:0, mng:0, lag:0, vers:0, dok:0, rech:0 };   // A456: mng, A470: lag, A473: vers, A475: dok, A479: rech
   const hinweise = [];
   try{
     /* A449: ?arten=alle holt auch Auftraege (erledigt, stempel). Ohne den Zusatz
@@ -21306,7 +21394,8 @@ async function eingangAbholen(key){
     /* A470: &lager=1 - B14 liefert Lagerartikel und Lager-Aenderungen nur an eine App, die sie anlegen kann. */
     /* A473: &versorger=1 - B18 liefert Versorger-Anlagen und -Aenderungen nur an eine App, die sie ausfuehren kann. */
     /* A475: &dateien=1 - B19 liefert Ablagen (Mail-PDF, Anhaenge) und Maengel mit Fotos nur an eine App, die sie holt. */
-    const r = await fetchMitTimeout(BACKEND_AZURE + '/api/eingang?arten=alle&mangel=1&aendern=1&lager=1&versorger=1&dateien=1', { headers:{ 'x-functions-key':key } });
+    /* A479: &rechnung=1 - B21 liefert Rechnungen (gmx_rechnung_erfassen) nur an eine App, die sie anlegt. */
+    const r = await fetchMitTimeout(BACKEND_AZURE + '/api/eingang?arten=alle&mangel=1&aendern=1&lager=1&versorger=1&dateien=1&rechnung=1', { headers:{ 'x-functions-key':key } });
     if(!r || !r.ok) return erg;
     const liste = await r.json().catch(() => []);
     if(!Array.isArray(liste) || !liste.length) return erg;
@@ -21351,6 +21440,14 @@ async function eingangAbholen(key){
         if(a.ok) erg.lag++; else if(!a.still) hinweise.push('Claude-Lager ' + a.text);
         continue;
       }
+      if(e && e.art === 'rechnung'){   // A479 (B21)
+        let a;
+        try{ a = await eingangRechnung(e, tomb, absender, key); }
+        catch(err){ console.warn('Claude-Rechnung:', err && err.message); continue; }   // nicht abhaken - naechster Versuch
+        erledigt.push(e.id); ergebnisse[e.id] = a.text;
+        if(a.ok && !a.schon) erg.rech++; else if(!a.ok) hinweise.push('Claude-Rechnung ' + a.text);
+        continue;
+      }
       if(e && e.art === 'ablage'){   // A475 (B19)
         let a;
         try{ a = await eingangAblage(e, tomb, absender, key); }
@@ -21386,7 +21483,7 @@ async function eingangAbholen(key){
         if(!q || !q.ok) console.warn('Claude-Eingang: Abhaken fehlgeschlagen (' + (q ? q.status : '-') + ')');
       }catch(err){ console.warn('Claude-Eingang abhaken:', err); }
     }
-    if(erg.auf || erg.ter || erg.auftr || erg.mng || erg.lag || erg.vers || erg.dok){
+    if(erg.auf || erg.ter || erg.auftr || erg.mng || erg.lag || erg.vers || erg.dok || erg.rech){
       syncSoon();
       const t = [];
       if(erg.auf) t.push(erg.auf + (erg.auf === 1 ? ' To Do' : ' To Dos'));
@@ -21395,6 +21492,7 @@ async function eingangAbholen(key){
       if(erg.lag) t.push(erg.lag + ' Lagerartikel');   // A470
       if(erg.vers) t.push(erg.vers + (erg.vers === 1 ? ' Versorgervertrag' : ' Versorgerverträge'));   // A473
       if(erg.dok) t.push(erg.dok + (erg.dok === 1 ? ' Dokument' : ' Dokumente'));   // A475
+      if(erg.rech) t.push(erg.rech + (erg.rech === 1 ? ' Rechnung' : ' Rechnungen'));   // A479
       if(erg.auftr) t.push(erg.auftr + (erg.auftr === 1 ? ' Auftrag' : ' Aufträge'));
       toast('Von Claude übernommen: ' + t.join(' und ') + ' ✓', 5000);
       try{
@@ -21404,6 +21502,7 @@ async function eingangAbholen(key){
           else if(curPage === 'zeit') await renderZeiterfassung();
           else if(curPage === 'dash') await renderDash();
           else if(curPage === 'lager') await renderLager();   // A470
+          else if(curPage === 'rechnungen') await renderRechnungen();   // A479
         }
       }catch(_){}
     }
