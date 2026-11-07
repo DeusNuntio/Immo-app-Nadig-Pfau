@@ -1350,7 +1350,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=39;   // A398: +kr_abrechnungen · A466: +excel_cache
-const APP_VERSION = '2026-11-05-A479';
+const APP_VERSION = '2026-11-07-A481';
 /* v364 (12.08.2026) – offene Punkte abgearbeitet.
    1) D1/XLSX_SRI: Der im Code hinterlegte PowerShell-Befehl war FALSCH und
       konnte nie funktionieren - Invoke-WebRequest liefert unter .Content einen
@@ -4533,7 +4533,7 @@ async function renderDash() {
   // Letzte Protokolle
   // Offene Entwürfe
   const drafts = prots.filter(p=>!p._papierkorb&&myObj.some(o=>o.id===p.objektId)&&p.status==='draft')
-    .sort((a,b)=>new Date(b.erstellt)-new Date(a.erstellt));
+    .sort((a,b)=>zeitWert(b.erstellt)-zeitWert(a.erstellt));   // A481 (F5)
   if (drafts.length) {
     html += `<div class="card" style="margin-bottom:12px;border-color:var(--amber)">
       <div class="card-hdr" style="color:var(--amber)"><i class="ti ti-clipboard"></i> Offene Entwürfe (${drafts.length})</div>
@@ -4547,7 +4547,7 @@ async function renderDash() {
 
   const lastProts = prots
     .filter(p=>!p._papierkorb&&myObj.some(o=>o.id===p.objektId)&&p.status!=='draft')
-    .sort((a,b)=>new Date(b.datum||b.erstellt)-new Date(a.datum||a.erstellt))
+    .sort((a,b)=>zeitWert(b.datum||b.erstellt)-zeitWert(a.datum||a.erstellt))   // A481 (F8)
     .slice(0,3);
   if (lastProts.length) {
     /* A461: eingeklappt - aufklappen per Tipp auf die Ueberschrift */
@@ -7935,7 +7935,7 @@ async function renderVersorgerArchiv(versorgerId){
   const box=document.getElementById('versArchivBox');
   if(!box) return;
   const hist=(await idbGetAll('versorger_archiv','versorgerId',versorgerId))
-    .sort((a,b)=>new Date(b.archiviert||0)-new Date(a.archiviert||0));
+    .sort((a,b)=>zeitWert(b.archiviert)-zeitWert(a.archiviert));   // A481 (F8)
   if(!hist.length){ box.innerHTML=''; return; }
   let rows='';
   for(const h of hist){
@@ -7949,7 +7949,7 @@ async function renderVersorgerArchiv(versorgerId){
     rows+=`<div style="background:var(--ink-05);border-radius:8px;padding:8px 10px;margin-bottom:6px">
       <div style="display:flex;justify-content:space-between;font-size:12px">
         <strong>${esc(h.anbieter||sp.label)}</strong>
-        <span style="color:var(--ink-40)">${h.archiviert?new Date(h.archiviert).toLocaleDateString('de-DE'):''}</span>
+        <span style="color:var(--ink-40)">${zeitWert(h.archiviert)?new Date(zeitWert(h.archiviert)).toLocaleDateString('de-DE'):''}</span>
       </div>
       <div style="font-size:11px;color:var(--ink-40)">${h.grund||'archiviert'}${h.vertragsnummer?' · Vertrag '+esc(h.vertragsnummer):''}${h.login?' · Benutzer '+esc(h.login):''}</div>
       ${pwTxt}
@@ -12772,7 +12772,7 @@ async function tmModalAusAkte(){
 
   const zeile = (d)=>{
     const t = (DOK_TYPEN.find(x=>x.val===d.typ)||{});
-    const dat = d.erstellt ? new Date(d.erstellt).toLocaleDateString('de-DE') : '';
+    const dat = zeitWert(d.erstellt) ? new Date(zeitWert(d.erstellt)).toLocaleDateString('de-DE') : '';   // A481 (F5)
     return `<div style="display:flex;align-items:center;gap:8px;border:1px solid var(--ink-10);border-radius:8px;padding:8px 10px;margin-bottom:6px">
         <i class="ti ${t.icon||'ti-file'}" style="color:var(--ink-40)"></i>
         <div style="min-width:0">
@@ -19498,7 +19498,7 @@ async function loescheProtEntwurf(id){
   const p=await idbGet('protokolle',id); if(!p) return;
   if(!darfLoeschen('protokoll',p)){ loeschenVerweigert(); return; }   // A468 (FA-03)
   if(!confirm(`Angefangenen Entwurf „${p.mieterName||'ohne Mieter'} · WE ${p.weNr||'?'}" wirklich löschen?\n\nEr wird in den Papierkorb verschoben und kann dort wiederhergestellt werden.`)) return;
-  p._papierkorb=true; p.geloeschtAm=now();
+  p._papierkorb=true; p.geloeschtAm=nowIso();   // A481 (F7): ISO statt deutschem Text
   await idbPut('protokolle',p);
   bcSend('protokoll_saved',{id});
   toast('Entwurf in den Papierkorb verschoben ✓');
@@ -19516,7 +19516,7 @@ async function loescheProtEntwurfMieter(id, mieterId){
     ? `Angefangenen Entwurf „${p.art||'Übergabe'} · WE ${p.weNr||'?'}" wirklich löschen?\n\nEr wird in den Papierkorb verschoben.`
     : `Abgeschlossenes Protokoll „${p.art||'Übergabe'} · ${fmtDate(p.datum)} · WE ${p.weNr||'?'}" wirklich löschen?\n\nEs wird in den Papierkorb verschoben und kann dort wiederhergestellt werden.`;
   if(!confirm(txt)) return;
-  p._papierkorb=true; p.geloeschtAm=now();
+  p._papierkorb=true; p.geloeschtAm=nowIso();   // A481 (F7): ISO statt deutschem Text
   await idbPut('protokolle',p);
   bcSend('protokoll_saved',{id});
   toast('Protokoll in den Papierkorb verschoben ✓');
@@ -19534,7 +19534,7 @@ async function renderObjAufgaben(el){
   if(!aufgaben.length){h+='<div class="empty"><i class="ti ti-check"></i><p>Keine Aufgaben</p></div>';}
   else {
     const offen=aufgaben.filter(a=>a.status!=='erledigt').sort((a,b)=>prioPrio(a.prio)-prioPrio(b.prio));
-    const erl=aufgaben.filter(a=>a.status==='erledigt').sort((a,b)=>new Date(b.erledigtAm||b.erstellt||0)-new Date(a.erledigtAm||a.erstellt||0));
+    const erl=aufgaben.filter(a=>a.status==='erledigt').sort((a,b)=>(zeitWert(b.erledigtZeit)||zeitWert(b.erledigtAm)||zeitWert(b.erstellt))-(zeitWert(a.erledigtZeit)||zeitWert(a.erledigtAm)||zeitWert(a.erstellt)));
     offen.forEach(a=>h+=taskHTML(a));
     if(erl.length){
       h+=`<div class="s-hdr" style="margin-top:14px"><div class="s-title" style="font-size:13px;color:var(--ink-40)">Erledigt (${erl.length})</div></div>`;
@@ -19559,8 +19559,8 @@ async function renderObjMaengel(el){
   else{
     const alle=[...maengel,...reps];
     const istErl=x=>x.status==='behoben'||x.status==='erledigt';
-    const offen=alle.filter(x=>!istErl(x)).sort((a,b)=>schwerePrio(a.schwere)-schwerePrio(b.schwere) || new Date(b.erstellt)-new Date(a.erstellt));
-    const erl  =alle.filter(istErl).sort((a,b)=>new Date(b.erstellt)-new Date(a.erstellt));
+    const offen=alle.filter(x=>!istErl(x)).sort((a,b)=>schwerePrio(a.schwere)-schwerePrio(b.schwere) || zeitWert(b.erstellt)-zeitWert(a.erstellt));   // A481 (F5)
+    const erl  =alle.filter(istErl).sort((a,b)=>zeitWert(b.erstellt)-zeitWert(a.erstellt));   // A481 (F5)
     offen.forEach(m=>h+=mangelHTML(m));
     if(erl.length){
       h+=`<div class="s-hdr" style="margin-top:14px"><div class="s-title" style="font-size:13px;color:var(--ink-40)">Behoben / Erledigt (${erl.length})</div></div>`;
@@ -20611,7 +20611,7 @@ async function renderAufgaben(){
     offen.sort((a,b)=>prioPrio(a.prio)-prioPrio(b.prio)).forEach(a=>h+=taskHTML(a));
     if(erledigt.length && !flt.hideDone){
       h+=`<div class="s-hdr" style="margin-top:16px"><div class="s-title" style="font-size:14px;color:var(--ink-40)">Erledigt (${erledigt.length})</div></div>`;
-      erledigt.sort((a,b)=>new Date(b.erledigtAm||b.erstellt||0)-new Date(a.erledigtAm||a.erstellt||0)).forEach(a=>h+=taskHTML(a));
+      erledigt.sort((a,b)=>(zeitWert(b.erledigtZeit)||zeitWert(b.erledigtAm)||zeitWert(b.erstellt))-(zeitWert(a.erledigtZeit)||zeitWert(a.erledigtAm)||zeitWert(a.erstellt))).forEach(a=>h+=taskHTML(a));
     } else if(erledigt.length){
       h+=`<button class="btn btn-sm" style="margin-top:14px;width:100%" data-action-click="aufToggleDone"><i class="ti ti-eye"></i> ${erledigt.length} erledigte Aufgabe${erledigt.length>1?'n':''} anzeigen</button>`;
     }
@@ -20620,10 +20620,10 @@ async function renderAufgaben(){
   <div id="auf-maengel" style="display:none">`;
   if(!maengel.length){h+=`<div class="empty"><i class="ti ti-mood-smile"></i><p>Keine Mängel erfasst</p></div>`;}
   else {
-    offMng.sort((a,b)=>schwerePrio(a.schwere)-schwerePrio(b.schwere) || new Date(b.erstellt)-new Date(a.erstellt)).forEach(m=>h+=mangelHTML(m));
+    offMng.sort((a,b)=>schwerePrio(a.schwere)-schwerePrio(b.schwere) || zeitWert(b.erstellt)-zeitWert(a.erstellt)).forEach(m=>h+=mangelHTML(m));
     if(erlMng.length && !flt.hideDone){
       h+=`<div class="s-hdr" style="margin-top:16px"><div class="s-title" style="font-size:14px;color:var(--ink-40)">Behoben (${erlMng.length})</div></div>`;
-      erlMng.sort((a,b)=>new Date(b.erstellt)-new Date(a.erstellt)).forEach(m=>h+=mangelHTML(m));
+      erlMng.sort((a,b)=>zeitWert(b.erstellt)-zeitWert(a.erstellt)).forEach(m=>h+=mangelHTML(m));
     } else if(erlMng.length){
       h+=`<button class="btn btn-sm" style="margin-top:14px;width:100%" data-action-click="aufToggleDone"><i class="ti ti-eye"></i> ${erlMng.length} behobene${erlMng.length>1?'':''} anzeigen</button>`;
     }
@@ -21525,7 +21525,7 @@ async function eingangAuftragErledigt(e, tomb, absender){
   const z = new Date(e.zeitpunkt || e.erstellt);
   const zeit = isNaN(z) ? new Date() : z;
   a.status = 'erledigt';
-  a.erledigtAm = zeit.toLocaleDateString('de-DE');   // Format wie toggleAufgabe
+  a.erledigtAm = datumDeTT(zeit);   // Format wie toggleAufgabe (A481: zweistellig)
   erledigtVermerk(a, absender ? absender.name + ' über Claude' : 'Claude (Sprachbefehl)', absender ? absender.id : '', zeit);   // A457
   const notiz = String(e.notiz || '').trim();
   if(notiz) a.beschreibung = [a.beschreibung || '', 'Erledigt-Notiz (Claude, ' + zeit.toLocaleString('de-DE') + '): ' + notiz].filter(Boolean).join('\n');
@@ -22389,7 +22389,7 @@ function claudeErstellt(e){   // Zeitpunkt des Diktats statt der Abholung, Forma
 async function toggleAufgabe(id){
   const a=await idbGet('aufgaben',id); if(!a) return;
   a.status=a.status==='erledigt'?'offen':'erledigt';
-  a.erledigtAm=a.status==='erledigt'?new Date().toLocaleDateString('de-DE'):'';
+  a.erledigtAm=a.status==='erledigt'?datumDeTT(new Date()):'';   // A481 (F6)
   a.erledigtVon=a.status==='erledigt'?(CU?.name||''):'';
   if(a.status==='erledigt') erledigtVermerk(a, CU?.name||'', CU?.id||'', new Date()); else erledigtVermerkLoeschen(a);   // A457
   await idbPut('aufgaben',a);
@@ -23332,23 +23332,12 @@ async function odSyncWeDateien(gruppe, weNr){
   const kn='WE '+weKey;
 
   const bekannt={}, bekanntById={};
-  /* A417 (B13): pendingNachOrdner wird hier mitgefuellt. Bis dahin las die
-     innerste Schleife (sieben Ebenen tief) `od_dateien` fuer JEDEN
-     Ordnerknoten noch einmal vollstaendig und filterte danach auf einen
-     einzigen Ordner - bei drei Standorten rund 1.100 Vollabzuege. Die Daten
-     liegen zu diesem Zeitpunkt laengst im Arbeitsspeicher. Ein Durchlauf
-     statt 1.100, kein Verhaltensunterschied.
-     Hinweis fuer spaeter: Wuerden im Verlauf neue pendingUpload-Saetze
-     geschrieben, muesste die Uebersicht mitgepflegt werden. Das geschieht
-     derzeit nicht. */
-  const pendingNachOrdner={};
+  /* A481 (F2): Die Uebersicht pendingNachOrdner (A417) stand hier, wurde hier aber nie benutzt - gebraucht wird sie in
+     syncDateibaum. Dorthin verschoben. */
   for(const rec of await idbGetAll('od_dateien')){
     if(!rec) continue;
     if(rec.pfad) bekannt[rec.pfad]=rec;
     if(rec.odItemId) bekanntById[rec.odItemId]=rec;
-    if(rec.pendingUpload && rec._blobB64){
-      (pendingNachOrdner[rec.ordner] = pendingNachOrdner[rec.ordner] || []).push(rec);
-    }
   }
 
   const _mAlle=await idbGetAll('mieter').catch(()=>[]);
@@ -26771,7 +26760,7 @@ async function renderProtokollArchiv() {
   const imPapierkorb = proAlle.filter(p => p._papierkorb);
   const alle   = proAlle
     .filter(p => !p._papierkorb && p.status !== 'draft')
-    .sort((a,b) => new Date(b.datum||b.erstellt) - new Date(a.datum||a.erstellt));
+    .sort((a,b) => zeitWert(b.datum||b.erstellt) - zeitWert(a.datum||a.erstellt));   // A481 (F8)
 
   const el = document.getElementById('page-protokoll-archiv');
 
@@ -26912,7 +26901,7 @@ function setArchivAnsicht(v){ window._archivAnsicht = v; renderProtokollArchiv()
 
 // P3 – Papierkorb-Ansicht: für alle sichtbar, Wiederherstellen + endgültig löschen
 function renderProtokollPapierkorb(el, eintraege){
-  const liste = [...eintraege].sort((a,b)=> new Date(b.geloeschtAm||0) - new Date(a.geloeschtAm||0));
+  const liste = [...eintraege].sort((a,b)=> zeitWert(b.geloeschtAm) - zeitWert(a.geloeschtAm));   // A481 (F7)
   let h = `
   <div class="tab-bar" style="margin-bottom:12px">
     <button class="tab-btn" onclick="setArchivAnsicht('liste')">Protokolle</button>
@@ -26930,7 +26919,7 @@ function renderProtokollPapierkorb(el, eintraege){
 
   liste.forEach(p => {
     const obj = getObj(p.objektId);
-    const geloescht = p.geloeschtAm ? new Date(p.geloeschtAm) : null;
+    const geloescht = zeitWert(p.geloeschtAm) ? new Date(zeitWert(p.geloeschtAm)) : null;   // A481 (F7)
     const restTage = geloescht ? Math.max(0, PAPIERKORB_TAGE - Math.floor((Date.now()-geloescht.getTime())/86400000)) : PAPIERKORB_TAGE;
     h += `<div style="background:var(--white);border:1px solid var(--ink-10);border-radius:var(--radius);
       padding:11px 13px;margin-bottom:7px;display:flex;gap:10px;align-items:center">
@@ -27029,8 +27018,8 @@ async function bereinigeProtokollPapierkorb() {
     let n = 0;
     for (const p of alle) {
       if (!p || !p._papierkorb || !p.geloeschtAm) continue;
-      const t = new Date(p.geloeschtAm).getTime();
-      if (isNaN(t) || t > grenze) continue;
+      const t = zeitWert(p.geloeschtAm);   // A481 (F7): new Date() las „7.11.2026, …“ als 11. Juli -> sofort endgültig gelöscht
+      if (!t || t > grenze) continue;
       try {
         const fotos = await idbGetAll('fotos', 'protId', p.id);
         for (const fo of fotos) await deleteMitTombstone('fotos', fo.id).catch(()=>{});
@@ -35993,7 +35982,7 @@ async function renderEinkaufsliste() {
   const myIds  = myObj.map(o=>o.id);
   const alle   = (await idbGetAll('einkaufsliste'))
     .filter(e=>myIds.includes(e.objektId)||!e.objektId)
-    .sort((a,b)=>{ if(a.status==='gekauft'&&b.status!=='gekauft') return 1; if(b.status==='gekauft'&&a.status!=='gekauft') return -1; return new Date(b.erstellt)-new Date(a.erstellt); });
+    .sort((a,b)=>{ if(a.status==='gekauft'&&b.status!=='gekauft') return 1; if(b.status==='gekauft'&&a.status!=='gekauft') return -1; return zeitWert(b.erstellt)-zeitWert(a.erstellt); });   // A481 (F5)
 
   const offen   = alle.filter(e=>e.status!=='gekauft');
   const gekauft = alle.filter(e=>e.status==='gekauft');
@@ -41290,7 +41279,7 @@ async function newProtokollForMieter(mieterId){
   // Vorhandenen Entwurf dieses Mieters direkt weiterbearbeiten (statt neu zu starten)
   const drafts=(await idbGetAll('protokolle'))
     .filter(p=>!p._papierkorb&&p.status==='draft'&&p.objektId===m.objektId&&p.mieterId===mieterId)
-    .sort((a,b)=>new Date(b.erstellt||b.datum||0)-new Date(a.erstellt||a.datum||0));
+    .sort((a,b)=>zeitWert(b.erstellt||b.datum)-zeitWert(a.erstellt||a.datum));   // A481 (F5)
   if(drafts.length){
     PD={...drafts[0]}; pRoomIdx=0;
     await restoreFotosForPD();
@@ -41376,7 +41365,7 @@ async function startProt(){
   const bestehendeDrafts=(await idbGetAll('protokolle'))
     .filter(p=>!p._papierkorb&&p.status==='draft'&&p.objektId===objId&&(p.mieterId===mietId||(!p.mieterId&&!mietId)));
   if(bestehendeDrafts.length>0){
-    const draft=bestehendeDrafts.sort((a,b)=>new Date(b.erstellt)-new Date(a.erstellt))[0];
+    const draft=bestehendeDrafts.sort((a,b)=>zeitWert(b.erstellt)-zeitWert(a.erstellt))[0];   // A481 (F5)
     const step=draft._draftStep||0;
     if(confirm(`Es gibt einen gespeicherten Entwurf vom ${fmtDate(draft.datum)} (Schritt ${step+1}). Fortfahren?`)){
       PD={...draft};
@@ -45085,8 +45074,15 @@ function zeitWert(t){
   // deutsches Format TT.M.JJJJ, HH:MM[:SS]
   const m=String(t).match(/(\d{1,2})\.(\d{1,2})\.(\d{4})[,\s]+(\d{1,2}):(\d{2})(?::(\d{2}))?/);
   if(m) return new Date(+m[3],+m[2]-1,+m[1],+m[4],+m[5],+(m[6]||0)).getTime();
+  /* A481 (F5): reines Datum TT.M.JJJJ bzw. JJJJ-MM-TT (lokal) - Date.parse las "5.11.2026" als 11. Mai */
+  const md=String(t).trim().match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
+  if(md) return new Date(+md[3],+md[2]-1,+md[1]).getTime();
+  const mi=String(t).trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if(mi) return new Date(+mi[1],+mi[2]-1,+mi[3]).getTime();
   const d=Date.parse(t); return isNaN(d)?0:d;
 }
+/* A481 (F6): Datum TT.MM.JJJJ zweistellig - Format von erledigtAm bei To Dos (A457) */
+function datumDeTT(d){ return (d || new Date()).toLocaleDateString('de-DE', { day:'2-digit', month:'2-digit', year:'numeric' }); }
 
 /* A422: Ein Feld entfernen UND die Entfernung fuer den Abgleich vermerken.
    Ohne diesen Vermerk holt der Merge das Feld beim naechsten Abgleich von
@@ -46262,7 +46258,7 @@ async function syncProfilUmstellen(){
       sel.value = SYNC_PROFIL; return;
     }
     const behalten = new Set([...HM_SYNC.stores, 'settings', 'sync_log', 'mieter_snapshots', 'od_auth']);
-    for (const st of alleStores){ if (!behalten.has(st)) await idbClear(st).catch(()=>{}); }
+    for (const st of STORES_ALLE){ if (!behalten.has(st)) await idbClear(st).catch(()=>{}); }   // A481 (F1): alleStores war nie definiert
     // Mieter auf Whitelist reduzieren (IBAN, Miete, Kaution, SA-Daten entfernen)
     try {
       const ms = await idbGetAll('mieter');
@@ -47614,10 +47610,17 @@ async function syncDateibaum(silent){
     // pfad -> Record; zusätzlich odItemId -> Record (v173: heilt Records nach
     // manueller Umbenennung/Verschiebung auf OneDrive, statt sie zu duplizieren).
     const bekannt={}, bekanntById={};
+    /* A417 (B13): wartende Uploads je Ordner in EINEM Durchlauf statt eines Vollabzugs je Ordnerknoten (rund 1.100).
+       A481 (F2): stand bis A480 versehentlich in odSyncWeDateien - hier lief daher jeder Abgleich in einen ReferenceError.
+       Neue pendingUpload-Saetze waehrend des Laufs kommen beim naechsten Abgleich bzw. ueber odPendingFlush. */
+    const pendingNachOrdner={};
     for(const rec of await idbGetAll('od_dateien')){
       if(!rec) continue;
       if(rec.pfad) bekannt[rec.pfad]=rec;
       if(rec.odItemId) bekanntById[rec.odItemId]=rec;
+      if(rec.pendingUpload && rec._blobB64){
+        (pendingNachOrdner[rec.ordner] = pendingNachOrdner[rec.ordner] || []).push(rec);
+      }
     }
 
     const _mAlle=await idbGetAll('mieter').catch(()=>[]);
@@ -55096,7 +55099,7 @@ function rechnPosAlleUmschalten(){
    Lieferantenname - der Beleg bleibt hier vollstaendig im Haus. */
 async function rechnKuerzelAufloesen(){
   if(!_rechnPositionen.length){ toast('Keine Positionen vorhanden'); return; }
-  const gs=await getSettings();
+  const gs={ backendKey:(await idbGet('settings','backendKey').catch(()=>null))?.value || '' };   // A481 (F3): getSettings gab es nie
   if(!gs.backendKey){ toast('Kein Backend-Schlüssel hinterlegt (Einstellungen → System).'); return; }
 
   /* Nur Positionen anfragen, die noch keinen Klartext haben. */
@@ -56640,7 +56643,7 @@ async function krSpeichern(){
   catch(e){ console.warn('KR speichern:', e); toast('Speichern fehlgeschlagen.', 6000); return; }
   toast('Als Entwurf gespeichert ✓');
   closeModal();
-  if(typeof showMieterDetail==='function') showMieterDetail(ctx.mieterId);
+  if(curPage==='mieter' && ctx.mieterId && currentMieterId===ctx.mieterId) await showMieter(ctx.mieterId);   // A481 (F4)
 }
 
 async function krVersendetSetzen(id, ja){
@@ -56662,7 +56665,7 @@ async function krLoeschen(id){
   catch(e){ console.warn('KR löschen:', e); toast('Löschen fehlgeschlagen.', 6000); return; }
   toast('Gelöscht');
   closeModal();
-  if(r && typeof showMieterDetail==='function') showMieterDetail(r.mieterId);
+  if(r && curPage==='mieter' && currentMieterId===r.mieterId) await showMieter(r.mieterId);   // A481 (F4)
 }
 
 /* ── A400: Brief aus dem Vorgang ────────────────────────────────
