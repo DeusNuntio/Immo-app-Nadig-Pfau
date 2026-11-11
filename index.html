@@ -1350,7 +1350,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=39;   // A398: +kr_abrechnungen · A466: +excel_cache
-const APP_VERSION = '2026-11-11-A490';
+const APP_VERSION = '2026-11-11-A492';
 /* v364 (12.08.2026) – offene Punkte abgearbeitet.
    1) D1/XLSX_SRI: Der im Code hinterlegte PowerShell-Befehl war FALSCH und
       konnte nie funktionieren - Invoke-WebRequest liefert unter .Content einen
@@ -21058,6 +21058,75 @@ async function eingangRechnung(e, tomb, absender, key){
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
+   A492 (11.11.2026) – Wohnung auf der Website als „Reserviert“ markieren.
+   Schalter in „Website – freie Wohnungen“. Gesendet wird status:'reserviert' an
+   POST /api/leerstand (Backend B25 reicht das Feld unverändert durch, keine
+   Backend-Änderung). Ab Website W10 steht dann „Reserviert“ an der Wohnung;
+   Bewerbungen bleiben möglich und kommen als Nachrücker an. Die lokale
+   Vormerkung merkt sich den Status, damit ein erneuter Aushang mit
+   Homepage-Häkchen die Reservierung nicht still auf „frei“ zurücksetzt.
+   ═══════════════════════════════════════════════════════════════════════ */
+function hpIstReserviert(x){ return String((x && x.status) || '').trim().toLowerCase() === 'reserviert'; }
+async function hpVormerkungStatus(kennung, status){
+  try{
+    const rec = await idbGet('settings','homepage_leerstand').catch(()=>null);
+    if(!rec || !rec.value || !rec.value[kennung]) return;
+    rec.value[kennung].status = status;
+    rec.geaendert = nowIso();
+    await idbPut('settings', rec);
+    syncSoon();
+  }catch(e){ console.warn('hpVormerkungStatus:', e); }
+}
+async function hpReserviertUmschalten(kennung){
+  if(!istVerwalter()){ toast('Nur für Admins'); return; }
+  const x = hpEintrag(kennung);
+  if(!x){ toast('Eintrag nicht gefunden'); return; }
+  const war = hpIstReserviert(x);
+  const name = x.titel || kennung;
+  const frage = war
+    ? `Reservierung für „${name}" aufheben?\n\nAuf der Website erscheint die Wohnung wieder als frei.`
+    : `„${name}" auf der Website als reserviert markieren?\n\nDie Wohnung bleibt sichtbar und zeigt „Reserviert“. Bewerbungen sind weiter möglich und gehen als Nachrücker ein.`;
+  if(!confirm(frage)) return;
+  const neu = war ? 'frei' : 'reserviert';
+  toast('Wird gespeichert …');
+  const ok = await hpSpeichern({ ...x, status: neu });
+  if(!ok) return;
+  await hpVormerkungStatus(kennung, neu);
+  toast(war ? 'Reservierung aufgehoben ✓' : 'Als reserviert markiert ✓');
+  await hpNeuZeichnen();
+}
+registerActions({ hpReserviertUmschalten });
+
+/* ═══════════════════════════════════════════════════════════════════════
+   A491 (11.11.2026) – SP-31: Zahlungserinnerung/Mahnung und Kautionsabrechnung mit Briefkopf und Anschriftfeld
+   (Fensterumschlag) wie Brief und Mieterhöhung. Die Anschrift ist die Wohnung; ist am Mieter eine neue Adresse
+   hinterlegt (nach Auszug), wird diese verwendet.
+   ═══════════════════════════════════════════════════════════════════════ */
+function eaEmpfaengerZeilen(m, obj){
+  const pers = (Array.isArray(m && m.personen_liste) ? m.personen_liste : []).filter(p => p && p.name && !p.verstorben && p.vertragspartner !== false).map(p => String(p.name).trim());
+  const namen = pers.length ? pers.slice(0, 3) : [String((m && m.mieter) || '').trim()].filter(Boolean);
+  const neu = String((m && m.neueAdresse) || '').trim();
+  const adr = neu ? neu.split(/\n|,\s*/).map(s => s.trim()).filter(Boolean)
+                  : [[obj && obj.name, m && m.weNr ? 'WE ' + m.weNr : ''].filter(Boolean).join(' · '), (obj && obj.ort) || ''].filter(Boolean);
+  return { namen, adr };
+}
+function eaBriefkopfHTML(m, obj, bk){
+  bk = bk || {};
+  const e = eaEmpfaengerZeilen(m, obj);
+  const tel = bk.tel || bk.telefon || '';
+  return `<div style="display:flex;justify-content:space-between;align-items:flex-start;margin:0 0 9mm">
+      <div style="width:85mm;padding-top:25mm">
+        <div style="font-size:8px;color:#888;text-decoration:underline;margin-bottom:2mm">${esc([bk.absender || bk.name, bk.strasse, bk.ort].filter(Boolean).join(' · '))}</div>
+        <div style="font-size:13px;line-height:1.5">${e.namen.map(n => '<strong>' + esc(n) + '</strong>').join('<br>')}${e.adr.length ? '<br>' + e.adr.map(esc).join('<br>') : ''}</div>
+      </div>
+      <div style="width:75mm;text-align:right">
+        ${npWortmarkeSvg(150)}
+        <div style="font-size:8px;color:#555;margin-top:3px">${esc([bk.strasse, bk.ort, tel ? 'Tel: ' + tel : ''].filter(Boolean).join(' · '))}</div>
+      </div>
+    </div>`;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
    A488 (10.11.2026) – Nachprüfung zur Sichtprüfung (Freigabe des Nutzers 10.11.2026, 23:17)
    SP-25 Mieterhöhung wird vorgemerkt: neue Miete erst ab „wirksam ab“; bei § 558 BGB zusätzlich erst nach
          bestätigter Zustimmung (§ 558b Abs. 1 BGB). Rückstand rechnet Monate vor einer Erhöhung mit der alten Miete.
@@ -31400,7 +31469,7 @@ async function erstelleKautionsEndabrechnung(mieterId){
   const objAdr = obj ? [obj.name, obj.ort].filter(Boolean).join(', ') : '';
   const objZeile = objAdr + (m.weNr?(' , WE '+m.weNr):'');
   const bk=getBriefkopf(m.objektId)||{};
-  const fussName=bk.name||vermName||''; const fussStr=bk.strasse||''; const fussOrt=[bk.plz,bk.ort].filter(Boolean).join(' '); const fussTel=bk.telefon||''; const fussMail=bk.email||'';
+  const fussName=bk.name||vermName||''; const fussStr=bk.strasse||''; const fussOrt=[bk.plz,bk.ort].filter(Boolean).join(' '); const fussTel=bk.tel||bk.telefon||''; const fussMail=bk.email||'';
   const posAbz = abzuege.map(a=>`<tr><td class="lbl">− ${esc(a.grund)}</td><td class="amt">−${eur(a.betrag)} €</td></tr>`).join('');
   const negativ = auszahlung<0;
   const auszWort = kautionBetragInWorte(Math.abs(auszahlung));
@@ -31416,10 +31485,10 @@ async function erstelleKautionsEndabrechnung(mieterId){
     @page{margin:0;size:A4}@media print{body{padding:20mm 20mm;-webkit-print-color-adjust:exact;print-color-adjust:exact}}body>*{page-break-inside:avoid}
   </style>`;
   const inhalt=`
+    ${eaBriefkopfHTML(m, obj, bk)}
     <div class="ea-h">Abrechnung der Mietkaution</div>
     <div class="ea-obj">für das Objekt ${esc(objZeile)}</div>
-    <div class="ea-an">An: <strong>${esc(m.mieter||'')}</strong></div>
-    <div class="ea-body">${esc(anredeMitKomma(getAnrede(m)))}<br>im Zuge der Beendigung des Mietverhältnisses rechnen wir die von Ihnen geleistete Mietkaution wie folgt ab:</div>
+    <div class="ea-body">${esc(anredeMitKomma(getAnredeVertrag(m)))}<br>im Zuge der Beendigung des Mietverhältnisses rechnen wir die von Ihnen geleistete Mietkaution wie folgt ab:</div>
     <table class="ea-t">
       <tr><td class="lbl">Geleistete Kaution${kd.art==='raten'?' (eingegangene Raten)':''}</td><td class="amt">${eur(grund)} €</td></tr>
       <tr><td class="lbl">Zinsen</td><td class="amt">${eur(zinsen)} €</td></tr>
@@ -40319,7 +40388,9 @@ function hpKarte(x){
     <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin-bottom:8px">
       <b>${esc(x.titel||x.id)}</b>
       <span class="ew-mono" style="font-size:11px;color:var(--ink-40)">${k}</span>
-      <span style="margin-left:auto;font-size:11px;color:var(--success)"><i class="ti ti-point-filled"></i> online</span>
+      ${hpIstReserviert(x)
+        ? '<span style="margin-left:auto;font-size:11px;color:var(--warn,#9a5a08)"><i class="ti ti-lock"></i> online · reserviert</span>'
+        : '<span style="margin-left:auto;font-size:11px;color:var(--success)"><i class="ti ti-point-filled"></i> online</span>'}
     </div>
     <div style="font-size:12px;color:var(--ink-40);margin-bottom:8px">${esc(x.adr||'')}${x.stadt?' · '+esc(x.stadt):''}</div>
     <div class="f-row">
@@ -40340,6 +40411,7 @@ function hpKarte(x){
     <div style="display:flex;gap:8px;flex-wrap:wrap">
       <button class="btn btn-sm" onclick="document.getElementById('hpDatei_${k}').click()"><i class="ti ti-photo-plus"></i> Bilder hinzufügen</button>
       <button class="btn btn-sm btn-copper" onclick="hpAendernSpeichern('${escJs(String(x.id))}')"><i class="ti ti-device-floppy"></i> Änderungen speichern</button>
+      <button class="btn btn-sm" onclick="hpReserviertUmschalten('${escJs(String(x.id))}')">${hpIstReserviert(x) ? '<i class="ti ti-lock-open"></i> Reservierung aufheben' : '<i class="ti ti-lock"></i> Als reserviert markieren'}</button>
       <button class="btn btn-sm btn-danger" style="margin-left:auto" onclick="hpEintragEntfernen('${escJs(String(x.id))}')"><i class="ti ti-world-off"></i> Von der Website nehmen</button>
     </div>
   </div>`;
@@ -40767,11 +40839,14 @@ async function aushangErzeugen(objektId, weNr){
   if(homepage){
     if(!energie){ toast('Für die Homepage ist eine Energieausweis-Angabe nötig (§ 87 GEG).'); return; }
     try{
+      // A492: eine Reservierung bleibt beim erneuten Veröffentlichen erhalten
+      const _lsAlt = await idbGet('settings','homepage_leerstand').catch(()=>null);
+      const _lsStatus = (_lsAlt && _lsAlt.value && _lsAlt.value[kennung] && hpIstReserviert(_lsAlt.value[kennung])) ? 'reserviert' : 'frei';
       const datensatz = {
         id:kennung, objektId, weNr, titel:zimmerTitel,
         stadt:(obj?.ort||'').replace(/^\d{5}\s*/,''), adr:obj?.name||'',
         flaeche: flaeche?flaeche+' m²':'', zimmer, miete: kalt?aushangFmtEur(kalt)+' €':'',
-        nk: nk?aushangFmtEur(nk)+' €':'', status:'frei', energie, frei_ab:frei,
+        nk: nk?aushangFmtEur(nk)+' €':'', status:_lsStatus, energie, frei_ab:frei,
         empfehlung:'', sichtbar:true,
         fotos: fuerHomepage, grundriss: grundriss||''   // A439: keine Vorschaubilder auf die Website
       };
@@ -54153,7 +54228,7 @@ async function mahnungDrucken(){
   const bk = getBriefkopf(m.objektId) || {};
   const vermName = bk.name || '';
   const fussStr = bk.strasse || ''; const fussOrt = [bk.plz, bk.ort].filter(Boolean).join(' ');
-  const fussTel = bk.telefon || ''; const fussMail = bk.email || '';
+  const fussTel = bk.tel || bk.telefon || ''; const fussMail = bk.email || '';   // A491: das Feld heißt tel
   const objAdr = obj ? [obj.name, obj.ort].filter(Boolean).join(', ') : '';
   const objZeile = objAdr + (m.weNr ? (', WE ' + m.weNr) : '');
   const moTab = ctx.offeneMonate.map(o =>
@@ -54161,7 +54236,7 @@ async function mahnungDrucken(){
   const titel = _opStufeLabel(stufe);
   // v224 (B23): personalisierte Anrede aus dem Mieterstamm (nutzt vorhandene Helfer;
   //   Fallback in getAnrede greift bei fehlenden Anrede-/Personendaten auf den Hauptmieter).
-  const anrede = esc(anredeMitKomma(getAnrede(m)));   // A490 (SP-26)
+  const anrede = esc(anredeMitKomma(getAnredeVertrag(m)));   // A490 (SP-26), A491: nur Vertragspartner
   let einleitung, schluss;
   if (stufe === 1){
     einleitung = `bei der Durchsicht unserer Mietkonten haben wir festgestellt, dass f\u00fcr Ihre Wohnung derzeit ein offener Betrag in H\u00f6he von <strong>${eur(ctx.rueckstand)} \u20ac</strong> besteht. Sicherlich handelt es sich um ein Versehen.`;
@@ -54188,9 +54263,9 @@ async function mahnungDrucken(){
     @page{margin:0;size:A4}@media print{body{padding:20mm 20mm;-webkit-print-color-adjust:exact;print-color-adjust:exact}}body>*{page-break-inside:avoid}
   </style>`;
   const inhalt = `
+    ${eaBriefkopfHTML(m, obj, bk)}
     <div class="ea-h">${esc(titel)}</div>
     <div class="ea-obj">Mietverh\u00e4ltnis ${esc(objZeile)}</div>
-    <div class="ea-an">An: <strong>${esc(m.mieter||'')}</strong></div>
     <div class="ea-body">${anrede}<br>${einleitung}</div>
     <table class="ea-t">
       ${moTab}

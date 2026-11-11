@@ -275,6 +275,25 @@ auch wenn für Dokumente eine Umleitung (z. B. Krefeld → Roland B. Nadig) akti
 - Weitere Druckvorlagen maskieren Namen und Freitexte: Wohnungsgeberbescheinigung, Zahlungserinnerung,
   Begründung der Mieterhöhung, Aushang.
 
+## Zahlungserinnerung und Kautionsabrechnung mit Briefkopf (seit A491)
+
+- Zahlungserinnerung/Mahnung und Kautionsabrechnung tragen den Briefkopf mit Logo, Rücksendezeile und **Anschriftfeld für
+  den Fensterumschlag**, wie Brief und Mieterhöhung.
+- Im Anschriftfeld stehen die Vertragspartner und die Wohnung. Ist am Mieter eine **neue Adresse** hinterlegt (nach
+  Auszug), wird diese verwendet.
+- Die Anrede richtet sich nur an die Vertragspartner.
+- Die Kautionsquittung bleibt eine Quittung ohne Anschriftfeld.
+
+## Wohnung auf der Website als „Reserviert“ markieren (seit A492)
+
+- Unter **Einstellungen → Daten → Website – freie Wohnungen → Übersicht öffnen** hat jede Wohnung den Schalter **„Als reserviert markieren“**
+  bzw. **„Reservierung aufheben“** (mit Rückfrage). Reservierte Wohnungen zeigen in der Liste „online · reserviert“.
+- Die App sendet `status: 'reserviert'` an `/api/leerstand`. Das Backend reicht das Feld unverändert weiter,
+  **keine Backend-Änderung nötig** (B25 bleibt).
+- Ab **Website W10** steht dann „Reserviert“ an der Wohnung. Die Wohnung bleibt sichtbar; Bewerbungen sind weiter
+  möglich und kommen als **Nachrücker** an (Wohnungsangabe endet auf „– Nachrücker“).
+- Ein erneuter Aushang mit Homepage-Häkchen behält die Reservierung bei, statt sie auf „frei“ zurückzusetzen.
+
 ## Datenschutz
 
 Diese Dateien sind **öffentlich abrufbar**. In den Quelltext gehören keine
