@@ -18,7 +18,7 @@
    ───────────────────────────────────────────────────────────────────────── */
 'use strict';
 
-const CACHE = 'nadigpfau-A481';
+const CACHE = 'nadigpfau-A490';
 
 /* v329 (R32): Wie lange die Navigation auf das Netz wartet, bevor die
    gecachte Fassung ausgeliefert wird. Siehe Kommentar am fetch-Handler. */
@@ -109,7 +109,9 @@ self.addEventListener('fetch', event => {
         try { return await netzP; } catch (_) { return Response.error(); }
       }
       const warten = new Promise(r => setTimeout(() => r(null), NAV_WARTEZEIT_MS));
-      const zuerst = await Promise.race([netzP.catch(() => null), warten]);
+      /* A483: Nur eine ERFOLGREICHE Netzantwort gewinnt. Ein schnelles 404/5xx (etwa waehrend eines Uploads bei
+         GitHub Pages) zeigte sonst eine Fehlerseite, obwohl die Offline-Kopie bereitlag. */
+      const zuerst = await Promise.race([netzP.then(r => (r && r.ok) ? r : null).catch(() => null), warten]);
       return zuerst || gecacht;
     })());
     return;
@@ -125,6 +127,7 @@ self.addEventListener('fetch', event => {
       }
       return res;
     }).catch(() => null);
+    event.waitUntil(netzP);   // A483: Nachladen im Hintergrund nicht abbrechen lassen
     return treffer || (await netzP) || Response.error();
   })());
 });

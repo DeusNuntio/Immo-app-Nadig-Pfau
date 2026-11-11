@@ -1350,7 +1350,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=39;   // A398: +kr_abrechnungen · A466: +excel_cache
-const APP_VERSION = '2026-11-07-A481';
+const APP_VERSION = '2026-11-11-A490';
 /* v364 (12.08.2026) – offene Punkte abgearbeitet.
    1) D1/XLSX_SRI: Der im Code hinterlegte PowerShell-Befehl war FALSCH und
       konnte nie funktionieren - Invoke-WebRequest liefert unter .Content einen
@@ -2798,12 +2798,12 @@ const _STAMP_STORES = ['mieter','users','tg'];
 function idbStempeln(store,obj,opts){
   if (obj && typeof obj === 'object') {
     if (opts && opts.keepStamp) {
-      if (!obj.updatedAt) obj.updatedAt = new Date().toISOString();
+      if (!obj.updatedAt) obj.updatedAt = stempelJetzt();
     } else if (_STAMP_STORES.includes(store)) {
       // Bei normaler Bearbeitung immer aktualisieren, damit Änderungen "gewinnen".
-      obj.updatedAt = new Date().toISOString();
+      obj.updatedAt = stempelJetzt();
     } else if (!obj.updatedAt) {
-      obj.updatedAt = new Date().toISOString();
+      obj.updatedAt = stempelJetzt();
     }
   }
   return obj;
@@ -2826,9 +2826,9 @@ function _mergeStempelNoetig(store, obj, opts){
     && !!(STORE_DEFS[store] && STORE_DEFS[store].merge);
 }
 function _aenderungsStempel(obj, alt){
-  if (!alt){ if (!obj.updatedAt) obj.updatedAt = new Date().toISOString(); return; }
+  if (!alt){ if (!obj.updatedAt) obj.updatedAt = stempelJetzt(); return; }
   if (obj.updatedAt && obj.updatedAt !== alt.updatedAt) return;          // Aufrufer hat bewusst gestempelt
-  obj.updatedAt = (_stabilJson(obj) !== _stabilJson(alt)) ? new Date().toISOString() : (alt.updatedAt || new Date().toISOString());
+  obj.updatedAt = (_stabilJson(obj) !== _stabilJson(alt)) ? stempelJetzt() : (alt.updatedAt || stempelJetzt());
 }
 function idbPut(store,obj,opts){
   return new Promise((res,rej)=>{
@@ -4270,6 +4270,7 @@ async function renderDash() {
   await bearbeiterUsersLaden().catch(()=>{});   // A465
   await syncIntervallTodos().catch(()=>{});
   await aktiviereFaelligeMieterwechsel();
+  await mhFaelligeAnwenden().catch(()=>{});   // A488 (SP-25)
   const allMieter = await idbGetAll('mieter');
   const myMieter  = allMieter.filter(m => myObj.some(o => o.id === m.objektId) && !m._vormieter && !m._zukuenftig && !m._tgMieter);
   const aufgaben  = await idbGetAll('aufgaben');
@@ -4480,6 +4481,7 @@ async function renderDash() {
       await versorgerErinnerungenNachziehen();
       html += await versorgerKarteHTML(myObj.map(o=>o.id));
     }catch(e){ console.warn('Versorger-Karte:', e); }
+    try{ html += await rechnungKarteHTML(); }catch(e){ console.warn('Rechnungs-Karte:', e); }   // A482
   }
 
   // Admin: offene Urlaubsanträge
@@ -4930,7 +4932,7 @@ p{margin-bottom:6px}
 <div class="anschrift"><b>${esc(m?.mieter||sp.mieterName)}</b><br>${esc(mieterAnschrift)}</div>
 <div class="datum">${esc(bk.ort.split(' ').slice(1).join(' ')||'Krefeld')}, den ${heute}</div>
 <h2>Anpassung der Stellplatzmiete – Tiefgarage, Stellplatz Nr. ${esc(String(sp.nr))}</h2>
-<p>${m?getAnredeVertrag(m):'Sehr geehrte Damen und Herren'},</p>
+<p>${esc(m?getAnredeVertrag(m):'Sehr geehrte Damen und Herren')},</p>
 <p>für den von Ihnen angemieteten Kfz-Einstellplatz Nr. ${esc(String(sp.nr))} in der Tiefgarage ${esc(obj?.adresse||'Inrather Str. 181–185 / Wilmendyk 7–13, 47803 Krefeld')} passen wir die monatliche Miete mit Wirkung zum <b>${abLang}</b> wie folgt an:</p>
 <div class="box">
   <div class="row"><span>Bisherige Stellplatzmiete</span><span>${fmtEur(alt)}</span></div>
@@ -5655,9 +5657,12 @@ async function renderInteressenten(el, objektId){
   let liste = objektId
     ? alle.filter(k => k.objektId===objektId || (!k.objektId && k.status==='warteliste'))
     : alle;
+  /* A486: Ohne Haus (und nicht Warteliste) stand ein Interessent bisher in KEINEM Haus - jetzt in jedem, gesondert. */
+  const ohneHaus = (objektId && ohneHausSichtbar()) ? alle.filter(k => !k.objektId && k.status !== 'warteliste' && interessentOffen(k))
+    .sort((a,b) => zeitWert(b.erstellt) - zeitWert(a.erstellt)) : [];
   // Erledigte (übernommen/abgesagt) ans Ende, sonst nach Datum absteigend
   const rang = k => (k.status==='uebernommen'||k.status==='absage') ? 1 : 0;
-  liste.sort((a,b)=> rang(a)-rang(b) || String(b.erstellt||'').localeCompare(String(a.erstellt||'')));
+  liste.sort((a,b)=> rang(a)-rang(b) || (zeitWert(b.erstellt)-zeitWert(a.erstellt)));
 
   let h = `<div class="s-hdr" style="margin-bottom:12px">
     <div class="s-title">Interessenten (${liste.filter(k=>k.status!=='uebernommen'&&k.status!=='absage').length} offen)</div>
@@ -5666,7 +5671,7 @@ async function renderInteressenten(el, objektId){
 
   if(!liste.length){
     h += `<div class="empty"><i class="ti ti-users-group"></i><p>Noch keine Interessenten erfasst.</p></div>`;
-    el.innerHTML = h; return;
+    el.innerHTML = h + interessentOhneHausHTML(ohneHaus, objektId) + interessentOhneHausErledigtHTML(alle, objektId); return;   // A486
   }
 
   liste.forEach(k=>{
@@ -5680,7 +5685,7 @@ async function renderInteressenten(el, objektId){
           <div style="font-size:12px;color:var(--ink-40);margin-top:2px">
             <i class="ti ti-home"></i> ${wohnung}${k.objektName?' · '+esc(k.objektName):''}
             ${k.personen?` · ${esc(String(k.personen))} Pers.`:''}
-            ${k.mietbeginn?` · ab ${esc(k.mietbeginn)}`:''}
+            ${k.mietbeginn?` · ab ${esc(datumAnzeige(k.mietbeginn))}`:''}
           </div>
           ${(k.telefon||k.email)?`<div style="font-size:12px;color:var(--ink-60);margin-top:3px">
             ${k.telefon?`<i class="ti ti-phone"></i> <a href="tel:${esc(k.telefon)}">${esc(k.telefon)}</a>  `:''}
@@ -5700,7 +5705,7 @@ async function renderInteressenten(el, objektId){
       </div>
     </div>`;
   });
-  el.innerHTML = h;
+  el.innerHTML = h + interessentOhneHausHTML(ohneHaus, objektId) + interessentOhneHausErledigtHTML(alle, objektId);   // A486
 }
 
 // Wohnungsauswahl-Optionen für ein Objekt (vorhandene WE-Nummern aus Mieterdaten)
@@ -6230,7 +6235,7 @@ async function ensureZaehler(objektId){
 }
 
 async function renderObjZaehler(el){
-  const zaehler = (await ensureZaehler(currentObjId)).sort((a,b)=>a.name.localeCompare(b.name));
+  const zaehler = (await ensureZaehler(currentObjId)).sort((a,b)=>String(a.name||'').localeCompare(String(b.name||'')));   // A487 (SP-09)
   const alleStaende = await idbGetAll('zaehlerstaende','objektId',currentObjId);
   const alleVersorger = (istVerwalter()) ? await idbGetAll('versorger','objektId',currentObjId) : [];
   const vMap = Object.fromEntries(alleVersorger.map(v=>[v.id,v]));
@@ -6413,6 +6418,7 @@ async function saveZaehlerstand(zaehlerId){
   const wert = document.getElementById('zsWert')?.value;
   if(wert===''||wert==null){ toast('Bitte Zählerstand eingeben'); return; }
   const datumISO = document.getElementById('zsDatum')?.value || today();
+  if(datumISO > today()){ toast('Das Ablesedatum liegt in der Zukunft.'); return; }   // A490
   const nummer = document.getElementById('zsNummer')?.value?.trim()||'';
   // Plausibilität: neuer Wert sollte nicht kleiner als letzter sein (Hinweis, kein Block)
   const bisher = (await idbGetAll('zaehlerstaende','zaehlerId',zaehlerId))
@@ -7291,7 +7297,7 @@ function meloPruefen(roh){
 /* Verlauf, neueste zuerst (ohne Datum = aeltester Stand). */
 function versorgerVerlauf(v){
   return (Array.isArray(v && v.preisverlauf) ? v.preisverlauf : []).filter(x => x && x.id).slice()
-    .sort((x, y) => String(y.ab || '').localeCompare(String(x.ab || '')) || String(y.erfasst || '').localeCompare(String(x.erfasst || '')));
+    .sort((x, y) => String(y.ab || '').localeCompare(String(x.ab || '')) || (zeitWert(y.erfasst)-zeitWert(x.erfasst)));
 }
 function versorgerStand(v, heuteIso){
   const h = heuteIso || today();
@@ -7375,7 +7381,7 @@ function versorgerAltstandSichern(v, alt){
 function versorgerVerlaufSetzen(v, e){
   const liste = (Array.isArray(v.preisverlauf) ? v.preisverlauf : []).filter(x => x && x.id && x.id !== e.id);
   liste.push(e);
-  liste.sort((x, y) => String(x.ab || '').localeCompare(String(y.ab || '')) || String(x.erfasst || '').localeCompare(String(y.erfasst || '')));
+  liste.sort((x, y) => String(x.ab || '').localeCompare(String(y.ab || '')) || (zeitWert(x.erfasst)-zeitWert(y.erfasst)));
   v.preisverlauf = liste.slice(-VERSORGER_VERLAUF_MAX);
   versorgerStandUebernehmen(v);
 }
@@ -8868,7 +8874,7 @@ async function mieterRegCode(m, neuErzeugen){
    2025 gleicht die Bank des Zahlers ihn ab (Verification of Payee) und warnt
    bei Abweichung. */
 /* v309: Einheitliche Telefondarstellung im Eigentuemerwechsel-Brief:
-   +49 / 177 250 97 10. Die Teilnehmernummer wird von rechts in Zweiergruppen
+   +49 / 1xx xxx xx xx. Die Teilnehmernummer wird von rechts in Zweiergruppen
    zerlegt, der Rest bleibt vorn - das ergibt bei 7 Stellen "250 97 10" und bei
    8 Stellen "21 37 00 40". Bewusst NUR fuer dieses Schreiben verwendet: die
    Regel unterstellt eine dreistellige Vorwahl (Mobilfunk) und wuerde bei
@@ -9810,7 +9816,7 @@ function saInternHTML(id, n){
     <textarea rows="2" lang="de" spellcheck="true" placeholder="Interne Notiz – nur für Verwalter sichtbar"
       data-action-change="saNotizSetzen" data-arg="${escAttr(id)}"
       style="width:100%;margin-top:7px;font-size:13px;font-family:inherit;min-height:44px;background:rgba(255,255,255,.75)">${esc(n.notiz || '')}</textarea>
-    ${n.geaendert ? `<div style="font-size:10px;color:var(--ink-40);margin-top:2px">zuletzt ${esc(new Date(n.geaendert).toLocaleString('de-DE'))}${n.von ? ' · ' + esc(n.von) : ''}</div>` : ''}
+    ${n.geaendert ? `<div style="font-size:10px;color:var(--ink-40);margin-top:2px">zuletzt ${esc(zeitDatum(n.geaendert).toLocaleString('de-DE'))}${n.von ? ' · ' + esc(n.von) : ''}</div>` : ''}
   </div>`;
 }
 async function saNotizAendern(id, fn){
@@ -9829,7 +9835,7 @@ async function saNotizAendern(id, fn){
     if(karte) karte.setAttribute('style', karte.getAttribute('style').replace(/background:[^;]*;(border-color:[^;]*;)?/, '') + saKartenStil(n));
     /* Die Notiz nicht neu aufbauen, solange darin getippt wird. */
     if(document.activeElement && box.contains(document.activeElement) && document.activeElement.tagName === 'TEXTAREA'){
-      const s = box.lastElementChild; if(s && s.tagName === 'DIV') s.textContent = 'zuletzt ' + new Date(n.geaendert).toLocaleString('de-DE') + (n.von ? ' · ' + n.von : '');
+      const s = box.lastElementChild; if(s && s.tagName === 'DIV') s.textContent = 'zuletzt ' + zeitDatum(n.geaendert).toLocaleString('de-DE') + (n.von ? ' · ' + n.von : '');
     } else box.outerHTML = saInternHTML(id, n);
   }
 }
@@ -9933,7 +9939,7 @@ async function saPapierkorbLaden(){
   return raus;
 }
 function saPapierkorbEndgueltigAb(p){
-  return new Date(new Date(p.geloeschtAm).getTime() + SA_PAPIERKORB_TAGE * 86400000);
+  return new Date(zeitDatum(p.geloeschtAm).getTime() + SA_PAPIERKORB_TAGE * 86400000);
 }
 async function saPapierkorbLegen(e){
   const wert = { id:e.id, anzeigeName:e.anzeigeName || '', objektName:e.objektName || '', zeitstempel:e.zeitstempel || '',
@@ -10195,6 +10201,12 @@ async function saAlsInteressentImportieren(id){
   if(_w){ if(!rec.objektId) rec.objektId = _w.objektId; if(_w.weNr && !rec.weNr) rec.weNr = _w.weNr;
     if(!rec.objektName || /^Aushang /i.test(rec.objektName)) rec.objektName = (getObj(_w.objektId) || {}).name || rec.objektName || ''; }
   if(_saN && _saN.besichtigungTermin){ rec.besichtigungTermin = _saN.besichtigungTermin; rec.status = 'eingeladen'; }
+  /* A486: Haus nicht erkannt -> fragen. Bis A485 wurde der Interessent ohne Haus gespeichert und war nirgends zu sehen. */
+  if(!rec.objektId){
+    const wahl = await saHausWaehlen(rec);
+    if(!wahl){ toast('Abgebrochen – nichts übernommen.'); return; }
+    if(wahl.objektId){ rec.objektId = wahl.objektId; rec.objektName = (getObj(wahl.objektId) || {}).name || rec.objektName; if(wahl.weNr) rec.weNr = wahl.weNr; }
+  }
   await idbPut('interessenten', rec);
   // Lokale Archivablage der Selbstauskunft (Store selbstauskuenfte)
   try{
@@ -10230,7 +10242,8 @@ async function saAlsInteressentImportieren(id){
   }
   /* A438: steht jetzt in der Interessentenakte. */
   if(_saN){ try{ await deleteMitTombstone('settings', 'sa_notiz_' + e.id); delete _saNotizen[e.id]; }catch(_){} }
-  toast('Als Interessent übernommen ✓');
+  toast(rec.objektId ? 'Als Interessent übernommen ✓ (' + ((getObj(rec.objektId) || {}).name || '') + (rec.weNr ? ' WE ' + rec.weNr : '') + ')'
+    : 'Als Interessent übernommen ✓ – noch keinem Haus zugeordnet (steht unter „Interessenten“ jedes Hauses).', 5000);   // A486
   // aus der Liste entfernen
   const karte=document.getElementById('saDetail_'+id);
   if(karte && karte.parentElement) karte.parentElement.style.display='none';
@@ -10598,21 +10611,21 @@ async function mailRenderSA(body){
   const key=(await idbGet('settings','backendKey').catch(()=>null))?.value;
   if(!key){
     body.innerHTML='<div class="empty"><i class="ti ti-key-off"></i><p>Kein Backend-Schlüssel hinterlegt. Bitte unter „Einstellungen → System → Website-Backend" den Function-Key speichern.</p></div>';
-    return;
+    await saLokaleListenAnhaengen(body); return;
   }
   const encKey=await saEncKeyHolen();
   if(!encKey){
-    body.innerHTML='<div class="empty"><i class="ti ti-lock-off"></i><p>Kein Entschlüsselungs-Schlüssel (SA_ENC_KEY) hinterlegt. Bitte unter „Einstellungen → System" speichern.</p></div>';
-    return;
+    body.innerHTML='<div class="empty"><i class="ti ti-lock-off"></i><p>Der Schlüssel zum Entschlüsseln der Selbstauskünfte fehlt auf diesem Gerät. Bitte unter „Einstellungen → System" eintragen.</p></div>';
+    await saLokaleListenAnhaengen(body); return;
   }
   let liste=[];
   try{
     const res=await peAbruf(key, '/api/inbox-sa');   // A467
-    if(!res.ok){ body.innerHTML='<div class="empty"><i class="ti ti-alert-circle"></i><p>Abruf fehlgeschlagen ('+res.status+').</p></div>'; return; }
+    if(!res.ok){ body.innerHTML='<div class="empty"><i class="ti ti-alert-circle"></i><p>Abruf fehlgeschlagen ('+res.status+').</p></div>'; await saLokaleListenAnhaengen(body); return; }
     liste=Array.isArray(res.daten)?res.daten:[];
   }catch(e){
     body.innerHTML='<div class="empty"><i class="ti ti-wifi-off"></i><p>Backend nicht erreichbar.</p></div>';
-    return;
+    await saLokaleListenAnhaengen(body); return;
   }
   /* A442: Papierkorb abtrennen, Abgelaufenes endgueltig loeschen. */
   if(await saPapierkorbAufraeumen(liste.map(e => e.id))){
@@ -10630,7 +10643,7 @@ async function mailRenderSA(body){
   const cnt=document.getElementById('mailCountSa'); if(cnt) cnt.innerHTML=peZahlHTML('sa', peListen().sa);
   window._saInbox = {};
   _papier.forEach(p => { window._saInbox[p.id] = p; });
-  if(!liste.length){ body.innerHTML='<div class="empty"><i class="ti ti-inbox"></i><p>Keine neuen Selbstauskünfte.</p></div>' + saPapierkorbHTML(_papier) + bwAblageHTML(_bw); return; }
+  if(!liste.length){ body.innerHTML='<div class="empty"><i class="ti ti-inbox"></i><p>Keine neuen Selbstauskünfte.</p></div>' + saPapierkorbHTML(_papier) + bwAblageHTML(_bw) + (await saArchivHTML()); return; }   // A486
   const _notizen = await saNotizenLaden(liste.map(e => e.id));   // A438
   let html='';
   for(const e of liste){
@@ -10666,7 +10679,7 @@ async function mailRenderSA(body){
       <div id="saDetail_${escAttr(e.id)}" style="margin-top:10px"></div>
     </div>`;
   }
-  body.innerHTML=html + saPapierkorbHTML(_papier) + bwAblageHTML(_bw);   // A442, A444
+  body.innerHTML=html + saPapierkorbHTML(_papier) + bwAblageHTML(_bw) + (await saArchivHTML());   // A442, A444, A486
   if(typeof saKartenErgaenzen === 'function') saKartenErgaenzen(liste).catch(err => console.warn('Selbstauskunft-Kontakt:', err));   // A472
 }
 
@@ -11024,6 +11037,8 @@ async function postfachVorschauLaden(id, nummern){
     /* Laedt das Bild nicht (abgelaufene Adresse, kaputte Datei), verschwindet
        der Platz wieder, statt einen leeren Rahmen stehen zu lassen. */
     img.onerror = ()=>{ ziel.remove(); };
+    img.decoding = 'async';
+    img.src = url;   // A485: Quelle erst nach den Ereignissen setzen - bis A484 fehlte sie ganz (nur Rahmen „Anhang“)
     ziel.appendChild(img);
   }
 }
@@ -11225,7 +11240,7 @@ async function mailRenderNachrichten(body){
   let html=NACHRICHTEN_HERKUNFT;
   if(!liste.length) html+='<div class="empty" style="padding:14px 0"><i class="ti ti-message-off"></i><p>Keine neuen Nachrichten.</p></div>';
   for(const n of liste){
-    const dt=n.zeitstempel||n.erstellt?new Date(n.zeitstempel||n.erstellt).toLocaleString('de-DE'):'';
+    const dt=n.zeitstempel||n.erstellt?zeitDatum(n.zeitstempel||n.erstellt).toLocaleString('de-DE'):'';
     const name=n.name||[n.vorname,n.nachname].filter(Boolean).join(' ')||'(ohne Namen)';
     /* v394: Portal-Registrierungen kommen ueber dasselbe Kontaktformular
        herein und tragen den Betreff im Text - sie bekommen die Portalfarbe. */
@@ -11531,7 +11546,7 @@ async function mailTokInteressentBefuellen(){
   if(!sel) return;
   let liste=[];
   try{ liste=await idbGetAll('interessenten'); }catch(e){ liste=[]; }
-  liste=(liste||[]).filter(i=>i && i.email).sort((a,b)=>String(b.erstellt||'').localeCompare(String(a.erstellt||'')));
+  liste=(liste||[]).filter(i=>i && i.email).sort((a,b)=>(zeitWert(b.erstellt)-zeitWert(a.erstellt)));
   sel.innerHTML='<option value="">– manuell eingeben –</option>'+liste.map(i=>{
     const vn=(i.vorname||'').trim();
     const nn=(i.nachname||'').trim() || (i.name||'').replace(vn,'').trim();
@@ -11768,7 +11783,7 @@ async function interessentZuAdresse(email){
   const a = a472Mail(email); if(!a) return null;
   const alle = await idbGetAll('interessenten').catch(() => []);
   const t = (alle || []).filter(k => k && a472Mail(k.email) === a && k.status !== 'uebernommen')
-    .sort((x, y) => String(y.geaendert || y.erstellt || '').localeCompare(String(x.geaendert || x.erstellt || '')));
+    .sort((x, y) => zeitWert(y.geaendert || y.erstellt) - zeitWert(x.geaendert || x.erstellt));   // A482
   return t[0] || null;
 }
 /* Ziel waehlen: vorgeschlagen wird, wer zur Absenderadresse passt. */
@@ -12079,7 +12094,7 @@ async function mieterArchivExtrasHTML(objektId, mieterId){
     .sort((a, b) => String(b.erstelltAm || '').localeCompare(String(a.erstelltAm || '')));
   const aush = (await idbGetAll('dokumente').catch(() => [])).filter(d => d && !d._deleted && d.typ === 'aushang' && !d.mieterId
     && d.objektId === m.objektId && weSchluessel(d.weNr) === weSchluessel(m.weNr))
-    .sort((a, b) => String(b.geaendert || '').localeCompare(String(a.geaendert || '')));
+    .sort((a, b) => (zeitWert(b.geaendert)-zeitWert(a.geaendert)));
   const kopf = (icon, titel, n) => `<div class="card-hdr" style="margin:14px 0 6px"><i class="ti ${icon}"></i> ${titel} (${n})</div>`;
   const zeile = (icon, titel, sub, knoepfe) => `<div style="background:var(--white);border:1px solid var(--ink-10);border-radius:var(--radius);padding:9px 12px;margin-bottom:6px;display:flex;gap:10px;align-items:center">
     <i class="ti ${icon}" style="font-size:18px;color:var(--copper)"></i>
@@ -12133,6 +12148,7 @@ async function whNvMieterKarteHTML(m){
     <div style="font-size:13px;line-height:1.5;margin-top:4px">${r ? whNvErgebnisHTML(r) : '<span style="color:var(--ink-60)">Neue Miete noch nicht eingetragen.</span>'}</div>
     ${info.nachher ? `<div style="font-size:12px;color:var(--ink-60);margin-top:4px">Neuer Mieter ab ${esc(fmtDate(_isoDatum(_einzugISOvon(info.nachher))))}</div>` : ''}
     <div style="font-size:12px;color:var(--ink-60);margin-top:6px"><i class="ti ti-users"></i> ${inter.length} offene Bewerbung${inter.length === 1 ? '' : 'en'} für diese Wohnung${eingeladen ? ' · ' + eingeladen + ' zur Besichtigung eingeladen' : ''}</div>
+    <div style="margin-top:8px"><button class="btn btn-sm btn-copper" data-action-click="mvAusWohnungModal" data-arg="${escAttr(m.objektId)}" data-arg2="${escAttr(String(m.weNr || ''))}"><i class="ti ti-file-text"></i> Mietvertrag erstellen</button></div>   <!-- A486 -->
     ${wohntHier ? `<label style="display:flex;gap:8px;align-items:flex-start;font-size:12px;margin-top:8px;cursor:pointer;line-height:1.45">
       <input type="checkbox" style="width:16px;height:16px;flex-shrink:0;margin-top:1px" ${bk.ok ? 'checked' : ''} data-action-change="besichtigungZustimmungSetzen" data-arg="${escAttr(m.id)}">
       <span>Mieter ist einverstanden, dass Bewerber ihn für Besichtigungen anrufen. Sein Name und seine Telefonnummer${tel ? ' (' + esc(tel) + ')' : ''} stehen dann im Text an Bewerber.
@@ -12768,7 +12784,7 @@ async function tmModalAusAkte(){
      bleiben bewusst draussen: die Gesamtaufstellung einer NKA enthaelt die
      Zahlen aller Wohnungen - genau der Befund v349. */
   const dok = (alle||[]).filter(d => d && d.mieterId === mieterId && !d._papierkorb)
-    .sort((a,b)=> String(b.erstellt||'').localeCompare(String(a.erstellt||'')));
+    .sort((a,b)=> (zeitWert(b.erstellt)-zeitWert(a.erstellt)));
 
   const zeile = (d)=>{
     const t = (DOK_TYPEN.find(x=>x.val===d.typ)||{});
@@ -13412,7 +13428,7 @@ async function mailRenderPapierkorb(body){
   liste = (liste||[]).filter(n => ((n && n.ablage) || 'erledigt') === sicht);
   if(!liste.length){
     body.innerHTML=kopf+`<div class="empty"><i class="ti ti-trash"></i><p>${sicht==='geloescht'?'Papierkorb ist leer.':'Nichts als erledigt abgelegt.'}</p>
-      <p style="font-size:11px;color:var(--ink-40)">Erledigte/gelöschte Nachrichten erscheinen hier 30 Tage lang und können wiederhergestellt werden. Setzt den Endpunkt <code>/api/inbox-trash</code> voraus.</p></div>`;
+      <p style="font-size:11px;color:var(--ink-40)">Erledigte/gelöschte Nachrichten erscheinen hier 30 Tage lang und können wiederhergestellt werden.</p></div>`;
     return;
   }
   body.innerHTML=kopf+liste.map(n=>`
@@ -13958,7 +13974,7 @@ async function saTokInteressentBefuellen(){
   let liste=[];
   try{ liste=await idbGetAll('interessenten'); }catch(e){ liste=[]; }
   // nur Einträge mit E-Mail, neueste zuerst
-  liste=(liste||[]).filter(i=>i && i.email).sort((a,b)=>String(b.erstellt||'').localeCompare(String(a.erstellt||'')));
+  liste=(liste||[]).filter(i=>i && i.email).sort((a,b)=>(zeitWert(b.erstellt)-zeitWert(a.erstellt)));
   sel.innerHTML='<option value="">– manuell eingeben –</option>'+liste.map(i=>{
     const vn=(i.vorname||'').trim();
     const nn=(i.nachname||'').trim() || (i.name||'').replace(vn,'').trim();
@@ -14276,7 +14292,7 @@ async function renderEigentuemerLeistung(el){
   const repAll = (await idbGetAll('reparaturen').catch(()=>[]))
     .filter(r=>r && myIds.has(r.objektId));
   // nach Jahr (laufendes + Vorjahr) sortiert, neueste zuerst
-  const rep = repAll.sort((a,b)=>String(b.datum||b.erstellt||'').localeCompare(String(a.datum||a.erstellt||'')));
+  const rep = repAll.sort((a,b)=>zeitWert(b.datum||b.erstellt)-zeitWert(a.datum||a.erstellt));   // A482
 
   let h=`<div class="s-hdr"><div class="s-title"><i class="ti ti-clipboard-text"></i> Leistungen / Abrechnung</div></div>
     <p style="font-size:12px;color:var(--ink-40);margin:0 0 12px">Erfasste Kleinreparaturen und Reparaturen Ihrer Objekte – Grundlage für Nebenkosten- und Eigentümerabrechnung. Personaldaten werden nicht angezeigt.</p>`;
@@ -15184,7 +15200,7 @@ function urlaubDatumSync(quelle){
     if(bE.value < vE.value) bE.value = vE.value;
     bE.min = vE.value;
   } else {
-    if(bE.value < vE.value) bE.value = vE.value;
+    if(bE.value < vE.value){ bE.value = vE.value; toast('Das Enddatum lag vor dem Startdatum und wurde angeglichen.'); }   // A490 (SP-35)
   }
   urlaubVorschau();
 }
@@ -16287,7 +16303,7 @@ async function deleteMitTombstone(store, id){
   const rec = await idbGet('settings','tombstones').catch(()=>null) || {id:'tombstones', value:{}};
   rec.value = rec.value || {};
   rec.value[store] = rec.value[store] || {};
-  rec.value[store][id] = nowIso();
+  rec.value[store][id] = stempelJetzt();   // A484
   await idbPut('settings', rec);
   syncSoon();   // v263: Löschung zeitnah verteilen, sonst lebt der Satz auf anderen Geräten weiter
 }
@@ -19619,7 +19635,7 @@ function renderMieterListe(q){
 }
 
 // Wandelt eine deutsche Telefonnummer in ein wa.me-taugliches Format (E.164 ohne +, ohne Sonderzeichen).
-// Beispiele: '0177 / 2509710' -> '491772509710' ; '+49 177 ...' -> '49177...' ; '0049 ...' -> '49...'
+// Beispiele: '0xxx / xxxxxxx' -> '49xxxxxxxxxx' ; '+49 177 ...' -> '49177...' ; '0049 ...' -> '49...'
 function waNummer(tel){
   if(!tel) return '';
   let t = String(tel).trim();
@@ -19895,9 +19911,10 @@ async function mangelAnHandwerker(id, store){
 
 
 async function showMieter(id){
-  currentMieterId=id;
   const m=await idbGet('mieter',id);
   if(!m) return;
+  if(m.objektId && getObj(m.objektId) && !darfObjekt(m.objektId)){ toast('Kein Zugriff auf diesen Mieter'); return; }   // A490 (SP-34)
+  currentMieterId=id;
   await ladeMieterWeCache();
   const obj=getObj(m.objektId);
   const _stamm=(await idbGet('objekt_stamm',m.objektId).catch(()=>null))||{};
@@ -19932,6 +19949,7 @@ async function showMieter(id){
     ${m._vormieter?`<div style="background:var(--ink-05);border-radius:8px;padding:8px 12px;margin-top:8px;font-size:12px;color:var(--ink-60)">
       <i class="ti ti-history"></i> Ehemaliger Mieter (ausgezogen${m.auszug?' am '+m.auszug:''}).${esc(m.neueAdresse?' Neue Anschrift: '+m.neueAdresse:'')}
     </div>`:''}
+    ${mhOffenHTML(m)}
     <div class="det-grid">
 ${nurTg?'':`
       ${istVerwalter()?`<div class="det-field"><label>Miete</label><span>${fmtEur(m.miete)}</span></div>
@@ -20713,7 +20731,7 @@ function aufDruckHTML(liste, istMng, opt, flt){
   const sortiere = (a, b) => {
     const ea = aufDruckErledigt(a), eb = aufDruckErledigt(b);
     if(ea !== eb) return ea ? 1 : -1;
-    if(ea) return String(b.erledigtZeit || b.erledigtAm || '').localeCompare(String(a.erledigtZeit || a.erledigtAm || ''));
+    if(ea) return (zeitWert(b.erledigtZeit) || zeitWert(b.erledigtAm)) - (zeitWert(a.erledigtZeit) || zeitWert(a.erledigtAm));   // A482
     const r = rang(a) - rang(b); if(r) return r;
     const da = datumVon(a) || '9999', db = datumVon(b) || '9999';
     return da < db ? -1 : da > db ? 1 : String(a.titel || '').localeCompare(String(b.titel || ''), 'de');
@@ -21023,7 +21041,7 @@ async function eingangRechnung(e, tomb, absender, key){
       beleg = await blobZuDataUrl(new Blob([roh], { type:mime })); belegMime = mime; belegName = name;
     }
   } else hinweise.push('ohne Beleg');
-  const zeit = e.erstellt && !isNaN(new Date(e.erstellt)) ? new Date(e.erstellt).toISOString() : nowIso();
+  const zeit = e.erstellt && !isNaN(zeitDatum(e.erstellt)) ? zeitDatum(e.erstellt).toISOString() : nowIso();
   const notiz = [String(e.notiz || '').trim(), 'aus GMX über Claude' + (d && d.mailDatum ? ' (Mail vom ' + fmtDate(d.mailDatum) + ')' : ''),
                  hinweise.length ? 'Bitte prüfen: ' + hinweise.join('; ') : ''].filter(Boolean).join(' · ').slice(0, 1000);
   const rec = {
@@ -21037,6 +21055,903 @@ async function eingangRechnung(e, tomb, absender, key){
   await idbPut('rechnungen', rec);
   return { ok:true, text:'angelegt: Rechnung ' + nr + ' (' + lieferant + ', ' + fmtEur(betrag) + (obj ? ', ' + obj.name : '') + ')'
     + (hinweise.length ? ' – bitte prüfen: ' + hinweise.join('; ') : '') };
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   A488 (10.11.2026) – Nachprüfung zur Sichtprüfung (Freigabe des Nutzers 10.11.2026, 23:17)
+   SP-25 Mieterhöhung wird vorgemerkt: neue Miete erst ab „wirksam ab“; bei § 558 BGB zusätzlich erst nach
+         bestätigter Zustimmung (§ 558b Abs. 1 BGB). Rückstand rechnet Monate vor einer Erhöhung mit der alten Miete.
+   SP-26 Anrede/Objektname in Druckvorlagen maskiert.   SP-27 „Nicht zugeordnete Daten“ nur für Admins.
+   SP-28 Eigentümer sehen nur Selbstauskünfte ihrer Häuser, keine Interessenten ohne Haus.
+   SP-29 Rückfrage, wenn eine Nebenkostenabrechnung ohne Kosten erstellt wird.
+   SP-30 Deckungsprüfung als Rückfrage vor dem Druck statt als Kasten im Mieterbrief (Entscheidung des Nutzers 23:20).
+   ═══════════════════════════════════════════════════════════════════════ */
+function mhZustimmungNoetig(grund){ return /558/.test(String(grund || '')); }
+/* Vorgemerkte Erhöhung anwenden, wenn der Stichtag erreicht ist und – falls nötig – die Zustimmung vorliegt.
+   Gibt true zurück, wenn m verändert wurde (Aufrufer speichert). */
+function mhAnwendenWennFaellig(m, heuteISO){
+  const p = m && m.mhOffen;
+  if(!p || !p.datum || !(Number(p.neueMiete) > 0)) return false;
+  if(p.datum > (heuteISO || today())) return false;
+  if(p.zustimmungNoetig && !p.zustimmungAm) return false;
+  const neueNK = Number(p.neueNK) || Number(m.nk) || 0;
+  if(!Array.isArray(m.miete_history)) m.miete_history = [];
+  m.miete_history.push({ datum:p.datum, alteMiete:m.miete, alteNK:m.nk, neueMiete:Number(p.neueMiete), neueNK,
+    grund:p.grund, begruendung:p.begruendung || '', erfasst:p.erfasst, erfasstVon:p.erfasstVon || '', zustimmungAm:p.zustimmungAm || null });
+  m.miete = Number(p.neueMiete); m.nk = neueNK; m.gesamt = m.miete + neueNK;
+  delete m.mhOffen;
+  return true;
+}
+async function mhFaelligeAnwenden(){
+  const heute = today(); let n = 0;
+  for(const m of await idbGetAll('mieter').catch(() => [])){
+    if(m && m.mhOffen && mhAnwendenWennFaellig(m, heute)){ await idbPut('mieter', m); n++; }
+  }
+  if(n){ try{ syncSoon(); }catch(_){} }
+  return n;
+}
+function mhOffenHTML(m){
+  const p = m && m.mhOffen; if(!p) return '';
+  const wartet = p.zustimmungNoetig && !p.zustimmungAm;
+  const stand = wartet ? 'Zustimmung des Mieters steht aus – die bisherige Miete gilt weiter.'
+    : (p.zustimmungAm ? 'Zustimmung vom ' + datumAnzeige(p.zustimmungAm) + '. ' : '') + 'Die neue Miete gilt ab dem Stichtag.';
+  return `<div style="background:var(--amber-l);border-radius:8px;padding:8px 12px;margin-top:8px;font-size:12px;color:var(--amber);line-height:1.5">
+      <i class="ti ti-trending-up"></i> <strong>Mieterhöhung vorgemerkt:</strong> ${esc(fmtEur(p.neueMiete))} Kaltmiete${Number(p.neueNK) ? ', ' + esc(fmtEur(p.neueNK)) + ' NK' : ''}
+      ab ${esc(datumAnzeige(p.datum))} (${esc(p.grund || '')}). ${esc(stand)}
+      ${istVerwalter() ? `<div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">
+        ${wartet ? `<button class="btn btn-sm btn-copper" data-action-click="mhZustimmungErfassen" data-arg="${escAttr(m.id)}"><i class="ti ti-check"></i> Zustimmung erhalten</button>` : ''}
+        <button class="btn btn-sm" data-action-click="mhOffenVerwerfen" data-arg="${escAttr(m.id)}"><i class="ti ti-x"></i> Verwerfen</button></div>` : ''}
+    </div>`;
+}
+async function mhZustimmungErfassen(mieterId){
+  if(!istVerwalter()){ toast('Nur für Verwalter'); return; }
+  const m = await idbGet('mieter', mieterId); if(!m || !m.mhOffen) return;
+  showModal(`<div class="m-title"><i class="ti ti-check"></i> Zustimmung zur Mieterhöhung</div>
+    <div style="font-size:12px;color:var(--ink-60);line-height:1.5;margin-bottom:10px">Bitte nur bestätigen, wenn die Zustimmung des Mieters vorliegt (schriftlich, oder durch vorbehaltlose Zahlung der erhöhten Miete).
+      Die neue Miete gilt dann ab ${esc(datumAnzeige(m.mhOffen.datum))}.</div>
+    <div class="f"><label for="mhZustDatum">Zustimmung erhalten am</label><input type="date" id="mhZustDatum" value="${today()}" max="${today()}"></div>
+    <div class="f-row"><button class="btn btn-copper btn-full" data-action-click="mhZustimmungSpeichern" data-arg="${escAttr(mieterId)}"><i class="ti ti-check"></i> Bestätigen</button>
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button></div>`);
+}
+async function mhZustimmungSpeichern(mieterId){
+  if(!istVerwalter()){ toast('Nur für Verwalter'); return; }
+  const m = await idbGet('mieter', mieterId); if(!m || !m.mhOffen) return;
+  const d = document.getElementById('mhZustDatum')?.value;
+  if(!d){ toast('Bitte Datum angeben'); return; }
+  if(d > today()){ toast('Das Datum liegt in der Zukunft'); return; }
+  m.mhOffen.zustimmungAm = d;
+  const sofort = mhAnwendenWennFaellig(m, today());
+  await idbPut('mieter', m); syncSoon(); closeModal();
+  await showMieter(mieterId);
+  toast(sofort ? 'Zustimmung vermerkt – neue Miete gilt ab sofort ✓' : 'Zustimmung vermerkt – neue Miete gilt ab ' + datumAnzeige(m.mhOffen.datum) + ' ✓');
+}
+async function mhOffenVerwerfen(mieterId){
+  if(!istVerwalter()){ toast('Nur für Verwalter'); return; }
+  const m = await idbGet('mieter', mieterId); if(!m || !m.mhOffen) return;
+  if(!confirm('Vorgemerkte Mieterhöhung verwerfen?\n\nDie bisherige Miete bleibt bestehen. Das Schreiben bleibt im Archiv.')) return;
+  delete m.mhOffen; await idbPut('mieter', m); syncSoon();
+  await showMieter(mieterId); toast('Vormerkung verworfen');
+}
+/* SP-25: Betrag, um den das heutige Soll für einen früheren Monat zu hoch ist (Erhöhungen, die erst später galten).
+   Nur Einträge mit vollständigen Zahlen; die NK bleibt außen vor, wenn eine NK-Historie geführt wird. */
+function mhSollKorrektur(hist, monat, mitNk){
+  let k = 0;
+  for(const h of (hist || [])){
+    if(!h || !/^\d{4}-\d{2}/.test(String(h.datum || '')) || String(h.datum).slice(0, 7) <= monat) continue;
+    const am = Number(h.alteMiete), nm = Number(h.neueMiete);
+    if(isFinite(am) && isFinite(nm) && am > 0 && nm > 0) k += nm - am;
+    const an = Number(h.alteNK), nn = Number(h.neueNK);
+    if(mitNk && isFinite(an) && isFinite(nn) && an > 0 && nn > 0) k += nn - an;
+  }
+  return Math.round(k * 100) / 100;
+}
+/* SP-28: Interessenten ohne Haus und Selbstauskünfte ohne Haus sieht nur der Admin; Eigentümer nur ihre Häuser. */
+function ohneHausSichtbar(){ return istVerwalter(); }   // A489: Entscheidung des Nutzers – auch Eigentümer
+function saArchivDarf(e){
+  if(istSystemAdmin()) return true;
+  const oid = (e && e.k && e.k.objektId) || (e && e.objektId) || '';
+  return oid ? darfObjekt(oid) : ohneHausSichtbar();   // A489: ohne Haus wie die Interessenten ohne Haus
+}
+/* SP-29: Summe der eingetragenen Kosten einer NKA-Maske (Präfix nka_ bzw. nkaLg_). */
+function nkaKostenSumme(praefix){
+  let s = 0;
+  for(const e of document.querySelectorAll('input[id^="' + praefix + '"]')){
+    if(e.type === 'checkbox' || e.type === 'date' || new RegExp('^' + praefix + '(vz|ein|aus|bem|wm|so)_').test(e.id)) continue;
+    s += Math.abs(parseBetrag(e.value) || 0);
+  }
+  return s;
+}
+function nkaOhneKostenAbbrechen(praefix){
+  if(nkaKostenSumme(praefix) > 0) return false;
+  return !confirm('Es sind keine Kosten eingetragen (Gesamtkosten 0,00 €).\n\nDie Abrechnung würde jedem Mieter seine gesamten Vorauszahlungen als Guthaben ausweisen. Trotzdem erstellen?');
+}
+/* SP-30: Die Deckungsprüfung fragt vor dem Druck; im Brief an den Mieter steht sie nicht mehr. */
+function nkaDeckungAbbrechen(hinweise){
+  if(!hinweise || !hinweise.length) return false;
+  return !confirm('Deckungsprüfung – bitte vor dem Versand klären:\n\n• ' + hinweise.join('\n\n• ') + '\n\nTrotzdem erstellen?');
+}
+/* A489: Der „Interne Prüfhinweis“ (Stammdaten je Mieter) fragt vor dem Druck und steht nicht mehr im Mieterbrief. */
+function nkaPruefAbbrechen(mieter, von, bis){
+  const z = [];
+  for(const m of (mieter || [])){
+    let h = []; try{ h = nkaPruefungMieter(m, von, bis) || []; }catch(_){}
+    for(const x of h) z.push((m.weNr ? 'WE ' + m.weNr + ' ' : '') + '(' + (m.mieter || '?') + '): ' + x);
+  }
+  if(!z.length) return false;
+  return !confirm('Prüfhinweise – bitte vor dem Versand klären:\n\n• ' + z.slice(0, 12).join('\n• ') + (z.length > 12 ? '\n… und ' + (z.length - 12) + ' weitere' : '') + '\n\nTrotzdem erstellen?');
+}
+registerActions({ mhZustimmungErfassen, mhZustimmungSpeichern, mhOffenVerwerfen });
+
+/* ═══════════════════════════════════════════════════════════════════════
+   A487 (10.11.2026) – Befunde der Sichtprüfung aus Nutzersicht (Freigabe des Nutzers 10.11.2026, 18:13)
+   SP-01 Rechnung: elf Formularfelder wurden nie gespeichert und beim Bearbeiten gelöscht.
+   SP-03 Interessent ohne Haus verschwand nach Absage/Übernahme.      SP-04 Suche fand Interessenten ohne Haus nicht.
+   SP-05 Selbstauskunft-Listen nur bei erfolgreichem Abruf sichtbar.  SP-08 Banner „fällige Aufgaben“ verdeckte die Bedienzeile.
+   SP-09 Zähler ohne Namen brach den Reiter.   SP-12 Mietbeginn/Verweis beim Mietvertrag aus Interessent.
+   SP-13 Meldungen abgeschnitten.   SP-14 „undefined“ in Suche/Rechnungskarte.   SP-18/19 Texte, Datum.
+   SP-02/06/07 Ansicht „Nicht zugeordnete Daten“ (Einstellungen → Kontrolle): zeigt, löscht nur auf Knopfdruck.
+   ═══════════════════════════════════════════════════════════════════════ */
+(function a487Stil(){
+  try{
+    const s = document.createElement('style');
+    s.textContent = '.toast{white-space:normal;width:max-content;max-width:90vw;line-height:1.35}'
+      + 'body.faellig-banner-an .page.active{padding-top:calc(14px + var(--faellig-h,44px))}';
+    document.head.appendChild(s);
+  }catch(_){}
+})();
+/* SP-13: lange Meldungen bleiben länger stehen (rund 55 ms je Zeichen, höchstens 9 s). */
+function toastDauer(msg, dur){ return Math.max(dur || 0, Math.min(9000, 1500 + String(msg == null ? '' : msg).length * 55)); }
+/* SP-08: Das Banner schiebt den Seiteninhalt nach unten, statt ihn zu verdecken. */
+function faelligBannerAn(banner){
+  try{ document.documentElement.style.setProperty('--faellig-h', (banner.offsetHeight || 44) + 'px'); document.body.classList.add('faellig-banner-an'); }catch(_){}
+}
+function faelligBannerWeg(){
+  const b = document.getElementById('faelligBanner'); if(b) b.remove();
+  document.body.classList.remove('faellig-banner-an');
+}
+/* SP-19: ISO-Datum für die Anzeige; anderes bleibt, wie es ist. */
+function datumAnzeige(v){ const t = String(v == null ? '' : v); return /^\d{4}-\d{2}-\d{2}$/.test(t) ? t.slice(8, 10) + '.' + t.slice(5, 7) + '.' + t.slice(0, 4) : t; }
+/* SP-01: Zusatzfelder des Rechnungsformulars. Nur Felder, die im Formular stehen; leer = null. */
+function rechnungZusatzfelderLesen(){
+  const o = {};
+  const el = id => document.getElementById(id);
+  const zahl = (id, feld) => { const e = el(id); if(!e) return; const t = String(e.value || '').trim().replace(',', '.'); const n = parseFloat(t); o[feld] = (t === '' || isNaN(n)) ? null : n; };
+  const text = (id, feld, leer) => { const e = el(id); if(!e) return; const t = String(e.value || '').trim(); o[feld] = t || leer; };
+  zahl('rGuthaben', 'guthaben'); text('rGuthabenDatum', 'guthabenDatum', '');
+  zahl('rCo2Kosten', 'co2KostenEur'); zahl('rCo2Menge', 'co2MengeKg'); zahl('rMwstBetrag', 'mwstBetrag'); zahl('rLohnanteil', 'lohnanteil');
+  text('rLeistungVon', 'leistungVonISO', null); text('rLeistungBis', 'leistungBisISO', null);
+  zahl('rVerbrauch', 'verbrauchMenge'); text('rVerbrauchEinheit', 'verbrauchEinheit', ''); text('rZaehlernr', 'zaehlernummer', '');
+  return o;
+}
+/* SP-03: abgesagte/übernommene Interessenten ohne Haus bleiben auffindbar (eingeklappt). */
+function interessentOhneHausErledigtHTML(alle, objektId){
+  if(!objektId || !ohneHausSichtbar()) return '';   // A488 (SP-28)
+  const liste = (alle || []).filter(k => k && !k.objektId && !interessentOffen(k)).sort((a, b) => zeitWert(b.geaendert || b.erstellt) - zeitWert(a.geaendert || a.erstellt));
+  if(!liste.length) return '';
+  return `<details style="margin-top:12px"><summary class="f-section-title" style="cursor:pointer"><i class="ti ti-archive"></i> Ohne Haus – abgesagt oder übernommen (${liste.length})</summary>`
+    + liste.map(k => `<div style="background:var(--white);border:1px solid var(--line);border-radius:var(--radius);padding:10px 12px;margin:6px 0;opacity:.85">
+      <b style="overflow-wrap:anywhere">${esc(k.name || '(ohne Name)')}</b>
+      <span style="font-size:12px;color:var(--ink-40)"> · ${esc(interessentStatusInfo(k.status, k).label)}</span>
+      <div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:6px">
+        <button class="btn btn-sm" onclick="modalInteressentDetail('${escJs(k.id)}')"><i class="ti ti-eye"></i> Details</button>
+        <button class="btn btn-sm btn-danger" onclick="deleteInteressent('${escJs(k.id)}')"><i class="ti ti-trash"></i> Löschen</button>
+      </div></div>`).join('') + '</details>';
+}
+/* SP-05: lokal gespeicherte Listen auch dann zeigen, wenn der Abruf vom Server nicht möglich ist. */
+async function saLokaleListenAnhaengen(body){
+  try{
+    let bw = []; try{ bw = await bwAblageLaden(); }catch(_){}
+    body.insertAdjacentHTML('beforeend', '<div style="font-size:12px;color:var(--ink-40);margin:14px 0 0">Auf diesem Gerät gespeichert (auch ohne Verbindung):</div>'
+      + bwAblageHTML(bw) + (await saArchivHTML()));
+  }catch(e){ console.warn('Selbstauskunft: lokale Listen', e); }
+}
+/* SP-02/06/07: Datensätze, die keine Ansicht mehr zeigt. Es wird nichts automatisch gelöscht. */
+const NZ_BEREICHE = { mieter:'Mieter', interessenten:'Interessenten', aufgaben:'Aufgaben', maengel:'Mängel', reparaturen:'Reparaturen', versorger:'Versorgerverträge',
+  zaehler:'Zähler', protokolle:'Protokolle', dokumente:'Unterlagen', kautionsquittungen:'Kautionsquittungen', mv_entwuerfe:'Mietvertrags-Entwürfe', brief_entwuerfe:'Briefentwürfe' };
+async function nichtZugeordnetSammeln(){
+  const haeuser = new Set(OBJEKTE.map(o => o.id)); haeuser.add(ALLGEMEIN_ID);
+  const lade = async s => (await idbGetAll(s).catch(() => [])).filter(x => x && x.id && !x._deleted && !x._papierkorb);
+  const mieter = await lade('mieter'), inter = await lade('interessenten');
+  const mIds = new Set(mieter.map(m => m.id)), iIds = new Set(inter.map(k => k.id));
+  const funde = [];
+  const dazu = (store, x, grund) => funde.push({ store, id:x.id, grund,
+    name:String(x.titel || x.name || x.mieter || x.mieterName || x.anbieter || x.betreff || x.bezeichnung || x.beschreibung || x.id).slice(0, 90),
+    datum:x.geaendert || x.erstellt || x.erstelltAm || x.datum || '' });
+  const hausGrund = x => !x.objektId ? 'ohne Haus' : (!haeuser.has(x.objektId) ? 'Haus unbekannt' : '');
+  for(const m of mieter){ const g = hausGrund(m); if(g) dazu('mieter', m, g); }
+  for(const k of inter){ if(k.objektId && !haeuser.has(k.objektId)) dazu('interessenten', k, 'Haus unbekannt'); }
+  for(const s of ['aufgaben', 'maengel', 'reparaturen', 'versorger', 'zaehler', 'protokolle']){
+    for(const x of await lade(s)){ const g = hausGrund(x); if(g) dazu(s, x, g); }
+  }
+  for(const d of await lade('dokumente')){
+    if(d.mieterId){ if(!mIds.has(d.mieterId)) dazu('dokumente', d, 'Mieter gelöscht'); }
+    else if(d.interessentId){ if(!iIds.has(d.interessentId)) dazu('dokumente', d, 'Interessent gelöscht'); }
+    else { const g = hausGrund(d); if(g) dazu('dokumente', d, g + ', ohne Mieter'); }
+  }
+  for(const s of ['kautionsquittungen', 'mv_entwuerfe', 'brief_entwuerfe']){
+    for(const x of await lade(s)){ if(x.mieterId && !mIds.has(x.mieterId)) dazu(s, x, 'Mieter gelöscht'); }
+  }
+  return funde;
+}
+async function modalNichtZugeordnet(){
+  if(!istSystemAdmin()){ toast('Nur für Admins'); return; }   // A488 (SP-27)
+  const funde = await nichtZugeordnetSammeln();
+  window._nzFunde = funde;
+  const gruppen = {};
+  for(const f of funde) (gruppen[f.store] = gruppen[f.store] || []).push(f);
+  const tag = v => { const d = v ? new Date(zeitWert(v) || v) : null; return d && !isNaN(d) ? d.toLocaleDateString('de-DE') : ''; };
+  showModal(`<div class="m-title"><i class="ti ti-map-pin-question"></i> Nicht zugeordnete Daten</div>
+    <div style="font-size:12px;color:var(--ink-60);line-height:1.5;margin-bottom:10px">Datensätze, die gespeichert sind, aber in keiner Ansicht mehr erscheinen – etwa weil das Haus
+      fehlt oder der Mieter bzw. Interessent gelöscht wurde. Es wird nichts automatisch gelöscht. Vor dem Löschen bitte Aufbewahrungspflichten beachten.</div>
+    ${funde.length ? Object.keys(gruppen).map(s => `<div class="f-section-title" style="margin-top:10px">${esc(NZ_BEREICHE[s] || s)} (${gruppen[s].length})</div>`
+      + gruppen[s].map(f => `<div id="nz_${escAttr(f.store)}_${escAttr(f.id)}" style="display:flex;gap:8px;align-items:center;border:1px solid var(--line);border-radius:10px;padding:8px 10px;margin:5px 0;background:var(--white)">
+        <div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600;overflow-wrap:anywhere">${esc(f.name)}</div>
+          <div style="font-size:11px;color:var(--ink-40)">${esc(f.grund)}${tag(f.datum) ? ' · ' + esc(tag(f.datum)) : ''}</div></div>
+        <button class="btn btn-sm btn-danger" data-action-click="nichtZugeordnetLoeschen" data-arg="${escAttr(f.store)}" data-arg2="${escAttr(f.id)}" aria-label="Löschen"><i class="ti ti-trash"></i></button>
+      </div>`).join('')).join('') : '<div class="empty"><i class="ti ti-circle-check"></i><p>Alles zugeordnet – keine Funde.</p></div>'}
+    <button class="btn btn-full" style="margin-top:12px" data-action-click="closeModal">Schließen</button>`);
+}
+async function nichtZugeordnetLoeschen(store, id){
+  if(!istSystemAdmin()){ toast('Nur für Admins'); return; }   // A488 (SP-27)
+  const f = (window._nzFunde || []).find(x => x.store === store && x.id === id);
+  if(!f){ toast('Eintrag nicht gefunden'); return; }
+  if(!confirm('„' + f.name + '“ (' + (NZ_BEREICHE[store] || store) + ') endgültig löschen?\n\nDer Datensatz wird auf allen Geräten entfernt.')) return;
+  try{
+    if(store === 'dokumente') await dokVollstaendigLoeschen(id); else await deleteMitTombstone(store, id);
+  }catch(e){ console.warn('Nicht zugeordnet löschen', e); toast('Löschen fehlgeschlagen.'); return; }
+  syncSoon();
+  window._nzFunde = (window._nzFunde || []).filter(x => !(x.store === store && x.id === id));
+  const z = document.getElementById('nz_' + store + '_' + id); if(z) z.remove();
+  toast('Gelöscht');
+}
+async function nichtZugeordnetHinweis(){
+  const el = document.getElementById('nzHinweis'); if(!el) return;
+  try{ const n = (await nichtZugeordnetSammeln()).length; el.textContent = n ? n + ' Datensätze ohne Zuordnung gefunden.' : 'Keine Funde.'; }catch(_){ el.textContent = ''; }
+}
+registerActions({ modalNichtZugeordnet, nichtZugeordnetLoeschen });
+
+/* ═══════════════════════════════════════════════════════════════════════
+   A486 (10.11.2026) – Interessenten ohne Haus, Mietvertrag an leerer Wohnung, Archiv der Selbstauskünfte
+   Meldung des Nutzers 10.11.2026, 14:13: Interessent aus einer Selbstauskunft angelegt und nicht wiedergefunden.
+   Ursache: Interessenten erscheinen nur im Reiter „Interessenten“ IHRES Hauses. Erkennt die Selbstauskunft das Haus nicht
+   (Freitext, Aushang), wurde der Interessent ohne Haus gespeichert und war nirgends mehr zu sehen - nicht geloescht.
+   (1) Jedes Haus zeigt unter „Interessenten“ zusaetzlich „Noch keinem Haus zugeordnet“ mit „Diesem Haus zuordnen“.
+   (2) „Als Interessent“: Haus nicht erkannt -> die App fragt nach Haus und optional Wohnung (oder bewusst ohne Haus).
+   (3) Neuvermietungs-Karte einer Wohnung: „Mietvertrag erstellen“ mit Auswahl aus den Interessenten dieser Wohnung,
+       dieses Hauses und ohne Haus (oder ohne Interessent).
+   (4) Reiter Selbstauskuenfte: „Übernommene Selbstauskünfte“ (lokales Archiv) mit Suche, Ansehen, Sprung zum Interessenten;
+       Auskuenfte ohne Interessent lassen sich loeschen (Art. 17 DSGVO - bis A485 blieben sie beim Loeschen des Interessenten liegen).
+   ═══════════════════════════════════════════════════════════════════════ */
+function interessentOffen(k){ return !!k && !['uebernommen', 'absage'].includes(k.status); }
+function a486Datum(x){ const d = x ? new Date(x) : null; return d && !isNaN(d) ? d.toLocaleDateString('de-DE') : ''; }
+function a486Objekte(){ return OBJEKTE.filter(o => !o.privat || o.sichtbarFuer?.includes(CU?.id)); }
+
+/* (1) Interessenten ohne Haus – im Reiter „Interessenten“ jedes Hauses */
+function interessentOhneHausHTML(liste, objektId){
+  if(!objektId || !liste || !liste.length) return '';
+  const name = (getObj(objektId) || {}).name || 'dieses Haus';
+  return `<div class="f-section-title" style="margin-top:18px"><i class="ti ti-home-question"></i> Noch keinem Haus zugeordnet (${liste.length})</div>
+    <div style="font-size:11px;color:var(--ink-40);line-height:1.5;margin:-2px 0 8px">Diese Interessenten erscheinen in jedem Haus, bis sie einem zugeordnet sind.</div>`
+    + liste.map(k => `<div style="background:var(--white);border:1px dashed var(--ink-20,#ccc);border-radius:var(--radius);padding:12px;margin-bottom:8px">
+      <div style="font-size:14px;font-weight:600;color:var(--ink)">${esc(k.name || '(ohne Name)')}</div>
+      <div style="font-size:12px;color:var(--ink-40);margin-top:2px">${k.objektName ? 'Angabe: „' + esc(k.objektName) + '“ · ' : ''}erfasst ${esc(a486Datum(k.erstellt))}
+        ${k.personen ? ' · ' + esc(String(k.personen)) + ' Pers.' : ''}${k.mietbeginn ? ' · ab ' + esc(datumAnzeige(k.mietbeginn)) : ''}</div>
+      ${(k.telefon || k.email) ? `<div style="font-size:12px;color:var(--ink-60);margin-top:3px;overflow-wrap:anywhere">${esc([k.telefon, k.email].filter(Boolean).join(' · '))}</div>` : ''}
+      <div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:8px">
+        <button class="btn btn-sm" onclick="modalInteressentDetail('${escJs(k.id)}')"><i class="ti ti-eye"></i> Details</button>
+        <button class="btn btn-sm btn-copper" data-action-click="interessentHausZuordnen" data-arg="${escAttr(k.id)}" data-arg2="${escAttr(objektId)}"><i class="ti ti-home-plus"></i> ${esc(name)} zuordnen</button>
+        <button class="btn btn-sm" onclick="mvStartAusInteressent('${escJs(k.id)}')"><i class="ti ti-file-text"></i> Mietvertrag erstellen</button>
+        <button class="btn btn-sm btn-danger" onclick="deleteInteressent('${escJs(k.id)}')"><i class="ti ti-trash"></i></button>
+      </div></div>`).join('');
+}
+async function interessentHausZuordnen(id, objektId){
+  if(!istVerwalter()){ toast('Nur für Verwalter'); return; }
+  const k = await idbGet('interessenten', id).catch(() => null);
+  const o = getObj(objektId);
+  if(!k || !o){ toast('Nicht gefunden'); return; }
+  k.objektId = objektId; k.objektName = o.name; k.geaendert = nowIso();
+  await idbPut('interessenten', k);
+  syncSoon();
+  toast('„' + (k.name || 'Interessent') + '“ ist jetzt ' + o.name + ' zugeordnet – bitte noch die Wohnung wählen.', 5000);
+  if(typeof curPage !== 'undefined' && curPage === 'objekt') await renderObjTab('interessenten');
+  await modalInteressentNeu(objektId, id);   // Wohnung waehlen (Formular „Bearbeiten“)
+}
+
+/* (2) „Als Interessent“: Haus waehlen, wenn die Selbstauskunft es nicht eindeutig nennt.
+   Liefert {objektId, weNr} ('' = bewusst ohne Haus) oder null (Abbruch – dann wird nichts uebernommen). */
+function saHausWaehlen(rec){
+  return new Promise(fertig => {
+    window._saHausWahl = fertig;
+    showModal(`
+      <div class="m-title"><i class="ti ti-home-question"></i> Für welches Haus?</div>
+      <div style="font-size:13px;line-height:1.5;margin-bottom:10px">Die Selbstauskunft von <b>${esc(rec.name || '(ohne Name)')}</b> nennt
+        ${rec.objektName ? '„' + esc(rec.objektName) + '“' : 'kein Haus'}. Die App kann das keinem Haus zuordnen.</div>
+      <div class="f"><label for="saHausObj">Haus</label>
+        <select id="saHausObj" data-action-change="saHausObjGewechselt">
+          <option value="">– ohne Haus übernehmen (später zuordnen) –</option>
+          ${a486Objekte().map(o => `<option value="${escAttr(o.id)}">${esc(o.name)}</option>`).join('')}
+        </select></div>
+      <div class="f" id="saHausWeWrap" style="display:none"><label for="saHausWe">Wohnung (optional)</label>
+        <select id="saHausWe"><option value="">– noch offen –</option></select></div>
+      <div style="font-size:11px;color:var(--ink-40);margin:-2px 0 10px">Ohne Haus erscheint der Interessent unter „Interessenten“ jedes Hauses im Block „Noch keinem Haus zugeordnet“.</div>
+      <div class="f-row">
+        <button class="btn btn-copper btn-full" data-action-click="saHausBestaetigen"><i class="ti ti-user-plus"></i> Übernehmen</button>
+        <button class="btn btn-full" data-action-click="saHausAbbrechen">Abbrechen</button></div>`);
+  });
+}
+async function saHausObjGewechselt(){
+  const id = (document.getElementById('saHausObj') || {}).value || '';
+  const wrap = document.getElementById('saHausWeWrap'), sel = document.getElementById('saHausWe');
+  if(!wrap || !sel) return;
+  wrap.style.display = id ? 'block' : 'none';
+  sel.innerHTML = '<option value="">– noch offen –</option>' + (id ? await interessentWohnungsOptionen(id, '') : '');
+}
+function saHausBestaetigen(){
+  const objektId = (document.getElementById('saHausObj') || {}).value || '';
+  const weNr = objektId ? ((document.getElementById('saHausWe') || {}).value || '') : '';
+  const f = window._saHausWahl; window._saHausWahl = null;
+  closeModal();
+  if(f) f({ objektId, weNr });
+}
+function saHausAbbrechen(){
+  const f = window._saHausWahl; window._saHausWahl = null;
+  closeModal();
+  if(f) f(null);
+}
+
+/* (3) Mietvertrag an einer leeren bzw. gekuendigten Wohnung – Interessent auswaehlen */
+async function mvAusWohnungModal(objektId, weNr){
+  if(!istVerwalter()){ toast('Nur für Verwalter'); return; }
+  const alle = (await idbGetAll('interessenten').catch(() => [])).filter(interessentOffen)
+    .sort((a, b) => zeitWert(b.geaendert || b.erstellt) - zeitWert(a.geaendert || a.erstellt));
+  const we = weSchluessel(weNr);
+  const gruppen = [
+    ['Für diese Wohnung', alle.filter(k => k.objektId === objektId && k.weNr && weSchluessel(k.weNr) === we)],
+    ['Für dieses Haus', alle.filter(k => k.objektId === objektId && !(k.weNr && weSchluessel(k.weNr) === we))],
+    ['Noch keinem Haus zugeordnet', ohneHausSichtbar() ? alle.filter(k => !k.objektId) : []]];   // A488 (SP-28)
+  const zeile = k => `<label style="display:flex;gap:8px;align-items:flex-start;font-size:13px;padding:5px 0;cursor:pointer">
+      <input type="radio" name="mvWohnWahl" value="${escAttr(k.id)}" style="width:16px;height:16px;flex-shrink:0;margin-top:2px">
+      <span style="flex:1;min-width:0;overflow-wrap:anywhere"><b>${esc(k.name || '(ohne Name)')}</b>
+        <span style="color:var(--ink-40)">· ${esc(interessentStatusInfo(k.status, k).label)}${k.weNr ? ' · WE ' + esc(String(k.weNr)) : ''}${!k.objektId && k.objektName ? ' · „' + esc(k.objektName) + '“' : ''}${k.mietbeginn ? ' · ab ' + esc(datumAnzeige(k.mietbeginn)) : ''}</span></span></label>`;
+  window._mvWohnung = { objektId, weNr };
+  showModal(`
+    <div class="m-title"><i class="ti ti-file-text"></i> Mietvertrag erstellen</div>
+    <div style="font-size:13px;margin-bottom:8px">${esc(await wohnungText(objektId, weNr))}</div>
+    <div style="font-size:12px;color:var(--ink-60);margin-bottom:6px">Mit wessen Angaben? Die Daten werden in den Vertrag übernommen und lassen sich dort ändern.</div>
+    ${gruppen.map(([titel, liste]) => liste.length ? `<div class="f-section-title" style="margin-top:8px">${esc(titel)} (${liste.length})</div>${liste.map(zeile).join('')}` : '').join('')}
+    <label style="display:flex;gap:8px;align-items:center;font-size:13px;padding:8px 0 4px;cursor:pointer">
+      <input type="radio" name="mvWohnWahl" value="" ${alle.length ? '' : 'checked'} style="width:16px;height:16px"> <span>Ohne Interessent (leeres Formular)</span></label>
+    <div style="font-size:11px;color:var(--ink-40);margin:4px 0 10px">Ein Interessent ohne Haus wird dabei dieser Wohnung zugeordnet.</div>
+    <div class="f-row">
+      <button class="btn btn-copper btn-full" data-action-click="mvAusWohnungStarten"><i class="ti ti-arrow-right"></i> Weiter zum Mietvertrag</button>
+      <button class="btn btn-full" data-action-click="closeModal">Abbrechen</button></div>`);
+}
+async function mvAusWohnungStarten(){
+  const w = window._mvWohnung; if(!w) return;
+  const gewaehlt = document.querySelector('input[name="mvWohnWahl"]:checked');
+  if(!gewaehlt){ toast('Bitte einen Interessenten oder „Ohne Interessent“ wählen.'); return; }
+  const id = gewaehlt.value;
+  try{ closeModal(); }catch(_){}
+  if(!id){ await mvOeffneGenerator({ vorbefuellung:{ objektId:w.objektId, weNr:w.weNr } }); return; }
+  const k = await idbGet('interessenten', id).catch(() => null);
+  if(!k){ toast('Interessent nicht gefunden'); return; }
+  if(!k.objektId){   // ohne Haus: dieser Wohnung zuordnen, damit er danach im Haus steht
+    k.objektId = w.objektId; k.objektName = (getObj(w.objektId) || {}).name || ''; k.weNr = w.weNr; k.geaendert = nowIso();
+    await idbPut('interessenten', k); syncSoon();
+  }
+  await mvOeffneGenerator({ quelleInteressentId:k.id, vorbefuellung:Object.assign({}, k, { objektId:w.objektId, weNr:w.weNr }) });
+}
+
+/* (4) Uebernommene Selbstauskuenfte – lokales Archiv (Store selbstauskuenfte), wie die abgelehnten Bewerbungen */
+async function saArchivLaden(){
+  const sa = (await idbGetAll('selbstauskuenfte').catch(() => [])).filter(s => s && s.id && !s._deleted);
+  const inter = await idbGetAll('interessenten').catch(() => []);
+  return sa.map(s => {
+    const k = inter.find(x => x && x.quelleId === s.id) || null;
+    const b = (s.daten && s.daten.basis) || {};
+    return { id:s.id, name:s.anzeigeName || [b.vorname, b.nachname].filter(Boolean).join(' '), email:b.email || '', objektName:s.objektName || '', objektId:s.objektId || '',
+      notiz:k ? (k.objektName || '') : '', zeit:s.zeitstempel || s.geaendert || '', k };
+  }).filter(saArchivDarf).sort((a, b) => zeitWert(b.zeit) - zeitWert(a.zeit));   // A488 (SP-28)
+}
+function saArchivEintragHTML(e){
+  const k = e.k;
+  const stand = k ? interessentStatusInfo(k.status, k).label + ' · ' + (k.objektId ? ((getObj(k.objektId) || {}).name || k.objektName || '') + (k.weNr ? ' WE ' + k.weNr : '') : 'noch keinem Haus zugeordnet')
+    : 'kein Interessent mehr';
+  return `<div style="border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:8px;background:var(--white)">
+    <b style="overflow-wrap:anywhere">${esc(e.name || '(ohne Namen)')}</b>
+    <div style="font-size:12px;color:var(--ink-60);overflow-wrap:anywhere">${esc([e.email, e.objektName].filter(Boolean).join(' · '))}</div>
+    <div style="font-size:12px;color:var(--ink-40)">eingegangen ${esc(a486Datum(e.zeit))} · ${esc(stand)}</div>
+    <div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:6px">
+      ${k ? `<button class="btn btn-sm btn-copper" onclick="modalInteressentDetail('${escJs(k.id)}')"><i class="ti ti-user"></i> Interessent öffnen</button>` : ''}
+      <button class="btn btn-sm" data-action-click="saArchivAnsehen" data-arg="${escAttr(e.id)}"><i class="ti ti-file-description"></i> Selbstauskunft ansehen</button>
+      ${k ? '' : `<button class="btn btn-sm btn-danger" data-action-click="saArchivLoeschen" data-arg="${escAttr(e.id)}" data-arg2="${escAttr(e.name || '')}"><i class="ti ti-trash"></i> Löschen</button>`}
+    </div></div>`;
+}
+async function saArchivHTML(){
+  const liste = await saArchivLaden();
+  window._saArchiv = liste;
+  const leer = '<div style="font-size:12px;color:var(--ink-40);padding:6px 0">Noch keine übernommenen Selbstauskünfte.</div>';
+  return `<details class="sa-archiv" style="margin-top:18px">
+    <summary class="f-section-title" style="cursor:pointer"><i class="ti ti-archive"></i> Übernommene Selbstauskünfte <span id="saArchivAnzahl">(${liste.length})</span></summary>
+    <div style="font-size:11px;color:var(--ink-40);line-height:1.5;margin:4px 0 8px">Selbstauskünfte, die als Interessent übernommen wurden. Entsteht kein
+      Mietverhältnis, sind sie zu löschen (Art. 5 Abs. 1 lit. e DSGVO): erst den Interessenten löschen, dann hier die Selbstauskunft.</div>
+    <input type="search" id="saArchivSuche" placeholder="Suche: Name, E-Mail, Objekt" autocomplete="off" data-action-input="saArchivSuche" style="width:100%;margin-bottom:8px">
+    <div id="saArchivListe">${liste.length ? liste.map(saArchivEintragHTML).join('') : leer}</div>
+  </details>`;
+}
+function saArchivSuche(){
+  const el = document.getElementById('saArchivListe'); if(!el) return;
+  const text = this && this.value != null ? this.value : '';
+  const t = bwTrefferListe(window._saArchiv || [], text);
+  el.innerHTML = t.length ? t.map(saArchivEintragHTML).join('')
+    : `<div style="font-size:12px;color:var(--ink-40);padding:6px 0">${text.trim() ? 'Kein Treffer.' : 'Noch keine übernommenen Selbstauskünfte.'}</div>`;
+}
+async function saArchivAnsehen(id){
+  const s = await idbGet('selbstauskuenfte', id).catch(() => null);
+  if(!s || !s.daten){ toast('Selbstauskunft nicht gefunden'); return; }
+  showModal(`<div class="m-title"><i class="ti ti-file-description"></i> Selbstauskunft ${esc(s.anzeigeName || '')}</div>
+    <div style="font-size:12px;color:var(--ink-40);margin-bottom:8px">eingegangen ${esc(a486Datum(s.zeitstempel))}${s.objektName ? ' · ' + esc(s.objektName) : ''}</div>
+    ${saAuskunftHTML(s.daten)}
+    <button class="btn btn-full" style="margin-top:12px" data-action-click="closeModal">Schließen</button>`);
+}
+async function saArchivLoeschen(id, name){
+  const k = (await idbGetAll('interessenten').catch(() => [])).find(x => x && x.quelleId === id);
+  if(k){ toast('Zu dieser Selbstauskunft gibt es noch einen Interessenten – erst ihn löschen.', 5000); return; }
+  if(!confirm('Selbstauskunft von „' + (name || '') + '“ endgültig löschen?\n\nSie wird auf allen Geräten entfernt.')) return;
+  try{ await deleteMitTombstone('selbstauskuenfte', id); syncSoon(); }catch(_){ toast('Löschen fehlgeschlagen.'); return; }
+  window._saArchiv = (window._saArchiv || []).filter(x => x.id !== id);
+  saArchivSuche.call(document.getElementById('saArchivSuche'));
+  const z = document.getElementById('saArchivAnzahl'); if(z) z.textContent = '(' + window._saArchiv.length + ')';
+  toast('Selbstauskunft gelöscht');
+}
+registerActions({ interessentHausZuordnen, saHausObjGewechselt, saHausBestaetigen, saHausAbbrechen, mvAusWohnungModal, mvAusWohnungStarten,
+  saArchivSuche, saArchivAnsehen, saArchivLoeschen });
+
+/* ═══════════════════════════════════════════════════════════════════════
+   A484 (10.11.2026) – Abgleich und Wiederherstellung absichern (Architekturprüfung, Fahrplan 1–5)
+   (1) Hochladen nur nach erfolgreichem Zusammenführen; eine unlesbare Datei auf OneDrive gilt nicht
+       mehr als „gelesen“ (Reparatur nur über die bestätigte Schaltfläche, v253).
+   (2) Geräteuhr: Die App misst beim Hochladen die Abweichung zur OneDrive-Serverzeit und stempelt
+       Änderungen danach mit der korrigierten Zeit; Zukunftsstempel werden beim Abgleich gekappt.
+   (3) „Keine Änderungen“ heißt jetzt: Die Datei auf OneDrive hat schon genau den Stand dieses Geräts
+       (Fingerabdruck der Datei, dauerhaft je eTag gemerkt) – nicht mehr „seit dem letzten eigenen Upload
+       unverändert“. Eine ältere Datei wird damit wieder überschrieben.
+   (4) Import „Ersetzen“ behält die Zeitstempel der Sicherung; „Wiederherstellen“ nennt vorher, wie viele
+       neuere Datensätze überschrieben werden.
+   (5) Hochladen mit If-Match (eTag der gelesenen Datei); hat ein anderes Gerät dazwischen hochgeladen,
+       liest die App neu, führt zusammen und versucht es erneut (höchstens 3 Runden).
+   ═══════════════════════════════════════════════════════════════════════ */
+const UHR_TOLERANZ_MS   = 2 * 60 * 1000;    // darunter wird nicht korrigiert (Messung enthält die Antwortzeit)
+const UHR_HINWEIS_MS    = 5 * 60 * 1000;    // ab hier Hinweis an den Nutzer
+const SYNC_RUNDEN_MAX   = 3;                // Wiederholungen nach HTTP 412
+const SYNC_DATEI_SCHLUESSEL = 'a484SyncDatei';   // localStorage: {eTag, hash} der zuletzt gelesenen/geschriebenen Datei
+const SYNC_UHR_SCHLUESSEL   = 'a484Uhr';         // localStorage: {abw, am} gemessene Abweichung der Geräteuhr
+
+/* Gemessene Abweichung der Geräteuhr in ms (positiv = Gerät geht vor). 0, solange nichts gemessen ist. */
+function uhrAbweichungMs(){
+  try{
+    const u = JSON.parse(localStorage.getItem(SYNC_UHR_SCHLUESSEL) || 'null');
+    return (u && typeof u.abw === 'number' && isFinite(u.abw)) ? u.abw : 0;
+  }catch(_){ return 0; }
+}
+function uhrKorrekturMs(){ const a = uhrAbweichungMs(); return Math.abs(a) > UHR_TOLERANZ_MS ? a : 0; }
+/* „Jetzt“ nach Serverzeit (bei richtig gehender Uhr = Date.now()). */
+function syncEchtJetzt(){
+  try{ return Date.now() - uhrKorrekturMs(); }
+  catch(_){ return Date.now(); }   // z. B. Aufruf beim Start, bevor die Konstanten oben stehen
+}
+/* Zeitstempel für Abgleich-Stempel (updatedAt, Grabsteine, Feldgrabsteine). nowIso() bleibt für Anzeige-/Fachfelder. */
+function stempelJetzt(){ return new Date(syncEchtJetzt()).toISOString(); }
+
+/* Abweichung aus der Antwort eines Uploads messen (driveItem.lastModifiedDateTime = Serverzeit). */
+function uhrMessen(item, lokalMs){
+  const server = item && item.lastModifiedDateTime ? Date.parse(item.lastModifiedDateTime) : NaN;
+  if(!isFinite(server)) return;
+  const abw = lokalMs - server;
+  try{ localStorage.setItem(SYNC_UHR_SCHLUESSEL, JSON.stringify({abw, am: new Date(server).toISOString()})); }catch(_){}
+  if(Math.abs(abw) > UHR_HINWEIS_MS && !window._a484UhrHinweis){
+    window._a484UhrHinweis = true;
+    const min = Math.round(Math.abs(abw) / 60000);
+    const dauer = min >= 120 ? (Math.round(min / 60) + ' Stunden') : (min + ' Minuten');
+    try{ toast('Die Uhr dieses Geräts geht etwa ' + dauer + (abw > 0 ? ' vor' : ' nach')
+      + '. Bitte Datum und Uhrzeit automatisch einstellen. Beim Abgleich rechnet die App die Abweichung heraus.', 9000); }catch(_){}
+  }
+}
+
+/* Zukunftsstempel eines Datensatzes kappen. seite 'lokal': eigener Datensatz – mit gemessener Abweichung
+   zurückrechnen, sonst auf den letzten Abgleich (+1 ms) setzen, damit eine spätere Änderung eines richtig
+   gehenden Geräts gewinnt. seite 'remote': fremder Datensatz – mehr als 24 h in der Zukunft wird wie bei
+   Grabsteinen auf „jetzt“ gesetzt. Liefert dasselbe Objekt oder eine Kopie mit neuem updatedAt. */
+function syncZukunftKappen(rec, seite, lastSyncWert){
+  if(!rec || typeof rec !== 'object' || !rec.updatedAt) return rec;
+  const s = zeitWert(rec.updatedAt);
+  if(!s) return rec;
+  const jetzt = syncEchtJetzt();
+  let neu = null;
+  if(seite === 'lokal'){
+    if(s <= jetzt + UHR_TOLERANZ_MS) return rec;
+    const korr = uhrKorrekturMs();
+    if(korr > 0 && s - korr <= jetzt + UHR_TOLERANZ_MS) neu = s - korr;
+    else{
+      const ls = Math.min(Number(lastSyncWert) || 0, jetzt);
+      neu = ls ? Math.min(jetzt, ls + 1) : jetzt;
+    }
+  } else {
+    if(s <= jetzt + GRAB_ZUKUNFT_MS) return rec;
+    neu = jetzt;
+  }
+  window._a484Gekappt = (window._a484Gekappt || 0) + 1;
+  return Object.assign({}, rec, { updatedAt: new Date(neu).toISOString() });
+}
+/* Grabstein-Zeitpunkt eines eigenen Grabsteins zurückrechnen (Gegenstück zu syncZukunftKappen 'lokal'). */
+function syncGrabLokalKappen(v, lastSyncWert){
+  const s = zeitWert(v);
+  const jetzt = syncEchtJetzt();
+  if(!s || s <= jetzt + UHR_TOLERANZ_MS) return v;
+  const korr = uhrKorrekturMs();
+  if(korr > 0 && s - korr <= jetzt + UHR_TOLERANZ_MS) return new Date(s - korr).toISOString();
+  const ls = Math.min(Number(lastSyncWert) || 0, jetzt);
+  return new Date(ls ? Math.min(jetzt, ls + 1) : jetzt).toISOString();
+}
+async function syncLastSyncWert(){
+  try{ const ls = await idbGet('settings','lastSync'); return zeitWert(ls && ls.value) || 0; }catch(_){ return 0; }
+}
+
+/* Fingerabdruck unabhängig von der Reihenfolge der Felder (Geräte schreiben Felder beim Zusammenführen
+   in anderer Reihenfolge). Ohne updatedAt/updatedBy des Kopfes. Fällt Web Crypto aus: eindeutiger Wert
+   (= hochladen). */
+async function syncHashKanonisch(daten){
+  try{
+    const { updatedAt:_z, updatedBy:_v, ...inhalt } = daten || {};
+    const txt = JSON.stringify(inhalt, (k, v) => (v && typeof v === 'object' && !Array.isArray(v))
+      ? Object.keys(v).sort().reduce((a, key) => { a[key] = v[key]; return a; }, {}) : v);
+    const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(txt));
+    return Array.from(new Uint8Array(d), b => b.toString(16).padStart(2,'0')).join('');
+  }catch(e){
+    console.warn('Sync-Fingerabdruck nicht berechenbar - es wird hochgeladen:', e && e.message);
+    return 'ohne-' + Date.now() + '-' + Math.random();
+  }
+}
+function syncDateiMerkerLesen(){
+  try{ const m = JSON.parse(localStorage.getItem(SYNC_DATEI_SCHLUESSEL) || 'null'); return (m && m.eTag && m.hash) ? m : null; }catch(_){ return null; }
+}
+function syncDateiMerkerSetzen(eTag, hash){
+  try{
+    if(eTag && hash) localStorage.setItem(SYNC_DATEI_SCHLUESSEL, JSON.stringify({eTag, hash}));
+    else localStorage.removeItem(SYNC_DATEI_SCHLUESSEL);
+  }catch(_){}
+}
+
+/* Wiederherstellen: wie viele Datensätze dieses Geräts sind neuer als ihr Gegenstück in der Sicherung? */
+async function wiederherstellenNeuereZaehlen(backup, stores){
+  const je = {}; let gesamt = 0;
+  for(const s of stores){
+    if(s === 'settings') continue;
+    const stempel = new Map();
+    for(const it of (backup[s] || [])) if(it && backupIdGueltig(it.id)) stempel.set(it.id, recZeit(it));
+    if(!stempel.size) continue;
+    let n = 0;
+    for(const lok of await idbGetAll(s).catch(() => [])){
+      if(lok && stempel.has(lok.id) && recZeit(lok) > stempel.get(lok.id)) n++;
+    }
+    if(n){ je[s] = n; gesamt += n; }
+  }
+  return { gesamt, je };
+}
+
+// ── Sync zu OneDrive (A484: ersetzt die Fassung bis A483) ─────────────────
+async function syncToOneDrive() {
+  if (istHmSyncGeraet()) return syncToOneDriveHM();   // v196 (A3)
+  if (syncInProgress) return;
+  const token = await odGetToken();
+  if (!token) {   // v251: Grund kommt aus odGetToken; Fallback nur wenn gar nicht angemeldet
+    if (!odTokens) setSyncStatus('offline', {richtung:'hochgeladen', fehler:'Nicht mit OneDrive angemeldet'});
+    return;
+  }
+  syncInProgress = true;
+  setSyncStatus('pending');
+  try {
+    for (let runde = 1; runde <= SYNC_RUNDEN_MAX; runde++) {
+      const erg = await syncHochladenRunde(token);
+      if (erg !== 'erneut') break;
+      if (runde === SYNC_RUNDEN_MAX) setSyncStatus('offline', {richtung:'hochgeladen',
+        fehler:'Die Datei auf OneDrive wurde während des Abgleichs mehrfach von einem anderen Gerät geändert – nächster Versuch beim nächsten Abgleich'});
+    }
+  } catch(e) {
+    console.warn('Sync Upload:', e);
+    setSyncStatus('offline', {richtung:'hochgeladen', fehler:String(e && e.message || e)});   // v248
+  }
+  syncInProgress = false;
+};
+
+/* Eine Runde: Datei prüfen, ggf. zusammenführen, eigenen Stand hochladen.
+   Rückgabe 'fertig' (auch bei Abbruch mit Statusmeldung) oder 'erneut' (HTTP 412: Datei hat sich geändert). */
+async function syncHochladenRunde(token){
+  const kopf = {'Authorization':'Bearer '+token};
+  /* v252/v253: Nur wenn der Stand auf OneDrive nachweislich bekannt ist (gelesen ODER echtes 404), wird
+     hochgeladen. A484: „gelesen“ erst NACH erfolgreichem Parsen - bis A483 stand der Wert schon vor
+     head.json(), eine halb geschriebene Datei wurde dadurch still überschrieben (Szenario S5). */
+  let vorpruefung = 'unbekannt', grund = '', korrupt = false, eTag = null, remoteHash = null;
+  try {
+    // 1) Kopfdaten: eTag fuer If-Match. Schlaegt das fehl, geht es wie bis A483 nur ueber den Inhalt weiter.
+    let meta = null;
+    try {
+      const m = await fetchMitTimeout(odItemUrl(OD_FILE_URL) + '?$select=id,size,eTag,lastModifiedDateTime', {headers:kopf}, OD_SYNC_TIMEOUT);
+      if (m.ok) meta = await m.json();
+    } catch(_){ meta = null; }
+    eTag = (meta && meta.eTag) || null;
+    const merker = syncDateiMerkerLesen();
+    const lsVorher = await idbGet('settings','lastSync').catch(()=>null);
+    if (eTag && merker && merker.eTag === eTag && lsVorher && lsVorher.value) {
+      // Datei unveraendert seit unserem letzten Lesen/Hochladen - Inhalt und Fingerabdruck bekannt
+      // (ohne lastSync, z. B. nach einem Import, wird immer gelesen und zusammengefuehrt).
+      vorpruefung = 'gelesen'; remoteHash = merker.hash;
+    } else {
+      // 2) Inhalt lesen
+      const head = await fetchMitTimeout(OD_FILE_URL, {headers:kopf}, OD_SYNC_TIMEOUT);
+      if (head.ok) {
+        const text = await head.text();
+        let remote = null;
+        try { remote = text.trim() ? JSON.parse(text) : null; } catch(_){ remote = null; }
+        if (!remote || typeof remote !== 'object' || Array.isArray(remote)) {
+          grund = text.trim() ? 'Datei auf OneDrive unvollständig/beschädigt' : 'Datei auf OneDrive ist leer';
+          korrupt = true;
+        } else {
+          vorpruefung = 'gelesen';
+          remoteHash = await syncHashKanonisch(remote);
+          const ls = await idbGet('settings','lastSync').catch(()=>null);
+          if ((remote.updatedAt||'') !== (ls?.value||'')) {   // A469 (ZP-13): Datei geaendert, unabhaengig von der Geraeteuhr
+            /* v329 (R31): Die Wiedereintrittssperre bleibt waehrend des Merges gesetzt (siehe dort). */
+            const zus = await syncFromOneDrive();
+            /* A484 (Fahrplan 1): Scheitert das Zusammenfuehren (Speicher voll, Datei beim zweiten Lesen
+               kaputt), wird NICHT hochgeladen. Bis A483 lief der Upload trotzdem - die Datei verlor dann alle
+               Saetze, die dieses Geraet nicht uebernommen hatte (Szenario S7). */
+            if (!zus || zus.ok === false) {
+              setSyncStatus('offline', {richtung:'hochgeladen', korrupt: !!(zus && zus.korrupt),
+                fehler:'Abgebrochen: Zusammenführen fehlgeschlagen (' + ((zus && zus.grund) || 'unbekannt') + ') – kein Hochladen'});
+              return 'fertig';
+            }
+          }
+          if (eTag) syncDateiMerkerSetzen(eTag, remoteHash);
+        }
+      } else if (head.status === 404) {
+        vorpruefung = 'dateiFehlt';          // echte Ersteinrichtung: Upload erlaubt
+        eTag = null;
+      } else {
+        grund = 'HTTP '+head.status;
+      }
+    }
+  } catch(e){ grund = String(e && e.message || e); }
+
+  /* v253: Ist die Serverdatei nachweislich unlesbar, ist genau EIN Upload die richtige Reparatur – aber nur
+     nach ausdruecklicher Bestaetigung (syncReparaturHochladen). */
+  if (vorpruefung === 'unbekannt' && window._syncReparaturForce === true) {
+    console.warn('Reparatur-Upload: Serverstand wird bewusst überschrieben.');
+    vorpruefung = 'reparatur';
+  }
+  if (vorpruefung === 'unbekannt') {
+    console.warn('Upload abgebrochen – Remote-Stand nicht prüfbar:', grund);
+    setSyncStatus('offline', {richtung:'hochgeladen', korrupt,
+      fehler:'Abgebrochen: Stand auf OneDrive nicht prüfbar ('+grund+') – kein Überschreiben'});
+    return 'fertig';
+  }
+
+  // v196 (A3): HM-Aenderungen VOR dem Aufbau des Voll-Backups zurueckholen.
+  await hmRueckwegMergen(token);
+
+  const lastSyncWert = await syncLastSyncWert();
+  const backup = {};
+  for (const s of STORES_SYNC) {
+    backup[s] = await idbGetAll(s);
+    // v180 (H2) / A418 (B12): Geheimnisse und geraetebezogene Schluessel bleiben auf dem Geraet.
+    if (s === 'settings') { backup[s] = backup[s].filter(
+      r => !SETTINGS_GEHEIM.includes(r?.id) && !istGeraeteEinstellung(r?.id)); continue; }
+    // A484 (Fahrplan 2): eigene Zukunftsstempel vor dem Hochladen korrigieren (auch lokal speichern)
+    const liste = backup[s];
+    for (let i = 0; i < liste.length; i++) {
+      const k = syncZukunftKappen(liste[i], 'lokal', lastSyncWert);
+      if (k !== liste[i]) { liste[i] = k; try { await idbPut(s, k, {keepStamp:true}); } catch(e){ console.warn('Zeitstempel korrigieren:', e); } }
+    }
+  }
+  backup.updatedAt = stempelJetzt();
+  backup.updatedBy = odTokens?.user_name || 'Unbekannt';
+  // Tombstones (geräteübergreifend gelöschte Datensätze) mitführen, damit sie nicht zurückgemergt werden
+  try { const tomb=await idbGet('settings','tombstones'); backup.tombstones = tomb?.value || {}; } catch(e){ backup.tombstones={}; }
+  const json = JSON.stringify(backup);
+  /* A4/v254/v368: Groessenwarnung mit echter UTF-8-Groesse und den drei groessten Bereichen. */
+  const jsonBytes = new TextEncoder().encode(json).length;
+  if (jsonBytes > 18 * 1024 * 1024) {
+    let treiber = '';
+    try {
+      const groessen = Object.keys(backup || {})
+        .filter(k => Array.isArray(backup[k]))
+        .map(k => ({ k, mb: new TextEncoder().encode(JSON.stringify(backup[k])).length / 1048576 }))
+        .filter(x => x.mb >= 0.5)
+        .sort((a,b) => b.mb - a.mb)
+        .slice(0, 3);
+      if (groessen.length) treiber = ' – größte Bereiche: '
+        + groessen.map(x => x.k + ' ' + x.mb.toFixed(1) + ' MB').join(', ');
+    } catch(_){}
+    console.warn('Sync-Datenmenge groß:', Math.round(jsonBytes/1048576) + ' MB' + treiber);
+    try { toast('Hinweis: Datenmenge ' + Math.round(jsonBytes/1048576) + ' MB' + treiber
+      + '. Sync kann länger dauern.', 9000); } catch(_){}
+  }
+  /* A484 (Fahrplan 3): uebersprungen wird nur, wenn die Datei auf OneDrive schon genau diesen Stand hat.
+     lastSyncHash === null erzwingt den Upload (Profilwechsel, Reparatur). */
+  const hash = await syncHashKanonisch(backup);
+  if (lastSyncHash !== null && vorpruefung === 'gelesen' && remoteHash && hash === remoteHash) {
+    lastSyncHash = hash;
+    setSyncStatus('ok', {richtung:'hochgeladen', hinweis:'keine Änderungen', bytes:jsonBytes});
+    return 'fertig';
+  }
+  /* A484 (Fahrplan 5): If-Match mit dem eTag der gelesenen Datei. 412 = ein anderes Geraet hat
+     dazwischen hochgeladen -> neu lesen, zusammenfuehren, erneut versuchen. */
+  let schreib;
+  try {
+    schreib = await odDateiSchreiben(token, OD_FILE_URL, json, eTag ? {ifMatch: eTag} : undefined);
+  } catch(e) {
+    if (e && e.status === 412) { syncDateiMerkerSetzen(null); console.info('Abgleich: Datei hat sich geändert (412) – neue Runde'); return 'erneut'; }
+    throw e;
+  }
+  const lokalMs = Date.now();
+  lastSyncHash = hash;
+  window._syncBytes = schreib.bytes;   // v248/v253: echte Bytegröße
+  if (schreib.item) {
+    uhrMessen(schreib.item, lokalMs);
+    syncDateiMerkerSetzen(schreib.item.eTag || null, hash);
+  } else syncDateiMerkerSetzen(null);
+  try { await idbPut('settings', { id:'lastSync', value: backup.updatedAt }); } catch(e){}   // A469 (ZP-13)
+  // v196 (A3): frischen gefilterten Stand fuer HM-Geraete bereitstellen
+  await hmDateiSchreiben(token);
+  // v199 (B5): wöchentliche Backup-Generation ablegen (fehlertolerant, blockiert nie)
+  await genBackupSichern(token, json);
+  setSyncStatus('ok', {richtung:'hochgeladen', bytes:schreib.bytes});   // v248/v254
+  return 'fertig';
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   A483 (08.11.2026) – Kontaktdaten raus aus dem öffentlichen Quelltext, NKA-Standardzeitraum
+   (1) Telefon der Briefköpfe kr/dus/pfau und der Krefelder Hausmeister-Kontakt stehen nicht mehr
+       in index.html (GitHub Pages ist öffentlich). Gepflegt werden sie unter Einstellungen →
+       Briefköpfe; der Wert liegt in settings['briefkopf_<gruppe>'] und wird über OneDrive
+       synchronisiert – einmal eintragen genügt für alle Geräte.
+   (2) Die NKA schlägt den zuletzt vollständig abgelaufenen Abrechnungszeitraum vor.
+   ═══════════════════════════════════════════════════════════════════════ */
+/* Gruppen, deren Telefon bis A482 als Startwert im Quelltext stand. Funktion statt Konstante: kein TDZ-Risiko beim Start. */
+function briefkopfTelGruppe(k){ return k === 'kr' || k === 'dus' || k === 'pfau'; }
+
+/* Gespeicherter Briefkopf einer Gruppe OHNE Umleitung (für das Einstellungsformular und den
+   Hausmeister-Kontakt; die Umleitung gilt nur für die Dokumente). */
+function briefkopfEigen(key){
+  return { ...(BRIEFKOPF_DEFAULTS[key] || {}), ...(_briefkopfCache[key] || {}) };
+}
+
+/* Einmal je Gerät darauf hinweisen, dass die Telefonnummer neu eingetragen werden muss. */
+function briefkopfTelHinweisA483(gruppe, bk){
+  if(!briefkopfTelGruppe(gruppe) || String((bk && bk.tel) || '').trim()) return false;
+  if(window._a483TelHinweis) return false;          // je Sitzung höchstens einmal
+  window._a483TelHinweis = true;
+  let schon = false;
+  try{ schon = localStorage.getItem('a483TelHinweis') === '1'; }catch(_){ schon = false; }
+  if(schon) return false;
+  try{ localStorage.setItem('a483TelHinweis', '1'); }catch(_){ /* ohne Speicher: einmal je Sitzung */ }
+  try{ toast('Telefonnummer im Briefkopf fehlt. Bitte unter Einstellungen → Briefköpfe eintragen.', 6000); }
+  catch(e){ egal('Toast nicht darstellbar', e); }
+  return true;
+}
+
+/* Krefelder Hausmeister im Eigentümerwechsel-Schreiben (vorher fest im Quelltext). */
+function hausmeisterZeileEW(){
+  const k = briefkopfEigen('kr');
+  const name = String(k.hmName || '').trim();
+  if(!name){
+    if(!_briefkopfGewarnt._hm){
+      _briefkopfGewarnt._hm = true;
+      try{ toast('Hausmeister-Kontakt Krefeld fehlt – Einstellungen → Briefköpfe → Krefeld.', 5000); }
+      catch(e){ egal('Toast nicht darstellbar', e); }
+    }
+    return '';
+  }
+  const adr = String(k.hmAnschrift || '').trim(), tel = String(k.hmTel || '').trim();
+  return `<tr><td>Hausmeister</td><td><b>${esc(name)}</b>${adr ? '<br>' + esc(adr) : ''}${tel ? '<br>Telefon ' + esc(telAnzeige(tel)) : ''}</td></tr>`;
+}
+
+/* NKA: Beginnjahr des zuletzt vollständig abgelaufenen Zeitraums nach dem Muster aus
+   getNKAZeitraum (Monat/Tag von–bis). Auswahl reicht von 2024 bis zum laufenden Jahr. */
+function nkaStandardJahr(zt, heuteIso, cy){
+  const span = parseInt(zt.bis.slice(0, 4)) - parseInt(zt.von.slice(0, 4));
+  for(let j = cy; j >= 2024; j--){
+    if(((j + span) + zt.bis.slice(4)) < heuteIso) return j;
+  }
+  return 2024;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   A482 (08.11.2026) – Offene Rechnungen: Fälligkeit, Dashboard, „bezahlt“ über Claude (Backend B24)
+   Fällig-Status nur für offene Rechnungen mit Fälligkeitsdatum (JJJJ-MM-TT). „bald“ = in den nächsten
+   RECHN_FAELLIG_VORLAUF_TAGE Tagen. Sichtbarkeit wie renderRechnungen (Admin: eigene Objekte + allgemeine,
+   Eigentümer: nur eigene Objekte).
+   ═══════════════════════════════════════════════════════════════════════ */
+const RECHN_FAELLIG_VORLAUF_TAGE = 7;
+function rechnungFaelligInfo(r, heute){
+  if(!r || r.bezahlt || !/^\d{4}-\d{2}-\d{2}$/.test(String(r.faellig || ''))) return { status:'', tage:null };
+  const h = heute ? new Date(heute) : new Date(); h.setHours(0,0,0,0);
+  const f = new Date(+r.faellig.slice(0,4), +r.faellig.slice(5,7) - 1, +r.faellig.slice(8,10));
+  const tage = Math.round((f - h) / 86400000);
+  if(tage < 0) return { status:'ueberfaellig', tage };
+  if(tage <= RECHN_FAELLIG_VORLAUF_TAGE) return { status:'bald', tage };
+  return { status:'', tage };
+}
+function rechnungFaelligChip(r){
+  const i = rechnungFaelligInfo(r);
+  if(i.status === 'ueberfaellig') return `<span class="chip" style="font-size:9px;background:#C0392B;color:#fff">überfällig seit ${-i.tage} Tag${i.tage === -1 ? '' : 'en'}</span>`;
+  if(i.status === 'bald') return `<span class="chip" style="font-size:9px;background:var(--amber);color:#fff">${i.tage === 0 ? 'heute fällig' : 'fällig in ' + i.tage + (i.tage === 1 ? ' Tag' : ' Tagen')}</span>`;
+  return '';
+}
+async function rechnungenSichtbar(){
+  const ids = (await getMyObjekte()).map(o => o.id);
+  return (await idbGetAll('rechnungen').catch(() => [])).filter(r => r && !r._deleted
+    && (istSystemAdmin() ? (!r.objektId || ids.includes(r.objektId)) : ids.includes(r.objektId)));
+}
+async function rechnungenFaellig(){
+  return (await rechnungenSichtbar())
+    .map(r => ({ r, i:rechnungFaelligInfo(r) }))
+    .filter(x => x.i.status)
+    .sort((a, b) => a.i.tage - b.i.tage);
+}
+async function rechnungKarteHTML(){
+  const f = await rechnungenFaellig();
+  if(!f.length) return '';
+  const ueber = f.filter(x => x.i.status === 'ueberfaellig');
+  const summe = rc(f.reduce((s, x) => s + (Number(x.r.betrag) || 0), 0));
+  return `<div class="card" id="rechnungFaelligKarte" style="margin-bottom:10px;border-left:4px solid ${ueber.length ? 'var(--red,#C0392B)' : 'var(--amber)'}">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+      <i class="ti ti-file-invoice" style="font-size:18px;color:${ueber.length ? 'var(--red,#C0392B)' : 'var(--amber)'}"></i>
+      <b style="font-size:13px;flex:1;min-width:0">Rechnungen ${ueber.length ? ueber.length + ' überfällig' + (f.length > ueber.length ? ', ' + (f.length - ueber.length) + ' bald fällig' : '') : 'bald fällig (' + f.length + ')'} · ${fmtEur(summe)}</b>
+      <button class="btn btn-sm" data-action-click="rechnungenFaelligOeffnen"><i class="ti ti-list-details"></i> Alle</button></div>`
+    + f.slice(0, 5).map(x => `<div style="display:flex;align-items:center;gap:8px;font-size:12px;padding:5px 0;border-top:1px solid var(--ink-10);cursor:pointer" data-action-click="modalRechnungDetail" data-arg="${escAttr(x.r.id)}">
+        <div style="flex:1;min-width:0"><div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(x.r.lieferant || 'Ohne Lieferant')} · ${fmtEur(x.r.betrag)}</div>
+        <div style="color:var(--ink-40)">${x.r.objektId ? esc(zielName(x.r.objektId) || '') + ' · ' : ''}fällig ${fmtDatumKurz(x.r.faellig)} ${rechnungFaelligChip(x.r)}</div></div>
+        <i class="ti ti-chevron-right" style="color:var(--ink-40)"></i></div>`).join('')
+    + (f.length > 5 ? `<div style="font-size:12px;color:var(--ink-40);padding-top:4px">+${f.length - 5} weitere</div>` : '')
+    + `</div>`;
+}
+async function rechnungenFaelligOeffnen(){
+  rechnFilter.status = 'faellig';
+  nav('rechnungen', 'Rechnungen');
+}
+registerActions({ rechnungenFaelligOeffnen, modalRechnungDetail });
+
+/* Spiegel (B24): offene Rechnungen für rechnungen_anzeigen / rechnung_bezahlt. Ohne Mieternamen und ohne Beleg;
+   Betrag nur im Modus „mit Beträgen“ (Grundsatz spiegel-lib). Private Objekte bleiben draußen. */
+function rechnungenSpiegel(alle, modus, privat, name, kurz){
+  return (alle || []).filter(r => r && !r._deleted && !r.bezahlt && !(r.objektId && privat.has(r.objektId)))
+    .map(r => {
+      const z = RECHN_ZUORDNUNG.find(x => x.id === r.zuordnung);
+      const o = { id:r.id, lieferant:kurz(r.lieferant, 120), rechnungsnr:kurz(r.rechnungsnr, 60),
+        datum:/^\d{4}-\d{2}-\d{2}$/.test(r.datum || '') ? r.datum : '', faellig:/^\d{4}-\d{2}-\d{2}$/.test(r.faellig || '') ? r.faellig : '',
+        objekt:r.objektId ? name(r.objektId) : '', zuordnung:z ? z.name : String(r.zuordnung || ''),
+        kostenart:r.zuordnung === 'nk' ? kurz(r.kostenartName, 80) : '' };
+      if(modus === 'mit') o.betrag = spiegelZahl(r.betrag);
+      return o;
+    })
+    .sort((x, y) => (x.faellig || '9999').localeCompare(y.faellig || '9999')).slice(0, 500);
+}
+
+/* Auftrag „rechnung_bezahlt“ (B24, Abholung mit &bezahlt=1): setzt bezahlt + bezahltAm, Notiz ergänzt.
+   Gelöschte Rechnung (Grabstein) bzw. unbekannte ID -> nicht ausgeführt; schon bezahlt -> ok ohne Änderung. */
+async function eingangRechnungBezahlt(e, tomb){
+  const id = String(e.zielId || '');
+  if(!id) return { ok:false, text:'nicht ausgeführt: keine Rechnung angegeben' };
+  if(tomb && tomb.rechnungen && tomb.rechnungen[id]) return { ok:false, text:'nicht ausgeführt: Rechnung wurde gelöscht' };
+  const r = await idbGet('rechnungen', id).catch(() => null);
+  if(!r || r._deleted) return { ok:false, text:'nicht ausgeführt: Rechnung nicht gefunden' };
+  if(r.bezahlt) return { ok:true, schon:true, text:'war bereits bezahlt' + (r.bezahltAm ? ' (' + fmtDate(r.bezahltAm) + ')' : '') };
+  const am = /^\d{4}-\d{2}-\d{2}$/.test(String(e.datum || '')) ? e.datum : today();
+  r.bezahlt = true; r.bezahltAm = am; r.geaendert = nowIso();
+  r.notiz = [String(r.notiz || '').trim(), 'bezahlt gemeldet über Claude' + (e.notiz ? ': ' + String(e.notiz).slice(0, 300) : '')].filter(Boolean).join(' · ').slice(0, 1000);
+  await idbPut('rechnungen', r);
+  return { ok:true, text:'als bezahlt markiert: ' + (r.lieferant || 'Rechnung') + (r.rechnungsnr ? ' Nr. ' + r.rechnungsnr : '') + ' am ' + fmtDate(am) };
 }
 
 /* A475: Plausibilitaet Arbeitspreis (ct brutto) - darunter ist er fast sicher in Euro statt Cent eingegeben.
@@ -21215,7 +22130,7 @@ async function eingangAuftragMangelErledigt(e, tomb, absender){
   const m = await idbGet('maengel', id).catch(() => null);
   if(!m) return { ok:false, text:'nicht ausgeführt: nicht gefunden' };
   if(m.status === 'behoben' || m.status === 'erledigt') return { ok:false, text:'nicht ausgeführt: bereits behoben' + (m.erledigtAm ? ' am ' + fmtDate(m.erledigtAm) : '') };
-  const z = new Date(e.zeitpunkt || e.erstellt);
+  const z = zeitDatum(e.zeitpunkt || e.erstellt);
   const zeit = isNaN(z) ? new Date() : z;
   const von = claudeVon(absender);
   m.status = 'behoben';
@@ -21395,7 +22310,8 @@ async function eingangAbholen(key){
     /* A473: &versorger=1 - B18 liefert Versorger-Anlagen und -Aenderungen nur an eine App, die sie ausfuehren kann. */
     /* A475: &dateien=1 - B19 liefert Ablagen (Mail-PDF, Anhaenge) und Maengel mit Fotos nur an eine App, die sie holt. */
     /* A479: &rechnung=1 - B21 liefert Rechnungen (gmx_rechnung_erfassen) nur an eine App, die sie anlegt. */
-    const r = await fetchMitTimeout(BACKEND_AZURE + '/api/eingang?arten=alle&mangel=1&aendern=1&lager=1&versorger=1&dateien=1&rechnung=1', { headers:{ 'x-functions-key':key } });
+    /* A482: &bezahlt=1 - B24 liefert „rechnung_bezahlt“ nur an eine App, die es ausfuehrt. */
+    const r = await fetchMitTimeout(BACKEND_AZURE + '/api/eingang?arten=alle&mangel=1&aendern=1&lager=1&versorger=1&dateien=1&rechnung=1&bezahlt=1', { headers:{ 'x-functions-key':key } });
     if(!r || !r.ok) return erg;
     const liste = await r.json().catch(() => []);
     if(!Array.isArray(liste) || !liste.length) return erg;
@@ -21438,6 +22354,14 @@ async function eingangAbholen(key){
         catch(err){ console.warn('Claude-Lager:', err && err.name); continue; }   // nicht abhaken - naechster Versuch
         erledigt.push(e.id); ergebnisse[e.id] = a.text;
         if(a.ok) erg.lag++; else if(!a.still) hinweise.push('Claude-Lager ' + a.text);
+        continue;
+      }
+      if(e && e.art === 'rechnung_bezahlt'){   // A482 (B24)
+        let a;
+        try{ a = await eingangRechnungBezahlt(e, tomb); }
+        catch(err){ console.warn('Claude-Rechnung bezahlt:', err && err.message); continue; }   // nicht abhaken - naechster Versuch
+        erledigt.push(e.id); ergebnisse[e.id] = a.text;
+        if(a.ok && !a.schon) erg.auftr++; else if(!a.ok) hinweise.push('Claude-Auftrag ' + a.text);
         continue;
       }
       if(e && e.art === 'rechnung'){   // A479 (B21)
@@ -21522,7 +22446,7 @@ async function eingangAuftragErledigt(e, tomb, absender){
   const a = await idbGet('aufgaben', id).catch(() => null);
   if(!a) return { ok:false, text:'nicht ausgeführt: Aufgabe nicht gefunden' };
   if(a.status === 'erledigt') return { ok:false, text:'nicht ausgeführt: bereits erledigt' + (a.erledigtAm ? ' am ' + a.erledigtAm : '') };
-  const z = new Date(e.zeitpunkt || e.erstellt);
+  const z = zeitDatum(e.zeitpunkt || e.erstellt);
   const zeit = isNaN(z) ? new Date() : z;
   a.status = 'erledigt';
   a.erledigtAm = datumDeTT(zeit);   // Format wie toggleAufgabe (A481: zweistellig)
@@ -21561,7 +22485,7 @@ function stempelZielAufloesen(text){
    Wechsel; liegt der Befehl zeitlich VOR dem letzten Eintrag, wird nichts
    gebucht - die App kuerzt keine von Hand gesetzten Zeiten. */
 function stempelAuftragAnwenden(offen, e, nutzer, kats){
-  const t = new Date(e.zeitpunkt || e.erstellt);
+  const t = zeitDatum(e.zeitpunkt || e.erstellt);
   if(isNaN(t)) return { ok:false, text:'nicht ausgeführt: Zeitpunkt fehlt', sitzung:null };
   const zeit = t.toISOString();
   const uhr = fmtUhr(zeit);
@@ -21763,7 +22687,8 @@ async function spiegelBauen(modus){
       standort:(LAGER_STANDORTE.find(s => s.id === a.standort) || {}).label || '', neupreis:spiegelZahl(a.neupreis),
       wertStand:/^\d{4}-\d{2}-\d{2}$/.test(a.wertStand || '') ? a.wertStand : '', notiz:kurz(a.notiz, 200) };
   }).slice(0, 3000);
-  return { version:1, stand:nowIso(), modus, aufgaben, termine, wohnungen, vertraege, taetigkeiten, stempeluhr, maengel, kisten, lager };
+  const rechnungen = rechnungenSpiegel(await idbGetAll('rechnungen').catch(() => []), modus, privat, name, kurz);   // A482 (B24)
+  return { version:1, stand:nowIso(), modus, aufgaben, termine, wohnungen, vertraege, taetigkeiten, stempeluhr, maengel, kisten, lager, rechnungen };
 }
 
 /* Rueckgabe { status, grund } - status: geschoben | unveraendert | geloescht | aus |
@@ -22383,7 +23308,7 @@ async function claudeAbsender(){
 }
 function claudeErsteller(absender){ return absender ? absender.name + ' über Claude' : 'Claude (Diktat)'; }
 function claudeErstellt(e){   // Zeitpunkt des Diktats statt der Abholung, Format wie now()
-  const d = (e && e.erstellt) ? new Date(e.erstellt) : null;
+  const d = (e && e.erstellt) ? zeitDatum(e.erstellt) : null;
   return (d && !isNaN(d)) ? d.toLocaleString('de-DE') : now();
 }
 async function toggleAufgabe(id){
@@ -22613,7 +23538,7 @@ async function checkFaelligeTermine() {
   const maengel = (await idbGetAll('maengel'))
     .filter(m => m && myIds.includes(m.objektId)
               && m.status!=='behoben' && m.status!=='erledigt'
-              && m.erstellt && (!last || m.erstellt > last));
+              && m.erstellt && (!last || zeitWert(m.erstellt) > zeitWert(last)));   // A482: deutscher Text gegen ISO verglichen
   if (maengel.length) {
     const ico = 'data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' viewBox=\'0 0 192 192\'%3E%3Crect width=\'192\' height=\'192\' rx=\'32\' fill=\'%230D1F2D\'/%3E%3Cpath d=\'M96 44 L150 140 H42 Z\' fill=\'%23C97B3A\'/%3E%3Crect x=\'90\' y=\'84\' width=\'12\' height=\'30\' fill=\'%230D1F2D\'/%3E%3Crect x=\'90\' y=\'120\' width=\'12\' height=\'12\' fill=\'%230D1F2D\'/%3E%3C/svg%3E';
     new Notification('⚠️ Nadig Pfau – Neuer Mangel', {
@@ -22635,14 +23560,15 @@ function showFaelligBanner(anzahl) {
     banner.onclick = () => {
       Notification.requestPermission().then(p => {
         if (p === 'granted') checkFaelligeAufgaben();
-        banner.remove();
+        faelligBannerWeg();   // A487 (SP-08)
       });
     };
     document.body.appendChild(banner);
   }
   banner.innerHTML = `<i class="ti ti-bell" style="font-size:16px;flex-shrink:0"></i>
     <span>${anzahl} fällige Aufgabe${anzahl!==1?'n':''} · Tippen für Benachrichtigungen</span>
-    <button onclick="event.stopPropagation();this.parentNode.remove()" aria-label="Eintrag entfernen" style="margin-left:auto;background:none;border:none;color:#fff;font-size:18px;cursor:pointer">×</button>`;
+    <button onclick="event.stopPropagation();faelligBannerWeg()" aria-label="Hinweis schließen" style="margin-left:auto;background:none;border:none;color:#fff;font-size:18px;cursor:pointer">×</button>`;
+  faelligBannerAn(banner);   // A487 (SP-08): Seiteninhalt rückt unter das Banner
 }
 
 async function requestNotificationPermission() {
@@ -23400,7 +24326,7 @@ async function odSyncWeDateien(gruppe, weNr){
   }
   for(const grp of Object.values(proId)){
     if(grp.length<2) continue;
-    grp.sort((a,b)=> new Date(b.lastModified||b.geaendert||0)-new Date(a.lastModified||a.geaendert||0));
+    grp.sort((a,b)=> zeitDatum(b.lastModified||b.geaendert||0)-zeitDatum(a.lastModified||a.geaendert||0));
     for(const dub of grp.slice(1)){ dub.geloescht=true; await idbPut('od_dateien', dub); }
   }
   if(entfernt) syncSoon();
@@ -24849,8 +25775,8 @@ async function modalNKA(objektId) {
     if(typeof nkaUpdateWohnmonate==='function'){ try{ nkaUpdateWohnmonate(mieter); }catch(_){} }
   };
   window._nkaSetPeriode = setPeriode; // für onchange am Jahr-Dropdown
-  let defJahr = Math.max(2024, parseInt(zt.von.slice(0,4)));
-  if (defJahr > cy) defJahr = cy;
+  // A483: zuletzt vollstaendig abgelaufener Zeitraum statt des fest hinterlegten Jahres
+  let defJahr = nkaStandardJahr(zt, today(), cy);
   document.getElementById('nkaJahr').value = String(defJahr);
   setPeriode(defJahr);
   window._nkaPeriode = {von:document.getElementById('nkaVon').value, bis:document.getElementById('nkaBis').value};
@@ -24973,6 +25899,7 @@ async function erstelleNKA(objektId, korrektur) {
   const obj     = getObj(objektId);
   const vorlage = getNKAVorlage(objektId);
   if (!vorlage) return;
+  if (nkaOhneKostenAbbrechen('nka_')) return;   // A488 (SP-29)
   const kostenDef = nkaEffektiveKosten(vorlage);  // P3/P4: eigene Arten + Schlüssel-Wahl
   const jahr    = document.getElementById('nkaJahr').value;
   const von     = document.getElementById('nkaVon').value;
@@ -25051,6 +25978,8 @@ async function erstelleNKA(objektId, korrektur) {
     .filter(k => k.schluessel==='wfl' || k.schluessel==='wfl_gruppe')
     .reduce((sum,k) => sum + (Number(kostenMap[k.id])||0), 0);
   const _deckung = nkaDeckungPruefen([objektId], mieter, von, bis, gesamtWFL, _flaechenKosten);
+  if(nkaDeckungAbbrechen(_deckung)) return;   // A488 (SP-30)
+  if(nkaPruefAbbrechen(mieter, von, bis)) return;   // A489
 
   // Reparaturen im Abrechnungszeitraum laden
   const alleReps = await idbGetAll('reparaturen');
@@ -25334,9 +26263,8 @@ async function erstelleNKA(objektId, korrektur) {
     if(_abw >= 0.01) console.error('NKA-Kontrollsumme (Einzel)', m.id, zeilenSumme, _sollSumme);
     /* v366 (F8): zweiter, unabhaengiger Hinweis - er greift genau dort, wo die
        Rechenkontrolle blind ist (beide Seiten null). */
-    const kontrollHinweisGesamt = kontrollHinweis + nkaUnbekanntHinweisHTML(_unbekannteSchluessel)
-      + nkaDeckungHinweisHTML(_deckung);   // v367 (C1)
-    const _pruefHinweis = nkaPruefHinweisHTML(nkaPruefungMieter(m, von, bis));
+    const kontrollHinweisGesamt = kontrollHinweis + nkaUnbekanntHinweisHTML(_unbekannteSchluessel);   // A488 (SP-30): Deckungsprüfung fragt vor dem Druck und steht nicht mehr im Mieterbrief
+    const _pruefHinweis = '';   // A489: Rückfrage vor dem Druck (nkaPruefAbbrechen) statt Kasten im Brief
 
     briefeJeMieter[m.id] = `
     <div class="pagebreak">
@@ -25359,7 +26287,7 @@ async function erstelleNKA(objektId, korrektur) {
       <h2 style="margin:14px 0 2px">${esc(obj?.name||'')} · WE ${esc(m.weNr)}${m.etage?' · '+esc(m.etage):''}</h2>
       ${korrektur?`<div style="background:#FDECEA;border:1px solid #C0392B;color:#C0392B;padding:6px 10px;border-radius:4px;font-size:10px;margin-bottom:8px"><strong>Korrektur:</strong> ${esc(korrektur.text||'Diese Abrechnung ersetzt eine zuvor erstellte Fassung.')}</div>`:''}
       <h1 style="margin-bottom:8px">Mietnebenkosten – Einzelabrechnung${korrektur?' (Korrektur)':''}</h1>
-      <p style="font-size:11px;margin-bottom:6px">${getAnredeVertrag(m)},</p>
+      <p style="font-size:11px;margin-bottom:6px">${esc(getAnredeVertrag(m))},</p>
       <p style="font-size:11px;margin-bottom:10px;line-height:1.6">anbei erhalten Sie Ihre Nebenkostenabrechnung gemäß folgender Aufstellung:</p>
       <table class="info-table" style="margin:10px 0 8px">
         <tr><td></td><td>von</td><td>bis</td><td>Monate</td></tr>
@@ -26196,6 +27124,7 @@ async function erstelleNKALiegenschaft(lgId, korrektur){
   if (!istVerwalter()){ toast('Nur für Admins'); return; }
   const vorlage=getNKALgVorlage(lgId);
   if(!vorlage) return;
+  if(nkaOhneKostenAbbrechen('nkaLg_')) return;   // A488 (SP-29)
   const lg=LIEGENSCHAFTEN.find(l=>l.id===lgId);
   const jahr=document.getElementById('nkaLgJahr').value;
   const von =document.getElementById('nkaLgVon').value;
@@ -26259,6 +27188,8 @@ async function erstelleNKALiegenschaft(lgId, korrektur){
     .filter(k => k.schluessel==='wfl' || k.schluessel==='wfl_gruppe')
     .reduce((sum,k) => sum + (Number(kostenMap[k.id])||0), 0);
   const _deckung = nkaDeckungPruefen(lg.objektIds, mieter, von, bis, gesamtWFL, _flaechenKosten);
+  if(nkaDeckungAbbrechen(_deckung)) return;   // A488 (SP-30)
+  if(nkaPruefAbbrechen(mieter, von, bis)) return;   // A489
 
   // Reparaturen im Zeitraum (für automatische Kleinreparaturen)
   const alleReps=await idbGetAll('reparaturen');
@@ -26513,10 +27444,9 @@ async function erstelleNKALiegenschaft(lgId, korrektur){
       : '';
     if(_abw >= 0.01) console.error('NKA-Kontrollsumme', m.id, zeilenSumme, _sollSumme);
     /* v366 (F8): siehe Einzelabrechnung. */
-    const kontrollHinweisGesamt = kontrollHinweis + nkaUnbekanntHinweisHTML(_unbekannteSchluessel)
-      + nkaDeckungHinweisHTML(_deckung);   // v367 (C1)
+    const kontrollHinweisGesamt = kontrollHinweis + nkaUnbekanntHinweisHTML(_unbekannteSchluessel);   // A488 (SP-30): Deckungsprüfung fragt vor dem Druck und steht nicht mehr im Mieterbrief
     /* v347: Stammdatenpruefung zusaetzlich zur Rechenkontrolle. */
-    const _pruefHinweis = nkaPruefHinweisHTML(nkaPruefungMieter(m, von, bis));
+    const _pruefHinweis = '';   // A489: Rückfrage vor dem Druck (nkaPruefAbbrechen) statt Kasten im Brief
 
     let grussHTML;
     if(sigListe.length>=2){
@@ -26544,9 +27474,9 @@ async function erstelleNKALiegenschaft(lgId, korrektur){
       </div>
       <div class="bk-trennlinie"></div>
       ${korrBanner}
-      <h2 style="margin:14px 0 2px">${obj?.name||''} · WE ${m.weNr}${m.etage?' · '+m.etage:''}</h2>
+      <h2 style="margin:14px 0 2px">${esc(obj?.name||'')} · WE ${esc(m.weNr)}${m.etage?' · '+esc(m.etage):''}</h2>
       <h1 style="margin-bottom:8px">Mietnebenkosten – Einzelabrechnung${korrektur?' (Korrektur)':''}</h1>
-      <p style="font-size:11px;margin-bottom:6px">${getAnredeVertrag(m)},</p>
+      <p style="font-size:11px;margin-bottom:6px">${esc(getAnredeVertrag(m))},</p>
       <p style="font-size:11px;margin-bottom:10px;line-height:1.6">anbei erhalten Sie Ihre Nebenkostenabrechnung gemäß folgender Aufstellung:</p>
       <table class="info-table" style="margin:10px 0 8px">
         <tr><td></td><td>von</td><td>bis</td><td>Monate</td></tr>
@@ -27229,6 +28159,8 @@ const BRIEFKOPF_DEFAULTS = {
   // settings['briefkopf_mg'] und wird über OneDrive synchronisiert.
   // Die Gruppen kr/dus/pfau tragen die im Impressum veröffentlichten
   // Geschäftsdaten und bleiben deshalb als Startwert erhalten.
+  // A483: ausser dem Telefon - es steht nicht im Impressum (Website seit v4 ohne Nummer)
+  // und wird wie bei 'mg' nur noch unter Einstellungen → Briefköpfe gepflegt.
   // v377 (R20): Hier stand bis v376 "Geschäftsdaten der GbR". Eine GbR
   // besteht nicht - im Grundbuch stehen zwei natürliche Personen
   // (Bruchteilsgemeinschaft, §§ 741 ff. BGB). "Nadig Pfau
@@ -27249,7 +28181,7 @@ const BRIEFKOPF_DEFAULTS = {
     // Datenschutzhinweis (Art. 13 Abs. 1 lit. a DSGVO) ausgegeben.
     gemeinschaft:'Grundstücksgemeinschaft Nadig-Pfau',
     strasse:VERWALTER_STRASSE, ort:VERWALTER_ORT,
-    tel:'0177 / 2509710', email:'info@nadigpfau.de',
+    tel:'', email:'info@nadigpfau.de',
   },
   dus: {
     name:'Immobilienverwaltung Alexander-Roland Nadig und Anna-Alexandra Pfau', absender:'Nadig Pfau Immobilienverwaltung',
@@ -27260,13 +28192,13 @@ const BRIEFKOPF_DEFAULTS = {
     // Datenschutzhinweis (Art. 13 Abs. 1 lit. a DSGVO) ausgegeben.
     gemeinschaft:'Grundstücksgemeinschaft Nadig-Pfau',
     strasse:VERWALTER_STRASSE, ort:VERWALTER_ORT,
-    tel:'0177 / 2509710', email:'info@nadigpfau.de',
+    tel:'', email:'info@nadigpfau.de',
   },
   pfau: {
     name:'Anna-Alexandra Pfau und Torben Pfau', absender:'Anna-Alexandra und Torben Pfau',
     zusatz:'',
     strasse:'Venloer Straße 20', ort:'40477 Düsseldorf',
-    tel:'0177 / 2509710', email:'info@nadigpfau.de',
+    tel:'', email:'info@nadigpfau.de',
   },
 };
 // ── Eigentümer-/Vermieter-Stammdaten (Punkt 1.1) ─────────────────
@@ -27394,6 +28326,7 @@ function getBriefkopf(objektId) {
     try{ toast('Briefkopf unvollständig – bitte unter Einstellungen → Briefköpfe ergänzen.', 6000); }
     catch(e){ egal('Toast nicht darstellbar', e); }
   }
+  try{ briefkopfTelHinweisA483(_briefkopfOverride[gruppe] || gruppe, bk); }catch(_){ /* nur Hinweis */ }   // A483
   return bk;
 }
 
@@ -27463,7 +28396,7 @@ function renderBriefkopfConfig(){
   const feld=(k,f,lbl,val)=>`<div class="f" style="margin-bottom:6px"><label style="font-size:10px" for="bk_${k}_${f}">${lbl}</label>
     <input type="text" id="bk_${k}_${f}" value="${esc(val||'')}" style="font-size:12px"></div>`;
   return gruppen.map(g=>{
-    const b=getBriefkopfFor(g.key);
+    const b=briefkopfEigen(g.key);   // A483: der eigene Briefkopf - die Umleitung gilt nur fuer Dokumente
     const ovWahl = _briefkopfOverride[g.key] || '';
     const ovHtml = (g.key==='kr'||g.key==='mg') ? `
         <div class="f" style="margin-bottom:10px;background:#FFF7ED;border:1px solid #FCD9B6;border-radius:8px;padding:8px 10px">
@@ -27497,6 +28430,11 @@ function renderBriefkopfConfig(){
         ${feld(g.key,'ort','PLZ & Ort',b.ort)}
         ${feld(g.key,'tel','Telefon',b.tel)}
         ${feld(g.key,'email','E-Mail',b.email)}
+        ${(briefkopfTelGruppe(g.key) && !String(b.tel||'').trim()) ? `<div style="font-size:11px;color:#9E5E24;margin:-2px 0 6px"><i class="ti ti-info-circle"></i> Telefon leer – seit A483 steht die Nummer nicht mehr im öffentlichen Quelltext. Bitte einmal eintragen und speichern (wird synchronisiert).</div>` : ''}
+        ${g.key==='kr' ? `<div style="font-size:11px;font-weight:600;color:var(--copper);margin:8px 0 4px">Hausmeister (Eigentümerwechsel-Schreiben Krefeld)</div>
+        ${feld(g.key,'hmName','Name (z. B. Herr Muster)',b.hmName)}
+        ${feld(g.key,'hmAnschrift','Anschrift (optional)',b.hmAnschrift)}
+        ${feld(g.key,'hmTel','Telefon (optional)',b.hmTel)}` : ''}
         <button class="btn btn-sm btn-copper" style="margin-top:6px" onclick="saveBriefkopf('${g.key}')"><i class="ti ti-check"></i> Speichern</button>
       </div>
     </details>`;
@@ -27599,7 +28537,11 @@ function anschriftIstAlt(wert){
 
 async function saveBriefkopf(key){
   const g=f=>document.getElementById('bk_'+key+'_'+f)?.value.trim()||'';
-  const data={name:g('name'),absender:g('absender'),namen:g('namen'),zusatz:g('zusatz'),strasse:g('strasse'),ort:g('ort'),tel:g('tel'),email:g('email')};
+  /* A483: Hausmeister-Felder gibt es nur im Krefeld-Formular; sonst bleibt der gespeicherte Wert. */
+  const alt=_briefkopfCache[key]||{};
+  const hm=f=>document.getElementById('bk_'+key+'_'+f) ? g(f) : String(alt[f]||'');
+  const data={name:g('name'),absender:g('absender'),namen:g('namen'),zusatz:g('zusatz'),strasse:g('strasse'),ort:g('ort'),tel:g('tel'),email:g('email'),
+              hmName:hm('hmName'),hmAnschrift:hm('hmAnschrift'),hmTel:hm('hmTel')};
   _briefkopfCache[key]=data;
   await idbPut('settings',{id:'briefkopf_'+key, value:data, geaendert:nowIso()});
   clearTimeout(window._syncTimer);
@@ -28588,7 +29530,7 @@ async function mvOeffneGenerator(opts){
     objektId: k.objektId || '',
     weNr: k.weNr || '',
     // Defaults
-    mietbeginn: k.mietbeginnISO || '',
+    mietbeginn: k.mietbeginnISO || (/^\d{4}-\d{2}-\d{2}$/.test(String(k.mietbeginn || '')) ? k.mietbeginn : ''),   // A487 (SP-12): Selbstauskunft liefert das Datum in mietbeginn
   };
   await mvRenderGeneratorModal();
 }
@@ -29201,7 +30143,7 @@ async function mvBaueRenderdaten(){
   // Bankzeile aus Objekt-Stammdaten
   const bankZeile = gs.ktoInhaber
     ? [gs.ktoInhaber, gs.ktoIban?('IBAN '+gs.ktoIban):'', gs.ktoBic?('BIC '+gs.ktoBic):'', gs.ktoBank].filter(Boolean).join(', ')
-    : '__________________________ (Bankverbindung in den Gebäudedaten hinterlegen)';
+    : '________________________________________________';   // A490: Hinweis steht jetzt in der Rückfrage, nicht im Vertrag
 
   // Etage/Lage zusammenfassen
   const etageLage = [D.etage, D.lage].filter(Boolean).join(', ') || '__________';
@@ -29331,8 +30273,11 @@ async function mvErzeugen(){
   if(!D.objektId){ toast('Bitte Objekt wählen'); return; }
   if(!D.weNr){ toast('Bitte Wohneinheit wählen'); return; }
   if(!D.mietbeginn){ toast('Bitte Mietbeginn angeben'); return; }
+  /* A490: Ein Vertrag ohne Miete oder ohne Bankverbindung entstand bisher ohne Hinweis. */
+  if(!((parseFloat(String(D.kaltmiete||'').replace(',','.'))||0) > 0) && !confirm('Es ist keine Kaltmiete eingetragen (0,00 €).\n\nDen Vertrag trotzdem erzeugen?')) return;
 
   const rd = await mvBaueRenderdaten();
+  if(/^_{10,}/.test(String(rd.bankZeile||'')) && !confirm('Für dieses Haus ist keine Bankverbindung hinterlegt (Objekt → Gebäudedaten).\n\nIm Vertrag bleibt die Zeile „Zahlungsempfänger / Konto“ leer. Trotzdem erzeugen?')) return;
   const html = mvVertragHTML(rd);
 
   // 1) Neuen Mieter-Datensatz anlegen (Status zukünftig/Entwurf)
@@ -29393,7 +30338,7 @@ async function mvErzeugen(){
   if(D.quelleInteressentId){
     try{
       const k = await idbGet('interessenten', D.quelleInteressentId);
-      if(k){ k.status='uebernommen'; k.geaendert=nowIso(); await idbPut('interessenten', k); }
+      if(k){ k.status='uebernommen'; if(mieterId) k.mieterId=mieterId; k.geaendert=nowIso(); await idbPut('interessenten', k); }   // A487 (SP-12)
     }catch(err){ console.warn('Interessent als übernommen markieren:', err); }   // v244 (R26)
   }
 
@@ -30474,7 +31419,7 @@ async function erstelleKautionsEndabrechnung(mieterId){
     <div class="ea-h">Abrechnung der Mietkaution</div>
     <div class="ea-obj">für das Objekt ${esc(objZeile)}</div>
     <div class="ea-an">An: <strong>${esc(m.mieter||'')}</strong></div>
-    <div class="ea-body">Sehr geehrte/r Mieter/in,<br>im Zuge der Beendigung des Mietverhältnisses rechnen wir die von Ihnen geleistete Mietkaution wie folgt ab:</div>
+    <div class="ea-body">${esc(anredeMitKomma(getAnrede(m)))}<br>im Zuge der Beendigung des Mietverhältnisses rechnen wir die von Ihnen geleistete Mietkaution wie folgt ab:</div>
     <table class="ea-t">
       <tr><td class="lbl">Geleistete Kaution${kd.art==='raten'?' (eingegangene Raten)':''}</td><td class="amt">${eur(grund)} €</td></tr>
       <tr><td class="lbl">Zinsen</td><td class="amt">${eur(zinsen)} €</td></tr>
@@ -30712,7 +31657,7 @@ async function wgbErzeugeUndDrucke(mieterId, sigListe, opt) {
     const val = p.name || '';   // v334: ohne Geburtsdatum - § 19 BMG verlangt nur den Namen (Datenminimierung, Art. 5 Abs. 1 lit. c DSGVO)
     persZeilen += `<tr>
       <td style="width:20px;font-size:10px;color:#555;vertical-align:top;padding:2px 4px">${i+1}.</td>
-      <td style="border-bottom:1px solid #999;padding:4px 2px;font-size:11px;min-height:22px">${val}</td>
+      <td style="border-bottom:1px solid #999;padding:4px 2px;font-size:11px;min-height:22px">${esc(val)}</td>
     </tr>`;
   }
 
@@ -31120,7 +32065,7 @@ async function renderNKAArchiv(el, objektId) {
   if (!istVerwalter()) { el.innerHTML = '<div class="empty"><i class="ti ti-lock"></i><p>Nur für Verwalter.</p></div>'; return; }
   // v367 (C2): dieselbe Auswahl wie beim Knopf "Letzte NKA" - eine Funktion.
   const alle = ((await nkaArchivFuerObjekt(objektId)) || [])
-    .sort((a,b)=>String(b.erstellt||'').localeCompare(String(a.erstellt||'')));
+    .sort((a,b)=>(zeitWert(b.erstellt)-zeitWert(a.erstellt)));
 
   let h = `<div class="s-hdr" style="margin-bottom:10px">
     <div class="s-title">NKA-Archiv (${alle.length})</div>
@@ -31200,7 +32145,7 @@ async function oeffneLetzteNKA(objektId){
   const alle = await nkaArchivFuerObjekt(objektId);
   if(alle===null){ toast('Das NKA-Archiv konnte nicht gelesen werden.'); return; }
   if(!alle.length){ toast('Für dieses Objekt wurde noch keine Abrechnung erstellt.'); return; }
-  const letzte = alle.slice().sort((a,b)=>String(b.erstellt||'').localeCompare(String(a.erstellt||'')))[0];
+  const letzte = alle.slice().sort((a,b)=>(zeitWert(b.erstellt)-zeitWert(a.erstellt)))[0];
   await oeffneNKAGesamt(letzte.id);
 }
 
@@ -32253,7 +33198,7 @@ async function briefEntwurfListeZeichnen(mieterId, objektId){
   }catch(e){ console.warn('Entwürfe lesen:', e); wrap.innerHTML=''; return; }
   if(!mieterId && objektId) liste = liste.filter(x=>x.objektId===objektId);
   liste = liste.filter(x=>x && !x._geloescht && x.id!==window._briefEntwurfId)
-               .sort((a,b)=>String(b.geaendert||'').localeCompare(String(a.geaendert||'')));
+               .sort((a,b)=>(zeitWert(b.geaendert)-zeitWert(a.geaendert)));
   if(!liste.length){ wrap.innerHTML=''; return; }
   wrap.innerHTML = '<div class="f-section-title" style="margin-top:10px">'
     + '<i class="ti ti-file-text"></i> Vorhandene Entwürfe (' + liste.length + ')</div>'
@@ -32548,7 +33493,7 @@ async function druckeBrief(mieterId, objektId, opt) {
       <div class="bk-anschrift"><strong>${adressVollNamenVertrag(m)}</strong><br>${anschrift}</div>
       <!-- v392: Ausstellungsort ist der Sitz der Verwaltung, nicht die Lage
            der Wohnung. Bisher stand hier der Objektort. -->
-      <div class="bk-datum">Hilden, den ${esc(fmtD(datum))}</div>
+      <div class="bk-datum">${esc(String(abs.ort||'').replace(/^\s*\d{4,5}\s+/,'').trim() || 'Hilden')}, den ${esc(fmtD(datum))}</div>
       <div class="bk-betreff">${esc(betreff)}</div>
       <div class="bk-anrede">${esc(empfAnrede)}</div>
       <div class="bk-text">${briefTextHTML(text)}</div>
@@ -33435,7 +34380,7 @@ async function ewSeiteFuer(m, opt){
     <table class="ew-kasten"><tr><td>
       <table class="ew-daten">
         <tr><td>Verwaltung</td><td><b>${esc(bk.name || bk.absender || empfaenger)}</b>${bk.strasse?'<br>'+esc(bk.strasse):''}${bk.ort?', '+esc(bk.ort):''}${bk.tel?'<br>Telefon '+esc(telAnzeige(bk.tel)):''}${bk.email?'<br>'+esc(bk.email):''}</td></tr>
-        ${istKrefeld?`<tr><td>Hausmeister</td><td><b>Herr Dirk Nicolay</b><br>Wilmendyk 11, 47803 Krefeld<br>Telefon +49 / 176 21 37 00 40</td></tr>`:''}
+        ${istKrefeld?hausmeisterZeileEW():''}   <!-- A483: Kontakt aus Einstellungen → Briefköpfe (Krefeld) -->
       </table>
     </td></tr></table>
     <p class="ew-klein">Telefonisch erreichen Sie uns von 9:00 bis 17:00 Uhr. Außerhalb dieser Zeiten schreiben Sie uns bitte über WhatsApp unter derselben Nummer. Mängel und Störungen melden Sie bis zur Freischaltung des Mieterportals per E-Mail, telefonisch oder über WhatsApp. <span class="ew-notfall">Im Notfall – etwa Feuer, Wasserrohrbruch, Gasgeruch oder Stromausfall im ganzen Haus – erreichen Sie uns auch außerhalb dieser Zeiten telefonisch. Besteht Gefahr für Personen, wählen Sie bitte zuerst den Notruf 112.</span> Wichtige Schreiben – Betriebskostenabrechnung, Mieterhöhung, Kündigung – erhalten Sie unabhängig davon weiterhin per Post.</p>
@@ -34949,7 +35894,7 @@ function druckeAushang(objektId) {
   closeModal();
 
   const _aushangHtml = `<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8">
-<title>Aushang – ${titel}</title>
+<title>Aushang – ${esc(titel)}</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:Arial,sans-serif;background:#fff;padding:20px;max-width:190mm;margin:0 auto}
@@ -34967,14 +35912,14 @@ body{font-family:Arial,sans-serif;background:#fff;padding:20px;max-width:190mm;m
 </style></head><body>
 <div style="display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:10px;padding-bottom:8px;border-bottom:2px solid ${stilColors.border}">
   ${npWortmarkeSvg(140)}
-  <div style="font-size:11px;color:#555;text-align:right">${obj?.name||''}<br>${obj?.ort||''}</div>
+  <div style="font-size:11px;color:#555;text-align:right">${esc(obj?.name||'')}<br>${esc(obj?.ort||'')}</div>
 </div>
 <div class="aushang">
   <div class="aushang-head">
-    <div><h1>${titel}</h1><div class="obj">${obj?.name||''}</div></div>
+    <div><h1>${esc(titel)}</h1><div class="obj">${esc(obj?.name||'')}</div></div>
     <div style="font-size:18px;opacity:.7">${stil==='warn'?'⚠':stil==='ok'?'✓':'ℹ'}</div>
   </div>
-  <div class="aushang-body">${text}</div>
+  <div class="aushang-body">${esc(text).replace(/\n/g,'<br>')}</div>
   <div class="aushang-foot">
     <div class="foot-abs"><strong>${esc(abs.name)}</strong>${abs.sub?'<br>'+abs.sub:''}</div>
     <div class="foot-date">${fmtD(datum)}</div>
@@ -35776,7 +36721,7 @@ async function ladeWohnungsbilder(objektId, weNr){
   const pfx = wohnungsbildPrefix(objektId, weNr);
   const alle = await idbGetAll('dokumente').catch(()=>[]);
   return alle.filter(d=>d.typ==='wohnungsbild' && typeof d.id==='string' && d.id.startsWith(pfx))
-             .sort((a,b)=>String(a.erstellt).localeCompare(String(b.erstellt)));
+             .sort((a,b)=>(zeitWert(a.erstellt)-zeitWert(b.erstellt)));
 }
 
 async function modalWohnungsbilder(objektId, weNr){
@@ -36534,21 +37479,15 @@ async function saveMieterhoehung(mieterId) {
     }
   }
 
-  // History pflegen
-  if (!m.miete_history) m.miete_history = [];
-  m.miete_history.push({
-    datum, alteMiete: m.miete, alteNK: m.nk,
-    neueMiete, neueNK: neueNK||m.nk,
-    grund, begruendung: begruend,
-    erfasst: now(), erfasstVon: CU?.name||'',
-  });
-
-  // Miete aktualisieren
+  /* A488 (SP-25): Die Erhöhung wird vorgemerkt. Die neue Miete gilt erst ab dem Stichtag und – bei § 558 BGB –
+     erst nach bestätigter Zustimmung (§ 558b Abs. 1 BGB). Bis A487 wurde sie sofort als aktuelle Miete eingetragen. */
+  if (m.mhOffen && !confirm('Für diesen Mieter ist bereits eine Mieterhöhung vorgemerkt ('
+      + fmtEur(m.mhOffen.neueMiete) + ' ab ' + datumAnzeige(m.mhOffen.datum) + ').\n\nDurch die neue ersetzen?')) return;
   const alteMiete = m.miete;
   const alteNK = m.nk;
-  m.miete  = neueMiete;
-  m.nk     = neueNK||m.nk;
-  m.gesamt = neueMiete + (neueNK||m.nk);
+  m.mhOffen = { datum, neueMiete, neueNK: neueNK||m.nk, grund, begruendung: begruend,
+    erfasst: now(), erfasstVon: CU?.name||'', zustimmungNoetig: mhZustimmungNoetig(grund), zustimmungAm: null };
+  const _mhSofort = mhAnwendenWennFaellig(m, today());
 
   await idbPut('mieter', m);
   closeModal();
@@ -36605,7 +37544,7 @@ p{font-size:11px;line-height:1.8;margin-bottom:6px}
 </div>
 <div class="trenn"></div>
 <h2>${ueberschrift} gemäß ${grund}</h2>
-<p>${getAnredeVertrag(m)},</p>
+<p>${esc(getAnredeVertrag(m))},</p>
 <p>${istZustimmung
   ? `für Ihre Wohnung in ${obj?.name||''}, WE ${m.weNr}, bitten wir Sie um Zustimmung zu einer Erhöhung der Nettokaltmiete bis zur ortsüblichen Vergleichsmiete gemäß § 558 BGB. Die Erhöhung soll zum <strong>${wirksamAb}</strong> wirksam werden:`
   : istModernisierung
@@ -36619,7 +37558,7 @@ p{font-size:11px;line-height:1.8;margin-bottom:6px}
   <div class="row total"><span>Neue Gesamtmiete</span><span>${fmtEur(neueMiete + (neueNK||alteNK))}</span></div>
   <div style="font-size:10px;color:#555;margin-top:4px">Erhöhung Kaltmiete: ${fmtEur(diff)} (${((diff/alteMiete)*100).toFixed(1)} %)</div>
 </div>
-${begruend?`<p>${begruend}</p>`:''}
+${begruend?`<p>${esc(begruend).replace(/\n/g,'<br>')}</p>`:''}
 ${istZustimmung
   ? `<p>Wir bitten Sie, dieser Mieterhöhung bis zum Ablauf des zweiten Kalendermonats nach Zugang dieses Schreibens zuzustimmen. Eine vorbereitete Zustimmungserklärung können Sie unterzeichnet an uns zurücksenden. Erst mit Ihrer Zustimmung schulden Sie ab dem <strong>${wirksamAb}</strong> die erhöhte Miete von <strong>${fmtEur(neueMiete + (neueNK||alteNK))}</strong>.</p>
 <p>Bitte beachten Sie: Stimmen Sie nicht zu, können wir innerhalb der gesetzlichen Frist Klage auf Erteilung der Zustimmung erheben (§ 558b Abs. 2 BGB).</p>`
@@ -36643,7 +37582,9 @@ ${istZustimmung
 
   druckHTML(mhHtml);
   await showMieter(mieterId);
-  toast('Mieterhöhung gespeichert ✓');
+  toast(_mhSofort ? 'Mieterhöhung gespeichert ✓' : (mhZustimmungNoetig(grund)
+    ? 'Schreiben erstellt. Die neue Miete gilt erst nach Zustimmung – bitte in der Mieterakte bestätigen.'
+    : 'Mieterhöhung vorgemerkt – gilt ab ' + datumAnzeige(datum) + '.'));   // A488 (SP-25)
 }
 
 
@@ -36820,25 +37761,36 @@ async function runGlobalSearch(q) {
     const mieter = (await idbGetAll('mieter')).filter(m=>myIds.includes(m.objektId));
     mieter.forEach(m=>{
       const score = [m.mieter,m.telefon,m.email,m.weNr,m.etage,m.objekt].filter(Boolean).join(' ').toLowerCase();
-      if (score.includes(ql)) results.push({type:'mieter', icon:'ti-user', color:'var(--copper)', label:m.mieter, sub:'WE '+m.weNr+' · '+m.objekt, action:`closeModal();showMieter('${m.id}')`, id:m.id});
+      if (score.includes(ql)) results.push({type:'mieter', icon:'ti-user', color:'var(--copper)', label:m.mieter, sub:'WE '+(m.weNr||'–')+' · '+(m.objekt||getObj(m.objektId)?.name||''), action:`closeModal();showMieter('${m.id}')`, id:m.id});
+    });
+
+    // A490 (SP-33): Zähler und Lagerartikel
+    const _idOk = x => /^[\w.\-]+$/.test(String(x||''));
+    (await idbGetAll('zaehler').catch(()=>[])).filter(z=>z && myIds.includes(z.objektId) && _idOk(z.objektId)).forEach(z=>{
+      if ([z.name,z.zaehlernummer,z.nummer,z.art].filter(Boolean).join(' ').toLowerCase().includes(ql))
+        results.push({type:'zaehler', icon:'ti-gauge', color:'var(--blue)', label:z.name||('Zähler '+(z.zaehlernummer||z.nummer||'')), sub:[getObj(z.objektId)?.name, z.weNr?('WE '+z.weNr):'', z.zaehlernummer||z.nummer].filter(Boolean).join(' · ')+' · Reiter Zähler', action:`closeModal();showObjekt('${z.objektId}')`, id:z.id});
+    });
+    (await idbGetAll('lager').catch(()=>[])).filter(a=>a && _idOk(a.id)).forEach(a=>{
+      if ([a.bezeichnung,a.hersteller,a.herstellernummer,a.lagerort,a.typ].filter(Boolean).join(' ').toLowerCase().includes(ql))
+        results.push({type:'lager', icon:'ti-package', color:'var(--ink-60)', label:a.bezeichnung||'Lagerartikel', sub:['Lager', a.lagerort].filter(Boolean).join(' · '), action:`closeModal();modalLagerArtikel('${a.id}')`, id:a.id});
     });
 
     // Aufgaben
     (await idbGetAll('aufgaben')).filter(a=>istAllgemein(a.objektId)||myIds.includes(a.objektId)).forEach(a=>{
       if ((a.titel+' '+(a.beschreibung||'')).toLowerCase().includes(ql))
-        results.push({type:'aufgabe', icon:'ti-checklist', color:'var(--amber)', label:a.titel, sub:getObj(a.objektId)?.name+' · '+a.status, action:`closeModal();showAufgabeDetail('${a.id}')`, id:a.id});
+        results.push({type:'aufgabe', icon:'ti-checklist', color:'var(--amber)', label:a.titel, sub:[istAllgemein(a.objektId)?'Allgemein':getObj(a.objektId)?.name, a.status].filter(Boolean).join(' · '), action:`closeModal();showAufgabeDetail('${a.id}')`, id:a.id});
     });
 
     // Mängel
     (await idbGetAll('maengel')).filter(m=>myIds.includes(m.objektId)).forEach(m=>{
       if ((m.titel+' '+(m.beschreibung||'')).toLowerCase().includes(ql))
-        results.push({type:'mangel', icon:'ti-alert-triangle', color:'var(--red)', label:m.titel, sub:getObj(m.objektId)?.name+' · '+m.status, action:`closeModal();showMangelDetail('${m.id}')`, id:m.id});
+        results.push({type:'mangel', icon:'ti-alert-triangle', color:'var(--red)', label:m.titel, sub:[getObj(m.objektId)?.name, m.status].filter(Boolean).join(' · '), action:`closeModal();showMangelDetail('${m.id}')`, id:m.id});
     });
 
     // Reparaturen
     (await idbGetAll('reparaturen')).filter(r=>myIds.includes(r.objektId)).forEach(r=>{
       if ((r.titel+' '+(r.beschreibung||'')).toLowerCase().includes(ql))
-        results.push({type:'reparatur', icon:'ti-tools', color:'var(--ink-60)', label:r.titel, sub:getObj(r.objektId)?.name+' · '+r.datum, action:`closeModal();showReparaturDetail('${r.id}')`, id:r.id});
+        results.push({type:'reparatur', icon:'ti-tools', color:'var(--ink-60)', label:r.titel, sub:[getObj(r.objektId)?.name, r.datum].filter(Boolean).join(' · '), action:`closeModal();showReparaturDetail('${r.id}')`, id:r.id});
     });
 
     // Protokolle
@@ -36959,13 +37911,13 @@ async function runGlobalSearch(q) {
         /* A416 (B2): Interessenten sind Selbstauskuenfte der Mietbewerber -
            Einkommen, Arbeitgeber, Vormieter. Personenbezogene Daten Dritter,
            die nicht in eine Hausmeisteransicht gehoeren. */
-        if (!myIds.includes(i.objektId) && !istAllgemein(i.objektId)) continue;
+        if (!myIds.includes(i.objektId) && !istAllgemein(i.objektId) && !(ohneHausSichtbar() && !i.objektId)) continue;   // A487 (SP-04), A488 (SP-28)
         if (!passt(i.name, i.vorname, i.nachname, i.email, i.telefon)) continue;
         n++;
         results.push({type:'interessent', icon:'ti-user-search', color:'var(--blue)',
           label:[i.vorname,i.nachname].filter(Boolean).join(' ')||i.name||'Interessent',
-          sub:[getObj(i.objektId)?.name, i.status].filter(Boolean).join(' · '),
-          action:`closeModal();nav('objekt','Objekte')`});
+          sub:[getObj(i.objektId)?.name || (i.objektId ? '' : 'ohne Haus'), interessentStatusInfo(i.status, i).label].filter(Boolean).join(' · '),
+          action:`closeModal();modalInteressentDetail('${escJs(i.id)}')`});   // A487 (SP-04)
       }
     }catch(_){}
 
@@ -38396,13 +39348,13 @@ async function benachrichtigungenOffen(){
 async function modalBenachrichtigungen(){
   if(!istVerwalter()){ toast('Nur für Verwalter'); return; }
   const liste = (await benachrichtigungenOffen())
-    .sort((a,b)=>String(b.erstellt||'').localeCompare(String(a.erstellt||'')));
+    .sort((a,b)=>(zeitWert(b.erstellt)-zeitWert(a.erstellt)));
   let h = `<div class="m-title"><i class="ti ti-bell"></i> Meldungen an die Verwaltung</div>`;
   if(!liste.length){
     h += `<div class="empty"><i class="ti ti-check"></i><p>Keine offenen Meldungen.</p></div>`;
   } else {
     for(const n of liste){
-      const dt = n.erstellt ? new Date(n.erstellt).toLocaleString('de-DE') : '';
+      const dt = n.erstellt ? zeitDatum(n.erstellt).toLocaleString('de-DE') : '';
       if(n.art==='briefkopie'){
         h += `<div class="card" style="margin-bottom:8px;border-left:3px solid var(--copper)">
           <div style="font-weight:600;font-size:13px"><i class="ti ti-mail"></i> Brief an ${esc(n.mieterName||'')}</div>
@@ -38612,6 +39564,7 @@ async function saveEditMieter(id) {
   if(!persListe.length){ toast('Mindestens eine Person mit Namen erforderlich'); return; }
   const einzug = document.getElementById('mEinzug').value;
   const auszug = document.getElementById('mAuszug').value;
+  if(einzug && auszug && /^\d{4}-\d{2}-\d{2}$/.test(einzug) && /^\d{4}-\d{2}-\d{2}$/.test(auszug) && auszug < einzug){ toast('Das Auszugsdatum liegt vor dem Einzug.'); return; }   // A490
   // Einzug als ISO zum Vorbelegen von "Dabei ab", wo leer
   if(einzug && /^\d{4}-\d{2}-\d{2}$/.test(einzug)){
     persListe.forEach(p=>{ if(!p.ab) p.ab=einzug; });
@@ -39139,7 +40092,7 @@ async function modalAushangErstellen(objektId, weNr, vormieterId){
     <div class="m-title"><i class="ti ti-printer"></i> Aushang erstellen · WE ${esc(String(weNr))}</div>
     ${archivHtml}
     <div style="font-size:12px;color:var(--ink-40);margin-bottom:12px">${_archiv ? 'Oder neu erzeugen (ersetzt den gespeicherten): ' : ''}Daten prüfen oder ergänzen, dann „Aushang erzeugen“. ${gw
-      ? `Eingaben werden automatisch gespeichert – zuletzt ${esc(new Date(gw.geaendert).toLocaleString('de-DE'))}${gw.von ? ' · ' + esc(gw.von) : ''}. <button type="button" class="btn btn-sm" style="margin-top:6px" data-action-click="aushangVorschlaegeNeu" data-arg="${escAttr(objektId)}" data-arg2="${escAttr(String(weNr))}" data-arg3="${escAttr(vormieterId||'')}"><i class="ti ti-refresh"></i> Vorschläge neu laden</button>`
+      ? `Eingaben werden automatisch gespeichert – zuletzt ${esc(zeitDatum(gw.geaendert).toLocaleString('de-DE'))}${gw.von ? ' · ' + esc(gw.von) : ''}. <button type="button" class="btn btn-sm" style="margin-top:6px" data-action-click="aushangVorschlaegeNeu" data-arg="${escAttr(objektId)}" data-arg2="${escAttr(String(weNr))}" data-arg3="${escAttr(vormieterId||'')}"><i class="ti ti-refresh"></i> Vorschläge neu laden</button>`
       : `Vorbelegte Werte stammen aus den Wohnungs-Stammdaten${vm?' und vom letzten Mieter':''}. Was Sie hier ändern, wird für das nächste Mal gespeichert.`}</div>
 
     <div class="f-row">
@@ -42850,7 +43803,7 @@ async function renderSyncSchutz(){
   let h='';
   // Konfliktprotokoll (letzte 15)
   const log=(await idbGetAll('sync_log').catch(()=>[]))
-    .sort((a,b)=>(b.erstellt||'').localeCompare(a.erstellt||'')).slice(0,15);
+    .sort((a,b)=>(zeitWert(b.erstellt)-zeitWert(a.erstellt))).slice(0,15);
   /* v327: Das Protokoll schob die darunterliegenden Sicherungen weit nach
      unten - im Normalfall interessiert es niemanden. Als <details> geschlossen,
      die Anzahl steht in der Zusammenfassung. Bewusst natives <details> statt
@@ -42870,7 +43823,7 @@ async function renderSyncSchutz(){
       return `<div style="padding:7px 0;border-bottom:1px solid var(--ink-10);font-size:12px">
       <div style="font-weight:600;color:var(--ink);word-break:break-word">${esc(String(e.name||e.recId||''))} <span style="font-weight:400;color:var(--ink-40)">(${e.store})</span></div>
       <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:3px;color:var(--ink-40)">
-        <span style="white-space:nowrap">${new Date(e.erstellt).toLocaleString('de-DE',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}</span>
+        <span style="white-space:nowrap">${zeitDatum(e.erstellt).toLocaleString('de-DE',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}</span>
         <span class="chip chip-${e.aktion&&e.aktion.startsWith('lokal')?'ok':'warn'}" style="font-size:10px;padding:1px 6px;white-space:nowrap">${esc(e.aktion||'')}</span>
         ${e.von?`<span style="white-space:nowrap">· ${esc(String(e.von))}</span>`:''}
         ${loesbar?`<button class="btn btn-sm" style="padding:1px 8px;font-size:11px" onclick="syncKonfliktLoesen('${e.id}')"><i class="ti ti-adjustments"></i> Details / lösen</button>`:''}
@@ -42880,7 +43833,7 @@ async function renderSyncSchutz(){
   }
   // Snapshots
   const snaps=(await idbGetAll('mieter_snapshots').catch(()=>[]))
-    .sort((a,b)=>(b.erstellt||'').localeCompare(a.erstellt||''));
+    .sort((a,b)=>(zeitWert(b.erstellt)-zeitWert(a.erstellt)));
   /* v332: Bis zu zehn Sicherungen standen dauerhaft offen und nahmen den
      halben Bildschirm ein. Gleiches Muster wie beim Konfliktprotokoll darueber:
      natives <details>, kein eigener Auf-/Zuklapp-Zustand, fuer Screenreader
@@ -42891,7 +43844,7 @@ async function renderSyncSchutz(){
     h+='<div style="font-size:12px;color:var(--ink-40)">Noch keine Sicherung vorhanden. Sie entsteht automatisch beim nächsten Sync oder Import.</div>';
   } else {
     const zeile = s=>`<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:7px 0;border-bottom:1px solid var(--ink-10);font-size:12px">
-      <span style="flex:1;min-width:160px;word-break:break-word">${new Date(s.erstellt).toLocaleString('de-DE')} <span style="color:var(--ink-40)">· ${s.anzahl} Mieter, ${s.mitTelefon} mit Tel. · Anlass: ${esc(s.anlass||'')}</span></span>
+      <span style="flex:1;min-width:160px;word-break:break-word">${zeitDatum(s.erstellt).toLocaleString('de-DE')} <span style="color:var(--ink-40)">· ${s.anzahl} Mieter, ${s.mitTelefon} mit Tel. · Anlass: ${esc(s.anlass||'')}</span></span>
       <button class="btn btn-sm" onclick="restoreMieterSnapshot('${s.id}')"><i class="ti ti-restore"></i> Wiederherstellen</button>
     </div>`;
     h+='<div style="font-weight:600;font-size:13px;margin:14px 0 6px"><i class="ti ti-database"></i> Lokale Mieter-Sicherungen ('+snaps.length+'/10)</div>';
@@ -42928,6 +43881,7 @@ function switchSettingsTab(tab){
 /* Benutzer-Kontrolle (nur u_admin): Liste + letzte Aktivität */
 async function renderKontrolle(){
   if(CU?.id!=='u_admin') return;
+  nichtZugeordnetHinweis();   // A487
   const box=document.getElementById('kontrolleListe');
   if(!box) return;
   const users=(await idbGetAll('users')).filter(u=>u && u.id);
@@ -44155,6 +45109,9 @@ async function renderSettings(){
         sie zeigt, wer zuletzt von welchem Gerät aktiv war (keine Echtzeit-Anzeige).
       </p>
       <div id="kontrolleListe"></div>
+      <div class="card-hdr" style="margin-top:16px"><i class="ti ti-map-pin-question"></i> Nicht zugeordnete Daten</div>
+      <p style="font-size:13px;color:var(--ink-40);margin:0 0 10px">Datensätze ohne Haus oder mit gelöschtem Mieter bzw. Interessenten, die keine Ansicht mehr zeigt. <span id="nzHinweis"></span></p>
+      <button class="btn" data-action-click="modalNichtZugeordnet"><i class="ti ti-search"></i> Anzeigen</button>   <!-- A487 -->
     </div>`:''}
   `;
   // OneDrive-Status-Karte befüllen
@@ -44951,7 +45908,7 @@ async function erstelleMieterSnapshot(anlass){
       daten:mieter,
     });
     // Nur die letzten 10 behalten
-    const alle=(await idbGetAll('mieter_snapshots')).sort((a,b)=>(b.erstellt||'').localeCompare(a.erstellt||''));
+    const alle=(await idbGetAll('mieter_snapshots')).sort((a,b)=>(zeitWert(b.erstellt)-zeitWert(a.erstellt)));
     for(const s of alle.slice(10)) await idbDelete('mieter_snapshots',s.id).catch(()=>{});
   }catch(e){ console.warn('Snapshot:',e); }
 }
@@ -44961,7 +45918,7 @@ async function erstelleMieterSnapshot(anlass){
 async function restoreMieterSnapshot(id){
   const snap=await idbGet('mieter_snapshots',id).catch(()=>null);
   if(!snap){ toast('Sicherung nicht gefunden'); return; }
-  if(!confirm(`Mieter-Stand vom ${new Date(snap.erstellt).toLocaleString('de-DE')} wiederherstellen?\n\n${snap.anzahl} Mieter (${snap.mitTelefon} mit Telefon) werden mit frischem Zeitstempel zurückgespielt und setzen sich beim Sync auf allen Geräten durch.`)) return;
+  if(!confirm(`Mieter-Stand vom ${zeitDatum(snap.erstellt).toLocaleString('de-DE')} wiederherstellen?\n\n${snap.anzahl} Mieter (${snap.mitTelefon} mit Telefon) werden mit frischem Zeitstempel zurückgespielt und setzen sich beim Sync auf allen Geräten durch.`)) return;
   const NOW=nowIso();
   for(const m of snap.daten){ m.updatedAt=NOW; await idbPut('mieter',m,{keepStamp:true}); }
   toast(`✓ ${snap.anzahl} Mieter wiederhergestellt`);
@@ -45042,7 +45999,7 @@ async function logSyncKonflikt(eintrag){
 }
 async function pruneSyncLog(){
   try{
-    const alle=(await idbGetAll('sync_log')).sort((a,b)=>(b.erstellt||'').localeCompare(a.erstellt||''));
+    const alle=(await idbGetAll('sync_log')).sort((a,b)=>(zeitWert(b.erstellt)-zeitWert(a.erstellt)));
     for(const e of alle.slice(300)) await idbDelete('sync_log',e.id).catch(err=>console.warn('Sync-Protokoll kürzen:', err));
   }catch(e){ console.warn('Sync-Protokoll aufräumen:', e); }   // v244 (R26)
 }
@@ -45082,6 +46039,14 @@ function zeitWert(t){
   const d=Date.parse(t); return isNaN(d)?0:d;
 }
 /* A481 (F6): Datum TT.MM.JJJJ zweistellig - Format von erledigtAm bei To Dos (A457) */
+/* A482: Zeitstempel als Date - deutsches Format ("7.11.2026, 21:41:00", "5.11.2026"), ISO, Zahl oder Date.
+   Unlesbares verhaelt sich wie bisher new Date(v). Gemeinsam mit zeitWert die einzige Stelle, die gespeicherte Zeiten liest. */
+function zeitDatum(v){
+  if(v instanceof Date) return v;
+  if(typeof v === 'number') return new Date(v);
+  const w = zeitWert(v);
+  return w ? new Date(w) : new Date(v);
+}
 function datumDeTT(d){ return (d || new Date()).toLocaleDateString('de-DE', { day:'2-digit', month:'2-digit', year:'numeric' }); }
 
 /* A422: Ein Feld entfernen UND die Entfernung fuer den Abgleich vermerken.
@@ -45089,7 +46054,7 @@ function datumDeTT(d){ return (d || new Date()).toLocaleDateString('de-DE', { da
    jedem Geraet zurueck, das den alten Stand noch fuehrt. */
 function feldGeleert(rec, ...felder){
   if(!rec) return rec;
-  const stamp = new Date().toISOString();
+  const stamp = stempelJetzt();
   const grab = (rec._geleert && typeof rec._geleert==='object') ? {...rec._geleert} : {};
   for(const f of felder){ grab[f] = stamp; delete rec[f]; }
   rec._geleert = grab;
@@ -45210,7 +46175,7 @@ function mergeTombstones(a, b){
 // stampFelder: Metafelder, die NIE als Tombstone erfasst werden.
 function erfasseLeerungen(altSnapshot, obj){
   const IGNORE = new Set(['_geleert','updatedAt','geaendert','erstellt','_konflikte','id']);
-  const stamp = new Date().toISOString();
+  const stamp = stempelJetzt();
   const grab = (obj._geleert && typeof obj._geleert==='object') ? {...obj._geleert} : {};
   if(altSnapshot && typeof altSnapshot==='object'){
     for(const k in altSnapshot){
@@ -45306,7 +46271,7 @@ function backupImportDialog(backup){
         <button class="btn btn-full btn-danger" style="margin-bottom:8px" onclick="importBackupAusfuehren('ersetzen')">
           <i class="ti ti-replace"></i> Vollständig ersetzen
         </button>
-        <div style="font-size:11px;color:var(--ink-40);margin:-4px 0 12px 2px">Die enthaltenen Bereiche werden komplett durch die Sicherung überschrieben. Nur verwenden, wenn der lokale Stand sicher verworfen werden soll.</div>
+        <div style="font-size:11px;color:var(--ink-40);margin:-4px 0 12px 2px">Die enthaltenen Bereiche werden auf diesem Gerät komplett durch die Sicherung ersetzt; die Zeitstempel bleiben wie in der Sicherung. Neuere Änderungen anderer Geräte kommen beim nächsten Abgleich wieder dazu. Für ein neues oder leeres Gerät – um einen Stand überall durchzusetzen: „Wiederherstellen“.</div>
         ${pr.fehlend.length?`<div style="font-size:11px;color:var(--amber);margin:-8px 0 12px 2px">Diese Sicherung enthält ${pr.fehlend.length} Bereich${pr.fehlend.length===1?'':'e'} nicht (${esc(pr.fehlend.join(', '))}); ${pr.fehlend.length===1?'er bleibt':'sie bleiben'} unverändert.</div>`:''}
         <button class="btn btn-full" onclick="window._pendingBackup=null;closeModal()">Abbrechen</button>`);
     }catch(err){ toast('Fehler beim Lesen: '+err.message); }
@@ -45328,16 +46293,32 @@ async function importBackupAusfuehren(modus){
   const pr = backupPruefen(backup);
   if(pr.fehler.length){ window._pendingBackup=null; toast('Backup nicht importiert: '+pr.fehler[0], 6000); return; }
   const stores = STORES_SYNC.filter(s => Array.isArray(backup[s]));
+  /* A484 (Fahrplan 4): „Wiederherstellen“ stempelt alles neu und setzt sich auf allen Geraeten durch - auch gegen
+     spaetere Aenderungen (Szenario S9). Vorher sagen, wie viele neuere Datensaetze dieses Geraets betroffen sind. */
+  if(modus==='wiederherstellen'){
+    let neuer = {gesamt:0, je:{}};
+    try{ neuer = await wiederherstellenNeuereZaehlen(backup, stores); }catch(e){ console.warn('Wiederherstellen: Zählung', e); }
+    if(neuer.gesamt > 0){
+      const liste = Object.entries(neuer.je).sort((x,y) => y[1]-x[1]).slice(0,5).map(([s,k]) => s + ' ' + k).join(', ');
+      if(!confirm('Achtung: ' + neuer.gesamt + ' Datensätze auf diesem Gerät sind neuer als in der Sicherung (' + liste + ').\n\n'
+        + '„Wiederherstellen“ überschreibt sie – beim nächsten Abgleich auch auf allen anderen Geräten. Änderungen anderer Geräte, '
+        + 'die hier noch nicht angekommen sind, werden ebenfalls überschrieben.\n\nTrotzdem wiederherstellen?')){
+        window._pendingBackup=null; toast('Wiederherstellen abgebrochen – nichts geändert'); return;
+      }
+    }
+  }
   try{
     await erstelleMieterSnapshot('vor Import ('+modus+')');
-    const NOW = nowIso();
+    const NOW = stempelJetzt();   // A484: Serverzeit
     const schreiben = {};
     for(const s of stores){
       const liste = schreiben[s] = [];
       for(const item of backup[s]){
         if(!backupIdGueltig(item && item.id)) continue;
         if(modus==='ersetzen'){
-          liste.push([item]);
+          /* A484 (Fahrplan 4): Zeitstempel der Sicherung behalten. Bis A483 stempelte idbStempeln mieter/tg/users neu -
+             nur diese drei Bereiche setzten sich danach auf allen Geraeten durch, alle anderen nicht (W1). */
+          liste.push([item, {keepStamp:true}]);
         } else if(modus==='wiederherstellen'){
           // Frischer Zeitstempel: der wiederhergestellte Stand gewinnt beim Sync überall.
           // settings haben keinen Stempel-Bedarf; alle anderen Stores bekommen frischen updatedAt
@@ -45356,6 +46337,7 @@ async function importBackupAusfuehren(modus){
     window._pendingBackup=null;
     // Nach Import lokalen Stand hochladen, damit alle Geräte ihn ziehen
     try{ await idbDelete('settings','lastSync'); }catch(_){}
+    syncDateiMerkerSetzen(null);   // A484: Datei vor dem naechsten Upload neu lesen und zusammenfuehren
     const txt = (modus==='wiederherstellen' ? 'Backup wiederhergestellt ✓ – wird auf allen Geräten übernommen'
               : modus==='ersetzen' ? 'Backup vollständig übernommen ✓'
               : 'Backup zusammengeführt ✓') + (pr.ohneId ? ` · ${pr.ohneId} ohne ID übersprungen` : '');
@@ -45811,28 +46793,29 @@ async function odDateiLaden(token, contentUrl){
 /* Datei schreiben. Kleine Dateien per einfachem PUT, groessere ueber eine
    Graph-Upload-Sitzung (segmentiert, je Segment wiederholbar).
    Prueft in beiden Faellen die tatsaechlich gespeicherte Groesse. */
-async function odDateiSchreiben(token, contentUrl, json){
+async function odDateiSchreiben(token, contentUrl, json, opts){   // A484: opts.ifMatch = eTag (412 -> Fehler mit status)
   const bytes = new TextEncoder().encode(json);     // einmal kodieren, dann Bytes schneiden
   const gesamt = bytes.length;
   const kopf = {'Authorization':'Bearer ' + token};
+  const bedingung = (opts && opts.ifMatch) ? {'If-Match': opts.ifMatch} : {};   // A484 (Fahrplan 5)
 
   if (gesamt <= OD_EINFACH_MAX){
     const r = await odFetchWiederholt(contentUrl, {
       method:'PUT',
-      headers: Object.assign({}, kopf, {'Content-Type':'application/json'}),
+      headers: Object.assign({}, kopf, bedingung, {'Content-Type':'application/json'}),
       body: bytes,
     }, OD_SYNC_TIMEOUT);
-    if (!r.ok) throw new Error('HTTP ' + r.status);
+    if (!r.ok) { const e = new Error('HTTP ' + r.status); e.status = r.status; throw e; }
     return await odGroessePruefen(r, gesamt);
   }
 
   // 1) Sitzung eroeffnen
   const sr = await odFetchWiederholt(odItemUrl(contentUrl) + ':/createUploadSession', {
     method:'POST',
-    headers: Object.assign({}, kopf, {'Content-Type':'application/json'}),
+    headers: Object.assign({}, kopf, bedingung, {'Content-Type':'application/json'}),
     body: JSON.stringify({item:{'@microsoft.graph.conflictBehavior':'replace'}}),
   }, OD_TEIL_TIMEOUT);
-  if (!sr.ok) throw new Error('Upload-Sitzung: HTTP ' + sr.status);
+  if (!sr.ok) { const e = new Error('Upload-Sitzung: HTTP ' + sr.status); e.status = sr.status; throw e; }
   const sitzung = await sr.json();
   const ziel = sitzung && sitzung.uploadUrl;
   if (!ziel) throw new Error('Upload-Sitzung ohne Adresse');
@@ -46332,23 +47315,8 @@ const OD_SYNC_TIMEOUT = 90000; // 90 s
 let odTokens       = null;
 let lastSyncHash   = '';
 
-/* A452 (externer Review 3.2): Fingerabdruck fuer "keine Aenderungen". Bis A451 waren
-   es Laenge + letzte 30 Zeichen der JSON-Datei - eine gleich lange Aenderung mitten
-   darin (Miete 450 -> 460, ein Datum) galt als unveraendert und wurde nicht
-   hochgeladen (nachgestellt in e2e_sync_zwei_geraete.py). Jetzt SHA-256 ueber den
-   Inhalt OHNE updatedAt/updatedBy des Kopfes: die wechseln bei jedem Abgleich und
-   wuerden die Erkennung sonst immer aushebeln. Faellt Web Crypto aus, wird
-   hochgeladen - lieber einmal zu viel als eine Aenderung verschluckt. */
-async function syncInhaltHash(backup){
-  try{
-    const { updatedAt:_zeit, updatedBy:_von, ...inhalt } = backup || {};
-    const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(inhalt)));
-    return Array.from(new Uint8Array(d), b => b.toString(16).padStart(2,'0')).join('');
-  }catch(e){
-    console.warn('Sync-Fingerabdruck nicht berechenbar - es wird hochgeladen:', e && e.message);
-    return 'ohne-' + Date.now() + '-' + Math.random();
-  }
-}
+/* A452/A484: Fingerabdruck fuer "keine Aenderungen" -> syncHashKanonisch (A484-Block). Seit A484 wird der eigene
+   Stand mit dem Fingerabdruck der DATEI auf OneDrive verglichen, nicht mehr mit dem letzten eigenen Upload. */
 
 // ── Token speichern/laden ─────────────────────────────────
 async function odSaveTokens(t) {
@@ -46851,141 +47819,7 @@ async function msalLogout() {
 };
 
 // ── Sync zu OneDrive ──────────────────────────────────────
-async function syncToOneDrive() {
-  if (istHmSyncGeraet()) return syncToOneDriveHM();   // v196 (A3)
-  if (syncInProgress) return;
-  const token = await odGetToken();
-  if (!token) {   // v251: Grund kommt aus odGetToken; Fallback nur wenn gar nicht angemeldet
-    if (!odTokens) setSyncStatus('offline', {richtung:'hochgeladen', fehler:'Nicht mit OneDrive angemeldet'});
-    return;
-  }
-  syncInProgress = true;
-  setSyncStatus('pending');
-  try {
-    // SCHUTZ vor Überschreiben: Liegt auf OneDrive ein NEUERER Stand als unser letzter
-    // Sync, erst dessen Daten herunterladen und mergen, bevor wir unseren Stand hochladen.
-    // Sonst könnte ein Gerät mit veralteten Daten fremde neuere Änderungen (z. B. neu
-    // erfasste Telefonnummern) plattmachen.
-    /* v252: Ergebnis der Vorpruefung festhalten. Nur wenn der Remote-Stand
-       nachweislich bekannt ist (gelesen ODER echtes 404 = Datei existiert nicht),
-       darf hochgeladen werden. Vorher wurde jeder Fehler verschluckt und der
-       Upload lief trotzdem – ein Geraet mit duennem Datenstand konnte so den
-       vollstaendigen Bestand auf OneDrive ueberschreiben. */
-    let vorpruefung = 'unbekannt';
-    let vorpruefungGrund = '';
-    try {
-      const head = await fetchMitTimeout(OD_FILE_URL, {headers:{'Authorization':'Bearer '+token}}, OD_SYNC_TIMEOUT);
-      if (head.ok) {
-        vorpruefung = 'gelesen';
-        const remote = await head.json();
-        const ls = await idbGet('settings','lastSync').catch(()=>null);
-        const localSync = ls?.value||'';
-        if ((remote.updatedAt||'') !== localSync) {   // A469 (ZP-13): Datei geaendert, unabhaengig von der Geraeteuhr
-          /* v329 (R31): Die Wiedereintrittssperre bleibt waehrend des Merges
-             GESETZT. Bis v328 wurde sie hier geoeffnet - und der Merge dauert
-             Sekunden. Feuerte in dieser Zeit der 3-Sekunden-Timer aus
-             syncSoon(), lief ein ZWEITER syncToOneDrive() an; zwei Uploads auf
-             dieselbe Datei enden im Last-Write-Wins.
-             Warum das Oeffnen frueher noetig schien: syncFromOneDrive() ruft bei
-             HTTP 404 selbst syncToOneDrive() auf (Ersteinrichtung). Aus DIESER
-             Kette heraus ist der Rueckruf aber ueberfluessig - wir stehen bereits
-             in syncToOneDrive und laufen unmittelbar danach in den Upload-Zweig
-             (vorpruefung === 'gelesen'). Der Rueckruf laeuft jetzt in die Sperre
-             und kehrt still zurueck; hochgeladen wird trotzdem, nur eben einmal.
-             Wird syncFromOneDrive dagegen eigenstaendig aufgerufen, ist
-             syncInProgress false und der 404-Pfad arbeitet unveraendert. */
-          await syncFromOneDrive();          // remote → lokal mergen (datensatzweise)
-        }
-      } else if (head.status === 404) {
-        vorpruefung = 'dateiFehlt';          // echte Ersteinrichtung: Upload erlaubt
-      } else {
-        vorpruefungGrund = 'HTTP '+head.status;
-      }
-    } catch(e){ vorpruefungGrund = String(e && e.message || e); }
-
-    /* v253: Ist die Serverdatei nachweislich unlesbar, ist genau EIN Upload die
-       richtige Reparatur – aber nur nach ausdrücklicher Bestätigung durch den
-       Nutzer (syncReparaturHochladen). Der Schutz bleibt sonst unverändert. */
-    if (vorpruefung === 'unbekannt' && window._syncReparaturForce === true) {
-      console.warn('Reparatur-Upload: Serverstand wird bewusst überschrieben.');
-      vorpruefung = 'reparatur';
-    }
-    if (vorpruefung === 'unbekannt') {
-      // Kein Upload ins Blinde: lieber kein Sync als Datenverlust.
-      console.warn('Upload abgebrochen – Remote-Stand nicht prüfbar:', vorpruefungGrund);
-      setSyncStatus('offline', {richtung:'hochgeladen',
-        fehler:'Abgebrochen: Stand auf OneDrive nicht prüfbar ('+vorpruefungGrund+') – kein Überschreiben'});
-      syncInProgress = false;
-      return;
-    }
-
-    // v196 (A3): HM-Aenderungen VOR dem Aufbau des Voll-Backups zurueckholen,
-    // damit sie sofort in immo_daten.json landen.
-    await hmRueckwegMergen(token);
-
-    const backup = {};
-    for (const s of STORES_SYNC) {
-      backup[s] = await idbGetAll(s);
-      // v180 (Review H2): Geheimnisse (Function-Key, SA-Schlüssel) bleiben auf dem Gerät –
-      // sie gehören weder in die OneDrive-JSON noch in Backup-Dateien. settings werden
-      // beim Sync ohnehin nie zurückgelesen (nur gepusht), daher kein Funktionsverlust.
-      /* A418 (B12): zusaetzlich die geraetebezogenen Schluessel. Sie werden
-         beim Herunterladen ohnehin ignoriert - aber sie haben auch in der
-         gemeinsamen Datei nichts verloren. */
-      if (s === 'settings') backup[s] = backup[s].filter(
-        r => !SETTINGS_GEHEIM.includes(r?.id) && !istGeraeteEinstellung(r?.id));
-    }
-    backup.updatedAt = new Date().toISOString();
-    backup.updatedBy = odTokens?.user_name || 'Unbekannt';
-    // Tombstones (geräteübergreifend gelöschte Datensätze) mitführen, damit sie nicht zurückgemergt werden
-    try { const tomb=await idbGet('settings','tombstones'); backup.tombstones = tomb?.value || {}; } catch(e){ backup.tombstones={}; }
-    const json = JSON.stringify(backup);
-    /* A4: Groessenwarnung. v254: json.length zaehlt UTF-16-Einheiten, nicht Bytes –
-       fuer Schwelle und Anzeige wird jetzt die echte UTF-8-Groesse verwendet. */
-    const jsonBytes = new TextEncoder().encode(json).length;
-    if (jsonBytes > 18 * 1024 * 1024) {
-      /* v368: Bis hierher nannte die Warnung pauschal "(Fotos)" als Ursache.
-         Das stimmt heute, muss aber nicht so bleiben - gemessen tragen 25.000
-         Buchungen bereits 6,8 MB bei. Wer die Datei verkleinern soll, muss
-         wissen, wo sie herkommt; deshalb werden die drei groessten Bereiche
-         benannt statt geraten. */
-      let treiber = '';
-      try {
-        /* backup ist flach: backup[storename] = [...] (dazu updatedAt/updatedBy,
-           die unter der 0,5-MB-Schwelle ohnehin herausfallen). */
-        const groessen = Object.keys(backup || {})
-          .filter(k => Array.isArray(backup[k]))
-          .map(k => ({ k, mb: new TextEncoder().encode(JSON.stringify(backup[k])).length / 1048576 }))
-          .filter(x => x.mb >= 0.5)
-          .sort((a,b) => b.mb - a.mb)
-          .slice(0, 3);
-        if (groessen.length) treiber = ' – größte Bereiche: '
-          + groessen.map(x => x.k + ' ' + x.mb.toFixed(1) + ' MB').join(', ');
-      } catch(_){}
-      console.warn('Sync-Datenmenge groß:', Math.round(jsonBytes/1048576) + ' MB' + treiber);
-      try { toast('Hinweis: Datenmenge ' + Math.round(jsonBytes/1048576) + ' MB' + treiber
-        + '. Sync kann länger dauern.', 9000); } catch(_){}
-    }
-    const hash = await syncInhaltHash(backup);   // A452
-    if (hash === lastSyncHash) { setSyncStatus('ok', {richtung:'hochgeladen', hinweis:'keine Änderungen', bytes:jsonBytes}); syncInProgress=false; return; }   // v248/v254
-    /* v254: segmentierter Upload mit Groessenpruefung (ersetzt den einzelnen PUT,
-       der bei ~16 MB mitten in der Uebertragung abbrechen konnte). */
-    const schreib = await odDateiSchreiben(token, OD_FILE_URL, json);
-    const sollBytes = schreib.bytes;
-    lastSyncHash = hash;
-    window._syncBytes = sollBytes;   // v248/v253: echte Bytegröße
-    try { await idbPut('settings', { id:'lastSync', value: backup.updatedAt }); } catch(e){}   // A469 (ZP-13)
-    // v196 (A3): frischen gefilterten Stand fuer HM-Geraete bereitstellen
-    await hmDateiSchreiben(token);
-    // v199 (B5): wöchentliche Backup-Generation ablegen (fehlertolerant, blockiert nie)
-    await genBackupSichern(token, json);
-    setSyncStatus('ok', {richtung:'hochgeladen', bytes:sollBytes});   // v248/v254
-  } catch(e) {
-    console.warn('Sync Upload:', e);
-    setSyncStatus('offline', {richtung:'hochgeladen', fehler:String(e && e.message || e)});   // v248
-  }
-  syncInProgress = false;
-};
+// A484: syncToOneDrive und syncHochladenRunde stehen im A484-Block (Suche: "A484 (10.11.2026)").
 
 // ── Sync von OneDrive ─────────────────────────────────────
 // Erzwingt den Download vom Server (umgeht den Zeitstempel-Vergleich).
@@ -47063,8 +47897,8 @@ async function syncFromOneDrive() {
             let v = src[st][id];
             if (src === remoteTomb) {   // A469 (GP-03, ZP-04/ZP-13): fremde Grabsteine pruefen
               if (!backupIdGueltig(id)) continue;
-              if (zeitWert(v) > Date.now() + GRAB_ZUKUNFT_MS) { if (mergedTomb[st][id]) continue; v = new Date().toISOString(); }
-            }
+              if (zeitWert(v) > syncEchtJetzt() + GRAB_ZUKUNFT_MS) { if (mergedTomb[st][id]) continue; v = stempelJetzt(); }   // A484: Serverzeit
+            } else v = syncGrabLokalKappen(v, localVal);   // A484 (Fahrplan 2): eigene Zukunfts-Grabsteine zurueckrechnen
             // jüngsten Löschzeitpunkt behalten
             if (!mergedTomb[st][id] || v > mergedTomb[st][id]) mergedTomb[st][id] = v;
           }
@@ -47089,7 +47923,7 @@ async function syncFromOneDrive() {
       }
       // bereinigte Tombstones lokal speichern
       /* A452: nur bei echter Aenderung schreiben. Das Neuschreiben stempelte den
-         Datensatz bei jedem Herunterladen neu; mit dem Inhalts-Fingerabdruck (syncInhaltHash)
+         Datensatz bei jedem Herunterladen neu; mit dem Inhalts-Fingerabdruck (syncHashKanonisch)
          wurde daraus ein Upload je Abgleich, abwechselnd auf allen Geraeten. */
       if (JSON.stringify(mergedTomb) !== JSON.stringify(localTomb)) await idbPut('settings', { id:'tombstones', value: mergedTomb });
 
@@ -47098,11 +47932,12 @@ async function syncFromOneDrive() {
       for (const s of mergeStores) {
         if (!backup[s]) continue;
         const tombS = mergedTomb[s] || {};
-        for (const item of backup[s]) {
-          if(!item || !backupIdGueltig(item.id)) continue;   // A469 (GP-03)
+        for (const itemRoh of backup[s]) {
+          if(!itemRoh || !backupIdGueltig(itemRoh.id)) continue;   // A469 (GP-03)
+          const item = syncZukunftKappen(itemRoh, 'remote');   // A484 (Fahrplan 2)
           // getombstonete Datensätze nicht wieder einspielen (außer nachträglich neuer bearbeitet; A469 ZP-03: Zeitwert)
           if (tombS[item.id] && !(recZeit(item) > zeitWert(tombS[item.id]))) continue;
-          const local = await idbGet(s, item.id).catch(()=>null);
+          const local = syncZukunftKappen(await idbGet(s, item.id).catch(()=>null), 'lokal', localVal);   // A484
           // Feldsicher zusammenführen: gefüllte Werte werden nie durch leere überschrieben.
           const {merged} = mergeRecord(local, item);
           await syncKonfliktPruefen(s, local, item, merged, localTime, backup.updatedBy||'unbekannt');   // A469 (GP-11)
@@ -47117,13 +47952,14 @@ async function syncFromOneDrive() {
         if (!backup[s]) continue;
         const tombS = mergedTomb[s] || {};
         const remoteIds = new Set();
-        for (const item of backup[s]) {
-          if(!item || !backupIdGueltig(item.id)) continue;   // A469 (GP-03)
+        for (const itemRoh of backup[s]) {
+          if(!itemRoh || !backupIdGueltig(itemRoh.id)) continue;   // A469 (GP-03)
+          const item = syncZukunftKappen(itemRoh, 'remote');   // A484 (Fahrplan 2)
           remoteIds.add(item.id);
           const remoteStamp = item.updatedAt||item.geaendert||item.erstellt||'';
           // getombstoneten Datensatz nicht wieder einspielen (außer nachträglich neuer; A469 ZP-03: Zeitwert)
           if (tombS[item.id] && !(recZeit(item) > zeitWert(tombS[item.id]))) continue;
-          const local = await idbGet(s, item.id).catch(()=>null);
+          const local = syncZukunftKappen(await idbGet(s, item.id).catch(()=>null), 'lokal', localVal);   // A484
           const localStamp = local ? (local.updatedAt||local.geaendert||local.erstellt||'') : '';
           // Feldsicher zusammenführen statt pauschal ersetzen: kein gefülltes
           // Feld wird durch ein leeres überschrieben; bei echten Konflikten
@@ -47160,8 +47996,9 @@ async function syncFromOneDrive() {
          geraetegebunden ist, ueber mergeRecord wie jeder andere Datensatz. */
       if (backup.settings) {
         let uebernommen = 0;
-        for (const item of backup.settings) {
-          if(!item || !item.id) continue;
+        for (const itemRoh of backup.settings) {
+          if(!itemRoh || !itemRoh.id) continue;
+          const item = syncZukunftKappen(itemRoh, 'remote');   // A484 (Fahrplan 2)
           if(SETTINGS_GEHEIM.includes(item.id) || istGeraeteEinstellung(item.id)) continue;
           /* A422: Der Schluessel-Salt wird uebernommen, aber NIE ueberschrieben.
              Haette dieses Geraet bereits einen eigenen Salt, wuerden mit dem
@@ -47179,7 +48016,7 @@ async function syncFromOneDrive() {
               continue;
             }
           }
-          const local = await idbGet('settings', item.id).catch(()=>null);
+          const local = syncZukunftKappen(await idbGet('settings', item.id).catch(()=>null), 'lokal', localVal);   // A484
           /* A454: Lese-/Wichtig-Markierungen eintragsweise vereinigen (siehe peKartenVereinigen).
              Als Ganzes ersetzt, loeschte ein zweites Geraet die Markierungen des ersten. */
           if (PE_VEREINIGEN[item.id] && local && local.value && item.value) {
@@ -51516,7 +52353,7 @@ function pruefIstOffen(b){
   return false;
 }
 function _r2Norm(s){ return String(s || '').toLowerCase().replace(/\s+/g, ' ').trim(); }
-function regel2Sortierung(a, b){ return (Number(a.prio) || 0) - (Number(b.prio) || 0) || String(a.erstellt || '').localeCompare(String(b.erstellt || '')); }
+function regel2Sortierung(a, b){ return (Number(a.prio) || 0) - (Number(b.prio) || 0) || (zeitWert(a.erstellt)-zeitWert(b.erstellt)); }
 async function regel2Laden(nurAktive){
   let alle = [];
   try{ alle = (await idbGetAll('buch_regeln')) || []; }catch(_){ alle = []; }
@@ -53324,7 +54161,7 @@ async function mahnungDrucken(){
   const titel = _opStufeLabel(stufe);
   // v224 (B23): personalisierte Anrede aus dem Mieterstamm (nutzt vorhandene Helfer;
   //   Fallback in getAnrede greift bei fehlenden Anrede-/Personendaten auf den Hauptmieter).
-  const anrede = anredeMitKomma(getAnrede(m));
+  const anrede = esc(anredeMitKomma(getAnrede(m)));   // A490 (SP-26)
   let einleitung, schluss;
   if (stufe === 1){
     einleitung = `bei der Durchsicht unserer Mietkonten haben wir festgestellt, dass f\u00fcr Ihre Wohnung derzeit ein offener Betrag in H\u00f6he von <strong>${eur(ctx.rueckstand)} \u20ac</strong> besteht. Sicherlich handelt es sich um ein Versehen.`;
@@ -53985,6 +54822,7 @@ function zaSollIst(buchungen, mieterListe, monate, spIdx){
       soll: (Number(m.gesamt)||0)+spSoll, netto:Number(m.miete)||0, nk:Number(m.nk)||0,
       spSoll, tg: !!m._tgMieter,
       vzHist: (Array.isArray(m.vzHistorie)&&m.vzHistorie.length)?m.vzHistorie:null,   // v240
+      mhHist: (Array.isArray(m.miete_history)&&m.miete_history.length)?m.miete_history:null,   // A488 (SP-25)
       ehem: !!m._vormieter, einzugISO:_einzugISOvon(m), auszugISO:_auszugISOvon(m),
       mietfrei: Array.isArray(m.mietfrei)&&m.mietfrei.length ? m.mietfrei : null };
   }
@@ -54099,7 +54937,7 @@ function zaSollIst(buchungen, mieterListe, monate, spIdx){
       // gepflegtes Gesamt-Soll (z. B. inkl. Garage/Möbel) erhalten bleibt.
       const nkMo = s.vzHist ? vzZuStichtag({nk:s.nk, vzHistorie:s.vzHist}, mo+'-01') : s.nk;
       const sollMo = !aktivMo ? 0 : (mf ? mietfreiSollMo(mf.art, nkMo, s.spSoll)
-                                       : Math.round((s.soll + (nkMo - s.nk))*100)/100);
+                                       : Math.round((s.soll + (nkMo - s.nk) - (s.mhHist ? mhSollKorrektur(s.mhHist, mo, !s.vzHist) : 0))*100)/100);   // A488 (SP-25)
       const diff=Math.round((istGesamt - sollMo)*100)/100;
       // §6: reine Wohnungsmiete (ohne SP-Anteil) in NK-Vorauszahlung + Kaltmiete zerlegen –
       // NK zuerst (§ 366 Abs. 2 BGB analog), Rest Kaltmiete. Nur zur Anzeige, veraendert diff nicht.
@@ -54416,7 +55254,7 @@ function schwerePrio(sw){return sw==='schwerwiegend'?0:sw==='mittel'?1:2;}
 function toast(msg,dur=2400){
   const t=document.getElementById('toastEl');
   t.textContent=msg;t.classList.add('show');
-  setTimeout(()=>t.classList.remove('show'),dur);
+  setTimeout(()=>t.classList.remove('show'),toastDauer(msg,dur));   // A487 (SP-13)
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -54661,6 +55499,7 @@ async function renderRechnungen(){
     if(rechnFilter.zuordnung!=='all' && r.zuordnung!==rechnFilter.zuordnung) return false;
     if(rechnFilter.status==='offen' && r.bezahlt) return false;
     if(rechnFilter.status==='bezahlt' && !r.bezahlt) return false;
+    if(rechnFilter.status==='faellig' && !rechnungFaelligInfo(r).status) return false;   // A482
     if(rechnFilter.jahr!=='all' && (r.datum||'').slice(0,4)!==rechnFilter.jahr) return false;
     if(rechnFilter.q){
       const q=rechnFilter.q.toLowerCase();
@@ -54673,6 +55512,8 @@ async function renderRechnungen(){
   // Summen
   const summe=rc(liste.reduce((s,r)=>s+(Number(r.betrag)||0),0));
   const summeOffen=rc(liste.filter(r=>!r.bezahlt).reduce((s,r)=>s+(Number(r.betrag)||0),0));
+  const _ueber=liste.filter(r=>rechnungFaelligInfo(r).status==='ueberfaellig');   // A482
+  const summeUeber=rc(_ueber.reduce((s,r)=>s+(Number(r.betrag)||0),0));
 
   let h=`<div class="s-hdr"><div class="s-title"><i class="ti ti-file-invoice"></i> Rechnungen</div>
     <button class="btn btn-sm" data-action-click="modalAsAufstellung" title="Heizkostenaufstellung für A+S erzeugen"><i class="ti ti-flame"></i> A+S</button>
@@ -54686,7 +55527,8 @@ async function renderRechnungen(){
         <div style="font-size:18px;font-weight:700">${fmtEur(summe)}</div>
         <div style="font-size:11px;color:var(--ink-40)">${liste.length} Rechnung${liste.length===1?'':'en'}</div></div>
       <div><div style="font-size:11px;color:var(--ink-40)">davon offen</div>
-        <div style="font-size:18px;font-weight:700;color:${summeOffen>0?'var(--red)':'var(--green)'}">${fmtEur(summeOffen)}</div></div>
+        <div style="font-size:18px;font-weight:700;color:${summeOffen>0?'var(--red)':'var(--green)'}">${fmtEur(summeOffen)}</div>
+        ${_ueber.length?`<div style="font-size:11px;color:var(--red,#C0392B);font-weight:600">${_ueber.length} überfällig · ${fmtEur(summeUeber)}</div>`:''}</div>
     </div>
   </div>`;
 
@@ -54704,6 +55546,7 @@ async function renderRechnungen(){
       <option value="all"${rechnFilter.status==='all'?' selected':''}>Alle</option>
       <option value="offen"${rechnFilter.status==='offen'?' selected':''}>Offen</option>
       <option value="bezahlt"${rechnFilter.status==='bezahlt'?' selected':''}>Bezahlt</option>
+      <option value="faellig"${rechnFilter.status==='faellig'?' selected':''}>Fällig/überfällig</option>
     </select>
     <select onchange="rechnFilter.jahr=this.value;renderRechnungen()" style="flex-shrink:0;padding:7px;border:1px solid var(--ink-10);border-radius:8px;font-size:12px">
       <option value="all"${rechnFilter.jahr==='all'?' selected':''}>Alle Jahre</option>
@@ -54749,7 +55592,8 @@ function rechnCard(r){
         </div>
         <div style="margin-top:5px;display:flex;gap:5px;align-items:center;flex-wrap:wrap">
           <span class="chip" style="font-size:9px;background:${chipColor};color:${chipText}">${r.bezahlt?'bezahlt':'offen'}</span>
-          <span class="chip" style="font-size:9px;background:#F0F0F0;color:#888">${z?.name||r.zuordnung}</span>
+          ${rechnungFaelligChip(r)}
+          <span class="chip" style="font-size:9px;background:#F0F0F0;color:#888">${esc(z?.name||r.zuordnung||'ohne Zuordnung')}</span>
           ${z?.umlage?'<span class="chip" style="font-size:9px;background:#E8F5E9;color:#2E7D52">umlagefähig</span>':''}
           ${r.beleg?'<span class="chip" style="font-size:9px;background:var(--copper-bg);color:var(--copper-d)"><i class="ti ti-paperclip"></i> Beleg</span>':''}
         </div>
@@ -55510,7 +56354,8 @@ async function rechnungSpeichern(id){
   }
 
   const bestehend = id ? await idbGet('rechnungen', id).catch(()=>null) : null;
-  const rec={
+  /* A487 (SP-01): Bestand behalten (Herkunft, Zusatzfelder) und die Zusatzfelder des Formulars mitspeichern. */
+  const rec=Object.assign({}, bestehend || {}, {
     id: id||uid(),
     lieferant,
     rechnungsnr: document.getElementById('rNr').value.trim(),
@@ -55537,7 +56382,7 @@ async function rechnungSpeichern(id){
     erstelltIso: bestehend?.erstelltIso || nowIso(),
     ersteller: bestehend?.ersteller || CU?.name||'',
     geaendert: nowIso(),
-  };
+  }, rechnungZusatzfelderLesen());
   await idbPut('rechnungen', rec);
   _rechnBeleg=null;
   _rechnPositionen=[];
@@ -55622,6 +56467,7 @@ async function modalRechnungBearbeiten(id){
 async function rechnBezahltUmschalten(id){
   const r=await idbGet('rechnungen', id); if(!r) return;
   r.bezahlt=!r.bezahlt; r.geaendert=nowIso();
+  if(r.bezahlt) r.bezahltAm=today(); else delete r.bezahltAm;   // A482
   await idbPut('rechnungen', r);
   syncSoon();
   closeModal();
