@@ -1457,7 +1457,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=39;   // A398: +kr_abrechnungen · A466: +excel_cache
-const APP_VERSION = '2026-11-16-A499';
+const APP_VERSION = '2026-11-16-A500';
 /* v364 (12.08.2026) – offene Punkte abgearbeitet.
    1) D1/XLSX_SRI: Der im Code hinterlegte PowerShell-Befehl war FALSCH und
       konnte nie funktionieren - Invoke-WebRequest liefert unter .Content einen
@@ -52373,18 +52373,40 @@ function excelAuswerten(p, blatt, meta){
 }
 
 /* ── OneDrive (austauschbar für Tests) ── */
-function excelOrdnerNorm(s){ return String(s || '').trim().replace(/\\/g, '/').replace(/\/{2,}/g, '/').replace(/^\/+|\/+$/g, '').trim(); }
+/* A500: Ein eingefügter Windows-Pfad (C:\Users\…\OneDrive[ - Firma]\…) wird auf den Teil nach „OneDrive“ gekürzt –
+   OneDrive im Netz kennt nur Pfade ab dem eigenen Stammordner („Graph 400 … segment 'root:'“ bei „C:“). */
+function excelOrdnerNorm(s){
+  let p = String(s || '').trim().replace(/^["']+|["']+$/g, '').replace(/\\/g, '/').replace(/\/{2,}/g, '/');
+  const od = p.match(/^(?:[A-Za-z]:)?\/?(?:Users|Benutzer)\/[^/]+\/OneDrive(?: - [^/]+)?(?:\/|$)(.*)$/i);
+  if(od) p = od[1];
+  else if(/^[A-Za-z]:/.test(p)) p = p.replace(/^[A-Za-z]:/, '');
+  return p.replace(/^\/+|\/+$/g, '').trim();
+}
 async function excelOrdnerListe(ordner){
   const r = await odGraph(odPfadAdresse(ordner) + ':/children?$select=id,name,size,eTag,lastModifiedDateTime,file&$top=500');
   if(r && r.__notfound) throw new Error('Ordner „' + ordner + '“ in OneDrive nicht gefunden.');
   return (r && r.value) || [];
 }
 async function excelDateiHolen(item){
-  const meta = await odGraph(odItemAdresse(item.id) + '?$select=id,@microsoft.graph.downloadUrl');
-  const url = meta && meta['@microsoft.graph.downloadUrl'];
-  if(!url) throw new Error('Download-Adresse fehlt für ' + item.name);
-  const r = await fetchMitTimeout(url, {}, 180000);
-  if(!r.ok) throw new Error('HTTP ' + r.status + ' beim Laden von ' + item.name);
+  /* A500: Manche OneDrive-Konten liefern die Download-Adresse nicht (weder mit noch ohne $select).
+     Dann wird der Inhalt direkt über Graph geholt (…/content, mit Anmeldung) – wie beim Datei-Abgleich. */
+  let url = null;
+  try{
+    const meta = await odGraph(odItemAdresse(item.id));
+    url = meta && !meta.__notfound ? (meta['@microsoft.graph.downloadUrl'] || meta['@content.downloadUrl'] || null) : null;
+  }catch(e){ console.warn('Excel: Metadaten für ' + item.name + ' nicht lesbar, lade direkt:', e && e.message); }
+  if(url){
+    const r = await fetchMitTimeout(url, {}, 180000);
+    if(r.ok) return await r.arrayBuffer();
+    console.warn('Excel: Download-Adresse lieferte HTTP ' + r.status + ' für ' + item.name + ', lade direkt');
+  }
+  return await excelInhaltDirekt(item);
+}
+async function excelInhaltDirekt(item){
+  const token = await odGetToken();
+  if(!token) throw new Error('Nicht bei OneDrive angemeldet');
+  const r = await fetchMitTimeout(OD_GRAPH + odItemAdresse(item.id) + '/content', { headers:{ 'Authorization':'Bearer ' + token } }, 180000);
+  if(!r.ok) throw new Error('HTTP ' + r.status + ' beim Laden von ' + item.name + (r.status === 401 ? ' (Anmeldung prüfen)' : ''));
   return await r.arrayBuffer();
 }
 /* Neueste Datei je Kürzel. Mehrdeutige Namen (passen zu zwei Kürzeln) werden übergangen. */
@@ -52415,6 +52437,7 @@ async function excelOrdnerSpeichern(){
   const inp = document.getElementById('excelOrdnerInp');
   const wert = excelOrdnerNorm(inp && inp.value);
   if(!wert){ toast('Bitte den OneDrive-Ordner eintragen, z. B. NadigPfau/Buchhaltung.', 4000); return; }
+  if(inp && inp.value.trim() !== wert){ inp.value = wert; toast('Pfad auf den OneDrive-Teil gekürzt: ' + wert, 4000); }   // A500
   try{ await idbPut('settings', { id:'excel_ordner', value:wert, updatedAt:nowIso() }); syncSoon(); }
   catch(e){ console.error('Excel-Ordner speichern:', e); toast('Konnte nicht gespeichert werden.', 4000); return; }
   toast('Ordner gespeichert ✓');
