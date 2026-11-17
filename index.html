@@ -480,6 +480,12 @@ body{background:var(--surface);color:var(--ink);font-size:15px;-webkit-font-smoo
 .bb-card{background:var(--white);border:1px solid var(--ink-10);border-radius:12px;padding:12px;margin-bottom:8px;box-shadow:var(--shadow)}
 .bb-card.bb-notdienst{border-left:3px solid var(--red)}
 .bb-badge{display:inline-block;background:var(--red-l);color:var(--red);font-size:10px;font-weight:600;padding:1px 7px;border-radius:10px;margin-left:6px;vertical-align:middle}
+/* A502: Reihenfolge von Hand */
+.rang-pfeile{display:flex;flex-direction:column;gap:3px;flex-shrink:0}
+.rang-knopf{all:unset;box-sizing:border-box;width:34px;height:26px;display:flex;align-items:center;justify-content:center;border:1px solid var(--ink-10);border-radius:7px;background:var(--white);color:var(--ink-40);cursor:pointer;font-size:15px}
+.rang-knopf:hover{color:var(--ink);border-color:var(--ink-40)}
+.rang-knopf:focus-visible{outline:2px solid var(--copper,#b87333);outline-offset:1px}
+@media print{.rang-pfeile{display:none}}
 /* A501: Versorgerverträge */
 .fin-link{all:unset;cursor:pointer;text-decoration:underline;color:var(--red)}
 .fin-link:focus-visible{outline:2px solid var(--copper,#b87333);outline-offset:2px}
@@ -1482,7 +1488,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=39;   // A398: +kr_abrechnungen · A466: +excel_cache
-const APP_VERSION = '2026-11-16-A501';
+const APP_VERSION = '2026-11-16-A502';
 /* v364 (12.08.2026) – offene Punkte abgearbeitet.
    1) D1/XLSX_SRI: Der im Code hinterlegte PowerShell-Befehl war FALSCH und
       konnte nie funktionieren - Invoke-WebRequest liefert unter .Content einen
@@ -4634,8 +4640,8 @@ async function renderDash() {
 
   // Dringende Punkte – mit Typ-Markierung für klickbare Navigation (P4)
   const dringend = [
-    ...myAuf.filter(a=>a.prio==='hoch').map(a=>({...a,_typ:'aufgabe'})),
-    ...myMng.filter(m=>m.schwere==='schwerwiegend').map(m=>({...m,_typ:'mangel'}))
+    ...myAuf.filter(a=>a.prio==='hoch').sort(aufRangSort).map(a=>({...a,_typ:'aufgabe'})),   // A502
+    ...myMng.filter(m=>m.schwere==='schwerwiegend').sort(mngRangSort).map(m=>({...m,_typ:'mangel'}))
   ];
   if (dringend.length) {
     html += `<div class="card" style="border-color:var(--red);margin-bottom:12px">
@@ -19590,7 +19596,7 @@ async function renderObjAufgaben(el){
   </button>`;
   if(!aufgaben.length){h+='<div class="empty"><i class="ti ti-check"></i><p>Keine Aufgaben</p></div>';}
   else {
-    const offen=aufgaben.filter(a=>a.status!=='erledigt').sort((a,b)=>prioPrio(a.prio)-prioPrio(b.prio));
+    const offen=aufgaben.filter(a=>a.status!=='erledigt').sort(aufRangSort);   // A502
     const erl=aufgaben.filter(a=>a.status==='erledigt').sort((a,b)=>(zeitWert(b.erledigtZeit)||zeitWert(b.erledigtAm)||zeitWert(b.erstellt))-(zeitWert(a.erledigtZeit)||zeitWert(a.erledigtAm)||zeitWert(a.erstellt)));
     offen.forEach(a=>h+=taskHTML(a));
     if(erl.length){
@@ -19616,7 +19622,7 @@ async function renderObjMaengel(el){
   else{
     const alle=[...maengel,...reps];
     const istErl=x=>x.status==='behoben'||x.status==='erledigt';
-    const offen=alle.filter(x=>!istErl(x)).sort((a,b)=>schwerePrio(a.schwere)-schwerePrio(b.schwere) || zeitWert(b.erstellt)-zeitWert(a.erstellt));   // A481 (F5)
+    const offen=alle.filter(x=>!istErl(x)).sort(mngRangSort);   // A481 (F5), A502
     const erl  =alle.filter(istErl).sort((a,b)=>zeitWert(b.erstellt)-zeitWert(a.erstellt));   // A481 (F5)
     offen.forEach(m=>h+=mangelHTML(m));
     if(erl.length){
@@ -20667,7 +20673,7 @@ async function renderAufgaben(){
   if(!offen.length&&!erledigt.length){
     h+=`<div class="empty"><i class="ti ti-check"></i><p>Keine offenen Aufgaben</p></div>`;
   } else {
-    offen.sort((a,b)=>prioPrio(a.prio)-prioPrio(b.prio)).forEach(a=>h+=taskHTML(a));
+    offen.sort(aufRangSort).forEach(a=>h+=taskHTML(a));   // A502
     if(erledigt.length && !flt.hideDone){
       h+=`<div class="s-hdr" style="margin-top:16px"><div class="s-title" style="font-size:14px;color:var(--ink-40)">Erledigt (${erledigt.length})</div></div>`;
       erledigt.sort((a,b)=>(zeitWert(b.erledigtZeit)||zeitWert(b.erledigtAm)||zeitWert(b.erstellt))-(zeitWert(a.erledigtZeit)||zeitWert(a.erledigtAm)||zeitWert(a.erstellt))).forEach(a=>h+=taskHTML(a));
@@ -20679,7 +20685,7 @@ async function renderAufgaben(){
   <div id="auf-maengel" style="display:none">`;
   if(!maengel.length){h+=`<div class="empty"><i class="ti ti-mood-smile"></i><p>Keine Mängel erfasst</p></div>`;}
   else {
-    offMng.sort((a,b)=>schwerePrio(a.schwere)-schwerePrio(b.schwere) || zeitWert(b.erstellt)-zeitWert(a.erstellt)).forEach(m=>h+=mangelHTML(m));
+    offMng.sort(mngRangSort).forEach(m=>h+=mangelHTML(m));   // A502
     if(erlMng.length && !flt.hideDone){
       h+=`<div class="s-hdr" style="margin-top:16px"><div class="s-title" style="font-size:14px;color:var(--ink-40)">Behoben (${erlMng.length})</div></div>`;
       erlMng.sort((a,b)=>zeitWert(b.erstellt)-zeitWert(a.erstellt)).forEach(m=>h+=mangelHTML(m));
@@ -20769,11 +20775,13 @@ function aufDruckHTML(liste, istMng, opt, flt){
   const objName = x => istAllgemein(x.objektId) ? 'Allgemein' : ((getObj(x.objektId) || {}).name || '–');
   const datumVon = x => x.datum || '';   // To Do: faellig, Mangel: festgestellt
   const rang = x => istMng ? schwerePrio(x.schwere) : prioPrio(x.prio);
+  const vonHand = liste.some(x => !aufDruckErledigt(x) && rangFest(x));   // A502: von Hand geordnet -> Druck wie Bildschirm
   const sortiere = (a, b) => {
     const ea = aufDruckErledigt(a), eb = aufDruckErledigt(b);
     if(ea !== eb) return ea ? 1 : -1;
     if(ea) return (zeitWert(b.erledigtZeit) || zeitWert(b.erledigtAm)) - (zeitWert(a.erledigtZeit) || zeitWert(a.erledigtAm));   // A482
     const r = rang(a) - rang(b); if(r) return r;
+    if(vonHand) return rangVergleich(a, b, istMng);
     const da = datumVon(a) || '9999', db = datumVon(b) || '9999';
     return da < db ? -1 : da > db ? 1 : String(a.titel || '').localeCompare(String(b.titel || ''), 'de');
   };
@@ -21096,6 +21104,93 @@ async function eingangRechnung(e, tomb, absender, key){
   await idbPut('rechnungen', rec);
   return { ok:true, text:'angelegt: Rechnung ' + nr + ' (' + lieferant + ', ' + fmtEur(betrag) + (obj ? ', ' + obj.name : '') + ')'
     + (hinweise.length ? ' – bitte prüfen: ' + hinweise.join('; ') : '') };
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   A502 (16.11.2026) – To Dos und Mängel von Hand ordnen (Pfeile hoch/runter)
+   Wunsch des Nutzers 16.11.2026, 20:41: innerhalb derselben Dringlichkeit das Wichtigste nach oben schieben.
+   Die Stufe (Priorität bzw. Schwere) bleibt die erste Ordnung; innerhalb der Stufe zählt das Feld „rang“.
+   Ohne eigenes „rang“ gilt der bisherige Platz: To Dos nach Anlage (älteste zuerst), Mängel neueste zuerst.
+   „rang“ liegt auf derselben Zahlenskala wie dieser Standardplatz – beim Schieben wird deshalb in der Regel
+   nur der verschobene Eintrag geschrieben (Mittelwert der neuen Nachbarn), nicht die ganze Liste.
+   Die Reihenfolge wird abgeglichen und gilt für alle Benutzer und Geräte.
+   ═══════════════════════════════════════════════════════════════════════ */
+const RANG_SCHRITT = 1000;
+function rangFest(x){ return !!x && typeof x.rang === 'number' && isFinite(x.rang); }
+function rangWert(x, istMng){ return rangFest(x) ? x.rang : (istMng ? -zeitWert(x.erstellt) : zeitWert(x.erstellt)); }
+function rangVergleich(a, b, istMng){
+  return rangWert(a, istMng) - rangWert(b, istMng) || (String(a.id) < String(b.id) ? -1 : String(a.id) > String(b.id) ? 1 : 0);
+}
+function aufRangSort(a, b){ return prioPrio(a.prio) - prioPrio(b.prio) || rangVergleich(a, b, false); }
+function mngRangSort(a, b){ return schwerePrio(a.schwere) - schwerePrio(b.schwere) || rangVergleich(a, b, true); }
+function rangStufe(x, istMng){ return istMng ? schwerePrio(x.schwere) : prioPrio(x.prio); }
+function rangAttr(store, x){
+  const istMng = store !== 'aufgaben';
+  return ' data-rang="' + store + '" data-rid="' + escAttr(x.id) + '" data-stufe="' + rangStufe(x, istMng) + '"';
+}
+function rangPfeileHTML(store, x){
+  const wort = store === 'aufgaben' ? 'To Do' : 'Eintrag';
+  const knopf = (r, symbol, text) => '<button type="button" class="rang-knopf rang-' + (r < 0 ? 'hoch' : 'runter') + '" title="' + text + '" aria-label="' + wort + ' ' + text
+    + '" onclick="event.stopPropagation();rangVerschieben(this,' + r + ')"><i class="ti ti-chevron-' + symbol + '"></i></button>';
+  return '<span class="rang-pfeile">' + knopf(-1, 'up', 'nach oben') + knopf(1, 'down', 'nach unten') + '</span>';
+}
+/* Sichtbarer Nachbar derselben Stufe in der angezeigten Liste (Filter und Suche zählen mit). */
+function rangNachbar(karte, richtung){
+  const weiter = richtung < 0 ? 'previousElementSibling' : 'nextElementSibling';
+  let nb = karte[weiter];
+  while(nb && nb.matches('.task-item[data-rang]') && nb.style.display === 'none') nb = nb[weiter];
+  if(!nb || !nb.matches('.task-item[data-rang]') || nb.dataset.stufe !== karte.dataset.stufe) return null;
+  return nb;
+}
+async function rangGruppeLaden(istMng, stufe){
+  let alle;
+  if(istMng){
+    alle = [...(await idbGetAll('maengel')).map(m => ({ d:m, store:'maengel' })),
+      ...(await idbGetAll('reparaturen')).filter(r => r.type !== 'austausch').map(r => ({ d:r, store:'reparaturen' }))]
+      .filter(e => e.d.status !== 'behoben' && e.d.status !== 'erledigt');
+  } else {
+    alle = (await idbGetAll('aufgaben')).filter(a => a.status !== 'erledigt').map(a => ({ d:a, store:'aufgaben' }));
+  }
+  return alle.filter(e => rangStufe(e.d, istMng) === stufe).sort((a, b) => rangVergleich(a.d, b.d, istMng));
+}
+async function rangVerschieben(knopf, richtung){
+  const karte = knopf && knopf.closest('.task-item[data-rang]');
+  if(!karte) return;
+  const store = karte.dataset.rang, id = karte.dataset.rid, istMng = store !== 'aufgaben', stufe = Number(karte.dataset.stufe);
+  const nb = rangNachbar(karte, richtung);
+  if(!nb){ toast(richtung < 0 ? 'Steht in dieser Stufe schon ganz oben' : 'Steht in dieser Stufe schon ganz unten'); return; }
+  try{
+    const gruppe = await rangGruppeLaden(istMng, stufe);
+    const ich = gruppe.find(e => e.store === store && String(e.d.id) === id);
+    const rest = gruppe.filter(e => e !== ich);
+    const k = rest.findIndex(e => e.store === nb.dataset.rang && String(e.d.id) === nb.dataset.rid);
+    if(!ich || k < 0){ toast('Die Liste hat sich geändert – bitte noch einmal versuchen'); await rangNeuZeichnen(store); return; }
+    const pos = richtung < 0 ? k : k + 1;
+    const vor = rest[pos - 1], nach = rest[pos];
+    const w = v => rangWert(v.d, istMng);
+    const neu = vor && nach ? (w(vor) + w(nach)) / 2 : vor ? w(vor) + RANG_SCHRITT : nach ? w(nach) - RANG_SCHRITT : 0;
+    if((!vor || neu > w(vor)) && (!nach || neu < w(nach))){
+      ich.d.rang = neu;
+      await idbPut(store, ich.d);
+    } else {
+      /* Nachbarn mit gleichem Wert (z. B. ohne Anlagezeit) oder kein Platz mehr dazwischen: Stufe gleichmäßig neu verteilen. */
+      rest.splice(pos, 0, ich);
+      const start = Math.min(...rest.map(w));
+      for(let i = 0; i < rest.length; i++){
+        const soll = start + i * RANG_SCHRITT;
+        if(rest[i].d.rang !== soll){ rest[i].d.rang = soll; await idbPut(rest[i].store, rest[i].d); }
+      }
+    }
+    syncSoon();
+  }catch(e){ console.error('Reihenfolge ändern:', e); toast('Reihenfolge konnte nicht gespeichert werden.', 5000); return; }
+  await rangNeuZeichnen(store);
+  const wieder = document.querySelector('.task-item[data-rang="' + store + '"][data-rid="' + (window.CSS && CSS.escape ? CSS.escape(id) : id) + '"] .rang-' + (richtung < 0 ? 'hoch' : 'runter'));
+  if(wieder){ try{ wieder.focus({ preventScroll:true }); }catch(_){} }
+}
+async function rangNeuZeichnen(store){
+  if(curPage === 'aufgaben') await renderAufgaben();
+  else if(curPage === 'objekt') await renderObjTab(store === 'aufgaben' ? 'aufgaben' : 'maengel');
+  if(curPage === 'dash') await renderDash();
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -24434,7 +24529,7 @@ function taskHTML(t) {
   const obj  = getObj(t.objektId);
   const done = t.status==='erledigt';
   const pc   = t.prio==='hoch'?'prio-h':t.prio==='mittel'?'prio-m':'prio-l';
-  return `<div class="task-item${done?'':' ton-'+pc.slice(5)}${bearbeiterKlasse(t,done)}" style="cursor:pointer;${bearbeiterStil(t,done)}" onclick="showAufgabeDetail('${t.id}')">
+  return `<div class="task-item${done?'':' ton-'+pc.slice(5)}${bearbeiterKlasse(t,done)}"${done?'':rangAttr('aufgaben',t)} style="cursor:pointer;${bearbeiterStil(t,done)}" onclick="showAufgabeDetail('${t.id}')">
     <div class="t-prio ${pc}"></div>
     <div class="t-check ${done?'done':''}" onclick="event.stopPropagation();toggleAufgabe('${t.id}')">
       ${done?'<i class="ti ti-check" style="font-size:12px"></i>':''}
@@ -24454,6 +24549,7 @@ function taskHTML(t) {
       ${t.beschreibung?`<div style="font-size:12px;color:var(--ink-40);margin-top:3px">${esc(t.beschreibung.slice(0,60))}${t.beschreibung.length>60?'…':''}</div>`:''}
     </div>
     <div class="t-actions">
+      ${done?'':rangPfeileHTML('aufgaben',t)}
       <button class="btn btn-sm" aria-label="To Do ändern" title="Bearbeiten" onclick="event.stopPropagation();editAufgabe('${t.id}')"><i class="ti ti-pencil"></i></button>
       ${darfLoeschen('aufgabe',t)?`<button class="btn btn-sm btn-danger" aria-label="To Do löschen" title="Löschen" onclick="event.stopPropagation();deleteAufgabe('${t.id}')"><i class="ti ti-trash"></i></button>`:''}
     </div>
@@ -24466,7 +24562,7 @@ function mangelHTML(m){
   const done=m.status==='behoben'||m.status==='erledigt';
   const pc=m.schwere==='schwerwiegend'?'prio-h':m.schwere==='mittel'?'prio-m':'prio-l';
   const istRep=m.istReparatur||m.type==='reparatur';
-  return `<div class="task-item${done?'':' ton-'+pc.slice(5)}${bearbeiterKlasse(m,done)}" style="cursor:pointer;${bearbeiterStil(m,done)}" onclick="showMangelDetail('${m.id}')">
+  return `<div class="task-item${done?'':' ton-'+pc.slice(5)}${bearbeiterKlasse(m,done)}"${done?'':rangAttr(m._altStore?'reparaturen':'maengel',m)} style="cursor:pointer;${bearbeiterStil(m,done)}" onclick="showMangelDetail('${m.id}')">
     <div class="t-prio ${pc}"></div>
     <div class="t-check ${done?'done':''}" onclick="event.stopPropagation();toggleMangel('${m.id}')">
       ${done?'<i class="ti ti-check" style="font-size:12px"></i>':''}
@@ -24486,6 +24582,7 @@ function mangelHTML(m){
       ${m.beschreibung?`<div style="font-size:12px;color:var(--ink-40);margin-top:3px;font-style:italic">${esc(m.beschreibung.slice(0,60))}${m.beschreibung.length>60?'…':''}</div>`:''}
     </div>
     <div class="t-actions">
+      ${done?'':rangPfeileHTML(m._altStore?'reparaturen':'maengel',m)}
       ${darfLoeschen('mangel',m)?`<button class="btn btn-sm btn-danger" aria-label="Mangel löschen" title="Löschen" onclick="event.stopPropagation();deleteMangel('${m.id}')"><i class="ti ti-trash"></i></button>`:''}
     </div>
   </div>`;
