@@ -1488,7 +1488,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=39;   // A398: +kr_abrechnungen · A466: +excel_cache
-const APP_VERSION = '2026-11-16-A502';
+const APP_VERSION = '2026-11-18-A504';
 /* v364 (12.08.2026) – offene Punkte abgearbeitet.
    1) D1/XLSX_SRI: Der im Code hinterlegte PowerShell-Befehl war FALSCH und
       konnte nie funktionieren - Invoke-WebRequest liefert unter .Content einen
@@ -51580,7 +51580,7 @@ function zaParseCSV(text){
     .filter(x=>x.m)
     .sort((a,b)=>Number(a.m[1])-Number(b.m[1]))
     .map(x=>x.ix);
-  if(iBetrag<0||iIban<0){ return {header,buchungen:[],fehler:'Unbekanntes CSV-Format (Spalten nicht gefunden)'}; }
+  if(iBetrag<0||iIban<0){ return {header,buchungen:[],fehler: (header.includes('Empfänger/Absender') ? 'Kurz-Export ohne IBAN-Spalten erkannt – bitte im Online-Banking den CSV-Export mit allen Spalten (u. a. „Begünstigter/Absender - Kontonummer“) wählen.' : 'Unbekanntes CSV-Format (Spalten nicht gefunden)')}; }   // A504
   const buchungen=[];
   /* v223 (B3): Vorkommenszähler je identischer Buchung innerhalb DIESER Datei.
      Schlüssel bewusst OHNE kontoId (eine CSV = ein Konto) und deckungsgleich mit den
@@ -52264,6 +52264,8 @@ async function zaSpeichern(){
     }
   }
   toast(`${neu} Eingänge${neuAus?` und ${neuAus} Ausgänge`:''} gespeichert${akt?`, ${akt} nachträglich zugeordnet`:''}${dup?`, ${dup} bereits vorhanden`:''}${kol?`, ${kol} Namensgleichheit getrennt erfasst`:''}.`);
+  // A504: Abbuchungen mit offenen Rechnungen abgleichen (meldet selbst per Toast)
+  try{ const _rb=await rbAbgleichAusfuehren(); if(_rb.fehlt) setTimeout(()=>toast(`${_rb.fehlt} Abbuchung${_rb.fehlt===1?'':'en'} ohne Rechnung – siehe Rechnungen → „Beleg fehlt“`, 6000), 2500); }catch(e){ console.warn('A504 Abgleich:', e); }
   clearTimeout(window._syncTimer);
   window._syncTimer=setTimeout(()=>{ if(typeof syncToOneDrive==='function') syncToOneDrive(); }, 3000);
   zaRenderVerlauf();
@@ -57104,14 +57106,247 @@ function rechnAsPosWechsel(){
 }
 
 // Filter-State für die Rechnungsliste
-let rechnFilter = { objId:'all', zuordnung:'all', status:'all', jahr:'all', q:'' };
+let rechnFilter = { objId:'all', zuordnung:'all', status:'all', jahr:'all', q:'', sort:'datum_neu' };   // A503: sort
+/* A503: Sortierung und Excel-Export der Rechnungsliste. */
+const RECHN_SORTIERUNGEN = [
+  { id:'datum_neu', name:'Datum: neueste zuerst' }, { id:'datum_alt', name:'Datum: älteste zuerst' },
+  { id:'betrag_hoch', name:'Betrag: höchster zuerst' }, { id:'betrag_tief', name:'Betrag: niedrigster zuerst' },
+  { id:'lieferant', name:'Lieferant A–Z' }, { id:'objekt', name:'Objekt A–Z' },
+  { id:'faellig', name:'Fälligkeit: früheste zuerst' }, { id:'offen', name:'Offene zuerst' }
+];
+let _rechnListe = [];   // A503: zuletzt angezeigte (gefilterte, sortierte) Liste - Grundlage des Excel-Exports
+function rechnSortieren(liste, art, nameVon){
+  const name = nameVon || (id => (id ? (zielName(id) || '') : ''));
+  const datum = (a, b) => (b.datum || '').localeCompare(a.datum || '') || (b.erstelltIso || '').localeCompare(a.erstelltIso || '');
+  const text = (x, y) => String(x || '').localeCompare(String(y || ''), 'de', { sensitivity:'base' });
+  const f = {
+    datum_alt: (a, b) => -datum(a, b),
+    betrag_hoch: (a, b) => (Number(b.betrag) || 0) - (Number(a.betrag) || 0) || datum(a, b),
+    betrag_tief: (a, b) => (Number(a.betrag) || 0) - (Number(b.betrag) || 0) || datum(a, b),
+    lieferant: (a, b) => text(a.lieferant, b.lieferant) || datum(a, b),
+    objekt: (a, b) => { const x = name(a.objektId), y = name(b.objektId); return (!x - !y) || text(x, y) || datum(a, b); },
+    faellig: (a, b) => { const x = a.faellig || '', y = b.faellig || ''; return (!x - !y) || x.localeCompare(y) || datum(a, b); },
+    offen: (a, b) => (!!a.bezahlt - !!b.bezahlt) || datum(a, b)
+  }[art] || datum;
+  return liste.slice().sort(f);
+}
+function rechnBezug(r){
+  if(r.zuordnung==='nk' && r.kostenartName) return r.kostenartName;
+  if(r.zuordnung==='mieter' && r.mieterName) return r.mieterName;
+  if(r.zuordnung==='reparatur' && r.reparaturTitel) return r.reparaturTitel;
+  return r.zuordnung==='allgemein' ? 'Verwaltung' : '';
+}
+/* Zeilen fuer den Export - rein, damit testbar. Datum als echtes Excel-Datum, Betrag als Zahl. */
+function rechnExcelZeilen(liste, nameVon){
+  const name = nameVon || (id => (id ? (zielName(id) || '') : ''));
+  const dat = s => (/^\d{4}-\d{2}-\d{2}/.test(String(s || '')) ? new Date(+s.slice(0,4), +s.slice(5,7) - 1, +s.slice(8,10)) : '');
+  const kopf = ['Rechnungsdatum','Lieferant','Rechnungsnr.','Betrag brutto (€)','Objekt','Art','Bezug','Fällig am','Status','Bezahlt am','Beleg','Notiz'];
+  const zeilen = liste.map(r => {
+    const z = RECHN_ZUORDNUNG.find(x => x.id === r.zuordnung);
+    return [dat(r.datum), r.lieferant || '', r.rechnungsnr || '', Math.round((Number(r.betrag) || 0) * 100) / 100, name(r.objektId),
+      (z && z.name) || r.zuordnung || '', rechnBezug(r), dat(r.faellig), r.bezahlt ? 'bezahlt' : 'offen', dat(r.bezahltAm),
+      r.beleg ? 'ja' : 'nein', r.notiz || ''];
+  });
+  return { kopf, zeilen };
+}
+async function rechnExcelExport(){
+  if(!istVerwalter()){ toast('Nur für Admins'); return; }
+  if(!_rechnListe.length){ toast('Keine Rechnungen in der Liste.'); return; }
+  try{ await xlsxLaden(); }
+  catch(e){ console.warn('Excel-Bibliothek:', e); toast('Excel-Bibliothek nicht verfügbar (Internet nötig).'); return; }
+  const { kopf, zeilen } = rechnExcelZeilen(_rechnListe);
+  const ws = XLSX.utils.aoa_to_sheet([kopf, ...zeilen], { cellDates:true });
+  const n = zeilen.length;
+  for(let i = 0; i < n; i++){
+    for(const c of [0, 7, 9]){ const a = XLSX.utils.encode_cell({ r:i + 1, c }); if(ws[a] && ws[a].t === 'd') ws[a].z = 'dd.mm.yyyy'; }
+    const b = XLSX.utils.encode_cell({ r:i + 1, c:3 }); if(ws[b]) ws[b].z = '#,##0.00';
+  }
+  /* Summenzeile als Formel - rechnet in Excel nach, wenn Zeilen geaendert werden. */
+  XLSX.utils.sheet_add_aoa(ws, [['Summe', '', '', { t:'n', f:'SUBTOTAL(9,D2:D' + (n + 1) + ')', z:'#,##0.00' }]], { origin:{ r:n + 1, c:0 } });
+  ws['!cols'] = [{wch:12},{wch:28},{wch:18},{wch:14},{wch:24},{wch:22},{wch:22},{wch:12},{wch:9},{wch:12},{wch:6},{wch:40}];
+  ws['!autofilter'] = { ref:'A1:L' + (n + 1) };
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Rechnungen');
+  const dateiname = 'Rechnungen_' + today() + '.xlsx';
+  try{ XLSX.writeFile(wb, dateiname); toast('Excel exportiert ✓ (' + n + ' Rechnung' + (n === 1 ? '' : 'en') + ')'); }
+  catch(e){ toast('Export fehlgeschlagen: ' + (e.message || e)); }
+}
 // Beleg-Zwischenspeicher beim Erfassen (Data-URL + Metadaten)
 let _rechnBeleg = null; // { data, mimeType, name }
+
+/* ══════════════════════════════════════════════════════════════════
+   A504 (18.11.2026): Abgleich Rechnungen ↔ Bankabbuchungen
+   (1) Offene Rechnung + Abbuchung (Store 'buchungen', typ 'ausgang') mit gleichem
+       Betrag und Rechnungsnummer im Verwendungszweck -> „bezahlt“ (Datum, Konto,
+       Buchungs-ID). Ohne Nummer: Betrag + Lieferant im Empfänger/Zweck, Zahlung
+       zwischen 5 Tagen vor und 120 Tagen nach dem Rechnungsdatum, je Buchung nur
+       eine Rechnung.
+   (2) Abbuchungen, die nach einer Rechnungszahlung aussehen, aber keiner Rechnung
+       zugeordnet sind -> Liste „Beleg fehlt“ (ab RB_AB_DATUM). Dort: Rechnung
+       erfassen (vorbefüllt) oder „kein Beleg nötig“.
+   Kein neuer Store: Verknüpfung über r.bezahltBuchungId und b.rechnungId /
+   b.belegNichtNoetig (beide Stores werden bereits synchronisiert).
+   ══════════════════════════════════════════════════════════════════ */
+const RB_AB_DATUM = '2025-01-01';
+const RB_AUSSCHLUSS = /(lohn|gehalt|übertrag|uebertrag|darlehen|tilgung|zinsen|entgeltabrechnung|entgeltabschluss|steuer|finanzamt|bundeskasse|abschlag|vertragskonto|rundfunk|kaution|nebenkostenerstattung|nebenkostenabrechnung|guthaben|rückerstattung|rueckerstattung|rueckueberweisung|dauerauftrag|entgelt|geb(ü|ue)hr|grundbesitz|kassenzeichen|vertragsnummer|sparkasse|bundesagentur)/i;
+const RB_RECHNUNGSHINWEIS = /(\bre\b|\bre\.|\brech\b|rechnung|\brg\b|\brnr\b|beleg|ihr einkauf bei|\bauftrag\b)/i;
+const RB_LIEF_STOP = new Set(['gmbh','gbr','kg','ohg','ag','se','co','und','the','inh','inhaber','meisterbetrieb','haustechnik','deutschland','europe','limited','ltd','sarl','sca','sagt','danke','fachcentrum','elektroanlagen','tischler','dach','solar','gesellschaft','service','handel','duesseldorf','krefeld','moenchengladbach','hilden','monheim','landeshauptstadt','stadt','paypal','payments','amazon']);
+
+function rbBetragGleich(a, b){ return Math.abs(Math.abs(Number(a)||0) - Math.abs(Number(b)||0)) < 0.005; }
+function rbTage(isoA, isoB){
+  const a = Date.parse(isoA+'T00:00:00Z'), b = Date.parse(isoB+'T00:00:00Z');
+  return (isNaN(a)||isNaN(b)) ? null : Math.round((b-a)/86400000);
+}
+function rbNummerImZweck(nr, b){
+  const n = rechnungNorm(nr);
+  if(!n || n.length < 4) return false;
+  return rechnungNorm(`${b.zweck||''} ${b.zweckKey||''}`).includes(n);
+}
+function rbLieferantTokens(lieferant){
+  return String(lieferant||'').toLowerCase().replace(/ä/g,'ae').replace(/ö/g,'oe').replace(/ü/g,'ue').replace(/ß/g,'ss')
+    .split(/[^a-z0-9]+/).filter(w => w.length >= 4 && !RB_LIEF_STOP.has(w));
+}
+function rbLieferantInBuchung(lieferant, b){
+  const hay = rechnungNorm(`${b.name||''} ${b.zweck||''}`);
+  return rbLieferantTokens(lieferant).some(w => hay.includes(w));
+}
+function rbKontoLabel(kontoId){
+  try{ const k = (typeof ZA_KONTEN!=='undefined' ? ZA_KONTEN : []).find(x => x.id===kontoId); return k ? (k.label||k.id) : (kontoId||''); }
+  catch(_){ return kontoId||''; }
+}
+function rbSiehtNachRechnungAus(b, lieferantTokens){
+  const txt = `${b.name||''} ${b.zweck||''}`;
+  if(RB_AUSSCHLUSS.test(txt)) return false;
+  if(RB_RECHNUNGSHINWEIS.test(b.zweck||'')) return true;
+  if(typeof ZA_UMTAUSCH_ABSENDER!=='undefined' && ZA_UMTAUSCH_ABSENDER.some(re => re.test(txt))) return true;
+  const hayName = rechnungNorm(b.name||'');   // Lieferanten nur im Empfängernamen suchen (Zweck ist zu unscharf)
+  return lieferantTokens.some(w => w.length >= 5 && hayName.includes(w));
+}
+
+/* Reine Berechnung (ohne Speichern) – auch für Tests. Liefert
+   { bezahlt:[{r,b,via}], verknuepft:[{r,b}], fehlt:[b] } */
+function rbAbgleichBerechnen(rechnungen, buchungen){
+  const aus = (buchungen||[]).filter(b => b && b.typ==='ausgang' && Number(b.betrag) < 0 && !b._deleted);
+  const benutzt = new Set(aus.filter(b => b.rechnungId).map(b => b.id));
+  (rechnungen||[]).forEach(r => { if(r && r.bezahltBuchungId) benutzt.add(r.bezahltBuchungId); });
+  const bezahlt = [], verknuepft = [];
+  const kandidaten = (r, mitNummer) => aus.filter(b => !benutzt.has(b.id) && rbBetragGleich(b.betrag, r.betrag) &&
+      (mitNummer ? rbNummerImZweck(r.rechnungsnr, b) : (() => {
+        if(!rbLieferantInBuchung(r.lieferant, b)) return false;
+        const d = rbTage(r.datum, b.datumISO); return d!==null && d >= -5 && d <= 120; })()))
+    .sort((x,y) => String(x.datumISO).localeCompare(String(y.datumISO)));
+  const offen = (rechnungen||[]).filter(r => r && !r._deleted && !r.bezahltBuchungId && Number(r.betrag) > 0)
+    .sort((x,y) => String(x.datum).localeCompare(String(y.datum)));
+  for(const pass of [true, false]){            // erst Nummer+Betrag, dann Lieferant+Betrag
+    for(const r of offen){
+      if(r._rbErledigt) continue;
+      const k = kandidaten(r, pass);
+      if(!k.length) continue;
+      if(!pass && k.length > 1 && rbTage(r.datum, k[0].datumISO) === rbTage(r.datum, k[1].datumISO)) continue;   // nicht eindeutig
+      const b = k[0];
+      benutzt.add(b.id); r._rbErledigt = true;
+      (r.bezahlt ? verknuepft : bezahlt).push({ r, b, via: pass ? 'nummer' : 'lieferant' });
+    }
+  }
+  offen.forEach(r => { delete r._rbErledigt; });
+  const tokens = [...new Set((rechnungen||[]).flatMap(r => rbLieferantTokens(r && r.lieferant)))];
+  const fehlt = aus.filter(b => !benutzt.has(b.id) && !b.belegNichtNoetig && String(b.datumISO||'') >= RB_AB_DATUM &&
+      rbSiehtNachRechnungAus(b, tokens))
+    .sort((x,y) => String(y.datumISO).localeCompare(String(x.datumISO)));
+  return { bezahlt, verknuepft, fehlt };
+}
+
+let _rbFehlt = [];
+async function rbAbgleichAusfuehren(opt){
+  if(typeof istVerwalter==='function' && !istVerwalter()) return { bezahlt:0, fehlt:0 };
+  let rechnungen=[], buchungen=[];
+  try{ rechnungen = await idbGetAll('rechnungen'); }catch(_){}
+  try{ buchungen = await idbGetAll('buchungen'); }catch(_){}
+  const erg = rbAbgleichBerechnen(rechnungen, buchungen);
+  const jetzt = nowIso();
+  for(const {r, b, via} of [...erg.bezahlt, ...erg.verknuepft]){
+    const neuBezahlt = !r.bezahlt;
+    r.bezahlt = true;
+    if(neuBezahlt || !r.bezahltAm) r.bezahltAm = b.datumISO || today();
+    r.bezahltBuchungId = b.id;
+    r.bezahltKonto = rbKontoLabel(b.kontoId);
+    if(neuBezahlt) r.bezahltVia = 'bankabgleich-' + via;
+    r.geaendert = jetzt;
+    await idbPut('rechnungen', r);
+    b.rechnungId = r.id; b.updatedAt = jetzt;
+    await idbPut('buchungen', b);
+  }
+  _rbFehlt = erg.fehlt;
+  if(erg.bezahlt.length || erg.verknuepft.length){ if(typeof syncSoon==='function') syncSoon(); }
+  if(erg.bezahlt.length && !(opt && opt.still)){
+    toast(`${erg.bezahlt.length} Rechnung${erg.bezahlt.length===1?'':'en'} per Kontoabgleich als bezahlt markiert ✓`, 5000);
+  }
+  return { bezahlt: erg.bezahlt.length, fehlt: erg.fehlt.length };
+}
+
+function rbBannerHtml(){
+  if(!_rbFehlt.length) return '';
+  const summe = rc(_rbFehlt.reduce((s,b) => s + Math.abs(Number(b.betrag)||0), 0));
+  return `<div class="card" style="margin-bottom:12px;border-left:4px solid var(--copper,#B87333);cursor:pointer" onclick="rbModalBelegFehlt()">
+    <div style="display:flex;align-items:center;gap:10px">
+      <i class="ti ti-file-alert" style="font-size:22px;color:var(--copper,#B87333)"></i>
+      <div style="flex:1"><div style="font-weight:700">Beleg fehlt: ${_rbFehlt.length} Abbuchung${_rbFehlt.length===1?'':'en'}</div>
+        <div style="font-size:12px;color:var(--ink-40)">Zahlungen laut Kontoauszug ohne Rechnung in der App · ${fmtEur(summe)}</div></div>
+      <i class="ti ti-chevron-right"></i></div></div>`;
+}
+
+function rbModalBelegFehlt(){
+  const zeilen = _rbFehlt.map(b => `<div style="border-bottom:1px solid var(--ink-10);padding:8px 0">
+      <div style="display:flex;justify-content:space-between;gap:8px">
+        <div style="font-weight:600">${esc(b.name||'(ohne Empfänger)')}</div>
+        <div style="font-weight:700;white-space:nowrap">${fmtEur(Math.abs(Number(b.betrag)||0))}</div></div>
+      <div style="font-size:11px;color:var(--ink-40)">${esc(fmtDate ? fmtDate(b.datumISO) : b.datumISO)} · ${esc(rbKontoLabel(b.kontoId))}</div>
+      <div style="font-size:12px;margin:2px 0 6px">${esc(String(b.zweck||'').slice(0,160))}</div>
+      <div style="display:flex;gap:6px">
+        <button class="btn btn-sm btn-copper" onclick="rbRechnungAusBuchung('${escJs(b.id)}')"><i class="ti ti-plus"></i> Rechnung erfassen</button>
+        <button class="btn btn-sm" onclick="rbKeinBelegNoetig('${escJs(b.id)}')"><i class="ti ti-check"></i> Kein Beleg nötig</button></div>
+    </div>`).join('');
+  showModal(`<div class="m-title"><i class="ti ti-file-alert"></i> Beleg fehlt (${_rbFehlt.length})</div>
+    <div style="font-size:12px;color:var(--ink-40);margin-bottom:8px">Abbuchungen ab ${esc(fmtDate ? fmtDate(RB_AB_DATUM) : RB_AB_DATUM)}, die nach einer Rechnung aussehen, zu denen aber keine Rechnung in der App passt (Betrag + Rechnungsnummer oder Lieferant).</div>
+    ${zeilen || '<div class="empty"><p>Nichts offen ✓</p></div>'}
+    <button class="btn btn-full" style="margin-top:10px" onclick="closeModal()">Schließen</button>`);
+}
+
+async function rbKeinBelegNoetig(id){
+  const b = await idbGet('buchungen', id).catch(() => null); if(!b) return;
+  b.belegNichtNoetig = true; b.updatedAt = nowIso();
+  await idbPut('buchungen', b);
+  if(typeof syncSoon==='function') syncSoon();
+  _rbFehlt = _rbFehlt.filter(x => x.id !== id);
+  toast('Als „kein Beleg nötig“ markiert');
+  rbModalBelegFehlt();
+  if(curPage==='rechnungen') renderRechnungen();
+}
+
+function rbNummerAusZweck(zweck){
+  const m = String(zweck||'').match(/(?:rechnungs?-?\s*nr\.?|rechnung|rech\.|re\.?|rg\.?|beleg(?:nummer)?)\s*[:.]?\s*([A-Z0-9][A-Z0-9\-\/]{2,})/i);
+  return m ? m[1] : '';
+}
+async function rbRechnungAusBuchung(id){
+  const b = await idbGet('buchungen', id).catch(() => null); if(!b) return;
+  closeModal();
+  await modalRechnungErfassen();
+  const setz = (fid, v) => { const el = document.getElementById(fid); if(el && v!=null && v!==''){ el.value = v; el.dispatchEvent(new Event('change', {bubbles:true})); } };
+  const paypal = String(b.zweck||'').match(/Ihr Einkauf bei\s+([^,\n]+)/i);
+  setz('rLieferant', paypal ? paypal[1].trim() : (b.name||''));
+  setz('rNr', rbNummerAusZweck(b.zweck));
+  setz('rDatum', b.datumISO);
+  setz('rBetrag', String(Math.abs(Number(b.betrag)||0).toFixed(2)).replace('.', ','));
+  if(b.objektId) setz('rObj', b.objektId);
+  toast('Aus der Abbuchung vorbefüllt – bitte Beleg anhängen und prüfen. Nach dem Speichern wird die Zahlung automatisch zugeordnet.', 6000);
+}
 
 async function renderRechnungen(){
   const el=document.getElementById('page-rechnungen');
   if(!el) return;
   if(!istVerwalter()){ el.innerHTML='<div class="empty"><i class="ti ti-lock"></i><p>Nur für Admins</p></div>'; return; }
+
+  try{ await rbAbgleichAusfuehren(); }catch(e){ console.warn('A504 Abgleich:', e); }   // A504
 
   const myObj=await getMyObjekte();
   const myIds=myObj.map(o=>o.id);
@@ -57136,7 +57371,9 @@ async function renderRechnungen(){
       if(!hay.includes(q)) return false;
     }
     return true;
-  }).sort((a,b)=>(b.datum||'').localeCompare(a.datum||'')||(b.erstelltIso||'').localeCompare(a.erstelltIso||''));
+  });
+  liste = rechnSortieren(liste, rechnFilter.sort);   // A503
+  _rechnListe = liste;
 
   // Summen
   const summe=rc(liste.reduce((s,r)=>s+(Number(r.betrag)||0),0));
@@ -57146,6 +57383,7 @@ async function renderRechnungen(){
 
   let h=`<div class="s-hdr"><div class="s-title"><i class="ti ti-file-invoice"></i> Rechnungen</div>
     <button class="btn btn-sm" data-action-click="modalAsAufstellung" title="Heizkostenaufstellung für A+S erzeugen"><i class="ti ti-flame"></i> A+S</button>
+    <button class="btn btn-sm" onclick="rechnExcelExport()" title="Gefilterte Liste als Excel-Datei"><i class="ti ti-file-spreadsheet"></i> Excel</button>
     <button class="btn btn-sm btn-copper" data-action-click="modalRechnungErfassen"><i class="ti ti-plus"></i> Erfassen</button>
   </div>`;
 
@@ -57160,6 +57398,8 @@ async function renderRechnungen(){
         ${_ueber.length?`<div style="font-size:11px;color:var(--red,#C0392B);font-weight:600">${_ueber.length} überfällig · ${fmtEur(summeUeber)}</div>`:''}</div>
     </div>
   </div>`;
+
+  h+=rbBannerHtml();   // A504: Beleg fehlt
 
   // Filterleiste
   h+=`<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px;padding-bottom:4px">
@@ -57180,6 +57420,9 @@ async function renderRechnungen(){
     <select onchange="rechnFilter.jahr=this.value;renderRechnungen()" style="flex:1 1 auto;min-width:0;max-width:100%;padding:7px;border:1px solid var(--ink-10);border-radius:8px;font-size:12px">
       <option value="all"${rechnFilter.jahr==='all'?' selected':''}>Alle Jahre</option>
       ${jahre.map(j=>`<option value="${j}"${rechnFilter.jahr===j?' selected':''}>${j}</option>`).join('')}
+    </select>
+    <select onchange="rechnFilter.sort=this.value;renderRechnungen()" title="Sortierung" style="flex:1 1 auto;min-width:0;max-width:100%;padding:7px;border:1px solid var(--ink-10);border-radius:8px;font-size:12px">
+      ${RECHN_SORTIERUNGEN.map(s=>`<option value="${s.id}"${rechnFilter.sort===s.id?' selected':''}>${esc(s.name)}</option>`).join('')}
     </select>
   </div>
   <input type="text" placeholder="Suche: Lieferant, Nr., Notiz…" value="${esc(rechnFilter.q)}"
