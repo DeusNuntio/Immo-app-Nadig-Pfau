@@ -1488,7 +1488,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=39;   // A398: +kr_abrechnungen · A466: +excel_cache
-const APP_VERSION = '2026-11-19-A508';
+const APP_VERSION = '2026-11-19-A509';
 /* v364 (12.08.2026) – offene Punkte abgearbeitet.
    1) D1/XLSX_SRI: Der im Code hinterlegte PowerShell-Befehl war FALSCH und
       konnte nie funktionieren - Invoke-WebRequest liefert unter .Content einen
@@ -12279,13 +12279,38 @@ async function archivTeilen(art, id){
   }
 }
 /* Knopfreihe; mitAnsehen=false, wenn die Zeile schon einen eigenen Öffnen-Knopf hat. */
-function archivKnoepfeHTML(art, id, mitAnsehen){
-  const k = (aktion, icon, titel) => '<button class="btn btn-sm" data-action-click="' + aktion + '" data-arg="'
-    + escAttr(art) + '" data-arg2="' + escAttr(id) + '" title="' + titel + '"><i class="ti ' + icon + '"></i></button>';
+function archivKnoepfeHTML(art, id, mitAnsehen, loeschMieterId){
+  const k = (aktion, icon, titel, klasse) => '<button class="btn btn-sm' + (klasse || '') + '" data-action-click="' + aktion + '" data-arg="'
+    + escAttr(art) + '" data-arg2="' + escAttr(id) + '"' + (loeschMieterId ? ' data-arg3="' + escAttr(loeschMieterId) + '"' : '')
+    + ' title="' + titel + '"><i class="ti ' + icon + '"></i></button>';
   return (mitAnsehen === false ? '' : k('archivAnsehen', 'ti-eye', 'Ansehen'))
     + k('archivDrucken', 'ti-printer', 'Drucken')
     + k('archivSpeichern', 'ti-download', 'Speichern')
-    + k('archivTeilen', 'ti-share', 'Teilen / weiterleiten');
+    + k('archivTeilen', 'ti-share', 'Teilen / weiterleiten')
+    + (loeschMieterId && istVerwalter() ? k('archivLoeschen', 'ti-trash', 'Löschen', ' btn-danger') : '');   // A509
+}
+/* A509: Löschen aus dem Mieterarchiv. Kautionsbelege liegen im eigenen
+   Speicher, Aushänge in 'dokumente' (mit OneDrive-Ablage) - beide über die
+   vorhandenen Wege mit Tombstone, damit sie nach dem Abgleich nicht wiederkommen. */
+async function archivLoeschen(art, id, mieterId){
+  if(!istVerwalter()){ toast('Nur für Admins'); return; }
+  if(art === 'kq'){
+    const x = await idbGet('kautionsquittungen', id).catch(() => null);
+    if(!x){ toast('Beleg nicht gefunden'); return; }
+    if(!confirm((x.typ === 'endabrechnung' ? 'Diese Kautionsabrechnung' : 'Diese Kautionsquittung') + ' wirklich löschen?')) return;
+    await deleteMitTombstone('kautionsquittungen', id);
+    try{ bcSend('kautionsquittung_saved', { mieterId: x.mieterId }); }catch(_){}
+  } else {
+    const d = await idbGet('dokumente', id).catch(() => null);
+    if(!d){ toast('Dokument nicht gefunden'); return; }
+    if(!confirm('„' + (d.name || 'Dokument') + '“ wirklich löschen?')) return;
+    await dokVollstaendigLoeschen(id);
+  }
+  syncSoon();
+  toast('Gelöscht ✓');
+  const el = document.getElementById('mieterDokEl');
+  const m = mieterId ? await idbGet('mieter', mieterId).catch(() => null) : null;
+  if(el && m) await renderDokumente(el, m.objektId, m.id);
 }
 
 /* ── Aushang „Ihr Hausmeister“ (Krefeld) ───────────────────────────────
@@ -12383,7 +12408,7 @@ async function aushangHausmeisterDrucken(){
   druckHTML(aushangHausmeisterHTML(ids, hm, getBriefkopfFor('kr')), 'Aushang – Ihr Hausmeister', 'Aushang Hausmeister Krefeld');
 }
 
-registerActions({ archivAnsehen, archivDrucken, archivSpeichern, archivTeilen, modalAushangHausmeister, aushangHausmeisterDrucken });
+registerActions({ archivAnsehen, archivDrucken, archivSpeichern, archivTeilen, archivLoeschen, modalAushangHausmeister, aushangHausmeisterDrucken });
 
 /* ── Archiv des Mieters: was nicht im Speicher 'dokumente' liegt ───────── */
 async function mieterArchivExtrasHTML(objektId, mieterId){
@@ -12400,18 +12425,19 @@ async function mieterArchivExtrasHTML(objektId, mieterId){
     && d.objektId === m.objektId && weSchluessel(d.weNr) === weSchluessel(m.weNr))
     .sort((a, b) => (zeitWert(b.geaendert)-zeitWert(a.geaendert)));
   const kopf = (icon, titel, n) => `<div class="card-hdr" style="margin:14px 0 6px"><i class="ti ${icon}"></i> ${titel} (${n})</div>`;
-  const zeile = (icon, titel, sub, knoepfe) => `<div style="background:var(--white);border:1px solid var(--ink-10);border-radius:var(--radius);padding:9px 12px;margin-bottom:6px;display:flex;gap:10px;align-items:center">
+  /* A509: flex-wrap wie in renderDokumente - bei fünf Knöpfen brach der Titel am Handy mitten im Wort um. */
+  const zeile = (icon, titel, sub, knoepfe) => `<div style="background:var(--white);border:1px solid var(--ink-10);border-radius:var(--radius);padding:9px 12px;margin-bottom:6px;display:flex;flex-wrap:wrap;gap:10px;align-items:center">
     <i class="ti ${icon}" style="font-size:18px;color:var(--copper)"></i>
-    <div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600;overflow-wrap:anywhere">${esc(titel)}</div><div style="font-size:11px;color:var(--ink-40)">${esc(sub)}</div></div>
-    <div style="display:flex;gap:5px;flex-shrink:0">${knoepfe}</div></div>`;
+    <div style="flex:1 1 150px;min-width:0"><div style="font-size:13px;font-weight:600;overflow-wrap:anywhere">${esc(titel)}</div><div style="font-size:11px;color:var(--ink-40)">${esc(sub)}</div></div>
+    <div style="display:flex;gap:5px;flex-shrink:0;margin-left:auto">${knoepfe}</div></div>`;
   let h = '';
   if(mails.length) h += kopf('ti-mail', 'Gesendete E-Mails', mails.length) + kontaktVerlaufHTML(mails, 'm:' + m.id);
   if(kq.length) h += kopf('ti-receipt', 'Kaution – Quittungen und Abrechnungen', kq.length) + kq.map(x => zeile(x.typ === 'endabrechnung' ? 'ti-file-invoice' : 'ti-receipt',
     (x.typ === 'endabrechnung' ? 'Kautionsabrechnung' : 'Kautionsquittung') + (x.betrag != null && x.betrag !== '' ? ' · ' + fmtEur(x.betrag) : ''),
     a472DatumZeit(x.erstelltAm) + (x.erstelltVon ? ' · ' + x.erstelltVon : ''),
-    archivKnoepfeHTML('kq', x.id))).join('');   // A507: ansehen, drucken, speichern, teilen
+    archivKnoepfeHTML('kq', x.id, true, m.id))).join('');   // A507/A509: ansehen, drucken, speichern, teilen, löschen
   if(aush.length) h += kopf('ti-printer', 'Aushang „Wohnung frei“ dieser Wohnung', aush.length) + aush.map(d => zeile('ti-printer', d.name || 'Aushang',
-    d.erstellt || '', archivKnoepfeHTML('dok', d.id))).join('');   // A507
+    d.erstellt || '', archivKnoepfeHTML('dok', d.id, true, m.id))).join('');   // A507/A509
   if(bz.interessenten && bz.interessenten.length){
     h += kopf('ti-user-search', 'Aus der Bewerbung', bz.interessenten.length) + bz.interessenten.map(k => zeile('ti-user', k.name || k.email || 'Bewerbung',
       'Interessent seit ' + a472Datum(k.erstellt) + (k.quelle === 'website-sa' ? ' · Selbstauskunft über die Website' : ''),
