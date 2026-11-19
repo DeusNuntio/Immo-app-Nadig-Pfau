@@ -1488,7 +1488,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=39;   // A398: +kr_abrechnungen · A466: +excel_cache
-const APP_VERSION = '2026-11-19-A509';
+const APP_VERSION = '2026-11-19-A510';
 /* v364 (12.08.2026) – offene Punkte abgearbeitet.
    1) D1/XLSX_SRI: Der im Code hinterlegte PowerShell-Befehl war FALSCH und
       konnte nie funktionieren - Invoke-WebRequest liefert unter .Content einen
@@ -12410,6 +12410,107 @@ async function aushangHausmeisterDrucken(){
 
 registerActions({ archivAnsehen, archivDrucken, archivSpeichern, archivTeilen, archivLoeschen, modalAushangHausmeister, aushangHausmeisterDrucken });
 
+/* ═══════════════════════════════════════════════════════════════════════
+   A510 (19.11.2026) – Mietvertrag „unterschrieben“, Uhrzeit an allen Archiveinträgen
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* Erstellzeit eines Archiveintrags in ms. 'erstellt' ist deutsches Anzeige-
+   format ("19.11.2026, 11:57:12"), 'geaendert' ISO - aber 'geaendert' springt
+   auch beim Umschalten der Portalfreigabe. Fuer "welche Fassung ist neuer"
+   zaehlt deshalb zuerst 'erstellt'. */
+function dokZeitMs(d){
+  const m = /^(\d{1,2})\.(\d{1,2})\.(\d{4})(?:,?\s*(\d{1,2}):(\d{2})(?::(\d{2}))?)?/.exec(String(d && d.erstellt || ''));
+  if(m) return new Date(+m[3], +m[2] - 1, +m[1], +(m[4] || 0), +(m[5] || 0), +(m[6] || 0)).getTime();
+  const t = Date.parse(String(d && (d.erstelltAm || d.geaendert) || ''));
+  return isFinite(t) ? t : 0;
+}
+/* "19.11.2026, 11:57 Uhr" - auch für ältere Einträge, die nur ein Datum tragen. */
+function dokZeitText(d){
+  const ms = dokZeitMs(d);
+  if(!ms) return String(d && d.erstellt || '');
+  const z = new Date(ms);
+  const p = n => String(n).padStart(2, '0');
+  const mitUhr = /\d{1,2}:\d{2}/.test(String(d && d.erstellt || '')) || !d.erstellt;
+  return p(z.getDate()) + '.' + p(z.getMonth() + 1) + '.' + z.getFullYear() + (mitUhr ? ', ' + p(z.getHours()) + ':' + p(z.getMinutes()) + ' Uhr' : '');
+}
+/* Stempel für den Fuß erzeugter Dokumente. */
+function erstelltStempel(){
+  const z = new Date(), p = n => String(n).padStart(2, '0');
+  return 'erstellt am ' + p(z.getDate()) + '.' + p(z.getMonth() + 1) + '.' + z.getFullYear() + ' um ' + p(z.getHours()) + ':' + p(z.getMinutes()) + ' Uhr';
+}
+
+/* ── Mietvertrag als unterschrieben markieren ───────────────────────── */
+function dokDatumDe(iso){ const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso || '')); return m ? m[3] + '.' + m[2] + '.' + m[1] : ''; }
+async function modalVertragUnterschrieben(dokId){
+  if(!istVerwalter()){ toast('Nur für Admins'); return; }
+  const d = await idbGet('dokumente', dokId).catch(() => null);
+  if(!d || d.typ !== 'vertrag'){ toast('Vertrag nicht gefunden'); return; }
+  showModal(`
+    <div class="m-title"><i class="ti ti-signature"></i> Mietvertrag als unterschrieben markieren</div>
+    <p style="font-size:13px;color:var(--ink-60);line-height:1.5;margin-bottom:10px">Der Eintrag heißt danach „Wohnraum-Mietvertrag – unterschrieben am …“. Er wird nicht mehr gelöscht, wenn Sie den Vertrag neu erzeugen; eine neue Fassung landet daneben.</p>
+    <div class="f"><label for="vuDatum">Unterschrieben am</label><input type="date" id="vuDatum" value="${today()}"></div>
+    <div class="f"><label for="vuScan">Unterschriebenes Exemplar (PDF oder Foto, optional)</label><input type="file" id="vuScan" accept="application/pdf,image/*"></div>
+    <button class="btn btn-copper btn-full" data-action-click="vertragUnterschriebenSpeichern" data-arg="${escAttr(dokId)}"><i class="ti ti-check"></i> Speichern</button>
+    <button class="btn btn-full" style="margin-top:6px" data-action-click="showMieterDokumente" data-arg="${escAttr(d.mieterId || '')}">Abbrechen</button>`);
+}
+async function vertragUnterschriebenSpeichern(dokId){
+  if(!istVerwalter()){ toast('Nur für Admins'); return; }
+  const d = await idbGet('dokumente', dokId).catch(() => null);
+  if(!d){ toast('Vertrag nicht gefunden'); return; }
+  const iso = document.getElementById('vuDatum')?.value || '';
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(iso)){ toast('Bitte das Datum der Unterschrift angeben'); return; }
+  if(iso > today()){ toast('Das Datum liegt in der Zukunft'); return; }
+  const datei = document.getElementById('vuScan')?.files?.[0] || null;
+  if(datei && datei.size > 10 * 1024 * 1024){ toast('Datei zu groß (max. 10 MB)'); return; }
+  const de = dokDatumDe(iso);
+  d.unterschriebenAm = iso;
+  d.name = 'Wohnraum-Mietvertrag – unterschrieben am ' + de;
+  d.geaendert = nowIso();
+  await idbPut('dokumente', d);
+  if(d.mieterId){
+    const m = await idbGet('mieter', d.mieterId).catch(() => null);
+    if(m){ m.mvStatus = 'unterschrieben'; m.mvUnterschriebenAm = iso; m.updatedAt = nowIso(); await idbPut('mieter', m); }
+  }
+  if(datei){
+    const data = await new Promise((ok, fehler) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = () => fehler(r.error); r.readAsDataURL(datei); });
+    const scan = { id: uid(), name: 'Mietvertrag – unterschriebenes Exemplar (' + de + ')', typ: 'vertrag', notiz: '',
+      objektId: d.objektId || null, mieterId: d.mieterId || null, data, mimeType: datei.type || 'application/pdf', size: datei.size,
+      erstellt: now(), ersteller: CU?.name || '', geaendert: nowIso(), unterschriebenAm: iso, istScan: true };
+    try{ const ref = await dokAuslagernRef(scan, data); if(ref){ scan.ref = ref; feldGeleert(scan, 'data'); } }catch(e){ console.warn('Scan auslagern:', e); }
+    await idbPut('dokumente', scan);
+  }
+  syncSoon();
+  toast('Als unterschrieben gespeichert ✓');
+  if(d.mieterId) await showMieterDokumente(d.mieterId);
+}
+async function vertragUnterschriftZuruecknehmen(dokId){
+  if(!istVerwalter()){ toast('Nur für Admins'); return; }
+  const d = await idbGet('dokumente', dokId).catch(() => null);
+  if(!d || !d.unterschriebenAm) return;
+  if(!confirm('Markierung „unterschrieben“ zurücknehmen? Der Vertrag gilt dann wieder als Entwurf und wird beim Neuerzeugen ersetzt.')) return;
+  delete d.unterschriebenAm; d.name = 'Wohnraum-Mietvertrag (Entwurf zur Prüfung)'; d.geaendert = nowIso();
+  await idbPut('dokumente', d);
+  if(d.mieterId){
+    const andere = (await idbGetAll('dokumente').catch(() => [])).some(x => x && !x._deleted && x.id !== d.id && x.mieterId === d.mieterId && x.typ === 'vertrag' && x.unterschriebenAm && !x.istScan);
+    const m = await idbGet('mieter', d.mieterId).catch(() => null);
+    if(m && !andere){ m.mvStatus = 'entwurf'; delete m.mvUnterschriebenAm; m.updatedAt = nowIso(); await idbPut('mieter', m); }
+  }
+  syncSoon();
+  if(d.mieterId) await showMieterDokumente(d.mieterId);
+}
+/* Kennzeichen + Knopf in der Archivzeile eines Vertrags. */
+function vertragStatusHTML(d){
+  if(!d || d.typ !== 'vertrag' || !istVerwalter()) return '';
+  if(d.unterschriebenAm){
+    return `<span style="font-size:11px;font-weight:700;color:var(--success);border:1px solid var(--success);border-radius:10px;padding:1px 8px">unterschrieben ${esc(dokDatumDe(d.unterschriebenAm))}</span>`
+      + (d.istScan ? '' : `<button class="btn btn-sm" data-action-click="vertragUnterschriftZuruecknehmen" data-arg="${escAttr(d.id)}" title="Markierung zurücknehmen"><i class="ti ti-arrow-back-up"></i></button>`);
+  }
+  if(!d.istHtml) return '';
+  return `<button class="btn btn-sm" data-action-click="modalVertragUnterschrieben" data-arg="${escAttr(d.id)}" title="Als unterschrieben markieren"><i class="ti ti-signature"></i> Unterschrieben</button>`;
+}
+
+registerActions({ modalVertragUnterschrieben, vertragUnterschriebenSpeichern, vertragUnterschriftZuruecknehmen, showMieterDokumente });
+
 /* ── Archiv des Mieters: was nicht im Speicher 'dokumente' liegt ───────── */
 async function mieterArchivExtrasHTML(objektId, mieterId){
   if(!mieterId || !istVerwalter()) return '';
@@ -12434,10 +12535,10 @@ async function mieterArchivExtrasHTML(objektId, mieterId){
   if(mails.length) h += kopf('ti-mail', 'Gesendete E-Mails', mails.length) + kontaktVerlaufHTML(mails, 'm:' + m.id);
   if(kq.length) h += kopf('ti-receipt', 'Kaution – Quittungen und Abrechnungen', kq.length) + kq.map(x => zeile(x.typ === 'endabrechnung' ? 'ti-file-invoice' : 'ti-receipt',
     (x.typ === 'endabrechnung' ? 'Kautionsabrechnung' : 'Kautionsquittung') + (x.betrag != null && x.betrag !== '' ? ' · ' + fmtEur(x.betrag) : ''),
-    a472DatumZeit(x.erstelltAm) + (x.erstelltVon ? ' · ' + x.erstelltVon : ''),
+    dokZeitText({ erstelltAm: x.erstelltAm }) + (x.erstelltVon ? ' · ' + x.erstelltVon : ''),   // A510
     archivKnoepfeHTML('kq', x.id, true, m.id))).join('');   // A507/A509: ansehen, drucken, speichern, teilen, löschen
   if(aush.length) h += kopf('ti-printer', 'Aushang „Wohnung frei“ dieser Wohnung', aush.length) + aush.map(d => zeile('ti-printer', d.name || 'Aushang',
-    d.erstellt || '', archivKnoepfeHTML('dok', d.id, true, m.id))).join('');   // A507/A509
+    dokZeitText(d), archivKnoepfeHTML('dok', d.id, true, m.id))).join('');   // A507/A509/A510
   if(bz.interessenten && bz.interessenten.length){
     h += kopf('ti-user-search', 'Aus der Bewerbung', bz.interessenten.length) + bz.interessenten.map(k => zeile('ti-user', k.name || k.email || 'Bewerbung',
       'Interessent seit ' + a472Datum(k.erstellt) + (k.quelle === 'website-sa' ? ' · Selbstauskunft über die Website' : ''),
@@ -20288,6 +20389,7 @@ ${nurTg?'':`
       <div class="det-field"><label>Wohnfläche</label><span>${m.flaeche?esc(m.flaeche)+' m²':'–'}</span></div>`}
       ${istVerwalter()&&mieteProQm(m)!==null?`<div class="det-field"><label>Kaltmiete je m²</label><span>${mieteProQmHTML(m,_stamm.mietspiegel)}${_stamm.mietspiegel?(()=>{const a=mietspiegelAmpel(mieteProQm(m),_stamm.mietspiegel);return a?` <span class="det-zusatz" style="color:${ampelAufDunkel(a.farbe)}">· ${a.label} (MS ${String(_stamm.mietspiegel).replace('.',',')} €/m²)</span>`:'';})():' <span class="det-zusatz" style="color:var(--ink-10)">· kein Mietspiegel hinterlegt</span>'}</span></div>`:''}
       <div class="det-field"><label>Einzug</label><span>${m.einzug||'–'}</span></div>
+      ${istVerwalter()&&m.mvStatus?`<div class="det-field"><label>Mietvertrag</label><span>${m.mvStatus==='unterschrieben'?'<span style="color:var(--success);font-weight:700">unterschrieben'+(m.mvUnterschriebenAm?' am '+esc(dokDatumDe(m.mvUnterschriebenAm)):'')+'</span>':'<span style="color:var(--amber)">Entwurf</span>'}</span></div>`:''}   <!-- A510 -->
       ${istVerwalter()?(()=>{ const _kd=kautionDetailVon(m); const _si=kautionStatusInfo(_kd.status); const _ai=kautionArtInfo(_kd.art); return `<div class="det-field"><label>Kaution</label><span>${fmtEur(kautionSaldo(_kd))} <span class="det-zusatz" style="color:${ampelAufDunkel(_si.farbe)}">· ${_ai.label.split(' (')[0]} · ${_si.label}</span></span></div>`; })():''}
       ${tgListe.map(sp=>`<div class="det-field" style="cursor:pointer" onclick="tgSpringeZuStellplatz('${sp.objektId}','${sp.id}')" title="Zum Stellplatz springen">
         <label>TG ${esc(String(sp.nr))}</label>
@@ -25894,6 +25996,7 @@ async function renderDokumente(el, objektId, mieterId) {
   DOK_TYPEN.forEach(typ => {
     const list = gruppeByTyp[typ.val];
     if (!list.length) return;
+    list.sort((a, b) => dokZeitMs(b) - dokZeitMs(a));   // A510: neueste zuerst
     h += `<div class="card-hdr" style="margin:12px 0 6px"><i class="ti ${typ.icon}"></i> ${typ.label} (${list.length})</div>`;
     list.forEach(d => {
       const isImg = d.mimeType?.startsWith('image/');
@@ -25905,7 +26008,8 @@ async function renderDokumente(el, objektId, mieterId) {
         </div>
         <div style="flex:1 1 150px;min-width:0">
           <div data-rolle="dokname" title="${escAttr(d.name||'')}" style="font-size:13px;font-weight:600;color:var(--ink);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere;line-height:1.35">${esc(d.name)}</div>
-          <div style="font-size:11px;color:var(--ink-40);margin-top:1px">${d.erstellt||''} · ${isHtmlDok?'Schreiben':fmtBytes(d.size||0)}</div>
+          <div style="font-size:11px;color:var(--ink-40);margin-top:1px">${esc(dokZeitText(d))} · ${isHtmlDok?'Schreiben':fmtBytes(d.size||0)}${list.length>1 && d===list[0] ? ' · <b style="color:var(--copper)">neueste</b>' : ''}</div>   <!-- A510 -->
+          ${d.typ==='vertrag' ? '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:4px">' + vertragStatusHTML(d) + '</div>' : ''}
           ${d.notiz?`<div style="font-size:11px;color:var(--ink-60);margin-top:2px;font-style:italic">${esc(d.notiz)}</div>`:''}
         </div>
         ${(istVerwalter() && d.mieterId && PORTAL_DOK_TYPEN.includes(d.typ)) ? (()=>{
@@ -31057,7 +31161,7 @@ function mvVertragHTML(d){
   h += '<div class="mv-sigrow"><div class="mv-sigline">Ort, Datum / Vermieter</div><div class="mv-sigline">Mieter</div></div>';
   h += '<div class="mv-sigrow"><div class="mv-sigline">weiterer Mieter</div><div class="mv-sigline">weiterer Mieter</div></div></div>';
 
-  h += '<div class="mv-foot">Nadig Pfau Immobilienverwaltung · Wohnraum-Mietvertrag</div>';
+  h += '<div class="mv-foot">Nadig Pfau Immobilienverwaltung · Wohnraum-Mietvertrag · ' + erstelltStempel() + '</div>';
 
   // Punkt 5+10: Jede ANGEKLICKTE Anlage als eigene Seite anhängen. Wo ein
   // Volltext in der App vorliegt, kann er eingebettet werden; sonst wird eine
@@ -32129,7 +32233,9 @@ async function mvErzeugen(){
   if(mieterId){
     try{
       const alle = await idbGetAll('dokumente');
-      for(const dok of alle.filter(x=>x.mieterId===mieterId && x.typ==='vertrag')){
+      /* A510: Unterschriebene Vertraege und Scans bleiben stehen - die neue Fassung kommt daneben. */
+      window._mvSchonUnterschrieben = alle.some(x=>x && !x._deleted && x.mieterId===mieterId && x.typ==='vertrag' && x.unterschriebenAm);
+      for(const dok of alle.filter(x=>x.mieterId===mieterId && x.typ==='vertrag' && !x.unterschriebenAm && !x.istScan)){
         /* A415 (B1): war idbDelete OHNE Grabstein - der alte Vertragsentwurf
            tauchte im Mieterportal wieder auf, neben dem neuen, ohne Hinweis
            welcher gilt. dokVollstaendigLoeschen setzt den Grabstein UND
@@ -32140,7 +32246,8 @@ async function mvErzeugen(){
     }catch(err){ console.warn('Alt-Verträge des Mieters aufräumen:', err); }   // v244 (R26)
     dokId = await archiviereMieterDokument({
       mieterId, objektId: D.objektId, typ:'vertrag',
-      name:'Wohnraum-Mietvertrag (Entwurf zur Prüfung)', html, mimeType:'text/html',
+      name: window._mvSchonUnterschrieben ? 'Wohnraum-Mietvertrag – neue Fassung (Entwurf zur Prüfung)' : 'Wohnraum-Mietvertrag (Entwurf zur Prüfung)',   // A510
+      html, mimeType:'text/html',
     });
   }
 
@@ -32265,7 +32372,7 @@ async function mvLegeMieterAn(D, rd){
     m.telefon = D.telefon||''; m.email = D.email||'';
     if(istNeu) m.leerstand = false;
     m.mvHeizVariante = rd.heizVariante;
-    m.mvStatus = 'entwurf';
+    m.mvStatus = (m.mvStatus === 'unterschrieben') ? 'unterschrieben' : 'entwurf';   // A510
     // Entwurfsdaten persistieren (alle Eingaben, ohne flüchtige _-Felder)
     const entwurf = {}; Object.keys(D).forEach(k=>{ if(!k.startsWith('_')) entwurf[k]=D[k]; });
     m.mvEntwurf = entwurf;
@@ -33100,7 +33207,7 @@ async function erstelleKautionsquittung(mieterId){
       <div><div class="line">&nbsp;</div><div class="cap">Unterschrift/en Mieter/n</div></div>
     </div>
 
-    <div class="kq-foot">Kautionsquittung · ${esc(objZeile)} · ${esc(vollName)}</div>`;   // A507: Kontakt steht jetzt im Briefkopf
+    <div class="kq-foot">Kautionsquittung · ${esc(objZeile)} · ${esc(vollName)} · ${esc(erstelltStempel())}</div>`;   // A507: Kontakt steht jetzt im Briefkopf
 
   const html='<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8"><title>Kautionsquittung – '
     +esc(m.mieter||'')+'</title>'+style+'</head><body>'+inhalt
@@ -33610,7 +33717,7 @@ oder zur Verfügung zu stellen, obwohl ein tatsächlicher Bezug der Wohnung wede
 </div>
 
 <div class="footer">
-  Wohnungsgeberbescheinigung gem. § 19 BMG · ${esc(obj?.name||'')} WE ${esc(m.weNr||'')} · ${esc(m.mieter)} · ${esc(heute)}
+  Wohnungsgeberbescheinigung gem. § 19 BMG · ${esc(obj?.name||'')} WE ${esc(m.weNr||'')} · ${esc(m.mieter)} · ${esc(erstelltStempel())}
 </div>
 
 <scr` + `ipt>(function(){var p=function(){setTimeout(function(){window.focus();window.print();},500);};if(document.readyState==='complete'){p();}else{window.addEventListener('load',p);}})()</scr` + `ipt>
