@@ -1488,7 +1488,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=39;   // A398: +kr_abrechnungen · A466: +excel_cache
-const APP_VERSION = '2026-11-19-A510';
+const APP_VERSION = '2026-11-25-A513';
 /* v364 (12.08.2026) – offene Punkte abgearbeitet.
    1) D1/XLSX_SRI: Der im Code hinterlegte PowerShell-Befehl war FALSCH und
       konnte nie funktionieren - Invoke-WebRequest liefert unter .Content einen
@@ -23578,6 +23578,7 @@ async function syncToOneDrive() {
     setSyncStatus('offline', {richtung:'hochgeladen', fehler:String(e && e.message || e)});   // v248
   }
   syncInProgress = false;
+  try{ rechnExcelOneDriveSpaeter(); }catch(_){}   // A511
 };
 
 /* Eine Runde: Datei prüfen, ggf. zusammenführen, eigenen Stand hochladen.
@@ -23855,15 +23856,30 @@ function rechnungenSpiegel(alle, modus, privat, name, kurz){
 }
 
 /* Auftrag „rechnung_bezahlt“ (B24, Abholung mit &bezahlt=1): setzt bezahlt + bezahltAm, Notiz ergänzt.
-   Gelöschte Rechnung (Grabstein) bzw. unbekannte ID -> nicht ausgeführt; schon bezahlt -> ok ohne Änderung. */
+   Gelöschte Rechnung (Grabstein) -> nicht ausgeführt; schon bezahlt -> ok ohne Änderung.
+   A513: Unbekannte ID -> { warten } (bleibt im Eingangsfach), bis RECHN_BEZAHLT_WARTEN_TAGE nach dem Anlegen des Auftrags -
+         die Rechnung kann noch auf dem Weg sein (über Claude angelegt, anderes Gerät). Danach nicht ausgeführt.
+         aktion 'korrektur' (B30) bei schon bezahlter Rechnung -> Zahldatum berichtigen. */
 async function eingangRechnungBezahlt(e, tomb){
   const id = String(e.zielId || '');
   if(!id) return { ok:false, text:'nicht ausgeführt: keine Rechnung angegeben' };
   if(tomb && tomb.rechnungen && tomb.rechnungen[id]) return { ok:false, text:'nicht ausgeführt: Rechnung wurde gelöscht' };
   const r = await idbGet('rechnungen', id).catch(() => null);
-  if(!r || r._deleted) return { ok:false, text:'nicht ausgeführt: Rechnung nicht gefunden' };
+  if(!r || r._deleted){
+    const alter = Date.now() - Date.parse(String(e.erstellt || ''));   // A513
+    if(!r && isFinite(alter) && alter >= 0 && alter < RECHN_BEZAHLT_WARTEN_TAGE * 86400000) return { warten:true, text:'' };
+    return { ok:false, text:'nicht ausgeführt: Rechnung nicht gefunden' + (r ? '' : ' (auch ' + RECHN_BEZAHLT_WARTEN_TAGE + ' Tage nach dem Auftrag nicht in der App)') };
+  }
+  const datumOk = /^\d{4}-\d{2}-\d{2}$/.test(String(e.datum || ''));
+  if(r.bezahlt && e.aktion === 'korrektur' && datumOk && e.datum !== r.bezahltAm){   // A513 (B30)
+    const vorher = r.bezahltAm || '';
+    r.bezahltAm = e.datum; r.geaendert = nowIso();
+    r.notiz = [String(r.notiz || '').trim(), 'Zahldatum berichtigt über Claude' + (vorher ? ' (vorher ' + fmtDate(vorher) + ')' : '') + (e.notiz ? ': ' + String(e.notiz).slice(0, 300) : '')].filter(Boolean).join(' · ').slice(0, 1000);
+    await idbPut('rechnungen', r);
+    return { ok:true, text:'Zahldatum berichtigt: ' + (r.lieferant || 'Rechnung') + (r.rechnungsnr ? ' Nr. ' + r.rechnungsnr : '') + ' bezahlt am ' + fmtDate(e.datum) + (vorher ? ' (vorher ' + fmtDate(vorher) + ')' : '') };
+  }
   if(r.bezahlt) return { ok:true, schon:true, text:'war bereits bezahlt' + (r.bezahltAm ? ' (' + fmtDate(r.bezahltAm) + ')' : '') };
-  const am = /^\d{4}-\d{2}-\d{2}$/.test(String(e.datum || '')) ? e.datum : today();
+  const am = datumOk ? e.datum : today();
   r.bezahlt = true; r.bezahltAm = am; r.geaendert = nowIso();
   r.notiz = [String(r.notiz || '').trim(), 'bezahlt gemeldet über Claude' + (e.notiz ? ': ' + String(e.notiz).slice(0, 300) : '')].filter(Boolean).join(' · ').slice(0, 1000);
   await idbPut('rechnungen', r);
@@ -24214,7 +24230,7 @@ let _eingangWartenGemeldet = false;   // A449: Hinweis "Sprachbenutzer fehlt" nu
 async function eingangAbholen(key){
   if(_eingangLaeuft || !key || !istVerwalter()) return { auf:0, ter:0, auftr:0, mng:0, lag:0 };
   _eingangLaeuft = true;
-  const erg = { auf:0, ter:0, auftr:0, mng:0, lag:0, vers:0, dok:0, rech:0 };   // A456: mng, A470: lag, A473: vers, A475: dok, A479: rech
+  const erg = { auf:0, ter:0, auftr:0, mng:0, lag:0, vers:0, dok:0, rech:0, post:0 };   // A512: post   // A456: mng, A470: lag, A473: vers, A475: dok, A479: rech
   const hinweise = [];
   try{
     /* A449: ?arten=alle holt auch Auftraege (erledigt, stempel). Ohne den Zusatz
@@ -24227,10 +24243,14 @@ async function eingangAbholen(key){
     /* A475: &dateien=1 - B19 liefert Ablagen (Mail-PDF, Anhaenge) und Maengel mit Fotos nur an eine App, die sie holt. */
     /* A479: &rechnung=1 - B21 liefert Rechnungen (gmx_rechnung_erfassen) nur an eine App, die sie anlegt. */
     /* A482: &bezahlt=1 - B24 liefert „rechnung_bezahlt“ nur an eine App, die es ausfuehrt. */
-    const r = await fetchMitTimeout(BACKEND_AZURE + '/api/eingang?arten=alle&mangel=1&aendern=1&lager=1&versorger=1&dateien=1&rechnung=1&bezahlt=1', { headers:{ 'x-functions-key':key } });
+    /* A511: &papier=1 - B28 liefert Papierrechnungen (rechnung_anlegen) nur an eine App, die sie anlegt. */
+    /* A512: &posten=1 - B29 liefert Posten der Monatsübersicht (finanzposten_anlegen) nur an eine App, die sie eintraegt. */
+    const r = await fetchMitTimeout(BACKEND_AZURE + '/api/eingang?arten=alle&mangel=1&aendern=1&lager=1&versorger=1&dateien=1&rechnung=1&bezahlt=1&papier=1&posten=1', { headers:{ 'x-functions-key':key } });
     if(!r || !r.ok) return erg;
     const liste = await r.json().catch(() => []);
     if(!Array.isArray(liste) || !liste.length) return erg;
+    /* A513: „bezahlt“ nach den Anlage-Aufträgen - eine im selben Abruf angelegte Rechnung existiert dann schon (sort ist stabil). */
+    liste.sort((x, y) => (x && x.art === 'rechnung_bezahlt' ? 1 : 0) - (y && y.art === 'rechnung_bezahlt' ? 1 : 0));
     const tomb = ((await idbGet('settings','tombstones').catch(() => null)) || {}).value || {};
     const erledigt = [];
     const ergebnisse = {};
@@ -24276,8 +24296,25 @@ async function eingangAbholen(key){
         let a;
         try{ a = await eingangRechnungBezahlt(e, tomb); }
         catch(err){ console.warn('Claude-Rechnung bezahlt:', err && err.message); continue; }   // nicht abhaken - naechster Versuch
+        if(a.warten) continue;   // A513: Rechnung noch nicht da - bleibt im Eingangsfach, naechster Versuch
         erledigt.push(e.id); ergebnisse[e.id] = a.text;
         if(a.ok && !a.schon) erg.auftr++; else if(!a.ok) hinweise.push('Claude-Auftrag ' + a.text);
+        continue;
+      }
+      if(e && e.art === 'finanzposten'){   // A512 (B29)
+        let a;
+        try{ a = await eingangFinanzPosten(e); }
+        catch(err){ console.warn('Claude-Posten:', err && err.message); continue; }   // nicht abhaken - naechster Versuch
+        erledigt.push(e.id); ergebnisse[e.id] = a.text;
+        if(a.ok && !a.schon) erg.post++; else if(!a.ok) hinweise.push('Claude-Posten ' + a.text);
+        continue;
+      }
+      if(e && e.art === 'papierrechnung'){   // A511 (B28)
+        let a;
+        try{ a = await eingangPapierRechnung(e, tomb, absender); }
+        catch(err){ console.warn('Claude-Papierrechnung:', err && err.message); continue; }   // nicht abhaken - naechster Versuch
+        erledigt.push(e.id); ergebnisse[e.id] = a.text;
+        if(a.ok && !a.schon) erg.rech++; else if(!a.ok) hinweise.push('Claude-Rechnung ' + a.text);
         continue;
       }
       if(e && e.art === 'rechnung'){   // A479 (B21)
@@ -24323,7 +24360,7 @@ async function eingangAbholen(key){
         if(!q || !q.ok) console.warn('Claude-Eingang: Abhaken fehlgeschlagen (' + (q ? q.status : '-') + ')');
       }catch(err){ console.warn('Claude-Eingang abhaken:', err); }
     }
-    if(erg.auf || erg.ter || erg.auftr || erg.mng || erg.lag || erg.vers || erg.dok || erg.rech){
+    if(erg.auf || erg.ter || erg.auftr || erg.mng || erg.lag || erg.vers || erg.dok || erg.rech || erg.post){
       syncSoon();
       const t = [];
       if(erg.auf) t.push(erg.auf + (erg.auf === 1 ? ' To Do' : ' To Dos'));
@@ -24333,6 +24370,7 @@ async function eingangAbholen(key){
       if(erg.vers) t.push(erg.vers + (erg.vers === 1 ? ' Versorgervertrag' : ' Versorgerverträge'));   // A473
       if(erg.dok) t.push(erg.dok + (erg.dok === 1 ? ' Dokument' : ' Dokumente'));   // A475
       if(erg.rech) t.push(erg.rech + (erg.rech === 1 ? ' Rechnung' : ' Rechnungen'));   // A479
+      if(erg.post) t.push(erg.post + (erg.post === 1 ? ' Posten' : ' Posten') + ' für die Monatsübersicht');   // A512
       if(erg.auftr) t.push(erg.auftr + (erg.auftr === 1 ? ' Auftrag' : ' Aufträge'));
       toast('Von Claude übernommen: ' + t.join(' und ') + ' ✓', 5000);
       try{
@@ -24604,7 +24642,8 @@ async function spiegelBauen(modus){
       wertStand:/^\d{4}-\d{2}-\d{2}$/.test(a.wertStand || '') ? a.wertStand : '', notiz:kurz(a.notiz, 200) };
   }).slice(0, 3000);
   const rechnungen = rechnungenSpiegel(await idbGetAll('rechnungen').catch(() => []), modus, privat, name, kurz);   // A482 (B24)
-  return { version:1, stand:nowIso(), modus, aufgaben, termine, wohnungen, vertraege, taetigkeiten, stempeluhr, maengel, kisten, lager, rechnungen };
+  const zahl = await zahlungenFuerSpiegel(modus).catch(err => { console.warn('Spiegel Zahlungen:', err && err.message); return {}; });   // A513 (B30)
+  return Object.assign({ version:1, stand:nowIso(), modus, aufgaben, termine, wohnungen, vertraege, taetigkeiten, stempeluhr, maengel, kisten, lager, rechnungen }, zahl);
 }
 
 /* Rueckgabe { status, grund } - status: geschoben | unveraendert | geloescht | aus |
@@ -24677,6 +24716,7 @@ async function renderConnectorConfig(){
       <select id="sprachBenutzerSel" data-action-change="sprachBenutzerSetzen"><option value="">— niemand (Befehle warten) —</option>${users.map(u => `<option value="${escAttr(u.id)}" ${sb === u.id ? 'selected' : ''}>${esc(u.name || u.id)}</option>`).join('')}</select></div>
     <div style="font-size:11px;color:var(--ink-40);margin:-4px 0 10px;line-height:1.5">Der Name steht auch bei To Dos, Terminen und Mängeln,
       die Claude anlegt oder als erledigt meldet („… über Claude“).</div>
+    ${await zahlungenConfigHTML(modus)}
     <div id="spiegelStandInfo" style="font-size:12px;color:var(--ink-60);margin-bottom:8px">${spiegelStandText(stand, modus)}</div>
     <button class="btn btn-full" data-action-click="spiegelJetztSchieben"><i class="ti ti-refresh"></i> Jetzt abgleichen</button>`;
 }
@@ -39797,7 +39837,7 @@ async function runGlobalSearch(q) {
                       .filter(Boolean).join(' ').toLowerCase();
         if(!txt.includes(ql)) continue;
         treffer.push(b);
-        if(treffer.length >= 25) break;
+        if(treffer.length >= 500) break;   // A511
       }
       treffer.sort((a,b)=>String(b.datumISO||'').localeCompare(String(a.datumISO||'')));
       for(const b of treffer){
@@ -39815,7 +39855,7 @@ async function runGlobalSearch(q) {
        Jede Gruppe ist gedeckelt: bei 116 Wohnungen sind das heute nie mehr als
        eine Handvoll Treffer, aber die Buchungen zeigen, wohin es fuehrt, wenn
        ein Bestand waechst - die Liste soll den Dialog nicht sprengen. */
-    const MAX_JE_ART = 12;
+    const MAX_JE_ART = 500;   // A511: Anzeige je Art begrenzt gsAnzeigeListe, der Rest unter „Alle … anzeigen“
     const passt = (...felder) => felder.filter(Boolean).join(' ').toLowerCase().includes(ql);
 
     // Objekte - der haeufigste Sucheinstieg ueberhaupt
@@ -39826,20 +39866,8 @@ async function runGlobalSearch(q) {
           action:`closeModal();showObjekt('${escJs(o.id)}')`});
     });
 
-    // Rechnungen - Kreditor, Nummer, Betreff
-    try{
-      let n=0;
-      for(const r of await idbGetAll('rechnungen')){
-        if (n>=MAX_JE_ART) break;
-        if (!myIds.includes(r.objektId) && !istAllgemein(r.objektId)) continue;
-        if (!passt(r.lieferant, r.nummer, r.betreff, r.notiz)) continue;
-        n++;
-        results.push({type:'rechnung', icon:'ti-file-invoice', color:'var(--amber)',
-          label:(r.lieferant||'Rechnung')+(r.nummer?' · '+r.nummer:''),
-          sub:[fmtDate(r.datum), r.betrag!=null?fmtEur(r.betrag):''].filter(Boolean).join(' · '),
-          action:`closeModal();nav('rechnungen','Rechnungen')`});
-      }
-    }catch(_){}
+    // Rechnungen - A511: Nummer, Positionen (Klartext, Artikelnr.), Beleg-Nr., Betrag mit Toleranz
+    try{ results.push(...await gsRechnungenSuchen(q, myIds)); }catch(e){ console.warn('Suche Rechnungen:', e); }
 
     // Dokumente
     try{
@@ -39908,6 +39936,7 @@ async function runGlobalSearch(q) {
     }catch(_){}
 
     if (!el) return;
+    _gsErgebnisse = results; _gsLetzteQ = q;   // A511
     if (!results.length) {
       el.innerHTML = '<div style="text-align:center;color:var(--ink-40);padding:20px;font-size:13px"><i class="ti ti-search-off" style="font-size:28px;display:block;margin-bottom:6px"></i>Keine Ergebnisse für „'+esc(q)+'"</div>';
       return;
@@ -39920,16 +39949,7 @@ async function runGlobalSearch(q) {
        OneDrive-Token hat (nachweis_a6.js). Auch der Suchbegriff selbst wird
        maskiert: er steht in der Ueberschrift der Trefferliste. */
     el.innerHTML = '<div style="font-size:11px;color:var(--ink-40);margin-bottom:8px">'+results.length+' Ergebnis'+( results.length!==1?'se':'')+' für „'+esc(q)+'"</div>' +
-      results.map(r=>`<div style="display:flex;gap:10px;align-items:center;padding:9px 10px;border:1px solid var(--ink-10);border-radius:var(--radius);margin-bottom:6px;cursor:pointer;background:var(--white)" onclick="${r.action}">
-        <div style="width:34px;height:34px;border-radius:8px;background:var(--ink-05);display:flex;align-items:center;justify-content:center;flex-shrink:0;color:${esc(r.color)}">
-          <i class="ti ${esc(r.icon)}"></i>
-        </div>
-        <div style="flex:1;min-width:0">
-          <div style="font-size:13px;font-weight:600;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(r.label)}</div>
-          <div style="font-size:11px;color:var(--ink-40);margin-top:1px">${esc(r.sub)}</div>
-        </div>
-        <i class="ti ti-chevron-right" style="color:var(--ink-20)"></i>
-      </div>`).join('');
+      gsAnzeigeListe(results).map(gsZeileHTML).join('');   // A511: je Art 12, dahinter „Alle … anzeigen“
   }, 300);
 }
 
@@ -57723,16 +57743,20 @@ function rechnBezug(r){
   if(r.zuordnung==='reparatur' && r.reparaturTitel) return r.reparaturTitel;
   return r.zuordnung==='allgemein' ? 'Verwaltung' : '';
 }
-/* Zeilen fuer den Export - rein, damit testbar. Datum als echtes Excel-Datum, Betrag als Zahl. */
+/* Zeilen fuer den Export - rein, damit testbar. Datum als echtes Excel-Datum, Betrag als Zahl.
+   A511: Spalten M–Q angehängt (Beleg-Nr., Zahlkonto, Wohnung, Gewährleistung, Positionen); A–L unverändert. */
 function rechnExcelZeilen(liste, nameVon){
   const name = nameVon || (id => (id ? (zielName(id) || '') : ''));
-  const dat = s => (/^\d{4}-\d{2}-\d{2}/.test(String(s || '')) ? new Date(+s.slice(0,4), +s.slice(5,7) - 1, +s.slice(8,10)) : '');
-  const kopf = ['Rechnungsdatum','Lieferant','Rechnungsnr.','Betrag brutto (€)','Objekt','Art','Bezug','Fällig am','Status','Bezahlt am','Beleg','Notiz'];
+  const dat = rechnExcelDatum;
+  const kopf = ['Rechnungsdatum','Lieferant','Rechnungsnr.','Betrag brutto (€)','Objekt','Art','Bezug','Fällig am','Status','Bezahlt am','Beleg','Notiz',
+                'Eigene Beleg-Nr.','Bezahlt über','Wohnung','Gewährleistung bis','Positionen'];
   const zeilen = liste.map(r => {
     const z = RECHN_ZUORDNUNG.find(x => x.id === r.zuordnung);
+    const pos = Array.isArray(r.positionen) ? r.positionen.filter(Boolean).map(p => p.klartext || p.bezeichnung || '').filter(Boolean).join('; ') : '';
     return [dat(r.datum), r.lieferant || '', r.rechnungsnr || '', Math.round((Number(r.betrag) || 0) * 100) / 100, name(r.objektId),
       (z && z.name) || r.zuordnung || '', rechnBezug(r), dat(r.faellig), r.bezahlt ? 'bezahlt' : 'offen', dat(r.bezahltAm),
-      r.beleg ? 'ja' : 'nein', r.notiz || ''];
+      r.beleg ? 'ja' : (r.belegOdId ? 'OneDrive' : 'nein'), r.notiz || '',
+      r.belegNr || r.belegNrHand || '', r.zahlkonto || '', r.wohnung || '', dat(r.gewaehrleistungBis), pos.slice(0, 3000)];
   });
   return { kopf, zeilen };
 }
@@ -57741,21 +57765,9 @@ async function rechnExcelExport(){
   if(!_rechnListe.length){ toast('Keine Rechnungen in der Liste.'); return; }
   try{ await xlsxLaden(); }
   catch(e){ console.warn('Excel-Bibliothek:', e); toast('Excel-Bibliothek nicht verfügbar (Internet nötig).'); return; }
-  const { kopf, zeilen } = rechnExcelZeilen(_rechnListe);
-  const ws = XLSX.utils.aoa_to_sheet([kopf, ...zeilen], { cellDates:true });
-  const n = zeilen.length;
-  for(let i = 0; i < n; i++){
-    for(const c of [0, 7, 9]){ const a = XLSX.utils.encode_cell({ r:i + 1, c }); if(ws[a] && ws[a].t === 'd') ws[a].z = 'dd.mm.yyyy'; }
-    const b = XLSX.utils.encode_cell({ r:i + 1, c:3 }); if(ws[b]) ws[b].z = '#,##0.00';
-  }
-  /* Summenzeile als Formel - rechnet in Excel nach, wenn Zeilen geaendert werden. */
-  XLSX.utils.sheet_add_aoa(ws, [['Summe', '', '', { t:'n', f:'SUBTOTAL(9,D2:D' + (n + 1) + ')', z:'#,##0.00' }]], { origin:{ r:n + 1, c:0 } });
-  ws['!cols'] = [{wch:12},{wch:28},{wch:18},{wch:14},{wch:24},{wch:22},{wch:22},{wch:12},{wch:9},{wch:12},{wch:6},{wch:40}];
-  ws['!autofilter'] = { ref:'A1:L' + (n + 1) };
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, 'Rechnungen');
+  const n = _rechnListe.length;
   const dateiname = 'Rechnungen_' + today() + '.xlsx';
-  try{ XLSX.writeFile(wb, dateiname); toast('Excel exportiert ✓ (' + n + ' Rechnung' + (n === 1 ? '' : 'en') + ')'); }
+  try{ XLSX.writeFile(rechnExcelMappe(_rechnListe, false), dateiname); toast('Excel exportiert ✓ (' + n + ' Rechnung' + (n === 1 ? '' : 'en') + ')'); }
   catch(e){ toast('Export fehlgeschlagen: ' + (e.message || e)); }
 }
 // Beleg-Zwischenspeicher beim Erfassen (Data-URL + Metadaten)
@@ -57952,11 +57964,8 @@ async function renderRechnungen(){
     if(rechnFilter.status==='bezahlt' && !r.bezahlt) return false;
     if(rechnFilter.status==='faellig' && !rechnungFaelligInfo(r).status) return false;   // A482
     if(rechnFilter.jahr!=='all' && (r.datum||'').slice(0,4)!==rechnFilter.jahr) return false;
-    if(rechnFilter.q){
-      const q=rechnFilter.q.toLowerCase();
-      const hay=`${r.lieferant||''} ${r.rechnungsnr||''} ${r.notiz||''} ${zielName(r.objektId)||''}`.toLowerCase();
-      if(!hay.includes(q)) return false;
-    }
+    if(!rechnZusatzfilterPasst(r, rechnFilter.status)) return false;   // A511
+    if(rechnFilter.q && !rechnTreffer(r, rechnFilter.q)) return false;   // A511: auch Positionen, Beleg-Nr., Betrag
     return true;
   });
   liste = rechnSortieren(liste, rechnFilter.sort);   // A503
@@ -57988,6 +57997,7 @@ async function renderRechnungen(){
   </div>`;
 
   h+=rbBannerHtml();   // A504: Beleg fehlt
+  h+=rechnOdHinweisHtml();   // A511
 
   // Filterleiste
   h+=`<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px;padding-bottom:4px">
@@ -58004,6 +58014,9 @@ async function renderRechnungen(){
       <option value="offen"${rechnFilter.status==='offen'?' selected':''}>Offen</option>
       <option value="bezahlt"${rechnFilter.status==='bezahlt'?' selected':''}>Bezahlt</option>
       <option value="faellig"${rechnFilter.status==='faellig'?' selected':''}>Fällig/überfällig</option>
+      <option value="gewaehr"${rechnFilter.status==='gewaehr'?' selected':''}>Gewährleistung läuft ab</option>
+      <option value="umlage"${rechnFilter.status==='umlage'?' selected':''}>Umlagefähig</option>
+      <option value="steuer"${rechnFilter.status==='steuer'?' selected':''}>Steuerlich prüfen</option>
     </select>
     <select onchange="rechnFilter.jahr=this.value;renderRechnungen()" style="flex:1 1 auto;min-width:0;max-width:100%;padding:7px;border:1px solid var(--ink-10);border-radius:8px;font-size:12px">
       <option value="all"${rechnFilter.jahr==='all'?' selected':''}>Alle Jahre</option>
@@ -58013,7 +58026,7 @@ async function renderRechnungen(){
       ${RECHN_SORTIERUNGEN.map(s=>`<option value="${s.id}"${rechnFilter.sort===s.id?' selected':''}>${esc(s.name)}</option>`).join('')}
     </select>
   </div>
-  <input type="text" placeholder="Suche: Lieferant, Nr., Notiz…" value="${esc(rechnFilter.q)}"
+  <input type="text" placeholder="Suche: Lieferant, Nr., Artikel, Betrag…" value="${esc(rechnFilter.q)}"
     oninput="rechnFilter.q=this.value;clearTimeout(window._rechnSuchT);window._rechnSuchT=setTimeout(renderRechnungen,300)"
     style="width:100%;padding:9px;border:1px solid var(--ink-10);border-radius:8px;font-size:13px;margin-bottom:12px">`;
 
@@ -58056,6 +58069,7 @@ function rechnCard(r){
           <span class="chip" style="font-size:9px;background:#F0F0F0;color:#888">${esc(z?.name||r.zuordnung||'ohne Zuordnung')}</span>
           ${z?.umlage?'<span class="chip" style="font-size:9px;background:#E8F5E9;color:#2E7D52">umlagefähig</span>':''}
           ${r.beleg?'<span class="chip" style="font-size:9px;background:var(--copper-bg);color:var(--copper-d)"><i class="ti ti-paperclip"></i> Beleg</span>':''}
+          ${rechnPapierChips(r)}
         </div>
       </div>
     </div>
@@ -58870,7 +58884,7 @@ async function modalRechnungDetail(id){
     const mark=r.positionen.filter(p=>p.markiert);
     const zeile=p=>`<div class="rpos-det${p.markiert?'':' rpos-det-aus'}">
       <span>${p.markiert?'<i class="ti ti-check"></i> ':''}${esc(p.bezeichnung||'')}${
-        p.klartext?`<br><span style="font-size:10px;font-style:italic">${esc(p.klartext)}</span>`:''}</span>
+        rechnPosZusatz(p)}</span>
       <span style="font-variant-numeric:tabular-nums;white-space:nowrap">${
         typeof p.gesamtpreis==='number'?rechnPosEur(p.gesamtpreis)+' €':''}</span></div>`;
     posHtml=`<details style="margin-top:10px">
@@ -58892,6 +58906,7 @@ async function modalRechnungDetail(id){
     }
   }
 
+  if(!belegHtml && r.belegOdId) belegHtml = rechnOdBelegKnoepfe(r);   // A511
   showModal(`<div class="m-title"><i class="ti ti-file-invoice"></i> ${esc(r.lieferant||'Rechnung')}</div>
     <div class="card" style="margin-bottom:10px">
       <div style="display:flex;justify-content:space-between;align-items:baseline">
@@ -58901,6 +58916,7 @@ async function modalRechnungDetail(id){
       <div style="font-size:12px;color:var(--ink-60);margin-top:8px;line-height:1.7">
         ${r.rechnungsnr?`<div>Rechnungsnr.: ${esc(r.rechnungsnr)}</div>`:''}
         ${r.belegNrHand?`<div>Eigene Beleg-Nr.: ${esc(r.belegNrHand)}</div>`:''}
+        ${rechnPapierDetailHTML(r)}
         <div>Datum: ${r.datum?fmtDatumKurz(r.datum):'–'}</div>
         ${r.faellig?`<div>Fällig bis: ${fmtDatumKurz(r.faellig)}</div>`:''}
         ${r.objektId?`<div>Objekt: ${esc(zielName(r.objektId))}</div>`:''}
@@ -58936,7 +58952,9 @@ async function rechnBezahltUmschalten(id){
 }
 
 async function rechnBelegOeffnen(id){
-  const r=await idbGet('rechnungen', id); if(!r||!r.beleg) return;
+  const r=await idbGet('rechnungen', id);
+  if(r && !r.beleg && r.belegOdId) return rechnOdBelegOeffnen(r);   // A511
+  if(!r||!r.beleg) return;
   // PDF in neuem Tab/Viewer öffnen
   try{
     const a=document.createElement('a');
@@ -58978,11 +58996,623 @@ async function dateiTeilen(quelle, dateiname, mime){
 // Rechnungsbeleg (PDF/XML) über den nativen Teilen-Dialog weiterleiten (v203, 23f/23h)
 async function rechnBelegTeilen(id){
   const r=await idbGet('rechnungen', id).catch(()=>null);
+  if(r && !r.beleg && r.belegOdId) return rechnOdBelegTeilen(r);   // A511
   if(!r||!r.beleg){ toast('Kein Beleg vorhanden'); return; }
   const istXml=(r.belegMime||'').includes('xml');
   let bn=(r.belegName||'Rechnung').replace(/[\\/:*?"<>|]+/g,' ').trim()||'Rechnung';
   if(!/\.(pdf|xml)$/i.test(bn)) bn += istXml?'.xml':'.pdf';
   await dateiTeilen(r.beleg, bn, istXml?'text/xml':'application/pdf');
+}
+
+/* ═══════════════════════════════════════════════════════════
+   A513 (25.11.2026) – Zahlungen der Hauskonten für Claude (B30, zahlungen_suchen)
+   Wunsch des Nutzers 25.11.2026: im Sprachchat prüfen, ob eine Rechnung bezahlt ist.
+   - Eigene Einstellung „Zahlungen für Claude“ (settings 'zahlungen_claude' = 'an'|'aus', abgeglichen), Standard aus.
+     Wirkt nur zusammen mit dem Lesezugriff „mit Beträgen“.
+   - Quellen: importierte Kontoauszüge (Speicher 'buchungen', auf allen Geräten) und die eingelesenen
+     Kontenlisten (Speicher 'excel_cache', nur dieses Gerät). Gleiche Zahlung aus beiden Quellen zählt einmal
+     (Konto + Tag + Betrag, je Quelle gezählt).
+   - Abbuchungen ja; Eingänge nur ohne Mieterbezug (Buchung ohne Mieter, mit Kategorie bzw. Spalte „Sonstiges“
+     der Kontenliste). Mieteingänge und Konten nur privater Objekte bleiben draußen.
+   - Hat das Gerät keine Zahlungen, schickt es nichts – der alte Auszug im Backend bleibt (B30).
+   ═══════════════════════════════════════════════════════════ */
+const ZAHLUNGEN_TAGE = 550;      // gut 18 Monate
+const ZAHLUNGEN_MAX = 5000;      // Backend nimmt bis 6000
+const RECHN_BEZAHLT_WARTEN_TAGE = 7;   // so lange wartet ein „bezahlt“-Auftrag auf eine noch nicht abgeglichene Rechnung
+
+async function zahlungenClaudeAn(){
+  return (((await idbGet('settings', 'zahlungen_claude').catch(() => null)) || {}).value) === 'an';
+}
+function zahlungenKontoPrivat(kontoId){
+  const k = ZA_KONTEN.find(x => x.id === kontoId);
+  return !!(k && k.objekte.length && k.objekte.every(o => (getObj(o) || {}).privat));
+}
+function zahlungenKontoLabel(kontoId){ return (ZA_KONTEN.find(x => x.id === kontoId) || {}).label || String(kontoId || ''); }
+
+/* Rein (ohne Speicher) – auch für Tests. buchungen: Speicher 'buchungen'; caches: [{p:Profil, c:excel_cache-Satz}] */
+function zahlungenAuszugBerechnen(buchungen, caches, heuteISO){
+  const grenze = ymd(new Date(new Date(heuteISO + 'T12:00:00').getTime() - ZAHLUNGEN_TAGE * 86400000));
+  const kurz = (s, n) => { s = String(s || '').replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n - 1) + '…' : s; };
+  const cent = b => Math.round(Number(b) * 100);
+  const liste = [], konten = {}, zahlImport = {}, zahlExcel = {};
+  const konto = (label, quelle, d) => {
+    const k = konten[label] || (konten[label] = { konto:label, quellen:new Set(), von:'', bis:'', anzahl:0 });
+    k.quellen.add(quelle);
+    if(d && (!k.bis || d > k.bis)) k.bis = d;
+    return k;
+  };
+  for(const b of (buchungen || [])){
+    if(!b || b._deleted || zahlungenKontoPrivat(b.kontoId)) continue;
+    const d = String(b.datumISO || '');
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(d)) continue;
+    const label = zahlungenKontoLabel(b.kontoId), k = konto(label, 'import', d);   // „bis“ zählt alle Buchungen, auch Mieten
+    const betrag = Math.round(Number(b.betrag) * 100) / 100;
+    if(!betrag || d < grenze) continue;
+    if(betrag > 0 && (b.mieterId || b.istStellplatz || !b.kategorie)) continue;   // nur Eingänge ohne Mieterbezug
+    const key = label + '|' + d + '|' + cent(betrag);
+    zahlImport[key] = (zahlImport[key] || 0) + 1;
+    liste.push({ d, konto:label, betrag, name:kurz(b.name, 80), zweck:kurz(b.zweck || b.buchungstext, 160), quelle:'import' });
+    k.anzahl++; if(!k.von || d < k.von) k.von = d;
+  }
+  for(const { p, c } of (caches || [])){
+    if(!p || !c || !Array.isArray(c.zeilen) || zahlungenKontoPrivat(p.kontoId)) continue;
+    const label = zahlungenKontoLabel(p.kontoId), k = konto(label, 'excel', c.letzteBuchungISO || '');
+    for(const r of c.zeilen){
+      const d = String(r.d || '');
+      if(!/^\d{4}-\d{2}-\d{2}$/.test(d) || d < grenze || d > heuteISO) continue;
+      let aus = 0, pm = 0, miete = false;
+      for(const sp in p.spalten){
+        const n = Number((r.w || {})[sp]) || 0, art = p.spalten[sp].art;
+        if(art === 'aus') aus += n; else if(art === 'pm') pm += n; else if(art === 'ein' && n) miete = true;
+      }
+      const betrag = Math.round((pm - aus) * 100) / 100;
+      if(!betrag || (betrag > 0 && miete)) continue;
+      const key = label + '|' + d + '|' + cent(betrag);
+      zahlExcel[key] = (zahlExcel[key] || 0) + 1;
+      if(zahlExcel[key] <= (zahlImport[key] || 0)) continue;   // schon aus dem Kontoauszug da
+      liste.push({ d, konto:label, betrag, name:kurz(r.n, 80), zweck:kurz(r.t, 160), quelle:'excel' });
+      k.anzahl++; if(!k.von || d < k.von) k.von = d;
+    }
+  }
+  liste.sort((x, y) => y.d.localeCompare(x.d));
+  return { stand:nowIso(), liste:liste.slice(0, ZAHLUNGEN_MAX),
+    konten:Object.values(konten).filter(k => k.anzahl).map(k => ({ konto:k.konto, quelle:k.quellen.size > 1 ? 'beide' : [...k.quellen][0], von:k.von, bis:k.bis, anzahl:k.anzahl })) };
+}
+async function zahlungenAuszug(){
+  const buchungen = await idbGetAll('buchungen').catch(() => []);
+  const caches = [];
+  for(const p of EXCEL_PROFILE){ const c = await excelCacheLaden(p.k); if(c && !c.fehler) caches.push({ p, c }); }
+  return zahlungenAuszugBerechnen(buchungen, caches, today());
+}
+/* Teil des Spiegels: { zahlungen } wenn an und vorhanden, { zahlungenAus:true } wenn aus, sonst nichts (alter Auszug bleibt). */
+async function zahlungenFuerSpiegel(modus){
+  if(modus !== 'mit' || !(await zahlungenClaudeAn())) return { zahlungenAus:true };
+  const z = await zahlungenAuszug();
+  return z.liste.length ? { zahlungen:z } : {};
+}
+
+async function zahlungenConfigHTML(modus){
+  const an = await zahlungenClaudeAn();
+  let info = '';
+  if(an){
+    const z = await zahlungenAuszug().catch(() => null);
+    info = !z || !z.liste.length ? 'Auf diesem Gerät liegen keine Zahlungen vor (Kontoauszüge importieren oder Kontenlisten einlesen).'
+      : 'Auf diesem Gerät: ' + z.liste.length + ' Zahlungen – ' + z.konten.map(k => esc(k.konto) + ' bis ' + fmtDatumKurz(k.bis)).join(', ') + '.';
+    if(modus !== 'mit') info = 'Wirkt erst, wenn der Lesezugriff „mit Beträgen“ steht.';
+  }
+  return `<div class="f"><label for="zahlungenClaudeSel">Zahlungen für Claude (Hauskonten)</label>
+      <select id="zahlungenClaudeSel" data-action-change="zahlungenClaudeSetzen"><option value="aus" ${an ? '' : 'selected'}>Aus</option>
+        <option value="an" ${an ? 'selected' : ''}>An – Abbuchungen und Eingänge ohne Mieterbezug</option></select></div>
+    <div style="font-size:11px;color:var(--ink-40);margin:-4px 0 10px;line-height:1.5">Damit Claude prüfen kann, ob eine Rechnung bezahlt ist (zahlungen_suchen):
+      Datum, Konto, Betrag, Empfänger und Verwendungszweck der letzten 18 Monate. Mieteingänge werden nicht übertragen.${info ? '<br>' + info : ''}</div>`;
+}
+async function zahlungenClaudeSetzen(){
+  if(!istVerwalter()){ toast('Nur für Verwalter'); return; }
+  const sel = (this && this.tagName === 'SELECT') ? this : document.getElementById('zahlungenClaudeSel');
+  const neu = sel && sel.value === 'an' ? 'an' : 'aus';
+  const alt = (await zahlungenClaudeAn()) ? 'an' : 'aus';
+  if(neu === alt) return;
+  if(neu === 'an' && !confirm('Claude erhält die Abbuchungen der Hauskonten der letzten 18 Monate (Datum, Konto, Betrag, Empfänger, Verwendungszweck) '
+      + 'und Eingänge ohne Mieterbezug. Empfänger können Personen sein (z. B. Kautionsrückzahlung, Handwerker). Mieteingänge werden nicht übertragen. '
+      + 'Für ein privates Claude-Konto (Pro/Max) besteht nach bisherigem Stand kein Auftragsverarbeitungsvertrag. Trotzdem freigeben?')){
+    if(sel) sel.value = alt;
+    return;
+  }
+  await idbPut('settings', { id:'zahlungen_claude', value:neu, geaendert:nowIso(), von:CU?.name || '' });
+  syncSoon();
+  const key = ((await idbGet('settings','backendKey').catch(() => null)) || {}).value;
+  toast(spiegelErgebnisText(await spiegelSchieben(key, true)), 5000);
+  spiegelStandAnzeigen();
+}
+registerActions({ zahlungenClaudeSetzen });
+
+/* ═══════════════════════════════════════════════════════════════════════
+   A512 (24.11.2026) – Kredite und feste Posten über Claude in die Monatsübersicht (Backend B29, finanzposten_anlegen)
+   Eingang art 'finanzposten' (nur mit &posten=1): { postenArt, name, anteile:[{objekt, betrag}], notiz }.
+   Je Anteil ein Posten in settings['finanz_posten'] (wie modalFinPosten). Gibt es im selben Haus schon einen Posten
+   mit derselben Bezeichnung (Groß-/Kleinschreibung egal), wird er aktualisiert (Art, Betrag, Notiz) – so kommen
+   geänderte Raten nach. Ganz oder gar nicht: ein unbekanntes Haus -> nichts eingetragen, Ergebnis an Claude.
+   Posten-ID 'cl_<Eingang>_<n>'; ist schon einer mit dieser Eingangs-ID da, gilt der Eintrag als übernommen.
+   Posten ohne Haus: von 'claude' -> sichtbar für den Admin (finPostenSichtbar).
+   ═══════════════════════════════════════════════════════════════════════ */
+function finPostenNameGleich(a, b){ return String(a || '').trim().toLowerCase() === String(b || '').trim().toLowerCase(); }
+async function eingangFinanzPosten(e){
+  const art = FIN_POSTEN_ARTEN[e.postenArt] ? e.postenArt : 'kredit';
+  const name = String(e.name || '').replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, 80);
+  const notiz = String(e.notiz || '').replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, 200);
+  const anteile = Array.isArray(e.anteile) ? e.anteile.slice(0, 20) : [];
+  if(!e.id || !name || !anteile.length) return { ok:false, text:'nicht übernommen: Angaben unvollständig' };
+  const liste = await finPostenLaden();
+  const praefix = 'cl_' + e.id + '_';
+  if(liste.some(p => String(p.id).startsWith(praefix))) return { ok:true, schon:true, text:'bereits eingetragen' };
+  const ziele = [];
+  for(const a of anteile){
+    const betrag = Math.abs(finRund(finZahl(a && a.betrag)));
+    if(!(betrag > 0) || betrag > 10000000) return { ok:false, text:'nicht übernommen: Betrag für „' + String(a && a.objekt || 'ohne Haus').slice(0, 60) + '“ ungültig' };
+    let obj = null;
+    if(a.objekt){
+      obj = eingangObjektFinden(a.objekt);
+      if(!obj) return { ok:false, text:'nicht übernommen: Haus „' + String(a.objekt).slice(0, 80) + '“ nicht erkannt – nichts eingetragen' };
+    }
+    if(ziele.some(z => (z.obj ? z.obj.id : '') === (obj ? obj.id : ''))) return { ok:false, text:'nicht übernommen: Haus ' + (obj ? obj.name : 'ohne Haus') + ' doppelt' };
+    ziele.push({ obj, betrag });
+  }
+  const jetzt = nowIso();
+  let neu = 0, akt = 0;
+  ziele.forEach((z, i) => {
+    const oid = z.obj ? z.obj.id : '';
+    const alt = liste.find(p => (p.objektId || '') === oid && finPostenNameGleich(p.name, name));
+    if(alt){ Object.assign(alt, { art, betrag:z.betrag, notiz: notiz || alt.notiz || '', geaendert:jetzt, quelle:'claude', claudeEingang:e.id }); akt++; }
+    else { liste.push({ id: praefix + i, art, name, betrag:z.betrag, objektId:oid, notiz, von: oid ? '' : 'claude', erstellt:jetzt, geaendert:jetzt, quelle:'claude', claudeEingang:e.id }); neu++; }
+  });
+  await finPostenSchreiben(liste);
+  const summe = finRund(ziele.reduce((s, z) => s + z.betrag, 0));
+  return { ok:true, text:'eingetragen: „' + name + '“, ' + fmtEur(summe) + ' im Monat' + (ziele.length > 1 ? ' auf ' + ziele.length + ' Häuser' : (ziele[0].obj ? ', ' + ziele[0].obj.name : ''))
+    + (akt ? ' (' + neu + ' neu, ' + akt + ' aktualisiert)' : '') };
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   A511 (21.11.2026) – Papierrechnungen über Claude, Suche in Rechnungen, Rechnungsliste in OneDrive
+
+   (1) Papierrechnungen (Backend B28, Werkzeug „rechnung_anlegen“, Eingang art 'papierrechnung', nur mit
+       &papier=1): Claude liest gescannte Belege aus OneDrive, zeigt die Angaben, merkt sie erst nach „ja“ vor.
+       Der Beleg bleibt in OneDrive – die App speichert nur den Verweis über die feste Datei-ID (belegOdId),
+       die beim Verschieben/Umbenennen gleich bleibt. Keine Kopie im Abgleich (Größe der Sync-Datei).
+       Felder zusätzlich zu A479: belegNr (laufende eigene Nummer, z. B. B0042), positionen (mit klartext,
+       artikelnr, umlagefaehig), wohnung, zahlkonto (welches Konto bezahlt hat – getrennt vom Objekt),
+       gewaehrleistungBis, umlagefaehig, gutschriftZu, steuerPruefen/steuerHinweis. Gutschriften: Betrag < 0.
+       Rechnungsnummer ist optional (Kassenbons). Doppel = gleiche Datei-ID, gleiche Beleg-Nr., gleiche
+       Rechnungsnr. + Lieferant oder (ohne Nr.) Lieferant + Datum + Betrag.
+   (2) Suche: Rechnungsnummer (bis A510 suchte die globale Suche das nicht vorhandene Feld „nummer“),
+       Positionen samt Klartext und Artikelnummer, Beleg-Nr., Betrag mit Toleranz („250“ findet 249,01 bis
+       250,99, also 249,90 und 250,00; „249,90“ genau). Mehrere Wörter = alle müssen passen. Gilt für die globale Suche und die Suche der
+       Rechnungsliste. Globale Suche zeigt je Art die ersten 12 Treffer und „Alle … anzeigen“ in eigenem Fenster;
+       bei Rechnungen öffnet das die Rechnungsliste mit dem Suchbegriff (dort Filter, Sortierung, Excel).
+   (3) Rechnungsliste in OneDrive (NadigPfau/Rechnungsliste/Rechnungen.xlsx): nach dem Abgleich neu geschrieben,
+       wenn sich Rechnungen geändert haben. Nur auf Geräten mit Rolle admin (sehen alle Rechnungen – eine
+       Teilsicht würde die Liste kürzen). Die Datei ist nur zum Lesen; Änderungen dort überschreibt der nächste
+       Abgleich (Blatt „Hinweis“).
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* ── Suche ───────────────────────────────────────────────────────────── */
+/* „250“, „249,90“, „1.250,00“, „250 €“, „-12,50“ -> { wert, genau } ; sonst null. */
+function rechnBetragAusText(w){
+  const t = String(w || '').replace(/€/g, '').replace(/\s+/g, '').trim();
+  if(!t || !/^-?(\d{1,3}(\.\d{3})+(,\d{1,2})?|\d+([.,]\d{1,2})?)$/.test(t)) return null;
+  const tausender = /^-?\d{1,3}(\.\d{3})+$/.test(t);
+  let x = t;
+  if(x.includes(',')) x = x.replace(/\./g, '').replace(',', '.');
+  else if(tausender) x = x.replace(/\./g, '');
+  const n = Number(x);
+  if(!isFinite(n)) return null;
+  return { wert: Math.abs(n), genau: !tausender && /[.,]\d{1,2}$/.test(t) };
+}
+function rechnBetragPasst(betrag, b){
+  if(!b) return false;
+  const x = Math.abs(Number(betrag) || 0);
+  return b.genau ? Math.abs(x - b.wert) < 0.005 : Math.abs(x - b.wert) < 0.995;   // „250“: 249,01 bis 250,99
+}
+function rechnPosText(p){
+  return p ? [p.bezeichnung, p.klartext, p.artikelnr].filter(Boolean).join(' ') : '';
+}
+function rechnSuchtext(r, nameVon){
+  const name = nameVon || (id => (id ? (zielName(id) || '') : ''));
+  const pos = Array.isArray(r.positionen) ? r.positionen.map(rechnPosText).join(' ') : '';
+  return [r.lieferant, r.rechnungsnr, r.belegNr, r.belegNrHand, r.notiz, name(r.objektId), r.kostenartName, r.mieterName,
+          r.reparaturTitel, r.wohnung ? 'WE ' + r.wohnung : '', r.zahlkonto, r.belegOdName, r.belegName, r.gutschriftZu, pos]
+    .filter(Boolean).join(' ');
+}
+function rechnWortPasst(w, hay, hayN){
+  const lw = w.toLowerCase();
+  if(hay.includes(lw)) return true;
+  const n = rechnungNorm(w);
+  return n.length >= 3 && hayN.includes(n);
+}
+/* Rein, damit testbar. Ergebnis: null (kein Treffer) oder { position: Text der passenden Position | null }. */
+function rechnTreffer(r, q, nameVon){
+  const woerter = String(q || '').trim().split(/\s+/).filter(Boolean);
+  if(!r || !woerter.length) return null;
+  const hay = rechnSuchtext(r, nameVon).toLowerCase(), hayN = rechnungNorm(hay);
+  for(const w of woerter){
+    const b = rechnBetragAusText(w);
+    if(b && (rechnBetragPasst(r.betrag, b) || (Array.isArray(r.positionen) && r.positionen.some(p => rechnBetragPasst(p && p.gesamtpreis, b))))) continue;
+    if(!rechnWortPasst(w, hay, hayN)) return null;
+  }
+  /* Welche Position hat den Treffer ausgelöst? Nur die Textwörter zählen. */
+  const textW = woerter.filter(w => !rechnBetragAusText(w));
+  let position = null;
+  if(textW.length && Array.isArray(r.positionen)){
+    const kopf = [r.lieferant, r.rechnungsnr, r.belegNr].filter(Boolean).join(' ').toLowerCase();
+    const p = r.positionen.find(p => { const t = rechnPosText(p).toLowerCase(), tn = rechnungNorm(t); return textW.every(w => rechnWortPasst(w, t, tn)); });
+    if(p && !textW.every(w => rechnWortPasst(w, kopf, rechnungNorm(kopf)))) position = p.klartext || p.bezeichnung || null;
+  }
+  return { position };
+}
+/* Globale Suche: je Art höchstens GS_ANZEIGE_JE_ART Treffer, dahinter „Alle … anzeigen“. */
+const GS_ANZEIGE_JE_ART = 12;
+const GS_ARTNAMEN = { mieter:'Mieter', zaehler:'Zähler', lager:'Lagerartikel', aufgabe:'Aufgaben', mangel:'Mängel', reparatur:'Reparaturen',
+  protokoll:'Protokolle', buchung:'Buchungen', objekt:'Objekte', rechnung:'Rechnungen', dokument:'Dokumente', termin:'Termine',
+  firma:'Branchenbuch', interessent:'Interessenten' };
+let _gsErgebnisse = [], _gsLetzteQ = '';
+function gsAnzeigeListe(results){
+  const zahl = {}, aus = [];
+  for(const r of results) zahl[r.type] = (zahl[r.type] || 0) + 1;
+  const gezeigt = {}, mehrGesetzt = {};
+  for(const r of results){
+    gezeigt[r.type] = (gezeigt[r.type] || 0) + 1;
+    if(gezeigt[r.type] <= GS_ANZEIGE_JE_ART){ aus.push(r); continue; }
+    if(mehrGesetzt[r.type]) continue;
+    mehrGesetzt[r.type] = true;
+    aus.push({ type:'mehr', icon:'ti-list-search', color:'var(--blue)',
+      label:'Alle ' + zahl[r.type] + ' ' + (GS_ARTNAMEN[r.type] || 'Treffer') + ' anzeigen',
+      sub: r.type === 'rechnung' ? 'Öffnet die Rechnungsliste mit diesem Suchbegriff (Filter, Excel)' : 'Vollständige Trefferliste in eigenem Fenster',
+      action: "gsAlleZeigen('" + escJs(r.type) + "')" });
+  }
+  return aus;
+}
+function gsZeileHTML(r){
+  return `<div style="display:flex;gap:10px;align-items:center;padding:9px 10px;border:1px solid var(--ink-10);border-radius:var(--radius);margin-bottom:6px;cursor:pointer;background:${r.type === 'mehr' ? 'var(--ink-05)' : 'var(--white)'}" onclick="${r.action}">
+        <div style="width:34px;height:34px;border-radius:8px;background:var(--ink-05);display:flex;align-items:center;justify-content:center;flex-shrink:0;color:${esc(r.color)}">
+          <i class="ti ${esc(r.icon)}"></i>
+        </div>
+        <div style="flex:1;min-width:0">
+          <div style="font-size:13px;font-weight:600;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(r.label)}</div>
+          <div style="font-size:11px;color:var(--ink-40);margin-top:1px">${esc(r.sub)}</div>
+        </div>
+        <i class="ti ti-chevron-right" style="color:var(--ink-20)"></i>
+      </div>`;
+}
+function gsAlleZeigen(typ){
+  const q = _gsLetzteQ;
+  if(typ === 'rechnung'){
+    rechnFilter = Object.assign({}, rechnFilter, { objId:'all', zuordnung:'all', status:'all', jahr:'all', q });
+    closeModal();
+    nav('rechnungen', 'Rechnungen');
+    return;
+  }
+  const liste = _gsErgebnisse.filter(r => r.type === typ);
+  showModal(`<div class="m-title"><i class="ti ti-list-search"></i> ${esc(GS_ARTNAMEN[typ] || 'Treffer')} für „${esc(q)}“</div>
+    <div style="font-size:11px;color:var(--ink-40);margin-bottom:8px">${liste.length} Treffer</div>
+    <div style="max-height:62vh;overflow-y:auto">${liste.map(gsZeileHTML).join('')}</div>
+    <button class="btn btn-full" style="margin-top:8px" onclick="gsZurueckZurSuche()"><i class="ti ti-arrow-left"></i> Zurück zur Suche</button>`);
+}
+function gsZurueckZurSuche(){
+  const q = _gsLetzteQ;
+  openGlobalSearch();
+  setTimeout(() => { const i = document.getElementById('globalSearchQ'); if(i){ i.value = q; runGlobalSearch(q); } }, 120);
+}
+/* Rechnungen für die globale Suche – sichtbar wie in renderRechnungen (Rechnungen sind nur für Verwalter). */
+async function gsRechnungenSuchen(q, myIds){
+  if(!istVerwalter()) return [];
+  const aus = [];
+  for(const r of await idbGetAll('rechnungen').catch(() => [])){
+    if(!r || r._deleted) continue;
+    if(!(istSystemAdmin() ? (!r.objektId || myIds.includes(r.objektId)) : myIds.includes(r.objektId))) continue;
+    const t = rechnTreffer(r, q);
+    if(!t) continue;
+    aus.push({ r, t });
+  }
+  aus.sort((a, b) => String(b.r.datum || '').localeCompare(String(a.r.datum || '')));
+  return aus.map(({ r, t }) => ({ type:'rechnung', icon:'ti-file-invoice', color:'var(--amber)',
+    label: (r.lieferant || 'Rechnung') + (r.rechnungsnr ? ' · ' + r.rechnungsnr : '') + (r.belegNr ? ' · ' + r.belegNr : ''),
+    sub: [t.position ? 'Position: ' + String(t.position).slice(0, 60) : '', fmtDate(r.datum), r.betrag != null ? fmtEur(r.betrag) : '',
+          r.objektId ? (zielName(r.objektId) || '') : ''].filter(Boolean).join(' · '),
+    action: "closeModal();modalRechnungDetail('" + escJs(r.id) + "')", id: r.id }));
+}
+
+/* ── Rechnungsliste: Zusatzfilter ───────────────────────────────────── */
+const RECHN_GEWAEHR_VORLAUF_TAGE = 90;
+function rechnGewaehrInfo(r, heute){
+  const bis = String(r && r.gewaehrleistungBis || '');
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(bis)) return null;
+  const h = heute || today();
+  const tage = rbTage(h, bis);
+  return { bis, tage, abgelaufen: tage < 0, bald: tage >= 0 && tage <= RECHN_GEWAEHR_VORLAUF_TAGE };
+}
+function rechnIstUmlagefaehig(r){
+  const z = RECHN_ZUORDNUNG.find(x => x.id === r.zuordnung);
+  return !!(r.umlagefaehig || (z && z.umlage) || (Array.isArray(r.positionen) && r.positionen.some(p => p && p.umlagefaehig)));
+}
+function rechnZusatzfilterPasst(r, status, heute){
+  if(status === 'gewaehr'){ const g = rechnGewaehrInfo(r, heute); return !!(g && g.bald); }
+  if(status === 'umlage') return rechnIstUmlagefaehig(r);
+  if(status === 'steuer') return !!r.steuerPruefen;
+  return true;
+}
+
+/* ── Karte und Detail ───────────────────────────────────────────────── */
+function rechnPapierChips(r){
+  const c = (txt, bg, fg, ico) => '<span class="chip" style="font-size:9px;background:' + bg + ';color:' + fg + '">' + (ico ? '<i class="ti ' + ico + '"></i> ' : '') + esc(txt) + '</span>';
+  const g = rechnGewaehrInfo(r);
+  return [
+    r.belegNr ? c(r.belegNr, '#EEF2F8', '#1B5FA8') : '',
+    (!r.beleg && r.belegOdId) ? c('Beleg (OneDrive)', 'var(--copper-bg)', 'var(--copper-d)', 'ti-cloud') : '',
+    Number(r.betrag) < 0 ? c('Gutschrift', '#E8F5E9', '#2E7D52') : '',
+    g && g.bald ? c('Gewährleistung bis ' + fmtDatumKurz(g.bis), '#FFF4E0', '#9A6200') : '',
+    r.steuerPruefen ? c('steuerlich prüfen', '#FDECEA', '#C0392B') : ''
+  ].join('');
+}
+function rechnPosZusatz(p){
+  const teile = [p.klartext, p.artikelnr ? 'Art.-Nr. ' + p.artikelnr : '', p.umlagefaehig ? 'umlagefähig' : ''].filter(Boolean);
+  return teile.length ? '<br><span style="font-size:10px;font-style:italic">' + esc(teile.join(' · ')) + '</span>' : '';
+}
+function rechnPapierDetailHTML(r){
+  const g = rechnGewaehrInfo(r);
+  const zeilen = [
+    r.belegNr ? 'Beleg-Nr.: ' + esc(r.belegNr) : '',
+    r.wohnung ? 'Wohnung: WE ' + esc(r.wohnung) : '',
+    r.zahlkonto ? 'Bezahlt über: ' + esc(r.zahlkonto) + (r.bezahltAm ? ' am ' + fmtDatumKurz(r.bezahltAm) : '') : '',
+    g ? 'Gewährleistung bis: ' + fmtDatumKurz(g.bis) + (g.abgelaufen ? ' (abgelaufen)' : g.bald ? ' (läuft bald ab)' : '') : '',
+    r.umlagefaehig ? 'Umlagefähig (Nebenkosten)' : '',
+    r.gutschriftZu ? 'Gutschrift zu: ' + esc(r.gutschriftZu) : '',
+    r.steuerPruefen ? '<span style="color:#C0392B">Steuerlich prüfen' + (r.steuerHinweis ? ': ' + esc(r.steuerHinweis) : '') + '</span>' : '',
+    (!r.beleg && r.belegOdId) ? 'Beleg in OneDrive' + (r.belegOdName ? ': ' + esc(r.belegOdName) : '') : ''
+  ].filter(Boolean);
+  return zeilen.map(z => '<div>' + z + '</div>').join('');
+}
+function rechnOdBelegKnoepfe(r){
+  return `<div style="display:flex;gap:8px;margin-bottom:8px">
+        <button class="btn" style="flex:1" onclick="rechnBelegOeffnen('${escJs(r.id)}')"><i class="ti ti-cloud"></i> Beleg aus OneDrive öffnen</button>
+        <button class="btn" onclick="rechnBelegTeilen('${escJs(r.id)}')" title="Über WhatsApp, E-Mail usw. weiterleiten"><i class="ti ti-share"></i></button>
+      </div>`;
+}
+/* Kurzlebige, vorab angemeldete Download-Adresse der OneDrive-Datei (Datei-ID bleibt beim Verschieben gleich). */
+async function rechnOdBelegAdresse(r){
+  if(!r || !r.belegOdId) throw new Error('kein OneDrive-Beleg');
+  const meta = await odGraph(odItemAdresse(r.belegOdId));
+  if(!meta || meta.__notfound) throw new Error('Datei in OneDrive nicht gefunden (gelöscht?)');
+  return { url: meta['@microsoft.graph.downloadUrl'] || meta['@content.downloadUrl'] || null, web: meta.webUrl || null,
+           name: meta.name || r.belegOdName || 'Beleg', mime: (meta.file && meta.file.mimeType) || r.belegOdMime || '' };
+}
+async function rechnOdBelegOeffnen(r){
+  try{
+    const a = await rechnOdBelegAdresse(r);
+    const ziel = a.url || a.web;
+    if(!ziel){ toast('OneDrive liefert keine Adresse für den Beleg'); return; }
+    const el = document.createElement('a');
+    el.href = ziel; el.target = '_blank'; el.rel = 'noopener';
+    document.body.appendChild(el); el.click(); el.remove();
+  }catch(e){ toast('Beleg nicht abrufbar: ' + (e && e.message || e) + (odTokens ? '' : ' – OneDrive verbinden'), 6000); }
+}
+async function rechnOdBelegTeilen(r){
+  try{
+    const a = await rechnOdBelegAdresse(r);
+    if(!a.url){ toast('OneDrive liefert keine Download-Adresse'); return; }
+    await dateiTeilen(a.url, a.name, a.mime || undefined);
+  }catch(e){ toast('Beleg nicht abrufbar: ' + (e && e.message || e), 6000); }
+}
+
+/* ── Eingang: Papierrechnung (B28) ─────────────────────────────────── */
+const PAPIER_POS_MAX = 200;
+function papierZahl(x){
+  if(x == null || x === '') return undefined;
+  const n = typeof x === 'number' ? x : Number(String(x).replace(/\s|€/g, '').replace(/\.(?=\d{3}(\D|$))/g, '').replace(',', '.'));
+  return isFinite(n) ? Math.round(n * 100) / 100 : undefined;
+}
+function papierDatum(x){ return /^\d{4}-\d{2}-\d{2}$/.test(String(x || '')) ? String(x) : null; }
+function papierText(x, max){ const t = String(x == null ? '' : x).replace(/[\u0000-\u001f\u007f]/g, ' ').trim(); return t ? t.slice(0, max) : ''; }
+/* Positionen härten (die App vertraut dem Eingang nicht). markiert = gehört zum bezahlten Umfang (v286); ohne Angabe ja. */
+function papierPositionen(liste){
+  if(!Array.isArray(liste)) return null;
+  const aus = [];
+  for(const p of liste.slice(0, PAPIER_POS_MAX)){
+    if(!p || typeof p !== 'object') continue;
+    const bezeichnung = papierText(p.bezeichnung, 200);
+    if(!bezeichnung) continue;
+    const q = { bezeichnung, markiert: p.markiert !== false };
+    const kt = papierText(p.klartext, 200); if(kt) q.klartext = kt;
+    const an = papierText(p.artikelnr, 60); if(an) q.artikelnr = an;
+    const me = papierZahl(p.menge); if(me !== undefined) q.menge = me;
+    const ei = papierText(p.einheit, 20); if(ei) q.einheit = ei;
+    const ep = papierZahl(p.einzelpreis); if(ep !== undefined) q.einzelpreis = ep;
+    const gp = papierZahl(p.gesamtpreis); if(gp !== undefined) q.gesamtpreis = gp;
+    if(p.umlagefaehig === true) q.umlagefaehig = true;
+    aus.push(q);
+  }
+  return aus.length ? aus : null;
+}
+async function eingangPapierRechnung(e, tomb, absender){
+  const lieferant = papierText(e.lieferant, 120);
+  const nr = papierText(e.rechnungsnr, 60);
+  const betrag = papierZahl(e.betrag);
+  const datum = papierDatum(e.datum);
+  if(!e.id || !lieferant || !datum || betrag === undefined || betrag === 0) return { ok:false, text:'nicht übernommen: Angaben unvollständig (Lieferant, Datum, Betrag)' };
+  const id = 'cl_' + e.id;
+  if(tomb && tomb.rechnungen && tomb.rechnungen[id]) return { ok:false, text:'nicht übernommen: in der App bereits gelöscht' };
+  if(await idbGet('rechnungen', id).catch(() => null)) return { ok:true, schon:true, text:'bereits angelegt' };
+  const b = (e.beleg && typeof e.beleg === 'object') ? e.beleg : {};
+  const odId = /^[A-Za-z0-9!._\-]{6,200}$/.test(String(b.odId || '')) ? String(b.odId) : '';
+  const belegNr = papierText(e.beleg_nr, 30);
+  const alle = (await idbGetAll('rechnungen').catch(() => [])).filter(r => r && !r._deleted);
+  const doppel = alle.find(r =>
+       (odId && r.belegOdId === odId)
+    || (belegNr && r.belegNr === belegNr)
+    || (nr && rechnungNorm(r.rechnungsnr) === rechnungNorm(nr) && rechnungLieferantGleich(r.lieferant, lieferant))
+    || (!nr && r.datum === datum && Math.abs((Number(r.betrag) || 0) - betrag) < 0.005 && rechnungLieferantGleich(r.lieferant, lieferant)));
+  if(doppel){
+    const grund = odId && doppel.belegOdId === odId ? 'dieser Beleg ist schon erfasst'
+      : belegNr && doppel.belegNr === belegNr ? 'Beleg-Nr. ' + belegNr + ' ist schon vergeben'
+      : 'Rechnung ist schon erfasst';
+    return { ok:false, text:'nicht übernommen: ' + grund + ' (' + (doppel.lieferant || '') + (doppel.datum ? ', ' + fmtDate(doppel.datum) : '') + ', ' + fmtEur(doppel.betrag) + ')' };
+  }
+  const zuordnung = RECHN_ZUORDNUNG.some(z => z.id === e.zuordnung) ? e.zuordnung : 'allgemein';
+  let obj = null;
+  if(e.objekt){
+    obj = eingangObjektFinden(e.objekt);
+    if(!obj) return { ok:false, text:'nicht übernommen: Objekt „' + papierText(e.objekt, 100) + '“ nicht erkannt' };
+  }
+  if(zuordnung !== 'allgemein' && !obj) return { ok:false, text:'nicht übernommen: Objekt fehlt' };
+  const hinweise = [];
+  let kostenartId = null, kostenartName = null, mieterId = null, mieterName = null;
+  const wohnung = papierText(e.wohnung, 20);
+  if(zuordnung === 'nk' && e.kostenart){
+    const k = rechnungKostenartFinden(obj.id, e.kostenart);
+    if(k.treffer){ kostenartId = k.treffer.id; kostenartName = k.treffer.name; }
+    else hinweise.push('Kostenart „' + papierText(e.kostenart, 80) + '“ ' + (k.mehrdeutig ? 'nicht eindeutig' : 'nicht gefunden') + ' – bitte wählen');
+  } else if(zuordnung === 'nk') hinweise.push('Kostenart bitte wählen');
+  if(zuordnung === 'mieter'){
+    const m = wohnung ? await wohnungAktuellerMieter(obj.id, wohnung).catch(() => null) : null;
+    if(m){ mieterId = m.id; mieterName = `WE ${m.weNr || ''} · ${hauptmieterNameVoll(m) || m.mieter || ''}`; }
+    else hinweise.push('kein jetziger Mieter in WE ' + (wohnung || '?') + ' – bitte wählen');
+  }
+  if(zuordnung === 'reparatur') hinweise.push('Reparatur/Mangel bitte wählen');
+  if(!odId) hinweise.push('ohne Beleg');
+  const bezahlt = e.bezahlt === true;
+  const zeit = e.erstellt && !isNaN(zeitDatum(e.erstellt)) ? zeitDatum(e.erstellt).toISOString() : nowIso();
+  const notiz = [papierText(e.notiz, 500), 'Papierbeleg über Claude', hinweise.length ? 'Bitte prüfen: ' + hinweise.join('; ') : '']
+    .filter(Boolean).join(' · ').slice(0, 1000);
+  const rec = {
+    id, lieferant, rechnungsnr:nr, belegNrHand:'', belegNr: belegNr || null, positionen: papierPositionen(e.positionen), datum,
+    faellig: papierDatum(e.faellig), betrag, zuordnung, objektId: obj ? obj.id : null, wohnung: wohnung || null,
+    kostenartId, kostenartName, mieterId, mieterName, reparaturId:null, reparaturTitel:null,
+    bezahlt, notiz, beleg:null, belegMime:null, belegName:null,
+    belegOdId: odId || null, belegOdName: papierText(b.name, 160) || null, belegOdMime: papierText(b.mime, 60) || null,
+    zahlkonto: papierText(e.zahlkonto, 40) || null,
+    gewaehrleistungBis: papierDatum(e.gewaehrleistung_bis), umlagefaehig: e.umlagefaehig === true,
+    gutschriftZu: papierText(e.gutschrift_zu, 60) || null,
+    steuerPruefen: e.steuer_pruefen === true, steuerHinweis: papierText(e.steuer_hinweis, 200) || null,
+    erstelltIso:zeit, ersteller:claudeErsteller(absender), geaendert:nowIso(), quelle:'claude-papier', claudeEingang:e.id
+  };
+  if(bezahlt){ rec.bezahltAm = papierDatum(e.bezahlt_am) || datum; rec.bezahltVia = 'claude'; }
+  await idbPut('rechnungen', rec);
+  return { ok:true, text:'angelegt: ' + (betrag < 0 ? 'Gutschrift' : 'Rechnung') + (belegNr ? ' ' + belegNr : '') + (nr ? ' Nr. ' + nr : '')
+    + ' (' + lieferant + ', ' + fmtEur(betrag) + (obj ? ', ' + obj.name : '') + (bezahlt ? ', bezahlt' : '') + ')'
+    + (hinweise.length ? ' – bitte prüfen: ' + hinweise.join('; ') : '') };
+}
+
+/* ── Excel: Zeilen, Mappe, OneDrive ─────────────────────────────────── */
+function rechnExcelDatum(s){ return /^\d{4}-\d{2}-\d{2}/.test(String(s || '')) ? new Date(+s.slice(0,4), +s.slice(5,7) - 1, +s.slice(8,10)) : ''; }
+/* Positionen als eigenes Blatt: eine Zeile je Position (für Suche und Filter in Excel). */
+function rechnExcelPositionen(liste, nameVon){
+  const name = nameVon || (id => (id ? (zielName(id) || '') : ''));
+  const kopf = ['Rechnungsdatum','Lieferant','Rechnungsnr.','Eigene Beleg-Nr.','Objekt','Bezeichnung (Beleg)','Klartext','Artikelnr.','Menge','Einheit','Einzelpreis (€)','Gesamtpreis (€)','umlagefähig'];
+  const zeilen = [];
+  for(const r of liste){
+    for(const p of (Array.isArray(r.positionen) ? r.positionen : [])){
+      if(!p) continue;
+      zeilen.push([rechnExcelDatum(r.datum), r.lieferant || '', r.rechnungsnr || '', r.belegNr || r.belegNrHand || '', name(r.objektId),
+        p.bezeichnung || '', p.klartext || '', p.artikelnr || '', typeof p.menge === 'number' ? p.menge : '', p.einheit || '',
+        typeof p.einzelpreis === 'number' ? p.einzelpreis : '', typeof p.gesamtpreis === 'number' ? p.gesamtpreis : '', p.umlagefaehig ? 'ja' : '']);
+    }
+  }
+  return { kopf, zeilen };
+}
+function rechnExcelMappe(liste, mitHinweis){
+  const { kopf, zeilen } = rechnExcelZeilen(liste);
+  const ws = XLSX.utils.aoa_to_sheet([kopf, ...zeilen], { cellDates:true });
+  const n = zeilen.length;
+  for(let i = 0; i < n; i++){
+    for(const c of [0, 7, 9, 15]){ const a = XLSX.utils.encode_cell({ r:i + 1, c }); if(ws[a] && ws[a].t === 'd') ws[a].z = 'dd.mm.yyyy'; }
+    const b = XLSX.utils.encode_cell({ r:i + 1, c:3 }); if(ws[b]) ws[b].z = '#,##0.00';
+  }
+  /* Summenzeile als Formel - rechnet in Excel nach, wenn gefiltert wird. */
+  XLSX.utils.sheet_add_aoa(ws, [['Summe', '', '', { t:'n', f:'SUBTOTAL(9,D2:D' + (n + 1) + ')', z:'#,##0.00' }]], { origin:{ r:n + 1, c:0 } });
+  ws['!cols'] = [{wch:12},{wch:28},{wch:18},{wch:14},{wch:24},{wch:22},{wch:22},{wch:12},{wch:9},{wch:12},{wch:9},{wch:40},{wch:12},{wch:14},{wch:8},{wch:12},{wch:60}];
+  ws['!autofilter'] = { ref:'A1:Q' + (n + 1) };
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Rechnungen');
+  const pz = rechnExcelPositionen(liste);
+  if(pz.zeilen.length){
+    const wp = XLSX.utils.aoa_to_sheet([pz.kopf, ...pz.zeilen], { cellDates:true });
+    for(let i = 0; i < pz.zeilen.length; i++){
+      const a = XLSX.utils.encode_cell({ r:i + 1, c:0 }); if(wp[a] && wp[a].t === 'd') wp[a].z = 'dd.mm.yyyy';
+      for(const c of [10, 11]){ const x = XLSX.utils.encode_cell({ r:i + 1, c }); if(wp[x] && wp[x].t === 'n') wp[x].z = '#,##0.00'; }
+    }
+    wp['!cols'] = [{wch:12},{wch:24},{wch:16},{wch:12},{wch:22},{wch:34},{wch:34},{wch:14},{wch:7},{wch:7},{wch:11},{wch:11},{wch:10}];
+    wp['!autofilter'] = { ref:'A1:M' + (pz.zeilen.length + 1) };
+    XLSX.utils.book_append_sheet(wb, wp, 'Positionen');
+  }
+  if(mitHinweis){
+    const wh = XLSX.utils.aoa_to_sheet([
+      ['Diese Liste schreibt die Hausverwaltungs-App bei jedem Abgleich neu.'],
+      ['Änderungen in dieser Datei gehen dabei verloren – bitte in der App ändern.'],
+      ['Stand: ' + new Date().toLocaleString('de-DE')], ['Rechnungen: ' + n]]);
+    wh['!cols'] = [{ wch:80 }];
+    XLSX.utils.book_append_sheet(wb, wh, 'Hinweis');
+  }
+  return wb;
+}
+const RECHN_OD_ORDNER = 'NadigPfau/Rechnungsliste';
+const RECHN_OD_DATEI = 'Rechnungen.xlsx';
+const RECHN_OD_LS = 'a511RechnOd';
+let _rechnOdLaeuft = false, _rechnOdTimer = null;
+function rechnOdStand(){ try{ return JSON.parse(localStorage.getItem(RECHN_OD_LS) || 'null') || {}; }catch(_){ return {}; } }
+function rechnOdStandSetzen(v){ try{ localStorage.setItem(RECHN_OD_LS, JSON.stringify(v)); }catch(_){} }
+/* Fingerabdruck der Liste: ändert sich nur, wenn eine Rechnung dazukommt, wegfällt oder geändert wird. */
+function rechnFingerabdruck(liste){
+  const s = liste.map(r => r.id + '|' + (r.geaendert || '') + '|' + (r.bezahlt ? 1 : 0) + '|' + (r.betrag || 0)).sort().join(';');
+  let h = 5381;
+  for(let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
+  return liste.length + ':' + (h >>> 0).toString(36);
+}
+function rechnExcelOneDriveSpaeter(){
+  clearTimeout(_rechnOdTimer);
+  _rechnOdTimer = setTimeout(() => { rechnExcelOneDrive().catch(e => console.warn('Rechnungsliste OneDrive:', e && e.message)); }, 4000);
+}
+/* opts.immer: auch ohne Änderung schreiben (Knopf). Rückgabe 'geschrieben' | 'unveraendert' | 'uebersprungen'. */
+async function rechnExcelOneDrive(opts){
+  opts = opts || {};
+  if(_rechnOdLaeuft || !istSystemAdmin() || (typeof hmFreigabeAktiv === 'function' && hmFreigabeAktiv())) return 'uebersprungen';
+  const token = await odGetToken().catch(() => null);
+  if(!token) return 'uebersprungen';
+  _rechnOdLaeuft = true;
+  try{
+    const myIds = (await getMyObjekte()).map(o => o.id);
+    const liste = rechnSortieren((await idbGetAll('rechnungen').catch(() => []))
+      .filter(r => r && !r._deleted && (!r.objektId || myIds.includes(r.objektId))), 'datum_neu');
+    const fp = rechnFingerabdruck(liste);
+    const st = rechnOdStand();
+    if(!opts.immer && st.fp === fp) return 'unveraendert';
+    await xlsxLaden();
+    const daten = XLSX.write(rechnExcelMappe(liste, true), { type:'array', bookType:'xlsx' });
+    await odEnsureFolder(RECHN_OD_ORDNER);
+    const r = await fetchMitTimeout(OD_GRAPH + odPfadAdresse(RECHN_OD_ORDNER + '/' + RECHN_OD_DATEI) + ':/content', {
+      method:'PUT', headers:{ 'Authorization':'Bearer ' + token, 'Content-Type':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' },
+      body: new Uint8Array(daten) }, 60000);
+    if(!r.ok){
+      rechnOdStandSetzen(Object.assign({}, st, { fehler: r.status === 423 ? 'Datei ist gerade geöffnet – nächster Versuch beim nächsten Abgleich' : 'HTTP ' + r.status, fehlerZeit: nowIso() }));
+      return 'uebersprungen';
+    }
+    rechnOdStandSetzen({ fp, zeit: nowIso(), anzahl: liste.length });
+    return 'geschrieben';
+  } finally { _rechnOdLaeuft = false; }
+}
+async function rechnOdJetzt(){
+  toast('Rechnungsliste wird geschrieben …');
+  try{
+    const e = await rechnExcelOneDrive({ immer:true });
+    if(e === 'geschrieben') toast('Rechnungsliste in OneDrive aktualisiert ✓');
+    else toast(rechnOdStand().fehler || 'Nicht geschrieben – OneDrive verbunden? Nur mit Rolle Admin.', 6000);
+  }catch(e){ toast('Fehler: ' + (e && e.message || e), 6000); }
+  if(curPage === 'rechnungen') renderRechnungen();
+}
+function rechnOdHinweisHtml(){
+  if(!istSystemAdmin()) return '';
+  const st = rechnOdStand();
+  const wann = st.zeit ? zeitDatum(st.zeit).toLocaleString('de-DE', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' }) : 'noch nicht';
+  return `<div style="display:flex;align-items:center;gap:8px;font-size:11px;color:var(--ink-40);margin:-4px 0 10px">
+    <i class="ti ti-cloud"></i><span style="flex:1;min-width:0">Excel-Liste in OneDrive (${esc(RECHN_OD_ORDNER + '/' + RECHN_OD_DATEI)}): ${esc(wann)}${st.fehler && (!st.zeit || st.fehlerZeit > st.zeit) ? ' · ' + esc(st.fehler) : ''}</span>
+    <button class="btn btn-sm" onclick="rechnOdJetzt()" title="Liste jetzt neu schreiben"><i class="ti ti-refresh"></i></button></div>`;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
