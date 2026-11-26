@@ -1488,7 +1488,7 @@ const STORES_SYNC  = STORES_ALLE.filter(s => STORE_DEFS[s].sync);               
 const STORES_MERGE = STORES_SYNC.filter(s => STORE_DEFS[s].merge);                // Pull-Merge
 
 const DB_NAME='immo_v2', DB_VER=39;   // A398: +kr_abrechnungen · A466: +excel_cache
-const APP_VERSION = '2026-11-25-A513';
+const APP_VERSION = '2026-11-26-A514';
 /* v364 (12.08.2026) – offene Punkte abgearbeitet.
    1) D1/XLSX_SRI: Der im Code hinterlegte PowerShell-Befehl war FALSCH und
       konnte nie funktionieren - Invoke-WebRequest liefert unter .Content einen
@@ -22246,6 +22246,7 @@ async function finanzRendern(neuLaden){
       + (s.einheiten ? '<br><span id="finLeerstand">Leerstand: ' + s.leer + ' von ' + s.einheiten + ' Einheiten (' + esc((s.leer / s.einheiten * 100).toLocaleString('de-DE', { maximumFractionDigits:1 })) + '&nbsp;%)</span>' : '') + '</div></div>'
       + '<div class="fin-knoepfe"><button type="button" class="btn btn-sm btn-primary" data-action-click="modalFinPosten"><i class="ti ti-plus"></i> Kredit / Posten</button>'
       + '<button type="button" class="btn btn-sm" data-action-click="modalVersorgerUebersicht"><i class="ti ti-file-dollar"></i> Versorgerverträge</button>'   // A501
+      + '<button type="button" class="btn btn-sm" data-action-click="modalKautionPruefliste"><i class="ti ti-lock-dollar"></i> Kautionen prüfen</button>'   // A514
       + '<button type="button" class="btn btn-sm" data-action-click="finCsv"><i class="ti ti-download"></i> CSV</button></div></div>'
     + '<div class="fin-leiste"><span class="fin-unter">Anhaken:</span><button type="button" class="btn btn-sm" data-action-click="finAuswahl" data-arg="alle">Alle</button>'
       + '<button type="button" class="btn btn-sm" data-action-click="finAuswahl" data-arg="keine">Keine</button>' + gruppen
@@ -24591,6 +24592,8 @@ async function spiegelBauen(modus){
       if(modus === 'mit' && aktiv){
         w.kalt = spiegelZahl(aktiv.miete); w.nk = spiegelZahl(aktiv.nk);
         w.gesamt = spiegelZahl(aktiv.gesamt) ?? ((w.kalt != null || w.nk != null) ? Math.round(((w.kalt || 0) + (w.nk || 0)) * 100) / 100 : null);
+        const kb = kautionBefundVon(aktiv);   // A514 (B31)
+        w.kaution = kb.kaution > 0 ? kb.kaution : 0; w.kautionHinweis = kb.befunde.join(',') || (kb.ohne ? 'keine' : 'ok');
       }
       wohnungen.push(w);
     }
@@ -59003,6 +59006,100 @@ async function rechnBelegTeilen(id){
   if(!/\.(pdf|xml)$/i.test(bn)) bn += istXml?'.xml':'.pdf';
   await dateiTeilen(r.beleg, bn, istXml?'text/xml':'application/pdf');
 }
+
+/* ═══════════════════════════════════════════════════════════
+   A514 (26.11.2026) – Kautionen prüfen (Einstellungen → Fibu → „Kautionen prüfen“)
+   Wunsch des Nutzers 26.11.2026: alle Kautionen der aktuellen Mieter gegen die
+   aktuelle Miete prüfen – weniger ist in Ordnung, mehr nicht, und keine krummen
+   Beträge mit Komma.
+   - Grenze § 551 Abs. 1 BGB: höchstens drei Monatsmieten ohne Betriebskosten
+     (Nettokaltmiete). Maßgeblich ist die Miete bei Vertragsschluss; geprüft wird
+     gegen die heutige Kaltmiete (liegt die Kaution darüber, war sie in aller Regel
+     schon bei Vertragsbeginn zu hoch).
+   - Kaltmiete wie kautionPlausiPruefen (v224/A469): m.miete, sonst m.kaltmiete.
+   - Kaution wie kautionDetailVon: kautionDetail.betrag, sonst m.kaution; bei Raten
+     zusätzlich die tatsächlich erhaltenen Raten.
+   - Aktuelle Mieter wie im Spiegel: je WE der Mieter ohne Vormieter/Nachmieter/
+     Leerstand/Tiefgarage; private Objekte und Tiefgaragen nicht.
+   - Rein lesend; korrigiert wird im Kautionsdialog des Mieters.
+   - Spiegel (B31): je vermieteter WE kaution + kautionHinweis (nur „mit Beträgen“).
+   ═══════════════════════════════════════════════════════════ */
+const KAUTION_MAX_MIETEN = 3;
+const KAUTION_BEFUND_TEXT = {
+  zu_hoch:'über 3 Kaltmieten',
+  erhalten_zu_hoch:'erhaltene Raten über 3 Kaltmieten',
+  krumm:'Betrag mit Cent',
+  miete_fehlt:'Kaltmiete fehlt'
+};
+
+/* Rein (ohne Speicher) – auch für Tests. */
+function kautionBefundVon(m){
+  const nkmRoh = (m.miete !== undefined && m.miete !== null && m.miete !== '') ? m.miete : m.kaltmiete;
+  const nkm = rc(parseBetrag(nkmRoh) || 0);
+  const kd = kautionDetailVon(m);
+  const kaution = rc(parseBetrag(kd.betrag) || 0);
+  const erhalten = kd.art === 'raten' ? kautionRatenSumme(kd) : null;
+  const grenze = rc(nkm * KAUTION_MAX_MIETEN);
+  const befunde = [];
+  if(kaution > 0 && nkm > 0 && kaution > grenze + 0.005) befunde.push('zu_hoch');
+  if(erhalten !== null && nkm > 0 && erhalten > grenze + 0.005 && !(kaution > grenze + 0.005)) befunde.push('erhalten_zu_hoch');
+  if(kaution > 0 && Math.abs(kaution - Math.round(kaution)) > 0.004) befunde.push('krumm');
+  if(kaution > 0 && !(nkm > 0)) befunde.push('miete_fehlt');
+  return { nkm, grenze, kaution, erhalten, befunde, ohne:!(kaution > 0) };
+}
+
+async function kautionAktuelleMieter(){
+  const mieterAlle = await idbGetAll('mieter').catch(() => []);
+  const aus = [];
+  for(const o of OBJEKTE){
+    if(o.privat || o.tiefgarage || !darfObjekt(o.id)) continue;
+    const mo = mieterAlle.filter(m => m && !m._deleted && m.objektId === o.id);
+    for(const we of await alleWeVonObjekt(o.id, mo)){
+      const aktiv = mo.find(m => String(m.weNr || '').trim() === we && !m._vormieter && !m._zukuenftig && !m.leerstand && !m._tgMieter);
+      if(aktiv) aus.push({ o, we, m:aktiv, b:kautionBefundVon(aktiv) });
+    }
+  }
+  return aus;
+}
+
+let _kpAlle = false;
+async function modalKautionPruefliste(){
+  if(!istVerwalter()){ toast('Nur für Verwalter'); return; }
+  const liste = await kautionAktuelleMieter();
+  const auff = liste.filter(x => x.b.befunde.length);
+  const ohne = liste.filter(x => x.b.ohne);
+  const rang = x => x.b.befunde.includes('zu_hoch') ? 0 : x.b.befunde.includes('erhalten_zu_hoch') ? 1 : x.b.befunde.includes('krumm') ? 2 : x.b.befunde.length ? 3 : x.b.ohne ? 4 : 5;
+  const zeigen = (_kpAlle ? liste : auff).slice().sort((x, y) => rang(x) - rang(y)
+    || String(x.o.name).localeCompare(String(y.o.name), 'de') || String(x.we).localeCompare(String(y.we), 'de', { numeric:true }));
+  const geld = v => v > 0 ? esc(fmtEur(v)) : '<span class="vu-grau">–</span>';
+  const zeilen = zeigen.map(({ o, we, m, b }) => {
+    const name = (typeof hauptmieterNachnamen === 'function' && hauptmieterNachnamen(m)) || m.mieter || m.name || '';
+    const befund = b.befunde.length ? b.befunde.map(c => '<span class="vu-rot">' + esc(KAUTION_BEFUND_TEXT[c] || c) + '</span>').join('<br>')
+      : (b.ohne ? '<span class="vu-grau">keine Kaution erfasst</span>' : '<span class="vu-gruen">in Ordnung</span>');
+    return '<tr><td class="fin-l"><b>' + esc(o.name) + ' WE ' + esc(we) + '</b><span class="vu-klein">' + esc(name) + '</span></td>'
+      + '<td class="fin-r" data-l="Kaltmiete">' + geld(b.nkm) + '</td>'
+      + '<td class="fin-r" data-l="Höchstens">' + geld(b.grenze) + '</td>'
+      + '<td class="fin-r" data-l="Kaution">' + geld(b.kaution) + (b.erhalten !== null ? '<span class="vu-klein">erhalten ' + esc(fmtEur(b.erhalten)) + '</span>' : '') + '</td>'
+      + '<td class="fin-l" data-l="Befund">' + befund + '</td>'
+      + '<td class="fin-k"><button type="button" class="btn btn-sm" data-action-click="kautionPrueflisteOeffnen" data-arg="' + escAttr(m.id) + '"><i class="ti ti-lock-dollar"></i> Kaution</button></td></tr>';
+  }).join('');
+  const zahl = c => liste.filter(x => x.b.befunde.includes(c)).length;
+  showModal('<div class="m-title"><i class="ti ti-lock-dollar"></i> Kautionen prüfen</div>'
+    + '<p class="vu-klein" style="margin:0 0 8px">' + liste.length + ' aktuelle Mieter · ' + (auff.length ? '<span class="vu-rot">' + auff.length + ' auffällig</span>' : '<span class="vu-gruen">nichts auffällig</span>')
+    + ' (über 3 Kaltmieten: ' + zahl('zu_hoch') + (zahl('erhalten_zu_hoch') ? ', erhaltene Raten zu hoch: ' + zahl('erhalten_zu_hoch') : '') + ', mit Cent: ' + zahl('krumm') + ', Kaltmiete fehlt: ' + zahl('miete_fehlt') + ')'
+    + ' · ohne Kaution: ' + ohne.length + '</p>'
+    + '<label class="fin-schalter"><input type="checkbox"' + (_kpAlle ? ' checked' : '') + ' data-action-change="kautionPrueflisteAlle"> Alle Mieter zeigen, nicht nur auffällige</label>'
+    + '<div class="fin-wrap"><table class="fin-tab vu-tab"><thead><tr><th class="fin-l">Wohnung / Mieter</th><th class="fin-r">Kaltmiete</th><th class="fin-r">Höchstens (3×)</th><th class="fin-r">Kaution</th><th class="fin-l">Befund</th><th class="fin-k"><span class="sr-only">Öffnen</span></th></tr></thead><tbody>'
+    + (zeilen || '<tr><td colspan="6" class="fin-hinweis">' + (liste.length ? 'Keine auffälligen Kautionen.' : 'Keine aktuellen Mieter sichtbar.') + '</td></tr>') + '</tbody></table></div>'
+    + '<p class="fin-hinweis"><i class="ti ti-info-circle"></i> § 551 Abs. 1 BGB: Die Kaution darf höchstens drei Monatsmieten ohne Betriebskosten betragen. Maßgeblich ist die Miete bei Vertragsschluss; '
+    + 'geprüft wird hier gegen die heutige Kaltmiete – liegt die Kaution darüber, war sie in aller Regel schon bei Vertragsbeginn zu hoch. Weniger ist zulässig. '
+    + 'Kautionen werden üblicherweise in vollen Euro vereinbart; ein Cent-Betrag deutet auf einen Tipp- oder Rechenfehler hin. Korrigieren über „Kaution“ beim Mieter. '
+    + 'Zu viel verlangte Kaution kann der Mieter zurückfordern (§ 551 Abs. 4 BGB) – im Einzelfall rechtlich prüfen lassen.</p>'
+    + '<button class="btn btn-full" style="margin-top:8px" data-action-click="closeModal">Schließen</button>');
+}
+async function kautionPrueflisteAlle(){ _kpAlle = !!(this && this.checked); await modalKautionPruefliste(); }
+async function kautionPrueflisteOeffnen(mieterId){ await modalKaution(mieterId); }
+registerActions({ modalKautionPruefliste, kautionPrueflisteAlle, kautionPrueflisteOeffnen });
 
 /* ═══════════════════════════════════════════════════════════
    A513 (25.11.2026) – Zahlungen der Hauskonten für Claude (B30, zahlungen_suchen)
